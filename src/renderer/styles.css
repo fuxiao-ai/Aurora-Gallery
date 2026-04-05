@@ -769,6 +769,29 @@ html[data-theme='light'] .topbar .header-title {
   border-color: color-mix(in srgb, var(--accent) 72%, var(--accent-2));
   box-shadow: 0 0 16px color-mix(in srgb, var(--accent-glow) 46%, transparent);
 }
+.topbar-locale-select {
+  -webkit-app-region: no-drag;
+  min-width: 100px;
+  max-width: 130px;
+  border-radius: 10px;
+  font-size: 13px;
+  padding: 6px 24px 6px 10px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset;
+}
+.topbar-locale-select:hover {
+  border-color: var(--accent);
+}
+.topbar-locale-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
 .topbar-theme-select {
   -webkit-app-region: no-drag;
   min-width: 140px;
@@ -1594,6 +1617,10 @@ select.ui-select option {
   }
   .topbar .stats {
     font-size: 11px;
+  }
+  .topbar-locale-select {
+    min-width: 88px;
+    max-width: 112px;
   }
   .topbar-theme-select {
     min-width: 126px;
@@ -4416,6 +4443,10 @@ html[data-theme='light'] .setting-checkbox-row input.preview-setting-checkbox:ho
   .topbar .search-box {
     max-width: none;
   }
+  .topbar-locale-select {
+    min-width: 86px;
+    max-width: 110px;
+  }
   .topbar-theme-select {
     min-width: 120px;
     max-width: 140px;
@@ -4484,6 +4515,9 @@ html[data-theme='light'] .setting-checkbox-row input.preview-setting-checkbox:ho
     border-radius: 20px;
   }
   .topbar .stats {
+    display: none;
+  }
+  .topbar-locale-select {
     display: none;
   }
   .topbar-theme-select {

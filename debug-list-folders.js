@@ -7,7 +7,8 @@ const PhotoDatabase = require('./src/database');
 
 async function main() {
   var userDataPath = process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming');
-  var dbPath = path.join(userDataPath, 'photo-manager', 'photos.db');
+  // 与 Electron userData 一致：开发时包名为 aurora-gallery（见 package.json name）
+  var dbPath = path.join(userDataPath, 'aurora-gallery', 'photos.db');
   console.log('Using database:', dbPath);
   var db = new PhotoDatabase(dbPath);
   db.ensureFaceSchemaLazy();

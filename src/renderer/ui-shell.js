@@ -1,6 +1,11 @@
 (function (global) {
   'use strict';
 
+  function tShell(key, zh) {
+    if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+    return zh;
+  }
+
   // ===== sidebar-resizer.js =====
   var SIDEBAR_WIDTH_STORAGE_KEY = 'pm_sidebar_width_px';
   var SIDEBAR_DRAG_MIN = 200;
@@ -103,7 +108,11 @@
     dom.scanProgress.classList.toggle('task-panel-collapsed', collapsed);
     var btn = document.getElementById('taskPanelToggleBtn');
     if (btn) {
-      btn.textContent = collapsed ? '展开' : '收起';
+      if (window.I18n && typeof window.I18n.t === 'function') {
+        btn.textContent = collapsed ? window.I18n.t('task.expand') : window.I18n.t('task.collapse');
+      } else {
+        btn.textContent = collapsed ? tShell('task.expand', '展开') : tShell('task.collapse', '收起');
+      }
       btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     }
   }
@@ -122,6 +131,21 @@
   });
 
   // ===== web-access-ui.js =====
+  function tNet(key, zh) {
+    if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+    return zh;
+  }
+  function tNetFmt(key, map, zhFallback) {
+    var s = tNet(key, zhFallback);
+    if (!map) return s;
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) {
+        s = s.split('{' + k + '}').join(String(map[k]));
+      }
+    }
+    return s;
+  }
+
   async function loadWebUrl(options) {
     options = options || {};
     var state = options.state || {};
@@ -163,7 +187,11 @@
         sw.disabled = false;
       }
       if (stEl) {
-        stEl.textContent = enabled ? (running ? '运行' : '未就绪') : '未开启';
+        stEl.textContent = enabled
+          ? running
+            ? tNet('settings.network.statusOn', '运行')
+            : tNet('settings.network.statusNotReady', '未就绪')
+          : tNet('settings.network.urlWhenOff', '未开启');
         stEl.classList.remove('online', 'offline');
         stEl.classList.add(enabled && running ? 'online' : 'offline');
       }
@@ -171,11 +199,11 @@
         state.webUrl = url;
         if (urlEl) urlEl.textContent = url;
       } else if (urlEl) {
-        urlEl.textContent = '未开启';
+        urlEl.textContent = tNet('settings.network.urlWhenOff', '未开启');
       }
     } catch (e) {
       if (stEl) {
-        stEl.textContent = '读取失败';
+        stEl.textContent = tNet('settings.network.readError', '读取失败');
         stEl.classList.remove('online');
         stEl.classList.add('offline');
       }
@@ -194,11 +222,23 @@
     try {
       var r = await api.webServerSetEnabled(!!enabled);
       if (!r || !r.success) {
-        appAlert('局域网访问开关操作失败：' + ((r && r.error) || '未知错误'));
+        appAlert(
+          tNetFmt(
+            'settings.network.webToggleFail',
+            { error: (r && r.error) || tNet('settings.common.unknownError', '未知错误') },
+            '局域网访问开关操作失败：' + ((r && r.error) || '未知错误'),
+          ),
+        );
         if (sw) sw.checked = !enabled;
       }
     } catch (e) {
-      appAlert('局域网访问开关操作失败：' + (e && e.message ? e.message : String(e)));
+      appAlert(
+        tNetFmt(
+          'settings.network.webToggleFail',
+          { error: e && e.message ? e.message : String(e) },
+          '局域网访问开关操作失败：' + (e && e.message ? e.message : String(e)),
+        ),
+      );
       if (sw) sw.checked = !enabled;
     } finally {
       if (sw) delete sw.dataset.syncing;
@@ -214,9 +254,9 @@
     if (navigator.clipboard) {
       navigator.clipboard.writeText(state.webUrl).then(function () {
         if (copyEl) {
-          copyEl.textContent = '已复制！';
+          copyEl.textContent = tNet('settings.network.copied', '已复制！');
           setTimeout(function () {
-            copyEl.textContent = '点击复制';
+            copyEl.textContent = tNet('settings.network.copy', '点击复制');
           }, 1500);
         }
       });
@@ -229,9 +269,9 @@
       document.execCommand('copy');
       document.body.removeChild(textarea);
       if (copyEl) {
-        copyEl.textContent = '已复制！';
+        copyEl.textContent = tNet('settings.network.copied', '已复制！');
         setTimeout(function () {
-          copyEl.textContent = '点击复制';
+          copyEl.textContent = tNet('settings.network.copy', '点击复制');
         }, 1500);
       }
     }
@@ -252,30 +292,34 @@
       var s = await api.tunnelGetStatus();
       var statusRaw = (s && s.status ? String(s.status) : 'idle').toLowerCase();
       var isEnabled = !!(s && s.enabled);
-      var statusLabel = '未开启';
+      var statusLabel = tNet('settings.network.tunnelOff', '未开启');
       if (!isEnabled) {
-        statusLabel = '未开启';
+        statusLabel = tNet('settings.network.tunnelOff', '未开启');
       } else if (statusRaw === 'running') {
-        statusLabel = '运行中';
+        statusLabel = tNet('settings.network.tunnelRunning', '运行中');
       } else if (statusRaw === 'starting') {
-        statusLabel = '启动中';
+        statusLabel = tNet('settings.network.tunnelStarting', '启动中');
       } else if (statusRaw === 'error') {
-        statusLabel = '异常';
+        statusLabel = tNet('settings.network.tunnelError', '异常');
       } else {
-        statusLabel = '待就绪';
+        statusLabel = tNet('settings.network.tunnelPending', '待就绪');
       }
       if (stEl) {
         stEl.textContent = statusLabel;
         stEl.classList.remove('online', 'offline');
         stEl.classList.add(isEnabled && statusRaw === 'running' ? 'online' : 'offline');
       }
-      if (urlEl) urlEl.textContent = s.url || '未获取';
+      if (urlEl) urlEl.textContent = s.url || tNet('settings.network.tunnelUrlPending', '未获取');
       if (binEl) {
         if (s && s.binaryPath) {
           var src = String(s.binaryPath || '');
-          binEl.textContent = 'cloudflared：' + src;
+          binEl.textContent = tNetFmt(
+            'settings.network.tunnelBinaryFmt',
+            { path: src },
+            'cloudflared：' + src,
+          );
         } else {
-          binEl.textContent = 'cloudflared：未找到';
+          binEl.textContent = tNet('settings.network.tunnelBinaryNotFound', 'cloudflared：未找到');
         }
       }
 
@@ -310,11 +354,11 @@
       }
     } catch (e) {
       if (stEl) {
-        stEl.textContent = '读取失败';
+        stEl.textContent = tNet('settings.network.readError', '读取失败');
         stEl.classList.remove('online');
         stEl.classList.add('offline');
       }
-      if (binEl) binEl.textContent = 'cloudflared：读取失败';
+      if (binEl) binEl.textContent = tNet('settings.network.tunnelBinaryReadError', 'cloudflared：读取失败');
     }
   }
 
@@ -330,19 +374,30 @@
     var pwdInput = document.getElementById('settingWebPassword');
     var hasPwdTyped = pwdInput && pwdInput.value && pwdInput.value.trim().length > 0;
     if (enabled && !state.hasWebPassword && !hasPwdTyped) {
-      appAlert('请先设置网页访问密码，再开启 Tunnel。');
+      appAlert(tNet('settings.network.tunnelPwdFirst', '请先设置网页访问密码，再开启 Tunnel。'));
       if (sw) sw.checked = false;
       return;
     }
     if (enabled && !state.hasWebPassword && hasPwdTyped) {
-      appAlert('请先点击「确认应用」保存访问密码，再开启 Tunnel。');
+      appAlert(
+        tNet(
+          'settings.network.tunnelApplyPwdFirst',
+          '请先点击「确认应用」保存访问密码，再开启 Tunnel。',
+        ),
+      );
       if (sw) sw.checked = false;
       return;
     }
     if (sw) sw.dataset.syncing = '1';
     var r = await api.tunnelSetEnabled(!!enabled);
     if (!r || !r.success) {
-      appAlert('Tunnel 操作失败：' + ((r && r.error) || '未知错误'));
+      appAlert(
+        tNetFmt(
+          'settings.network.tunnelToggleFail',
+          { error: (r && r.error) || tNet('settings.common.unknownError', '未知错误') },
+          'Tunnel 操作失败：' + ((r && r.error) || '未知错误'),
+        ),
+      );
       if (sw) sw.checked = !enabled;
     }
     if (sw) delete sw.dataset.syncing;
@@ -353,13 +408,14 @@
     var textEl = document.getElementById('tunnelUrlText');
     var copyEl = document.getElementById('tunnelUrlCopy');
     var u = textEl ? String(textEl.textContent || '') : '';
-    if (!u || u === '未获取') return;
+    var pending = tNet('settings.network.tunnelUrlPending', '未获取');
+    if (!u || u === pending) return;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(u).then(function () {
         if (copyEl) {
-          copyEl.textContent = '已复制！';
+          copyEl.textContent = tNet('settings.network.copied', '已复制！');
           setTimeout(function () {
-            copyEl.textContent = '点击复制';
+            copyEl.textContent = tNet('settings.network.copy', '点击复制');
           }, 1500);
         }
       });
@@ -375,9 +431,9 @@
       navigator.clipboard.writeText(text).then(function () {
         if (btn) {
           var old = btn.textContent;
-          btn.textContent = '已复制';
+          btn.textContent = tNet('settings.network.logCopied', '已复制');
           setTimeout(function () {
-            btn.textContent = old || '复制日志';
+            btn.textContent = old || tNet('settings.network.tunnelCopyLog', '复制日志');
           }, 1500);
         }
       });
@@ -412,10 +468,20 @@
       saveLastSettingsSectionId('settingsSectionNetwork');
       if (typeof getCurrentTab === 'function' ? getCurrentTab() === 'settings' : false)
         onRenderSettingsNav('settingsSectionNetwork');
-      appAlert(newPwd ? '访问密码已设置' : '访问密码已清除');
+      appAlert(
+        newPwd
+          ? tNet('settings.network.passwordSaved', '访问密码已设置')
+          : tNet('settings.network.passwordCleared', '访问密码已清除'),
+      );
       onRefreshTunnelStatus();
     } catch (e) {
-      appAlert('保存访问密码失败：' + (e && e.message ? e.message : String(e)));
+      appAlert(
+        tNetFmt(
+          'settings.network.passwordSaveFail',
+          { error: e && e.message ? e.message : String(e) },
+          '保存访问密码失败：' + (e && e.message ? e.message : String(e)),
+        ),
+      );
     }
   }
 
@@ -439,6 +505,11 @@
     document.querySelectorAll('.titlebar-menu-item').forEach(function (d) {
       d.classList.remove('open');
     });
+  }
+
+  function tMenu(key, zhFallback) {
+    if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+    return zhFallback;
   }
 
   async function menuAction(action, options) {
@@ -476,32 +547,38 @@
         break;
       case 'about':
         await appAlert(
-          '拂晓图库 v1.0.1\n\n一款轻量级的本地照片管理工具\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
-          '关于',
+          tMenu(
+            'help.aboutBody',
+            '拂晓图库 v1.0.2\n\n一款轻量级的本地相册应用（本地优先，索引与媒体保存在本机）\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
+          ),
+          tMenu('help.aboutTitle', '关于'),
         );
         break;
       case 'shortcuts':
         await appAlert(
-          '浏览（主界面）\n\n' +
-            'Ctrl + Q — 隐藏窗口到系统托盘后台 / 再次按下恢复显示（全局快捷键；使用 Control 键，macOS 上不会占用 Cmd+Q 退出）\n' +
-            '标题栏 ✕ / Alt+F4：由「管理设置 → 关闭按钮」决定：可每次询问（主题化弹窗）、直接托盘或直接退出。\n' +
-            '询问弹窗内可勾选「设为默认」。文件菜单「隐藏到托盘」「退出拂晓图库」不受此项影响。\n' +
-            'Ctrl + B — 简洁界面：收起或展开侧栏、顶栏与任务条（桌面端）\n' +
-            '网格中收藏按钮在鼠标悬停到缩略图上时显示；触控屏上始终显示。\n\n' +
-            '预览快捷键\n\n' +
-            'Esc — 关闭预览\n' +
-            '← / → — 上一张 / 下一张\n' +
-            '空格 — 播放 / 暂停幻灯片\n' +
-            'Delete — 删除到回收站\n' +
-            'F — 收藏 / 取消收藏\n' +
-            '0 — 重置缩放与旋转\n' +
-            '+ / − — 放大 / 缩小\n' +
-            'R — 顺时针旋转 90°（仅显示，不写文件）\n' +
-            'Home / End — 当前列表首张 / 末张\n' +
-            'O — 用系统默认程序打开当前图\n' +
-            'Ctrl + 滚轮 — 缩放图片\n\n' +
-            '菜单「查看」可切换到下一套界面风格。',
-          '快捷键',
+          tMenu(
+            'help.shortcutsBody',
+            '浏览（主界面）\n\n' +
+              'Ctrl + Q — 隐藏窗口到系统托盘后台 / 再次按下恢复显示（全局快捷键；使用 Control 键，macOS 上不会占用 Cmd+Q 退出）\n' +
+              '标题栏 ✕ / Alt+F4：由「管理设置 → 关闭按钮」决定：可每次询问（主题化弹窗）、直接托盘或直接退出。\n' +
+              '询问弹窗内可勾选「设为默认」。文件菜单「隐藏到托盘」「退出拂晓图库」不受此项影响。\n' +
+              'Ctrl + B — 简洁界面：收起或展开侧栏、顶栏与任务条（桌面端）\n' +
+              '网格中收藏按钮在鼠标悬停到缩略图上时显示；触控屏上始终显示。\n\n' +
+              '预览快捷键\n\n' +
+              'Esc — 关闭预览\n' +
+              '← / → — 上一张 / 下一张\n' +
+              '空格 — 播放 / 暂停幻灯片\n' +
+              'Delete — 删除到回收站\n' +
+              'F — 收藏 / 取消收藏\n' +
+              '0 — 重置缩放与旋转\n' +
+              '+ / − — 放大 / 缩小\n' +
+              'R — 顺时针旋转 90°（仅显示，不写文件）\n' +
+              'Home / End — 当前列表首张 / 末张\n' +
+              'O — 用系统默认程序打开当前图\n' +
+              'Ctrl + 滚轮 — 缩放图片\n\n' +
+              '菜单「查看」可切换到下一套界面风格。',
+          ),
+          tMenu('help.shortcutsTitle', '快捷键'),
         );
         break;
       case 'toggleChromeCollapsed':

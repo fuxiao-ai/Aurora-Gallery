@@ -1,6 +1,11 @@
 (function (global) {
   /** 大库下 buildTree 分片，让出主线程避免长时间脚本卡死 */
   var SIDEBAR_TREE_FLAT_CHUNK = 1800;
+
+  function tSide(key, zh) {
+    if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+    return zh;
+  }
   /** 不再省略子目录：目录树全量渲染（仍保留分片与渐进渲染避免长任务） */
   var SIDEBAR_TREE_MAX_RENDER_NODES = Number.MAX_SAFE_INTEGER;
   /** 各根「目录行」合计超过此值走渐进渲染（多根分摊） */
@@ -300,7 +305,9 @@
     var html = '';
     if (!Array.isArray(state.rootFolders) || state.rootFolders.length === 0) {
       html =
-        '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">暂无文件夹<br>请点击「管理设置」添加</div>';
+        '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">' +
+        tSide('sidebar.emptyNoFolders', '暂无文件夹<br>请点击「管理设置」添加') +
+        '</div>';
     } else {
       var total = 0;
       for (var i = 0; i < state.rootFolders.length; i++) total += state.rootFolders[i].photo_count;
@@ -309,7 +316,9 @@
         (state.currentView === 'all' ? 'active' : '') +
         '" data-sidebar-all="1" data-sidebar-view="dates-all">' +
         '<span class="icon">\u{1F5BC}\uFE0F</span>' +
-        '<span class="name">所有照片</span>' +
+        '<span class="name">' +
+        escapeHtml(tSide('sidebar.allPhotos', '所有照片')) +
+        '</span>' +
         '<span class="count">' +
         formatNumber(total) +
         '</span>' +
@@ -321,7 +330,9 @@
         (state.currentView === 'favorites' ? 'active' : '') +
         '" data-sidebar-favorites="1" data-sidebar-view="favorites">' +
         '<span class="icon">\u2B50</span>' +
-        '<span class="name">收藏</span>' +
+        '<span class="name">' +
+        escapeHtml(tSide('sidebar.favorites', '收藏')) +
+        '</span>' +
         '<span class="count">' +
         formatNumber(favCount) +
         '</span>' +
@@ -335,7 +346,9 @@
         (state.currentView === 'folder_overview' ? 'active' : '') +
         '" data-sidebar-folder-overview="1" data-sidebar-view="folder-overview">' +
         '<span class="icon">\u{1F5C2}\uFE0F</span>' +
-        '<span class="name">所有目录</span>' +
+        '<span class="name">' +
+        escapeHtml(tSide('sidebar.allFolders', '所有目录')) +
+        '</span>' +
         '<span class="count">' +
         formatNumber(folderOverviewCount) +
         '</span>' +
@@ -374,7 +387,11 @@
           '</span>' +
           '<button type="button" class="sidebar-root-rescan" data-root-path="' +
           escapeAttr(root.path) +
-          '" title="子文件夹有移动、重命名等变更时，点此重新扫描" aria-label="重新扫描此照片库">↻</button>' +
+          '" title="' +
+          escapeAttr(tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描')) +
+          '" aria-label="' +
+          escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
+          '">↻</button>' +
           '<span class="count">' +
           formatNumber(root.photo_count) +
           '</span>' +
@@ -432,7 +449,9 @@
     var html = '';
     if (!Array.isArray(st.rootFolders) || st.rootFolders.length === 0) {
       html =
-        '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">暂无文件夹<br>请点击「管理设置」添加</div>';
+        '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">' +
+        tSide('sidebar.emptyNoFolders', '暂无文件夹<br>请点击「管理设置」添加') +
+        '</div>';
       if (gate) gate.render(html);
       else if (sidebarContent) sidebarContent.innerHTML = html;
       return;
@@ -445,7 +464,9 @@
       (st.currentView === 'all' ? 'active' : '') +
       '" data-sidebar-all="1" data-sidebar-view="dates-all">' +
       '<span class="icon">\u{1F5BC}\uFE0F</span>' +
-      '<span class="name">所有照片</span>' +
+      '<span class="name">' +
+      escapeHtml(tSide('sidebar.allPhotos', '所有照片')) +
+      '</span>' +
       '<span class="count">' +
       formatNumber(total) +
       '</span>' +
@@ -456,7 +477,9 @@
       (st.currentView === 'favorites' ? 'active' : '') +
       '" data-sidebar-favorites="1" data-sidebar-view="favorites">' +
       '<span class="icon">\u2B50</span>' +
-      '<span class="name">收藏</span>' +
+      '<span class="name">' +
+      escapeHtml(tSide('sidebar.favorites', '收藏')) +
+      '</span>' +
       '<span class="count">' +
       formatNumber(favCount) +
       '</span>' +
@@ -470,7 +493,9 @@
       (st.currentView === 'folder_overview' ? 'active' : '') +
       '" data-sidebar-folder-overview="1" data-sidebar-view="folder-overview">' +
       '<span class="icon">\u{1F5C2}\uFE0F</span>' +
-      '<span class="name">所有目录</span>' +
+      '<span class="name">' +
+      escapeHtml(tSide('sidebar.allFolders', '所有目录')) +
+      '</span>' +
       '<span class="count">' +
       formatNumber(folderOverviewCount) +
       '</span>' +
@@ -516,7 +541,11 @@
         '</span>' +
         '<button type="button" class="sidebar-root-rescan" data-root-path="' +
         escapeAttr(root.path) +
-        '" title="子文件夹有移动、重命名等变更时，点此重新扫描" aria-label="重新扫描此照片库">↻</button>' +
+        '" title="' +
+        escapeAttr(tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描')) +
+        '" aria-label="' +
+        escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
+        '">↻</button>' +
         '<span class="count">' +
         formatNumber(root.photo_count) +
         '</span>' +

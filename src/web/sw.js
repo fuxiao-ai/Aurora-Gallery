@@ -1,6 +1,6 @@
 /* global self, caches */
 /* Minimal service worker for installability and faster shell load. */
-var CACHE_NAME = 'photo-manager-shell-v4';
+var CACHE_NAME = 'aurora-gallery-shell-v5';
 var SHELL_ASSETS = [
   '/',
   '/index.html',

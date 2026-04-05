@@ -163,6 +163,9 @@ contextBridge.exposeInMainWorld('photoAPI', {
   updateSettings: function (newSettings) {
     return ipcRenderer.invoke('update-settings', newSettings);
   },
+  syncUiLocale: function () {
+    return ipcRenderer.invoke('sync-ui-locale');
+  },
   // Web 服务器
   getWebUrl: function () {
     return ipcRenderer.invoke('get-web-url');

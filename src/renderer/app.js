@@ -609,6 +609,10 @@ async function applyInitialSettingsSnapshot() {
     onApplyCardSize: applyCardSize,
     onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
   });
+  if (window.I18n && typeof window.I18n.initFromSettings === 'function') {
+    window.I18n.initFromSettings(s0);
+  }
+  syncTaskPanelCollapsedUI();
 }
 
 function registerRuntimeApiListeners() {
@@ -923,6 +927,7 @@ function bindEvents() {
       });
     },
     onPersistGeneralSettings: persistGeneralSettingsFromControls,
+    onPersistUiLocale: persistUiLocaleFromControl,
     onToggleWebServerEnabled: toggleWebServerEnabled,
     onToggleTunnelEnabled: toggleTunnelEnabled,
     onPersistBrowsePrefs: persistBrowsePrefsFromForm,
@@ -935,6 +940,9 @@ function bindEvents() {
     },
     onThumbSettingChange: updateThumbPendingHint,
     onQuickThemeChange: persistGeneralSettingsFromControls,
+    onTopbarLocaleChange: function () {
+      void persistUiLocaleFromControl('topbar');
+    },
     onWebPasswordFocus: function (inputEl) {
       inputEl.dataset.pwdTouched = '1';
     },
@@ -1351,6 +1359,82 @@ function bindEvents() {
   });
 
   uiEvents.bindCardShineTracking();
+
+  window.addEventListener('localechange', function () {
+    try {
+      updateBrowsePathLabel();
+    } catch (ePath) {}
+    try {
+      syncTaskPanelCollapsedUI();
+    } catch (eTask) {}
+    try {
+      updateThumbCurrentLineDisplay();
+      updateThumbPendingHint();
+    } catch (eThumb) {}
+    try {
+      if (state.currentTab === 'folders') {
+        state.browseCaches.folders.sidebarSnapshot = null;
+        void loadRootFolders(true, false);
+      } else if (state.currentTab === 'dates') {
+        state.browseCaches.dates.dateGroupsList = null;
+        state.browseCaches.dates.dateGroupsListSort = null;
+        state.browseCaches.dates.dateGroupsCacheFavAt = null;
+        void loadDateGroups();
+      }
+    } catch (eSidebarI18n) {}
+    try {
+      if (state._photoBrowseCacheResult && (state.currentTab === 'folders' || state.currentTab === 'dates')) {
+        paintBrowsePhotoGridShell(state._photoBrowseCacheResult, {});
+      } else {
+        void loadStats();
+      }
+    } catch (eStatsBar) {}
+    try {
+      if (state.currentTab === 'settings') {
+        state._settingsFolderListFp = null;
+        void renderSettingsFolderList({ skipFetch: true });
+        void refreshWebServerStatus();
+        void refreshTunnelStatus();
+        var wCopyEl = document.getElementById('webUrlCopy');
+        if (wCopyEl) wCopyEl.textContent = tUi('settings.network.copy', '点击复制');
+        var tCopyEl = document.getElementById('tunnelUrlCopy');
+        if (tCopyEl) tCopyEl.textContent = tUi('settings.network.copy', '点击复制');
+        if (api && api.has && api.has('getSettings')) {
+          api
+            .getSettings()
+            .then(function (s) {
+              settingsSync.syncWebPasswordUiFromSettings({ state: state, settings: s });
+            })
+            .catch(function () {});
+        }
+        void refreshThumbnailBackfillStatus();
+        void refreshDuplicateHashStatus();
+        var hlsGbEl2 = document.getElementById('settingHlsMaxCacheGb');
+        var hlsEnEl2 = document.getElementById('settingHlsMaxCacheEntries');
+        var hlsHintEl2 = document.getElementById('hlsCacheSettingsHint');
+        if (hlsGbEl2 && hlsEnEl2 && hlsHintEl2) {
+          hlsHintEl2.textContent = tUiFmt(
+            'settings.task.hlsHintCurrentFmt',
+            { gb: hlsGbEl2.value, entries: hlsEnEl2.value },
+            '当前生效：' +
+              hlsGbEl2.value +
+              'GB / ' +
+              hlsEnEl2.value +
+              ' 目录（磁盘上限 0GB 表示不限）',
+          );
+        }
+      }
+    } catch (eSet) {}
+    try {
+      if (typeof syncPreviewWindowMaxButton === 'function' && api && api.has && api.has('isMaximized')) {
+        Promise.resolve(api.isMaximized())
+          .then(function (v) {
+            syncPreviewWindowMaxButton(!!v);
+          })
+          .catch(function () {});
+      }
+    } catch (ePrev) {}
+  });
 }
 
 function syncPreviewWindowMaxButton(isMaximized) {
@@ -1376,8 +1460,14 @@ function syncPreviewWindowMaxButton(isMaximized) {
     // 最大化：单窗
     path.setAttribute('d', 'M7 7h10v10H7z');
   }
-  btn.title = isMaximized ? '还原窗口' : '最大化窗口';
-  btn.setAttribute('aria-label', isMaximized ? '还原窗口' : '最大化窗口');
+  var tR = typeof tUi === 'function' ? tUi : function (_k, z) {
+    return z;
+  };
+  btn.title = isMaximized ? tR('preview.winRestore', '还原窗口') : tR('preview.winMaximize', '最大化窗口');
+  btn.setAttribute(
+    'aria-label',
+    isMaximized ? tR('preview.winRestore', '还原窗口') : tR('preview.winMaximize', '最大化窗口'),
+  );
 }
 
 function initPreviewWindowMaxButtonState() {
@@ -1595,8 +1685,8 @@ function syncBrowseChromeAfterSoftSettingsReturn() {
       result: { page: pg, totalPages: tp, total: total },
       formatNumber: formatNumber,
     });
-    if (dom.pageInfo) dom.pageInfo.textContent = formatNumber(total) + ' 个目录';
-    if (dom.statsBar) dom.statsBar.textContent = formatNumber(total) + ' 个目录';
+    if (dom.pageInfo) dom.pageInfo.textContent = formatFolderCountLabel(total);
+    if (dom.statsBar) dom.statsBar.textContent = formatFolderCountLabel(total);
   } else {
     photoGridUi.renderPagination({
       dom: dom,
@@ -1971,14 +2061,7 @@ async function loadStats() {
   var stats = await api.getStats();
   state.stats = stats || {};
   if (stats.totalPhotos > 0) {
-    dom.statsBar.textContent =
-      formatNumber(stats.totalPhotos) +
-      ' 张照片 | ' +
-      formatSize(stats.totalSize) +
-      ' | 视频 ' +
-      formatNumber(stats.videoPhotos || 0) +
-      ' 条 | ' +
-      formatSize(stats.videoSize || 0);
+    dom.statsBar.textContent = formatGlobalStatsBarText(stats);
   } else {
     dom.statsBar.textContent = '';
   }
@@ -2064,7 +2147,9 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
     gate.render(
       '<div class="sidebar-list-loading">' +
         '<div class="content-loading-spinner" aria-hidden="true"></div>' +
-        '<span>正在加载目录…</span>' +
+        '<span>' +
+        escapeHtml(tUi('sidebar.loadingFolders', '正在加载目录…')) +
+        '</span>' +
         '</div>',
     );
   }
@@ -2144,8 +2229,12 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
     if (gate.isAlive()) {
       gate.render(
         '<div class="sidebar-list-loading sidebar-list-loading--err">' +
-          '<p style="margin:0;font-weight:600;">目录加载失败</p>' +
-          '<p style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">请稍后重试</p></div>',
+          '<p style="margin:0;font-weight:600;">' +
+          escapeHtml(tUi('sidebar.loadFoldersFail', '目录加载失败')) +
+          '</p>' +
+          '<p style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
+          escapeHtml(tUi('sidebar.retryLater', '请稍后重试')) +
+          '</p></div>',
       );
     }
   }
@@ -2158,26 +2247,40 @@ function buildDateGroupsSidebarHtml(groups) {
 
   if (groups.length === 0) {
     html =
-      '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">暂无数据</div>';
+      '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">' +
+      escapeHtml(tUi('sidebar.datesEmpty', '暂无数据')) +
+      '</div>';
   } else {
     var total = 0;
     var i;
     for (i = 0; i < groups.length; i++) total += groups[i].count;
     html +=
-      '<div class="date-sidebar-sort" role="toolbar" aria-label="日期排序">' +
+      '<div class="date-sidebar-sort" role="toolbar" aria-label="' +
+      escapeAttr(tUi('sidebar.dateSortToolbarAria', '日期排序')) +
+      '">' +
       '<button type="button" class="date-sort-btn' +
       (state.dateGroupsSortOrder === 'desc' ? ' active' : '') +
-      '" data-date-sort="desc" title="最新日期在前">新→旧</button>' +
+      '" data-date-sort="desc" title="' +
+      escapeAttr(tUi('sidebar.dateSortDescTitle', '最新日期在前')) +
+      '">' +
+      escapeHtml(tUi('sidebar.dateSortDesc', '新→旧')) +
+      '</button>' +
       '<button type="button" class="date-sort-btn' +
       (state.dateGroupsSortOrder === 'asc' ? ' active' : '') +
-      '" data-date-sort="asc" title="最早日期在前">旧→新</button>' +
+      '" data-date-sort="asc" title="' +
+      escapeAttr(tUi('sidebar.dateSortAscTitle', '最早日期在前')) +
+      '">' +
+      escapeHtml(tUi('sidebar.dateSortAsc', '旧→新')) +
+      '</button>' +
       '</div>';
     html +=
       '<div class="folder-item ' +
       (state.currentView === 'all' ? 'active' : '') +
       '" data-sidebar-dates-all="1" data-sidebar-view="dates-all">' +
       '<span class="icon">\u{1F5BC}\uFE0F</span>' +
-      '<span class="name">所有日期</span>' +
+      '<span class="name">' +
+      escapeHtml(tUi('sidebar.allDates', '所有日期')) +
+      '</span>' +
       '<span class="count">' +
       formatNumber(total) +
       '</span></div>';
@@ -2188,7 +2291,9 @@ function buildDateGroupsSidebarHtml(groups) {
       (state.currentView === 'favorites' ? 'active' : '') +
       '" data-sidebar-favorites="1" data-sidebar-view="favorites">' +
       '<span class="icon">\u2B50</span>' +
-      '<span class="name">收藏</span>' +
+      '<span class="name">' +
+      escapeHtml(tUi('sidebar.favorites', '收藏')) +
+      '</span>' +
       '<span class="count">' +
       formatNumber(favCountDates) +
       '</span>' +
@@ -2200,7 +2305,11 @@ function buildDateGroupsSidebarHtml(groups) {
       var g = groups[j];
       var year = g.date.substring(0, 4);
       if (year !== lastYear) {
-        html += '<div class="date-year">' + year + ' 年</div>';
+        html +=
+          '<div class="date-year">' +
+          year +
+          escapeHtml(tUi('sidebar.yearSuffix', ' 年')) +
+          '</div>';
         lastYear = year;
       }
       var displayDate = formatDateLabel(g.date);
@@ -2245,7 +2354,9 @@ async function loadDateGroups() {
     gate.render(
       '<div class="sidebar-list-loading">' +
         '<div class="content-loading-spinner" aria-hidden="true"></div>' +
-        '<span>正在加载日期分组…</span>' +
+        '<span>' +
+        escapeHtml(tUi('sidebar.loadingDates', '正在加载日期分组…')) +
+        '</span>' +
         '</div>',
     );
   }
@@ -2257,7 +2368,9 @@ async function loadDateGroups() {
     if (gate.isAlive()) {
       gate.render(
         '<div class="sidebar-list-loading sidebar-list-loading--err">' +
-          '<p style="margin:0;font-weight:600;">日期列表加载失败</p></div>',
+          '<p style="margin:0;font-weight:600;">' +
+          escapeHtml(tUi('sidebar.loadDatesFail', '日期列表加载失败')) +
+          '</p></div>',
       );
     }
     return;
@@ -2768,13 +2881,76 @@ function viewDate(dateStr) {
   loadPhotos();
 }
 
+function tUi(key, zhFallback) {
+  if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+  return zhFallback;
+}
+
+function tUiFmt(key, map, zhFallback) {
+  var s = tUi(key, zhFallback);
+  if (!map) return s;
+  for (var k in map) {
+    if (Object.prototype.hasOwnProperty.call(map, k)) {
+      s = s.split('{' + k + '}').join(String(map[k]));
+    }
+  }
+  return s;
+}
+
+function formatGlobalStatsBarText(stats) {
+  stats = stats || {};
+  if (!stats.totalPhotos || stats.totalPhotos <= 0) return '';
+  return tUiFmt(
+    'stats.barFullFmt',
+    {
+      photos: formatNumber(stats.totalPhotos),
+      totalSize: formatSize(stats.totalSize),
+      videos: formatNumber(stats.videoPhotos || 0),
+      videoSize: formatSize(stats.videoSize || 0),
+    },
+    formatNumber(stats.totalPhotos) +
+      ' 张照片 | ' +
+      formatSize(stats.totalSize) +
+      ' | 视频 ' +
+      formatNumber(stats.videoPhotos || 0) +
+      ' 条 | ' +
+      formatSize(stats.videoSize || 0),
+  );
+}
+
+function formatFolderScopedStatsBarText(scopedTotal, scopedVideoCount, subCount) {
+  var st = Number(scopedTotal) || 0;
+  var vc = Number(scopedVideoCount) || 0;
+  var sub = Number(subCount) || 0;
+  if (st > 0) {
+    return tUiFmt(
+      'stats.barFolderFmt',
+      { photos: formatNumber(st), videos: formatNumber(vc) },
+      formatNumber(st) + ' 张照片 | 视频 ' + formatNumber(vc) + ' 条',
+    );
+  }
+  if (sub > 0) {
+    return tUiFmt(
+      'stats.folderNoDirectPhotosFmt',
+      { n: formatNumber(sub) },
+      '此文件夹下暂无直接照片 · ' + formatNumber(sub) + ' 个子目录（点击下方进入）',
+    );
+  }
+  return tUi('stats.zeroPhotos', '0 张照片');
+}
+
+function formatFolderCountLabel(n) {
+  var num = formatNumber(n);
+  return tUiFmt('stats.folderCountFmt', { n: num }, num + ' 个目录');
+}
+
 function updateBrowsePathLabel() {
   switch (state.currentView) {
     case 'duplicates':
-      dom.currentPath.textContent = '重复照片（哈希）';
+      dom.currentPath.textContent = tUi('path.duplicates', '重复照片（哈希）');
       break;
     case 'faces':
-      dom.currentPath.textContent = '人脸 · 按人物浏览';
+      dom.currentPath.textContent = tUi('path.faces', '人脸 · 按人物浏览');
       break;
     case 'favorites':
       dom.currentPath.textContent = state.searchQuery
@@ -2785,7 +2961,7 @@ function updateBrowsePathLabel() {
       dom.currentPath.textContent = '\u{1F50D} ' + state.searchQuery;
       break;
     case 'folder_overview':
-      dom.currentPath.textContent = '\u{1F5C2}\uFE0F 所有目录';
+      dom.currentPath.textContent = tUi('path.folderOverview', '\u{1F5C2}\uFE0F 所有目录');
       break;
     case 'folder': {
       var name = (state.currentPath || '').split(/[\\/]/).pop() || '';
@@ -2796,7 +2972,7 @@ function updateBrowsePathLabel() {
       dom.currentPath.textContent = '\u{1F4C5} ' + formatDateLabel(state.currentDate);
       break;
     default:
-      dom.currentPath.textContent = '所有照片';
+      dom.currentPath.textContent = tUi('path.allPhotos', '所有照片');
   }
 }
 
@@ -3151,6 +3327,10 @@ function normalizeFaceClusterThreshold(v) {
   return best;
 }
 
+function normalizeUiLocale(s) {
+  return s === 'en' ? 'en' : 'zh-CN';
+}
+
 function setGeneralSettingsAppliedFromObject(s) {
   if (!s) return;
   state.generalSettingsApplied = {
@@ -3169,6 +3349,7 @@ function setGeneralSettingsAppliedFromObject(s) {
     faceClusterThreshold: normalizeFaceClusterThreshold(s.faceClusterThreshold),
     faceAutoScanOnStartup: !!s.faceAutoScanOnStartup,
     thumbBackfillConcurrency: normalizeThumbBackfillConcurrency(s.thumbBackfillConcurrency),
+    uiLocale: normalizeUiLocale(s.uiLocale),
   };
 }
 
@@ -3206,6 +3387,22 @@ async function persistGeneralSettingsFromControls() {
     onSaveLastSettingsSectionId: saveLastSettingsSectionId,
     onRenderSettingsNav: renderSettingsNav,
     appAlert: appAlert,
+  });
+}
+
+async function persistUiLocaleFromControl(source) {
+  return settingsSync.persistUiLocaleFromControl({
+    state: state,
+    api: api,
+    onSetGeneralSettingsAppliedFromObject: setGeneralSettingsAppliedFromObject,
+    onRenderSettingsNav: renderSettingsNav,
+    getLastSectionId: getLastSettingsSectionId,
+    appAlert: appAlert,
+    source: source,
+    onAfterLocaleChange: function () {
+      updateBrowsePathLabel();
+      syncTaskPanelCollapsedUI();
+    },
   });
 }
 
@@ -3511,6 +3708,14 @@ function syncLiveSettingsWidgetsFromObject(s) {
   if (fasEl) fasEl.checked = !!s.faceAutoScanOnStartup;
   var tbcEl = document.getElementById('settingThumbBackfillConcurrency');
   if (tbcEl) tbcEl.value = String(normalizeThumbBackfillConcurrency(s.thumbBackfillConcurrency));
+  if (settingsSync && typeof settingsSync.setLocaleSelectValuePair === 'function') {
+    settingsSync.setLocaleSelectValuePair(normalizeUiLocale(s.uiLocale));
+  } else {
+    var localeEl = document.getElementById('settingUiLocale');
+    if (localeEl) {
+      localeEl.value = normalizeUiLocale(s.uiLocale) === 'en' ? 'en' : 'zh-CN';
+    }
+  }
 
   setGeneralSettingsAppliedFromObject(s);
 }
@@ -3542,8 +3747,11 @@ async function loadSettingsUI() {
     hlsGbEl.value = String(gb >= 0 ? Math.round(gb * 10) / 10 : 1);
     hlsEnEl.value = String(en >= 1 ? en : 48);
     if (hlsHintEl) {
-      hlsHintEl.textContent =
-        '当前生效：' + hlsGbEl.value + 'GB / ' + hlsEnEl.value + ' 目录（磁盘上限 0GB 表示不限）';
+      hlsHintEl.textContent = tUiFmt(
+        'settings.task.hlsHintCurrentFmt',
+        { gb: hlsGbEl.value, entries: hlsEnEl.value },
+        '当前生效：' + hlsGbEl.value + 'GB / ' + hlsEnEl.value + ' 目录（磁盘上限 0GB 表示不限）',
+      );
     }
   }
 
@@ -3600,20 +3808,30 @@ async function refreshThumbnailBackfillStatus() {
       var es = p.etaSeconds;
       if (es != null && isFinite(es) && es > 0 && typeof scanFlow.formatEtaLine === 'function') {
         var line = scanFlow.formatEtaLine(es);
-        if (line) eta = '，' + line;
+        if (line) eta = tUi('settings.task.thumbEtaPrefix', '，') + line;
       }
-      dom.thumbBackfillStatus.textContent =
+      dom.thumbBackfillStatus.textContent = tUiFmt(
+        'settings.task.thumbProgressRunning',
+        {
+          done: p.done,
+          total: p.total,
+          pct: pct,
+          success: p.success,
+          failed: p.failed,
+          eta: eta,
+        },
         '补全中 ' +
-        p.done +
-        '/' +
-        p.total +
-        '（' +
-        pct +
-        '%），成功 ' +
-        p.success +
-        '，失败 ' +
-        p.failed +
-        eta;
+          p.done +
+          '/' +
+          p.total +
+          '（' +
+          pct +
+          '%），成功 ' +
+          p.success +
+          '，失败 ' +
+          p.failed +
+          eta,
+      );
       if (dom.thumbBackfillStartBtn) dom.thumbBackfillStartBtn.disabled = true;
       if (dom.thumbBackfillCancelBtn) dom.thumbBackfillCancelBtn.style.display = '';
       if (!state.thumbBackfillPolling) {
@@ -3621,18 +3839,31 @@ async function refreshThumbnailBackfillStatus() {
       }
     } else {
       if (p.total > 0 || p.done > 0 || p.success > 0 || p.failed > 0) {
-        var doneText = p.cancelled ? '已停止' : '已完成';
-        dom.thumbBackfillStatus.textContent =
-          doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed;
+        var doneText = p.cancelled
+          ? tUi('settings.task.thumbStopped', '已停止')
+          : tUi('settings.task.thumbCompleted', '已完成');
+        dom.thumbBackfillStatus.textContent = tUiFmt(
+          'settings.task.thumbProgressDone',
+          {
+            doneLabel: doneText,
+            total: p.total,
+            success: p.success,
+            failed: p.failed,
+          },
+          doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed,
+        );
       } else {
-        dom.thumbBackfillStatus.textContent = '为尚无缩略图的照片后台补齐预览图';
+        dom.thumbBackfillStatus.textContent = tUi(
+          'settings.task.thumbBackfillDesc',
+          '为尚无缩略图的照片后台补齐预览图',
+        );
       }
       if (dom.thumbBackfillStartBtn) dom.thumbBackfillStartBtn.disabled = false;
       if (dom.thumbBackfillCancelBtn) dom.thumbBackfillCancelBtn.style.display = 'none';
       stopThumbnailBackfillPolling();
     }
   } catch (e) {
-    dom.thumbBackfillStatus.textContent = '补全状态读取失败';
+    dom.thumbBackfillStatus.textContent = tUi('settings.task.thumbReadError', '补全状态读取失败');
     if (dom.thumbBackfillExportFailedBtn) dom.thumbBackfillExportFailedBtn.disabled = true;
     stopThumbnailBackfillPolling();
   }
@@ -3644,13 +3875,25 @@ async function exportThumbnailBackfillFailedPaths() {
   if (!r || r.cancelled) return;
   if (!r.success) {
     if (r.empty) {
-      appAlert('暂无失败记录可导出');
+      appAlert(tUi('settings.task.thumbExportEmpty', '暂无失败记录可导出'));
       return;
     }
-    appAlert('导出失败：' + ((r && r.error) || '未知错误'));
+    appAlert(
+      tUiFmt(
+        'settings.task.thumbExportFail',
+        { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+        '导出失败：' + ((r && r.error) || '未知错误'),
+      ),
+    );
     return;
   }
-  appAlert('已导出 ' + (r.count || 0) + ' 条路径到：\n' + r.path);
+  appAlert(
+    tUiFmt(
+      'settings.task.thumbExportOk',
+      { count: r.count || 0, path: r.path },
+      '已导出 ' + (r.count || 0) + ' 条路径到：\n' + r.path,
+    ),
+  );
 }
 
 async function startThumbnailBackfill() {
@@ -3659,7 +3902,13 @@ async function startThumbnailBackfill() {
   try {
     var result = await api.startThumbnailBackfill();
     if (!result || !result.success) {
-      appAlert('启动补全失败: ' + ((result && result.error) || '未知错误'));
+      appAlert(
+        tUiFmt(
+          'settings.task.thumbStartFail',
+          { error: (result && result.error) || tUi('settings.common.unknownError', '未知错误') },
+          '启动补全失败: ' + ((result && result.error) || '未知错误'),
+        ),
+      );
     }
   } finally {
     refreshThumbnailBackfillStatus();
@@ -3682,28 +3931,46 @@ function setMaintenanceStatus(text) {
 
 async function runMaintenanceCleanup() {
   if (!(api && api.has('maintenanceCleanupMissingFiles'))) return;
-  if (!(await appConfirm('将检查并删除数据库中指向不存在文件的记录，是否继续？'))) return;
+  if (!(await appConfirm(tUi('settings.task.maintConfirmCleanup', '将检查并删除数据库中指向不存在文件的记录，是否继续？'))))
+    return;
   setMaintenanceBusy(true);
-  setMaintenanceStatus('正在清理失效文件记录...');
+  setMaintenanceStatus(tUi('settings.task.maintCleaning', '正在清理失效文件记录...'));
   try {
     var r = await api.maintenanceCleanupMissingFiles();
     if (!r || !r.success) {
-      setMaintenanceStatus('清理失败：' + ((r && r.error) || '未知错误'));
+      setMaintenanceStatus(
+        tUiFmt(
+          'settings.task.maintCleanupFail',
+          { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+          '清理失败：' + ((r && r.error) || '未知错误'),
+        ),
+      );
       return;
     }
     var result = r.result || {};
+    var totalDel = result.totalDeleted || result.deleted || 0;
     setMaintenanceStatus(
-      '清理完成：检查 ' +
-        (result.checked || 0) +
-        ' 条，删除失效文件 ' +
-        (result.deleted || 0) +
-        ' 条；移除失效根目录 ' +
-        (result.removedRoots || 0) +
-        ' 个（级联删除 ' +
-        (result.deletedByMissingRoots || 0) +
-        ' 条），合计删除 ' +
-        (result.totalDeleted || result.deleted || 0) +
-        ' 条',
+      tUiFmt(
+        'settings.task.maintCleanupDone',
+        {
+          checked: result.checked || 0,
+          deleted: result.deleted || 0,
+          removedRoots: result.removedRoots || 0,
+          deletedByMissingRoots: result.deletedByMissingRoots || 0,
+          totalDeleted: totalDel,
+        },
+        '清理完成：检查 ' +
+          (result.checked || 0) +
+          ' 条，删除失效文件 ' +
+          (result.deleted || 0) +
+          ' 条；移除失效根目录 ' +
+          (result.removedRoots || 0) +
+          ' 个（级联删除 ' +
+          (result.deletedByMissingRoots || 0) +
+          ' 条），合计删除 ' +
+          totalDel +
+          ' 条',
+      ),
     );
     markBrowseDataStale({ settingsPageDirty: true });
     await loadStats();
@@ -3717,15 +3984,27 @@ async function runMaintenanceCleanup() {
 async function runMaintenanceRebuildThumbFlags() {
   if (!(api && api.has('maintenanceRebuildThumbnailFlags'))) return;
   setMaintenanceBusy(true);
-  setMaintenanceStatus('正在重建缩略图标记...');
+  setMaintenanceStatus(tUi('settings.task.maintRebuildRunning', '正在重建缩略图标记...'));
   try {
     var r = await api.maintenanceRebuildThumbnailFlags();
     if (!r || !r.success) {
-      setMaintenanceStatus('重建失败：' + ((r && r.error) || '未知错误'));
+      setMaintenanceStatus(
+        tUiFmt(
+          'settings.task.maintRebuildFail',
+          { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+          '重建失败：' + ((r && r.error) || '未知错误'),
+        ),
+      );
       return;
     }
     var result = r.result || {};
-    setMaintenanceStatus('重建完成：仍缺失缩略图 ' + (result.missing || 0) + ' 条');
+    setMaintenanceStatus(
+      tUiFmt(
+        'settings.task.maintRebuildDone',
+        { missing: result.missing || 0 },
+        '重建完成：仍缺失缩略图 ' + (result.missing || 0) + ' 条',
+      ),
+    );
   } finally {
     setMaintenanceBusy(false);
   }
@@ -3733,16 +4012,23 @@ async function runMaintenanceRebuildThumbFlags() {
 
 async function runMaintenanceOptimize() {
   if (!(api && api.has('maintenanceOptimizeDatabase'))) return;
-  if (!(await appConfirm('将执行数据库优化（可能耗时数秒），是否继续？'))) return;
+  if (!(await appConfirm(tUi('settings.task.maintOptimizeConfirm', '将执行数据库优化（可能耗时数秒），是否继续？'))))
+    return;
   setMaintenanceBusy(true);
-  setMaintenanceStatus('正在优化数据库...');
+  setMaintenanceStatus(tUi('settings.task.maintOptimizing', '正在优化数据库...'));
   try {
     var r = await api.maintenanceOptimizeDatabase();
     if (!r || !r.success) {
-      setMaintenanceStatus('优化失败：' + ((r && r.error) || '未知错误'));
+      setMaintenanceStatus(
+        tUiFmt(
+          'settings.task.maintOptimizeFail',
+          { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+          '优化失败：' + ((r && r.error) || '未知错误'),
+        ),
+      );
       return;
     }
-    setMaintenanceStatus('数据库优化完成');
+    setMaintenanceStatus(tUi('settings.task.maintOptimizeDone', '数据库优化完成'));
   } finally {
     setMaintenanceBusy(false);
     tickBackgroundTasksOnce();
@@ -3752,18 +4038,30 @@ async function runMaintenanceOptimize() {
 async function runMaintenanceBackup() {
   if (!(api && api.has('backupDatabase'))) return;
   setMaintenanceBusy(true);
-  setMaintenanceStatus('准备备份…');
+  setMaintenanceStatus(tUi('settings.task.maintBackupPreparing', '准备备份…'));
   try {
     var r = await api.backupDatabase();
     if (!r || r.cancelled) {
-      setMaintenanceStatus(r && r.cancelled ? '已取消备份' : '备份已取消');
+      setMaintenanceStatus(
+        r && r.cancelled
+          ? tUi('settings.task.maintBackupCancelled', '已取消备份')
+          : tUi('settings.task.maintBackupCancelledAlt', '备份已取消'),
+      );
       return;
     }
     if (!r.success) {
-      setMaintenanceStatus('备份失败：' + ((r && r.error) || '未知错误'));
+      setMaintenanceStatus(
+        tUiFmt(
+          'settings.task.maintBackupFail',
+          { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+          '备份失败：' + ((r && r.error) || '未知错误'),
+        ),
+      );
       return;
     }
-    setMaintenanceStatus('已备份到：' + r.path);
+    setMaintenanceStatus(
+      tUiFmt('settings.task.maintBackupDone', { path: r.path }, '已备份到：' + r.path),
+    );
   } finally {
     setMaintenanceBusy(false);
   }
@@ -3784,19 +4082,29 @@ async function refreshDuplicateHashStatus() {
     state._dupHashProgressRunning = running;
     if (p.running) {
       var pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-      dom.duplicateHashStatus.textContent =
+      dom.duplicateHashStatus.textContent = tUiFmt(
+        'settings.task.dupProgressRunning',
+        {
+          done: p.done,
+          total: p.total,
+          pct: pct,
+          hashed: p.hashed,
+          reused: p.reused,
+          failed: p.failed,
+        },
         '检测中 ' +
-        p.done +
-        '/' +
-        p.total +
-        '（' +
-        pct +
-        '%），新算哈希 ' +
-        p.hashed +
-        '，复用缓存 ' +
-        p.reused +
-        '，失败 ' +
-        p.failed;
+          p.done +
+          '/' +
+          p.total +
+          '（' +
+          pct +
+          '%），新算哈希 ' +
+          p.hashed +
+          '，复用缓存 ' +
+          p.reused +
+          '，失败 ' +
+          p.failed,
+      );
       if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = true;
       if (dom.duplicateHashCancelBtn) dom.duplicateHashCancelBtn.style.display = '';
       if (!state.duplicateHashPolling) {
@@ -3804,31 +4112,46 @@ async function refreshDuplicateHashStatus() {
       }
     } else {
       if (p.done > 0 || p.duplicateGroups > 0) {
-        var doneText = p.cancelled ? '已停止' : '已完成';
-        dom.duplicateHashStatus.textContent =
-          doneText +
-          '：全量 ' +
-          p.total +
-          '，新算哈希 ' +
-          p.hashed +
-          '，复用缓存 ' +
-          p.reused +
-          '，失败 ' +
-          p.failed +
-          '；重复组 ' +
-          (p.duplicateGroups || 0) +
-          '，重复照片 ' +
-          (p.duplicatePhotos || 0);
+        var dupDoneLabel = p.cancelled
+          ? tUi('settings.task.thumbStopped', '已停止')
+          : tUi('settings.task.thumbCompleted', '已完成');
+        dom.duplicateHashStatus.textContent = tUiFmt(
+          'settings.task.dupProgressDone',
+          {
+            doneLabel: dupDoneLabel,
+            total: p.total,
+            hashed: p.hashed,
+            reused: p.reused,
+            failed: p.failed,
+            groups: p.duplicateGroups || 0,
+            photos: p.duplicatePhotos || 0,
+          },
+          dupDoneLabel +
+            '：全量 ' +
+            p.total +
+            '，新算哈希 ' +
+            p.hashed +
+            '，复用缓存 ' +
+            p.reused +
+            '，失败 ' +
+            p.failed +
+            '；重复组 ' +
+            (p.duplicateGroups || 0) +
+            '，重复照片 ' +
+            (p.duplicatePhotos || 0),
+        );
       } else {
-        dom.duplicateHashStatus.textContent =
-          '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）';
+        dom.duplicateHashStatus.textContent = tUi(
+          'settings.task.dupIdle',
+          '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
+        );
       }
       if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = false;
       if (dom.duplicateHashCancelBtn) dom.duplicateHashCancelBtn.style.display = 'none';
       stopDuplicateHashPolling();
     }
   } catch (e) {
-    dom.duplicateHashStatus.textContent = '重复检测状态读取失败';
+    dom.duplicateHashStatus.textContent = tUi('settings.task.dupReadError', '重复检测状态读取失败');
     stopDuplicateHashPolling();
   }
 }
@@ -3836,12 +4159,17 @@ async function refreshDuplicateHashStatus() {
 async function startDuplicateHashDetection() {
   if (!(api && api.has('maintenanceStartDuplicateHashDetection'))) return;
   if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = true;
-  if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = '正在启动重复检测任务...';
+  if (dom.duplicateHashStatus)
+    dom.duplicateHashStatus.textContent = tUi('settings.task.dupStarting', '正在启动重复检测任务...');
   try {
     var r = await api.maintenanceStartDuplicateHashDetection();
     if (!r || !r.success) {
       if (dom.duplicateHashStatus) {
-        dom.duplicateHashStatus.textContent = '启动失败：' + ((r && r.error) || '未知错误');
+        dom.duplicateHashStatus.textContent = tUiFmt(
+          'settings.task.dupStartFail',
+          { error: (r && r.error) || tUi('settings.common.unknownError', '未知错误') },
+          '启动失败：' + ((r && r.error) || '未知错误'),
+        );
       }
     } else {
       state.duplicateHasScanned = true;
@@ -4189,27 +4517,13 @@ function paintBrowsePhotoGridShell(result, paintOptions) {
     var scopedTotal = Number(result && result.total) || 0;
     var scopedVideoCount = Number(result && result.videoCount) || 0;
     var subCount = browseChildSummaries.length;
-    if (scopedTotal > 0) {
-      dom.statsBar.textContent =
-        formatNumber(scopedTotal) +
-        ' 张照片 | 视频 ' +
-        formatNumber(scopedVideoCount) +
-        ' 条';
-    } else if (subCount > 0) {
-      dom.statsBar.textContent =
-        '此文件夹下暂无直接照片 · ' + formatNumber(subCount) + ' 个子目录（点击下方进入）';
-    } else {
-      dom.statsBar.textContent = '0 张照片';
-    }
+    dom.statsBar.textContent = formatFolderScopedStatsBarText(
+      scopedTotal,
+      scopedVideoCount,
+      subCount,
+    );
   } else if (state.stats && Number(state.stats.totalPhotos) > 0) {
-    dom.statsBar.textContent =
-      formatNumber(state.stats.totalPhotos) +
-      ' 张照片 | ' +
-      formatSize(state.stats.totalSize) +
-      ' | 视频 ' +
-      formatNumber(state.stats.videoPhotos || 0) +
-      ' 条 | ' +
-      formatSize(state.stats.videoSize || 0);
+    dom.statsBar.textContent = formatGlobalStatsBarText(state.stats);
   } else {
     dom.statsBar.textContent = '';
   }
@@ -4335,8 +4649,8 @@ async function loadPhotos() {
         },
         formatNumber: formatNumber,
       });
-      if (dom.pageInfo) dom.pageInfo.textContent = formatNumber(fcResult.total) + ' 个目录';
-      if (dom.statsBar) dom.statsBar.textContent = formatNumber(fcResult.total) + ' 个目录';
+      if (dom.pageInfo) dom.pageInfo.textContent = formatFolderCountLabel(fcResult.total);
+      if (dom.statsBar) dom.statsBar.textContent = formatFolderCountLabel(fcResult.total);
       if (state._pendingBrowseScrollTop != null && dom.photoGrid) {
         dom.photoGrid.scrollTop = state._pendingBrowseScrollTop;
         state._pendingBrowseScrollTop = null;
@@ -5069,5 +5383,14 @@ async function menuAction(action) {
     appAlert: appAlert,
   });
 }
+
+window.__applyWebPasswordI18n = function () {
+  if (!(api && api.has('getSettings'))) return;
+  var R = window.RendererSettingsSync;
+  if (!R || !R.syncWebPasswordUiFromSettings) return;
+  api.getSettings().then(function (s) {
+    R.syncWebPasswordUiFromSettings({ state: state, settings: s });
+  });
+};
 
 init();

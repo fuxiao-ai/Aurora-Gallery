@@ -317,7 +317,12 @@
     if (typeof onRestartSlideshowTimer !== 'function') return;
     if (state.slideshowPlaying) return;
     state.slideshowPlaying = true;
-    if (dom.slideshowToggleBtn) dom.slideshowToggleBtn.textContent = '⏸ 暂停';
+    if (dom.slideshowToggleBtn) {
+      dom.slideshowToggleBtn.textContent =
+        window.I18n && typeof window.I18n.t === 'function'
+          ? window.I18n.t('preview.slideshow.pause')
+          : '⏸ 暂停';
+    }
     onRestartSlideshowTimer();
   }
 
@@ -330,7 +335,12 @@
       clearTimeout(state.slideshowTimer);
       state.slideshowTimer = null;
     }
-    if (dom.slideshowToggleBtn) dom.slideshowToggleBtn.textContent = '▶ 播放';
+    if (dom.slideshowToggleBtn) {
+      dom.slideshowToggleBtn.textContent =
+        window.I18n && typeof window.I18n.t === 'function'
+          ? window.I18n.t('preview.slideshow.play')
+          : '▶ 播放';
+    }
   }
 
   function toggleSlideshow(options) {

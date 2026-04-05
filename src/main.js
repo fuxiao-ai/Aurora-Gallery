@@ -554,6 +554,8 @@ function createDefaultSettings() {
     /** HLS 缓存上限（0 表示不限字节，目录数至少为 1） */
     hlsMaxCacheBytes: 1024 * 1024 * 1024,
     hlsMaxCacheEntries: 48,
+    /** 界面语言：zh-CN | en */
+    uiLocale: 'zh-CN',
   };
 }
 
@@ -604,6 +606,7 @@ function ensureSettingsShape() {
   if (['white', 'yellow', 'cyan', 'green', 'orange', 'pink'].indexOf(subColor) < 0)
     subColor = 'white';
   settings.subtitleColor = subColor;
+  if (settings.uiLocale !== 'en' && settings.uiLocale !== 'zh-CN') settings.uiLocale = 'zh-CN';
   var previewBoolKeys = [
     'previewShowFileName',
     'previewShowDateTaken',
@@ -2088,6 +2091,47 @@ function createTrayIconImage() {
     });
 }
 
+function getNormalizedUiLocale() {
+  return settings && settings.uiLocale === 'en' ? 'en' : 'zh-CN';
+}
+
+function getLocalizedAppTitle() {
+  return getNormalizedUiLocale() === 'en' ? 'Aurora Gallery' : '拂晓图库';
+}
+
+/** 窗口标题、托盘提示与托盘菜单（随 uiLocale 切换） */
+function refreshTrayAndTitleLocalized() {
+  ensureSettingsShape();
+  var en = getNormalizedUiLocale() === 'en';
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.setTitle(getLocalizedAppTitle());
+    } catch (e) {}
+  }
+  if (tray) {
+    try {
+      tray.setToolTip(en ? 'Aurora Gallery (running in background)' : '拂晓图库（后台运行中）');
+      tray.setContextMenu(
+        Menu.buildFromTemplate([
+          {
+            label: en ? 'Show window' : '显示主窗口',
+            click: function () {
+              showMainWindow();
+            },
+          },
+          { type: 'separator' },
+          {
+            label: en ? 'Quit Aurora Gallery' : '退出拂晓图库',
+            click: function () {
+              quitCompletely();
+            },
+          },
+        ]),
+      );
+    } catch (e2) {}
+  }
+}
+
 function setupTray(icon) {
   if (tray) return;
   try {
@@ -2096,23 +2140,7 @@ function setupTray(icon) {
     if (isDev) console.warn('[tray] unavailable:', e && e.message ? e.message : String(e));
     return;
   }
-  tray.setToolTip('拂晓图库（后台运行中）');
-  var menu = Menu.buildFromTemplate([
-    {
-      label: '显示主窗口',
-      click: function () {
-        showMainWindow();
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '退出拂晓图库',
-      click: function () {
-        quitCompletely();
-      },
-    },
-  ]);
-  tray.setContextMenu(menu);
+  refreshTrayAndTitleLocalized();
   tray.on('click', function () {
     showMainWindow();
   });
@@ -2137,7 +2165,7 @@ function createWindow(appIcon) {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: '拂晓图库',
+    title: getLocalizedAppTitle(),
     frame: false,
     titleBarStyle: 'hidden',
     webPreferences: {
@@ -2192,13 +2220,18 @@ function createWindow(appIcon) {
       wc.send('show-close-chooser');
       return;
     }
+    var en = getNormalizedUiLocale() === 'en';
     var res = dialog.showMessageBoxSync(mainWindow, {
       type: 'question',
-      buttons: ['后台运行', '退出程序', '取消'],
+      buttons: en
+        ? ['Run in background', 'Quit', 'Cancel']
+        : ['后台运行', '退出程序', '取消'],
       defaultId: 0,
       cancelId: 2,
-      title: '关闭拂晓图库',
-      message: '请选择：最小化到系统托盘继续后台运行，或完全退出程序。',
+      title: en ? 'Close Aurora Gallery' : '关闭拂晓图库',
+      message: en
+        ? 'Minimize to the system tray to keep running in the background, or quit completely.'
+        : '请选择：最小化到系统托盘继续后台运行，或完全退出程序。',
       noLink: true,
     });
     if (res === 0) mainWindow.hide();
@@ -3024,7 +3057,7 @@ app
         };
         var saveResult = await dialog.showSaveDialog(mainWindow, {
           title: '导出目录列表',
-          defaultPath: path.join(app.getPath('documents'), 'photo-manager-folders.json'),
+          defaultPath: path.join(app.getPath('documents'), 'AuroraGallery-folders.json'),
           filters: [{ name: 'JSON', extensions: ['json'] }],
         });
         if (saveResult.canceled || !saveResult.filePath) {
@@ -3533,6 +3566,9 @@ app
       }
       ensureSettingsShape();
       saveSettings();
+      if (newSettings && Object.prototype.hasOwnProperty.call(newSettings, 'uiLocale')) {
+        refreshTrayAndTitleLocalized();
+      }
       // 同步 web 密码
       if (
         newSettings &&
@@ -3545,6 +3581,12 @@ app
         }
       }
       return cloneSettingsForIpc();
+    });
+
+    ipcMain.handle('sync-ui-locale', function () {
+      reloadSettingsFromDiskSilently();
+      refreshTrayAndTitleLocalized();
+      return { ok: true };
     });
 
     // 扫描完成通知
@@ -3596,7 +3638,13 @@ app
     var msg = err && err.stack ? err.stack : String(err);
     console.error('[startup] fatal initialization error:', msg);
     try {
-      dialog.showErrorBox('启动失败', '应用初始化失败，请检查数据库与配置文件。\n\n' + msg);
+      var en0 = getNormalizedUiLocale() === 'en';
+      dialog.showErrorBox(
+        en0 ? 'Startup failed' : '启动失败',
+        en0
+          ? 'Initialization failed. Check the database and settings.\n\n' + msg
+          : '应用初始化失败，请检查数据库与配置文件。\n\n' + msg,
+      );
     } catch (e) {}
     app.quit();
   });

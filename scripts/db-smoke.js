@@ -31,7 +31,7 @@ function makePhoto(rootId, folderPath, fileName, fileType, hasThumbnail, dateTak
 }
 
 function run() {
-  const dbPath = path.join(os.tmpdir(), `photo-manager-smoke-${Date.now()}.db`);
+  const dbPath = path.join(os.tmpdir(), `aurora-gallery-smoke-${Date.now()}.db`);
   let db = null;
   try {
     db = new PhotoDatabase(dbPath);

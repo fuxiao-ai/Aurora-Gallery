@@ -1,6 +1,21 @@
 (function (global) {
   'use strict';
 
+  function tSt(key, zh) {
+    if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
+    return zh;
+  }
+  function tStFmt(key, map, zhFallback) {
+    var s = tSt(key, zhFallback);
+    if (!map) return s;
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) {
+        s = s.split('{' + k + '}').join(String(map[k]));
+      }
+    }
+    return s;
+  }
+
   // ===== settings-flow.js =====
   function openSettingsPage(options) {
     options = options || {};
@@ -317,7 +332,13 @@
       onLoadPhotos();
     } catch (e) {
       if (typeof appAlert === 'function')
-        appAlert('保存浏览偏好失败：' + (e && e.message ? e.message : String(e)));
+        appAlert(
+          tStFmt(
+            'settings.save.browsePrefsFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存浏览偏好失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
       onSyncBrowsePrefsFormFromRuntimeState();
     }
   }
@@ -393,7 +414,13 @@
       if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionMedia');
     } catch (e) {
       if (typeof appAlert === 'function')
-        appAlert('保存预览信息显示失败：' + (e && e.message ? e.message : String(e)));
+        appAlert(
+          tStFmt(
+            'settings.save.previewDisplayFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存预览信息显示失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
       onRevertPreviewDisplayCheckboxesToApplied();
     }
   }
@@ -528,7 +555,13 @@
       if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionGeneral');
     } catch (e) {
       if (typeof appAlert === 'function')
-        appAlert('保存通用设置失败：' + (e && e.message ? e.message : String(e)));
+        appAlert(
+          tStFmt(
+            'settings.save.generalFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存通用设置失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
       if (ap) {
         if (dom.settingAutoScan) dom.settingAutoScan.checked = !!ap.autoScanOnStartup;
         if (dom.settingAutoThumbBackfillOnStartup)
@@ -553,6 +586,64 @@
     }
   }
 
+
+  function setLocaleSelectValuePair(uiLocale) {
+    var v = uiLocale === 'en' ? 'en' : 'zh-CN';
+    var el = document.getElementById('settingUiLocale');
+    var topEl = document.getElementById('topbarUiLocale');
+    if (el) el.value = v;
+    if (topEl) topEl.value = v;
+  }
+
+  async function persistUiLocaleFromControl(options) {
+    options = options || {};
+    var state = options.state || {};
+    var api = options.api || null;
+    var onSetGeneralSettingsAppliedFromObject = options.onSetGeneralSettingsAppliedFromObject;
+    var onRenderSettingsNav = options.onRenderSettingsNav;
+    var getLastSectionId = options.getLastSectionId;
+    var appAlert = options.appAlert;
+    if (!(api && api.has && api.has('updateSettings'))) return;
+    if (typeof onSetGeneralSettingsAppliedFromObject !== 'function') return;
+    var el = document.getElementById('settingUiLocale');
+    var topEl = document.getElementById('topbarUiLocale');
+    if (!el && !topEl) return;
+    var v;
+    if (options.source === 'topbar' && topEl) {
+      v = topEl.value === 'en' ? 'en' : 'zh-CN';
+      if (el) el.value = v;
+    } else if (el) {
+      v = el.value === 'en' ? 'en' : 'zh-CN';
+      if (topEl) topEl.value = v;
+    } else {
+      v = topEl.value === 'en' ? 'en' : 'zh-CN';
+    }
+    var ap = state.generalSettingsApplied;
+    if (ap && ap.uiLocale === v) return;
+    try {
+      var r = await api.updateSettings({ uiLocale: v });
+      onSetGeneralSettingsAppliedFromObject(r);
+      if (window.I18n && typeof window.I18n.setLocale === 'function') {
+        window.I18n.setLocale(v);
+      }
+      setLocaleSelectValuePair(v);
+      var sid =
+        typeof getLastSectionId === 'function' ? getLastSectionId() : 'settingsSectionGeneral';
+      if (typeof onRenderSettingsNav === 'function' && state.currentTab === 'settings')
+        onRenderSettingsNav(sid);
+      if (typeof options.onAfterLocaleChange === 'function') options.onAfterLocaleChange();
+    } catch (e) {
+      if (typeof appAlert === 'function')
+        appAlert(
+          tStFmt(
+            'settings.save.localeFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存语言设置失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
+      if (ap) setLocaleSelectValuePair(ap.uiLocale);
+    }
+  }
 
   async function persistWindowCloseSetting(options) {
     options = options || {};
@@ -584,7 +675,13 @@
       if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionCloseBehavior');
     } catch (e) {
       if (typeof appAlert === 'function')
-        appAlert('保存关闭按钮设置失败：' + (e && e.message ? e.message : String(e)));
+        appAlert(
+          tStFmt(
+            'settings.save.windowCloseFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存关闭按钮设置失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
       if (applied != null) sel.value = applied;
     }
   }
@@ -618,14 +715,34 @@
       var editing = active === pwdInput || pwdInput.dataset.pwdTouched === '1';
       if (!editing) {
         delete pwdInput.dataset.pwdTouched;
-        pwdInput.placeholder = state.hasWebPassword ? '已设置' : '设置访问密码';
+        if (window.I18n && typeof window.I18n.t === 'function') {
+          pwdInput.placeholder = state.hasWebPassword
+            ? window.I18n.t('web.passwordSet')
+            : window.I18n.t('web.passwordUnset');
+        } else {
+          pwdInput.placeholder = state.hasWebPassword ? '已设置' : '设置访问密码';
+        }
       }
     }
     var st = document.getElementById('webPasswordStateText');
-    if (st) st.textContent = state.hasWebPassword ? '状态：已设置' : '状态：未设置';
+    if (st) {
+      if (window.I18n && typeof window.I18n.t === 'function') {
+        st.textContent = state.hasWebPassword
+          ? window.I18n.t('web.statusTextOn')
+          : window.I18n.t('web.statusTextOff');
+      } else {
+        st.textContent = state.hasWebPassword ? '状态：已设置' : '状态：未设置';
+      }
+    }
     var badge = document.getElementById('webPasswordStatusBadge');
     if (badge) {
-      badge.textContent = state.hasWebPassword ? '已设置' : '未设置';
+      if (window.I18n && typeof window.I18n.t === 'function') {
+        badge.textContent = state.hasWebPassword
+          ? window.I18n.t('web.badgeOn')
+          : window.I18n.t('web.badgeOff');
+      } else {
+        badge.textContent = state.hasWebPassword ? '已设置' : '未设置';
+      }
       badge.classList.remove('online', 'offline');
       badge.classList.add(state.hasWebPassword ? 'online' : 'offline');
     }
@@ -638,6 +755,8 @@
     revertPreviewDisplayCheckboxesToApplied: revertPreviewDisplayCheckboxesToApplied,
     persistPreviewDisplayFromControls: persistPreviewDisplayFromControls,
     persistGeneralSettingsFromControls: persistGeneralSettingsFromControls,
+    persistUiLocaleFromControl: persistUiLocaleFromControl,
+    setLocaleSelectValuePair: setLocaleSelectValuePair,
     persistWindowCloseSetting: persistWindowCloseSetting,
     syncThemeStyleControls: syncThemeStyleControls,
     syncWebPasswordUiFromSettings: syncWebPasswordUiFromSettings,

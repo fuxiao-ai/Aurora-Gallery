@@ -110,6 +110,7 @@
     var onPersistPreviewDisplay = options.onPersistPreviewDisplay;
     var onPersistWindowClose = options.onPersistWindowClose;
     var onPersistGeneralSettings = options.onPersistGeneralSettings;
+    var onPersistUiLocale = options.onPersistUiLocale;
     var onToggleTunnelEnabled = options.onToggleTunnelEnabled;
     var onToggleWebServerEnabled = options.onToggleWebServerEnabled;
     var onPersistBrowsePrefs = options.onPersistBrowsePrefs;
@@ -140,6 +141,9 @@
       }
       if (sid === 'settingWindowClose' && typeof onPersistWindowClose === 'function') {
         void onPersistWindowClose();
+      }
+      if (sid === 'settingUiLocale' && typeof onPersistUiLocale === 'function') {
+        void onPersistUiLocale();
       }
       if (
         (sid === 'settingAutoScan' ||
@@ -317,7 +321,7 @@
       );
     }
 
-    /** 顶栏 / 标题栏「拂晓图库」品牌区：管理设置打开时点击返回相册 */
+    /** 顶栏 / 标题栏品牌区（i18n：拂晓图库 / Aurora Gallery）：管理设置打开时点击返回相册 */
     if (typeof options.onCloseSettingsPage === 'function') {
       function isSettingsPageOpenForBrand() {
         var sp = document.getElementById('settingsPage');
@@ -397,6 +401,7 @@
     var onCancelCloseChoice = options.onCancelCloseChoice;
     var onThumbSettingChange = options.onThumbSettingChange;
     var onQuickThemeChange = options.onQuickThemeChange;
+    var onTopbarLocaleChange = options.onTopbarLocaleChange;
     var onWebPasswordFocus = options.onWebPasswordFocus;
 
     var closeChoiceOverlay = document.getElementById('closeChoiceOverlay');
@@ -421,6 +426,13 @@
     if (quickThemeStyle && typeof onQuickThemeChange === 'function') {
       quickThemeStyle.addEventListener('change', function () {
         void onQuickThemeChange();
+      });
+    }
+
+    var topbarUiLocale = document.getElementById('topbarUiLocale');
+    if (topbarUiLocale && typeof onTopbarLocaleChange === 'function') {
+      topbarUiLocale.addEventListener('change', function () {
+        void onTopbarLocaleChange();
       });
     }
 

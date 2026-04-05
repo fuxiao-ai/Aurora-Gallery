@@ -1,6 +1,6 @@
 {
   "name": "aurora-gallery",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Aurora Gallery（拂晓图库）— 支持百万张照片",
   "main": "src/main.js",
   "scripts": {
