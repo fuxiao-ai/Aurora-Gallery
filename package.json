@@ -1,0 +1,93 @@
+{
+  "name": "photo-manager",
+  "version": "1.0.0",
+  "description": "拂晓图库 - 支持百万张照片",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "lint": "eslint .",
+    "smoke:db": "electron scripts/db-smoke.js",
+    "download-face-models": "node scripts/download-face-models.js",
+    "download-cloudflared": "node scripts/download-cloudflared.js",
+    "format": "prettier -w .",
+    "pack": "electron-builder --dir",
+    "dist": "node scripts/download-cloudflared.js && electron-builder",
+    "dist:win": "node scripts/download-cloudflared.js --target win32 && electron-builder --win nsis",
+    "dist:mac": "node scripts/download-cloudflared.js --target darwin && electron-builder --mac dmg",
+    "postinstall": "electron-rebuild -f -w better-sqlite3,sharp,onnxruntime-node",
+    "rebuild-native": "electron-rebuild -f -w better-sqlite3,sharp,onnxruntime-node"
+  },
+  "author": {
+    "name": "拂晓AI",
+    "url": "https://foredawn.vip/"
+  },
+  "homepage": "https://foredawn.vip/",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.0.0 <23.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "ffmpeg-static": "^5.3.0",
+    "hls.js": "^1.5.7",
+    "onnxruntime-node": "^1.24.3",
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@eslint/js": "^10.0.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^24.13.3",
+    "eslint": "^10.1.0",
+    "prettier": "^3.8.1"
+  },
+  "build": {
+    "appId": "com.local.photo-manager",
+    "productName": "拂晓图库",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "src/main.js"
+    },
+    "afterPack": "./scripts/after-pack.js",
+    "asar": true,
+    "icon": "src/web/app-icon-512.png",
+    "win": {
+      "signAndEditExecutable": false,
+      "artifactName": "FuxiaoGallery-Setup-${version}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.photography"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

@@ -1,0 +1,36 @@
+node_modules/
+release/
+dist/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+
+# Electron
+*.asar
+
+# Local app/runtime data (keep generic; app stores data under user profile)
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets
+.env
+.env.*
+
+# cloudflared（npm run download-cloudflared，打包时由 afterPack 复制到 resources/bin）
+/bin/cloudflared
+/bin/cloudflared.exe
+

@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN" class="scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拂晓图库 - 科技感相册管理平台</title>
+    <meta
+      name="description"
+      content="拂晓图库：界面美观、多主题切换，支持局域网与远程访问的本地相册管理平台。"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              neon: '#66E3FF',
+              indigoDeep: '#0C1026',
+              panel: '#111735',
+            },
+            boxShadow: {
+              glow: '0 0 0 1px rgba(102,227,255,0.35), 0 0 24px rgba(102,227,255,0.18)',
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      .soft-grid {
+        background-image: linear-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+        background-size: 20px 20px;
+      }
+      .glass-card {
+        transition: transform 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
+      }
+      .glass-card:hover {
+        transform: translateY(-3px);
+        border-color: rgba(103, 232, 249, 0.45);
+        box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.25), 0 16px 36px rgba(2, 132, 199, 0.16);
+      }
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+        transition: opacity 0.6s ease, transform 0.6s ease;
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .slide {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        transition: opacity 0.55s ease;
+      }
+      .slide.active {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+    <div
+      id="cursorGlow"
+      class="pointer-events-none fixed -z-10 h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl transition-transform duration-150"
+      style="left: -999px; top: -999px"
+    ></div>
+    <div class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+      <div class="absolute -top-40 left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-cyan-500/20 blur-3xl"></div>
+      <div class="absolute bottom-0 right-0 h-80 w-80 rounded-full bg-indigo-600/20 blur-3xl"></div>
+      <div class="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(102,227,255,0.08),transparent_35%),radial-gradient(circle_at_80%_70%,rgba(59,130,246,0.08),transparent_35%)]"></div>
+    </div>
+
+    <header class="sticky top-0 z-20 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl">
+      <div class="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-4">
+        <a href="#" class="text-lg font-semibold tracking-wide text-neon">拂晓图库</a>
+        <nav class="hidden gap-8 text-sm text-slate-300 md:flex">
+          <a href="#features" class="hover:text-neon">核心功能</a>
+          <a href="#scenes" class="hover:text-neon">应用场景</a>
+          <a href="#download" class="hover:text-neon">下载</a>
+        </nav>
+        <a
+          href="#download"
+          class="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-200/60 hover:bg-cyan-300/20"
+          >下载试用</a
+        >
+      </div>
+    </header>
+
+    <main class="mx-auto w-full max-w-7xl px-6 py-14 md:py-20">
+      <section class="grid items-center gap-12 md:grid-cols-2">
+        <div>
+          <p class="mb-4 inline-flex rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1 text-xs text-cyan-200 shadow-[0_0_20px_rgba(103,232,249,0.15)]">简单好用的照片管理工具</p>
+          <h1 class="text-4xl font-bold leading-tight md:text-5xl">
+            为海量照片与视频打造的
+            <span class="bg-gradient-to-r from-cyan-300 via-sky-300 to-indigo-300 bg-clip-text text-transparent"
+              >科技感管理中枢</span
+            >
+          </h1>
+          <p class="mt-6 max-w-xl text-slate-300">拂晓图库帮你把照片和视频整理得井井有条：界面好看、主题可切换，还能在手机和电脑上随时查看。</p>
+          <div class="mt-8 flex flex-wrap gap-4">
+            <a
+              href="#download"
+              class="rounded-lg bg-cyan-300 px-6 py-3 font-semibold text-slate-900 shadow-[0_8px_24px_rgba(34,211,238,0.22)] transition hover:-translate-y-0.5 hover:bg-cyan-200"
+              >立即下载</a
+            >
+            <a
+              href="#features"
+              class="rounded-lg border border-white/20 px-6 py-3 font-semibold text-slate-100 transition hover:-translate-y-0.5 hover:border-cyan-300/50 hover:text-cyan-200"
+              >查看功能</a
+            >
+          </div>
+        </div>
+        <div class="glass-card reveal rounded-2xl border border-white/10 bg-panel/70 p-6 shadow-glow">
+          <p class="text-sm text-cyan-200">产品亮点</p>
+          <h2 class="mt-2 text-2xl font-bold leading-tight">打开就会用，上手零门槛</h2>
+          <ul class="mt-5 space-y-3 text-sm text-slate-300">
+            <li class="glass-card rounded-lg border border-white/10 bg-slate-900/50 px-4 py-3">
+              页面清爽耐看，白天夜晚都能找到舒服的显示风格。
+            </li>
+            <li class="glass-card rounded-lg border border-white/10 bg-slate-900/50 px-4 py-3">
+              从导入到查找再到预览，整个过程很顺手。
+            </li>
+            <li class="glass-card rounded-lg border border-white/10 bg-slate-900/50 px-4 py-3">
+              支持局域网和远程查看，在外也能看家里电脑里的照片。
+            </li>
+            <li class="glass-card rounded-lg border border-white/10 bg-slate-900/50 px-4 py-3">
+              文件主要保存在你自己的设备里，更安心。
+            </li>
+          </ul>
+          <div class="mt-5 grid grid-cols-3 gap-3 text-center">
+            <div class="rounded-lg border border-white/10 bg-slate-900/40 px-2 py-3">
+              <p class="text-lg font-bold text-cyan-200" data-countup="10">0</p>
+              <p class="text-[11px] text-slate-400">分钟上手</p>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-slate-900/40 px-2 py-3">
+              <p class="text-lg font-bold text-cyan-200" data-countup="3">0</p>
+              <p class="text-[11px] text-slate-400">步完成整理</p>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-slate-900/40 px-2 py-3">
+              <p class="text-lg font-bold text-cyan-200" data-countup="24">0</p>
+              <p class="text-[11px] text-slate-400">小时可访问</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="mt-20">
+        <h2 class="text-2xl font-bold md:text-3xl">功能板块介绍</h2>
+        <p class="mt-3 max-w-3xl text-slate-300">下面这些功能，都是日常管理照片时最常用、最实在的能力。</p>
+        <div class="mt-8 space-y-6">
+          <article class="glass-card reveal rounded-xl border border-white/10 bg-white/5 p-6">
+            <div class="grid gap-5 md:grid-cols-2">
+              <div class="soft-grid min-h-[180px] rounded-lg border border-dashed border-cyan-300/35 bg-slate-900/40 p-4">
+                <p class="text-xs text-cyan-200">功能配图预留 - 01</p>
+                <p class="mt-1 text-xs text-slate-400">建议放：主题切换与界面总览截图</p>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-cyan-200">好看的界面与主题切换</h3>
+                <ul class="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                  <li>界面简洁不花哨，照片信息一眼能看懂。</li>
+                  <li>多套主题可选，亮色和暗色都支持。</li>
+                  <li>长时间浏览也不刺眼，阅读更轻松。</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-card reveal rounded-xl border border-white/10 bg-white/5 p-6">
+            <div class="grid gap-5 md:grid-cols-2">
+              <div class="soft-grid min-h-[180px] rounded-lg border border-dashed border-cyan-300/35 bg-slate-900/40 p-4">
+                <p class="text-xs text-cyan-200">功能配图预留 - 02</p>
+                <p class="mt-1 text-xs text-slate-400">建议放：扫描任务与后台任务面板截图</p>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-cyan-200">导入与整理</h3>
+                <ul class="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                  <li>选择你的照片文件夹后，软件会自动整理内容。</li>
+                  <li>整理过程中可随时暂停、继续或取消。</li>
+                  <li>进度清楚可见，不用担心卡住没反应。</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-card reveal rounded-xl border border-white/10 bg-white/5 p-6">
+            <div class="grid gap-5 md:grid-cols-2">
+              <div class="soft-grid min-h-[180px] rounded-lg border border-dashed border-cyan-300/35 bg-slate-900/40 p-4">
+                <p class="text-xs text-cyan-200">功能配图预留 - 03</p>
+                <p class="mt-1 text-xs text-slate-400">建议放：筛选、排序、重复图管理截图</p>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-cyan-200">查找与分类</h3>
+                <ul class="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                  <li>可按时间、文件夹、图片/视频快速筛选。</li>
+                  <li>支持收藏和排序，想找哪张很快就能找到。</li>
+                  <li>可找出重复照片，帮你省空间。</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-card reveal rounded-xl border border-white/10 bg-white/5 p-6">
+            <div class="grid gap-5 md:grid-cols-2">
+              <div class="soft-grid min-h-[180px] rounded-lg border border-dashed border-cyan-300/35 bg-slate-900/40 p-4">
+                <p class="text-xs text-cyan-200">功能配图预留 - 04</p>
+                <p class="mt-1 text-xs text-slate-400">建议放：图片/视频预览与字幕功能截图</p>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-cyan-200">看图与看视频</h3>
+                <ul class="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                  <li>图片可放大缩小、旋转、全屏查看。</li>
+                  <li>视频可拖动进度，浏览更方便。</li>
+                  <li>支持字幕显示，追剧和看素材都更清楚。</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-card reveal rounded-xl border border-white/10 bg-white/5 p-6">
+            <div class="grid gap-5 md:grid-cols-2">
+              <div class="soft-grid min-h-[180px] rounded-lg border border-dashed border-cyan-300/35 bg-slate-900/40 p-4">
+                <p class="text-xs text-cyan-200">功能配图预留 - 05</p>
+                <p class="mt-1 text-xs text-slate-400">建议放：局域网/远程访问与维护设置截图</p>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-cyan-200">多设备访问与日常维护</h3>
+                <ul class="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                  <li>手机、平板、电脑都能访问同一套照片库。</li>
+                  <li>在局域网或远程环境下都能查看内容。</li>
+                  <li>提供常用维护功能，长期使用也稳定。</li>
+                  <li>文件以本地存储为主，隐私更有保障。</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="scenes" class="mt-20 grid gap-6 md:grid-cols-3">
+        <div class="glass-card reveal rounded-xl border border-cyan-300/20 bg-cyan-400/5 p-6">
+          <p class="text-sm text-cyan-200">摄影工作室</p>
+          <p class="mt-2 text-slate-300">快速定位样片、去重交付素材，降低人工整理成本。</p>
+        </div>
+        <div class="glass-card reveal rounded-xl border border-cyan-300/20 bg-cyan-400/5 p-6">
+          <p class="text-sm text-cyan-200">内容团队</p>
+          <p class="mt-2 text-slate-300">统一管理活动素材库，跨设备协同浏览与筛选。</p>
+        </div>
+        <div class="glass-card reveal rounded-xl border border-cyan-300/20 bg-cyan-400/5 p-6">
+          <p class="text-sm text-cyan-200">个人海量相册</p>
+          <p class="mt-2 text-slate-300">本地优先与隐私可控，告别云端依赖和查找焦虑。</p>
+        </div>
+      </section>
+
+      <section id="gallery" class="mt-20 reveal">
+        <div class="mb-6 flex items-end justify-between gap-4">
+          <div>
+            <h2 class="text-2xl font-bold md:text-3xl">产品展示图</h2>
+            <p class="mt-2 text-sm text-slate-300">自动轮播展示核心界面。你只需替换下方图片路径即可。</p>
+          </div>
+          <span class="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1 text-xs text-cyan-200"
+            >Auto Slider</span
+          >
+        </div>
+
+        <div class="grid gap-5 lg:grid-cols-3">
+          <div class="group relative min-h-[300px] overflow-hidden rounded-xl border border-cyan-300/35 bg-slate-900/40 lg:col-span-2">
+            <div class="slide active">
+              <img
+                src="./images/feature-01.jpg"
+                alt="界面总览截图"
+                class="h-full w-full object-cover"
+                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+              />
+              <div class="soft-grid hidden h-full items-center justify-center text-center">
+                <div>
+                  <p class="text-sm font-medium text-cyan-200">截图 01 占位</p>
+                  <p class="mt-1 text-xs text-slate-400">`./images/feature-01.jpg`</p>
+                </div>
+              </div>
+            </div>
+            <div class="slide">
+              <img
+                src="./images/feature-02.jpg"
+                alt="查找与分类截图"
+                class="h-full w-full object-cover"
+                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+              />
+              <div class="soft-grid hidden h-full items-center justify-center text-center">
+                <div>
+                  <p class="text-sm font-medium text-cyan-200">截图 02 占位</p>
+                  <p class="mt-1 text-xs text-slate-400">`./images/feature-02.jpg`</p>
+                </div>
+              </div>
+            </div>
+            <div class="slide">
+              <img
+                src="./images/feature-03.jpg"
+                alt="局域网与远程访问截图"
+                class="h-full w-full object-cover"
+                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+              />
+              <div class="soft-grid hidden h-full items-center justify-center text-center">
+                <div>
+                  <p class="text-sm font-medium text-cyan-200">截图 03 占位</p>
+                  <p class="mt-1 text-xs text-slate-400">`./images/feature-03.jpg`</p>
+                </div>
+              </div>
+            </div>
+            <div class="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/80 to-transparent p-4">
+              <p id="slideCaption" class="text-sm text-slate-200">界面总览：清爽布局与多主题切换</p>
+              <div id="slideDots" class="mt-2 flex gap-2"></div>
+            </div>
+          </div>
+
+          <div class="grid gap-5">
+            <div class="soft-grid min-h-[140px] rounded-xl border border-dashed border-white/25 bg-slate-900/40 p-4">
+              <p class="text-xs text-slate-300">替换图片说明</p>
+              <p class="mt-1 text-xs text-slate-500">把截图放到 `promo-site/images/` 目录，并命名为 `feature-01/02/03.jpg`。</p>
+            </div>
+            <div class="soft-grid min-h-[140px] rounded-xl border border-dashed border-white/25 bg-slate-900/40 p-4">
+              <p class="text-xs text-slate-300">轮播设置</p>
+              <p class="mt-1 text-xs text-slate-500">当前自动切换间隔为 4 秒，可在脚本中调整为你想要的节奏。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="download" class="mt-20 rounded-2xl border border-white/10 bg-white/5 p-8 shadow-glow reveal">
+        <h2 class="text-2xl font-bold">下载与安装</h2>
+        <p class="mt-3 text-slate-300">适用于 Windows，安装后就能开始整理你的照片和视频。</p>
+
+        <div class="mt-8 grid gap-6 md:grid-cols-2">
+          <article class="glass-card rounded-xl border border-cyan-300/30 bg-cyan-300/10 p-6">
+            <p class="text-sm text-cyan-200">稳定版本</p>
+            <h3 class="mt-1 text-xl font-semibold">拂晓图库 v1.0.0</h3>
+            <p class="mt-3 text-sm text-slate-300">推荐大多数用户安装，功能完整，日常使用最方便。</p>
+            <a
+              href="#"
+              class="mt-5 inline-flex rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-slate-900 hover:bg-cyan-200"
+              >下载 Windows 安装包</a
+            >
+          </article>
+          <article class="glass-card rounded-xl border border-white/10 bg-slate-900/50 p-6">
+            <p class="text-sm text-slate-300">便携版本</p>
+            <h3 class="mt-1 text-xl font-semibold">win-unpacked</h3>
+            <p class="mt-3 text-sm text-slate-300">无需安装，解压就能用，适合临时使用或放在移动硬盘里。</p>
+            <a
+              href="#"
+              class="mt-5 inline-flex rounded-lg border border-white/20 px-4 py-2 font-semibold hover:border-cyan-300/50 hover:text-cyan-200"
+              >下载便携包</a
+            >
+          </article>
+        </div>
+
+        <ol class="mt-8 list-decimal space-y-2 pl-5 text-sm text-slate-300">
+          <li>下载 `.exe` 安装包并完成安装。</li>
+          <li>首次打开后添加照片文件夹，等待自动整理完成。</li>
+          <li>整理完成后，就可以按时间和分类快速浏览。</li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="border-t border-white/10 py-8 text-center text-sm text-slate-500">
+      <p>
+        <span id="year"></span> 拂晓图库 · 作者
+        <a href="https://foredawn.vip/" class="text-cyan-300/90 hover:text-cyan-200" rel="noopener noreferrer" target="_blank"
+          >拂晓AI</a
+        >
+      </p>
+      <p class="mt-2"><a href="https://foredawn.vip/" class="hover:text-slate-400" rel="noopener noreferrer" target="_blank">foredawn.vip</a></p>
+    </footer>
+
+    <script>
+      document.getElementById('year').textContent = new Date().getFullYear();
+      (function () {
+        var glow = document.getElementById('cursorGlow');
+        window.addEventListener('mousemove', function (e) {
+          glow.style.transform = 'translate(' + (e.clientX - 128) + 'px,' + (e.clientY - 128) + 'px)';
+        });
+
+        var reveals = document.querySelectorAll('.reveal');
+        var io = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting) return;
+              entry.target.classList.add('in');
+              io.unobserve(entry.target);
+            });
+          },
+          { threshold: 0.12 }
+        );
+        reveals.forEach(function (el) {
+          io.observe(el);
+        });
+
+        var counters = document.querySelectorAll('[data-countup]');
+        counters.forEach(function (el) {
+          var target = Number(el.getAttribute('data-countup')) || 0;
+          var cur = 0;
+          var step = Math.max(1, Math.ceil(target / 24));
+          var timer = setInterval(function () {
+            cur += step;
+            if (cur >= target) {
+              cur = target;
+              clearInterval(timer);
+            }
+            el.textContent = String(cur);
+          }, 32);
+        });
+
+        var slides = Array.prototype.slice.call(document.querySelectorAll('#gallery .slide'));
+        var captions = ['界面总览：清爽布局与多主题切换', '查找分类：快速定位想看的照片', '多端访问：局域网与远程都可浏览'];
+        var captionEl = document.getElementById('slideCaption');
+        var dotsWrap = document.getElementById('slideDots');
+        var current = 0;
+        if (slides.length) {
+          slides.forEach(function (_, i) {
+            var dot = document.createElement('button');
+            dot.type = 'button';
+            dot.className =
+              'h-2 w-2 rounded-full border border-white/30 ' +
+              (i === 0 ? 'bg-cyan-300' : 'bg-white/30');
+            dot.addEventListener('click', function () {
+              current = i;
+              paint();
+            });
+            dotsWrap.appendChild(dot);
+          });
+          function paint() {
+            slides.forEach(function (s, idx) {
+              s.classList.toggle('active', idx === current);
+            });
+            if (captionEl) captionEl.textContent = captions[current] || '';
+            Array.prototype.forEach.call(dotsWrap.children, function (dot, idx) {
+              dot.className =
+                'h-2 w-2 rounded-full border border-white/30 ' +
+                (idx === current ? 'bg-cyan-300' : 'bg-white/30');
+            });
+          }
+          paint();
+          setInterval(function () {
+            current = (current + 1) % slides.length;
+            paint();
+          }, 4000);
+        }
+      })();
+    </script>
+  </body>
+</html>
