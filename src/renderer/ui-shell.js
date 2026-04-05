@@ -476,7 +476,7 @@
         break;
       case 'about':
         await appAlert(
-          '拂晓图库 v1.0\n\n一款轻量级的本地照片管理工具\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
+          '拂晓图库 v1.0.1\n\n一款轻量级的本地照片管理工具\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
           '关于',
         );
         break;

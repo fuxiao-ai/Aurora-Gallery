@@ -1,7 +1,7 @@
 {
-  "name": "photo-manager",
-  "version": "1.0.0",
-  "description": "拂晓图库 - 支持百万张照片",
+  "name": "aurora-gallery",
+  "version": "1.0.1",
+  "description": "Aurora Gallery（拂晓图库）— 支持百万张照片",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -44,7 +44,7 @@
     "prettier": "^3.8.1"
   },
   "build": {
-    "appId": "com.local.photo-manager",
+    "appId": "com.foredawn.aurora-gallery",
     "productName": "拂晓图库",
     "directories": {
       "output": "release"
@@ -61,7 +61,7 @@
     "icon": "src/web/app-icon-512.png",
     "win": {
       "signAndEditExecutable": false,
-      "artifactName": "FuxiaoGallery-Setup-${version}.${ext}",
+      "artifactName": "AuroraGallery-Setup-${version}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -72,6 +72,7 @@
       ]
     },
     "mac": {
+      "artifactName": "AuroraGallery-${version}.${ext}",
       "target": [
         {
           "target": "dmg",
