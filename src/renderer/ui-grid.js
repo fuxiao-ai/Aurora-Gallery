@@ -413,7 +413,9 @@
     var fp = normalizePath(row.folder_path || '');
     var coverId = parseInt(row.id, 10);
     var thumbUrl =
-      !isNaN(coverId) && coverId > 0 ? 'thumb://' + coverId : '';
+      !isNaN(coverId) && coverId > 0 && row.has_thumbnail
+        ? 'thumb://' + coverId
+        : '';
     var base = folderDisplayBasename(fp, normalizePath);
     var cnt = row.folder_photo_count != null ? row.folder_photo_count : 0;
     var html =

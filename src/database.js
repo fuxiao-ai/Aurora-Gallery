@@ -174,6 +174,7 @@ class PhotoDatabase {
       CREATE INDEX IF NOT EXISTS idx_photos_root_folder ON photos(root_id, folder_path);
       CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(file_name);
       CREATE INDEX IF NOT EXISTS idx_photos_type ON photos(file_type);
+      CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(is_favorite);
     `);
   }
 
@@ -198,6 +199,7 @@ class PhotoDatabase {
   init() {
     this.createCoreSchema();
     this.ensureCoreSchemaReady();
+    this.ensurePhotosIsFavoriteColumn();
     this.ensureRootFolderStatsCacheSchema();
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
@@ -256,6 +258,39 @@ class PhotoDatabase {
           ';',
       );
     } catch (e) {
+      void e;
+    }
+  }
+
+  /**
+   * 确保 photos 表有 is_favorite 列（收藏功能）。
+   * 旧版本数据库创建时没有这个列，需要 ALTER TABLE 添加。
+   */
+  ensurePhotosIsFavoriteColumn() {
+    if (!this.hasTable('photos')) return;
+    try {
+      // 检查列是否已存在
+      var hasColumn = false;
+      var pragma = this.db.prepare('PRAGMA table_info(photos)').all();
+      for (var i = 0; i < pragma.length; i++) {
+        if (pragma[i].name === 'is_favorite') {
+          hasColumn = true;
+          break;
+        }
+      }
+      if (!hasColumn) {
+        // 添加列，默认 0（未收藏）
+        this.db.exec('ALTER TABLE photos ADD COLUMN is_favorite INTEGER DEFAULT 0;');
+        console.log('[db migration] added missing is_favorite column to photos table');
+      }
+      // 确保 is_favorite 有索引（旧版本可能缺少）
+      try {
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(is_favorite);');
+      } catch (eIdx) {
+        console.error('[db migration] create idx_photos_favorite failed:', eIdx && eIdx.message ? eIdx.message : eIdx);
+      }
+    } catch (e) {
+      console.error('[db migration] ensure is_favorite column failed:', e && e.message ? e.message : e);
       void e;
     }
   }
@@ -664,12 +699,23 @@ class PhotoDatabase {
     ).all(...params, pageSize, offset);
     this.applyNaturalNameTieSort(photos, order, dir);
 
+    // 将 better-sqlite3 row 对象转为纯 JS 对象，避免 IPC 克隆失败
+    const plainPhotos = photos.map(function (row) {
+      var obj = {};
+      for (var key in row) {
+        if (row.hasOwnProperty(key)) {
+          obj[key] = row[key];
+        }
+      }
+      return obj;
+    });
+
     return {
-      photos,
-      total: total.count,
-      page,
-      pageSize,
-      totalPages: Math.ceil(total.count / pageSize),
+      photos: plainPhotos,
+      total: Number(total.count),
+      page: Number(page),
+      pageSize: Number(pageSize),
+      totalPages: Math.ceil(Number(total.count) / Number(pageSize)),
     };
   }
 
@@ -946,13 +992,24 @@ class PhotoDatabase {
     ).all(...pathBindArgs, pageSize, offset);
     this.applyNaturalNameTieSort(photos, order, dir);
 
+    // 将 better-sqlite3 row 对象转为纯 JS 对象，避免 IPC 克隆失败
+    var plainPhotos = photos.map(function (row) {
+      var obj = {};
+      for (var key in row) {
+        if (row.hasOwnProperty(key)) {
+          obj[key] = row[key];
+        }
+      }
+      return obj;
+    });
+
     return {
-      photos,
-      total: total.count,
-      videoCount: video ? video.count : 0,
-      page,
-      pageSize,
-      totalPages: Math.ceil(total.count / pageSize),
+      photos: plainPhotos,
+      total: Number(total.count),
+      videoCount: video ? Number(video.count) : 0,
+      page: Number(page),
+      pageSize: Number(pageSize),
+      totalPages: Math.ceil(Number(total.count) / Number(pageSize)),
     };
   }
 
@@ -1484,6 +1541,10 @@ class PhotoDatabase {
 
   commit() {
     this.db.exec('COMMIT');
+  }
+
+  rollback() {
+    this.db.exec('ROLLBACK');
   }
 
   insertPhoto(photo) {
