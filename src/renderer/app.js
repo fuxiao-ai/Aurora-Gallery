@@ -5071,6 +5071,8 @@ async function previewMoveToTrash() {
     onLoadPhotos: loadPhotos,
     onClosePreview: closePreview,
     onOpenPreview: openPreview,
+    photoGridUi: photoGridUi,
+    dom: dom,
   });
 }
 

@@ -301,6 +301,8 @@ HlsSessionManager.prototype.ensureSession = function (photo, cb) {
     'veryfast',
     '-crf',
     '23',
+    '-pix_fmt',
+    'yuv420p',
     '-c:a',
     'aac',
     '-b:a',

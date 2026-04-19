@@ -1149,14 +1149,12 @@
             if (
               target.closest('.preview-slideshow-controls') ||
               target.closest('.preview-close') ||
-              target.closest('.preview-zoom-box') ||
-              target.closest('.preview-info-bar') ||
-              target.closest('.preview-img') ||
-              target.closest('.preview-video')
+              target.closest('.preview-info-bar')
             ) {
               state.previewOverlaySwiping = false;
               return;
             }
+            // 允许在图片区域滑动切换，只在缩放时禁止
             state.previewOverlaySwiping = true;
             state.previewOverlaySwipeStartX = e.touches[0].clientX;
             state.previewOverlaySwipeStartY = e.touches[0].clientY;
@@ -1169,11 +1167,15 @@
             if (!state.previewOverlaySwiping) return;
             state.previewOverlaySwiping = false;
             if (!e.changedTouches || e.changedTouches.length === 0) return;
+            // 图片放大后，用户可能是在拖动看细节，不触发切换
+            if (state.zoom > 1.05) return;
             var dx = e.changedTouches[0].clientX - state.previewOverlaySwipeStartX;
             var dy = e.changedTouches[0].clientY - state.previewOverlaySwipeStartY;
             var absDx = Math.abs(dx);
             var absDy = Math.abs(dy);
-            if (absDx >= 60 && absDx > absDy * 1.2) {
+            // 降低阈值，放宽判断，让滑动更灵敏
+            // 30px 即可触发，允许稍微偏垂直一点的滑动
+            if (absDx >= 30 && absDx > absDy * 0.8) {
               navigatePreview(dx < 0 ? 1 : -1);
             }
           },
@@ -2679,26 +2681,85 @@
               fullImg.src = previewUrl;
             }
 
+            // 如果有原图尺寸信息，提前设置宽高比占位避免布局跳动
+            if (photo.width && photo.height) {
+              img.style.aspectRatio = photo.width + ' / ' + photo.height;
+            } else {
+              img.style.aspectRatio = 'auto';
+            }
+            // 移除固定像素尺寸，让CSS自动缩放填满容器
+            img.removeAttribute('width');
+            img.removeAttribute('height');
+
+            // 并行加载：立即开始加载大图，同时显示缩略图占位，减少等待时间
+            startSafetyTimer();
+            var fullImg = new Image();
+            try {
+              fullImg.fetchPriority = 'high';
+            } catch (ePri) {}
+
             if (photo.has_thumbnail) {
+              // 先显示缩略图占位
               img.onload = function () {
                 if (!isCurrentPreviewRequest()) return;
                 hidePreviewLoading();
                 img.style.visibility = 'visible';
                 img.classList.remove('switching');
-                loadFullPreview();
               };
               img.onerror = function () {
                 if (!isCurrentPreviewRequest()) return;
                 img.style.visibility = 'hidden';
                 showPreviewLoading();
-                loadFullPreview();
               };
               img.removeAttribute('src');
               img.src = '/thumb/' + photo.id;
+              // 如果缩略图已缓存，onload不会触发，手动处理
+              if (img.complete && img.naturalWidth > 0) {
+                if (isCurrentPreviewRequest()) {
+                  hidePreviewLoading();
+                  img.style.visibility = 'visible';
+                  img.classList.remove('switching');
+                }
+              }
+              // 大图加载完成后立即替换
+              fullImg.onload = function () {
+                if (!isCurrentPreviewRequest()) return;
+                applySrcToImg(previewUrl);
+              };
+              fullImg.onerror = function () {
+                if (!isCurrentPreviewRequest()) return;
+                var fb = new Image();
+                fb.onload = function () {
+                  if (!isCurrentPreviewRequest()) return;
+                  applySrcToImg(fallbackUrl);
+                };
+                fb.onerror = function () {
+                  finishPreviewImage();
+                };
+                fb.src = fallbackUrl;
+              };
+              fullImg.src = previewUrl;
             } else {
               img.style.visibility = 'hidden';
               showPreviewLoading();
-              loadFullPreview();
+              // 没有缩略图，直接加载大图
+              fullImg.onload = function () {
+                if (!isCurrentPreviewRequest()) return;
+                applySrcToImg(previewUrl);
+              };
+              fullImg.onerror = function () {
+                if (!isCurrentPreviewRequest()) return;
+                var fb = new Image();
+                fb.onload = function () {
+                  if (!isCurrentPreviewRequest()) return;
+                  applySrcToImg(fallbackUrl);
+                };
+                fb.onerror = function () {
+                  finishPreviewImage();
+                };
+                fb.src = fallbackUrl;
+              };
+              fullImg.src = previewUrl;
             }
           }
 

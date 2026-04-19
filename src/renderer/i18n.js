@@ -292,6 +292,7 @@
       'settings.task.thumbStart': '开始补全',
       'settings.task.thumbExportFailTitle':
         '将当前或上一轮补全中失败文件的路径导出为 txt（每行一条）',
+      'settings.task.thumbExportFailedPaths': '导出失败路径',
       'settings.task.thumbExportFail': '导出失败路径',
       'settings.task.thumbConcurrency': '同时处理',
       'settings.task.thumbConcurrencyAria': '缩略图补全同时处理张数',
@@ -724,6 +725,7 @@
       'settings.task.thumbStart': 'Start',
       'settings.task.thumbExportFailTitle':
         'Export failed paths from the current or last run as .txt (one path per line)',
+      'settings.task.thumbExportFailedPaths': 'Export failed paths',
       'settings.task.thumbExportFail': 'Export failed paths',
       'settings.task.thumbConcurrency': 'Parallel jobs',
       'settings.task.thumbConcurrencyAria': 'Thumbnail backfill concurrency',

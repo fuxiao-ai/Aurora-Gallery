@@ -1021,8 +1021,23 @@
           }
           if (img) {
             img.style.display = '';
-            img.src = 'photo://' + photo.id;
-            img.onload = function () {
+            // 如果有原图尺寸信息，提前设置宽高比占位避免布局跳动
+            if (photo.width && photo.height) {
+              img.style.aspectRatio = photo.width + ' / ' + photo.height;
+            } else {
+              img.style.aspectRatio = 'auto';
+            }
+            // 移除固定像素尺寸，让CSS自动缩放填满容器
+            img.removeAttribute('width');
+            img.removeAttribute('height');
+            // 如果有缩略图，先加载缩略图作为占位，然后加载原图
+            if (photo.has_thumbnail) {
+              img.src = 'thumb://' + photo.id;
+            }
+            // 并行加载原图，和web端一样加快显示速度
+            var originalImg = new Image();
+            originalImg.onload = function () {
+              img.src = originalImg.src;
               onPreviewImageDecoded();
               if (deferPreviewChrome) {
                 if (typeof options.onPreviewMainLinePrepare === 'function') {
@@ -1035,8 +1050,10 @@
                 onSyncPreviewFavoriteButton();
                 onPreloadAdjacentPages(index);
               }
+              if (img.classList) img.classList.remove('switching');
             };
-            img.onerror = function () {
+            originalImg.onerror = function () {
+              onPreviewImageDecoded();
               if (img.classList) img.classList.remove('switching');
               if (deferPreviewChrome) {
                 if (typeof options.onPreviewMainLinePrepare === 'function') {
@@ -1050,6 +1067,13 @@
                 onPreloadAdjacentPages(index);
               }
             };
+            originalImg.src = 'photo://' + photo.id;
+            // 如果缩略图已缓存，手动触发保证流程继续
+            if (photo.has_thumbnail && img.complete && img.naturalWidth > 0) {
+              // 已经加载完成，不影响，只是确保布局正确
+              onPreviewImageDecoded();
+              if (img.classList) img.classList.remove('switching');
+            }
           }
         }
       }, activeSwitchDelayMs);
@@ -1100,8 +1124,34 @@
         }
         if (img) {
           img.style.display = '';
+          // 如果有原图尺寸信息，提前设置宽高比占位避免布局跳动
+          if (photo.width && photo.height) {
+            img.style.aspectRatio = photo.width + ' / ' + photo.height;
+          } else {
+            img.style.aspectRatio = 'auto';
+          }
+          // 移除固定像素尺寸，让CSS自动缩放填满容器
+          img.removeAttribute('width');
+          img.removeAttribute('height');
+          // 如果有缩略图，先加载缩略图作为占位，然后加载原图
+          if (photo.has_thumbnail) {
+            img.src = 'thumb://' + photo.id;
+          }
           img.onload = onPreviewImageDecoded;
-          img.src = 'photo://' + photo.id;
+          // 并行加载原图，加快显示速度
+          var originalImg = new Image();
+          originalImg.onload = function () {
+            img.src = originalImg.src;
+            onPreviewImageDecoded();
+          };
+          originalImg.onerror = function () {
+            onPreviewImageDecoded();
+          };
+          originalImg.src = 'photo://' + photo.id;
+          // 如果缩略图已缓存，手动处理保证流程正确
+          if (photo.has_thumbnail && img.complete && img.naturalWidth > 0) {
+            onPreviewImageDecoded();
+          }
         }
       }
     }
@@ -1130,6 +1180,8 @@
     var onLoadPhotos = options.onLoadPhotos;
     var onClosePreview = options.onClosePreview;
     var onOpenPreview = options.onOpenPreview;
+    var photoGridUi = options.photoGridUi || null;
+    var dom = options.dom || {};
     if (!(api && api.has && api.has('photoMoveToTrash'))) return;
     if (typeof appConfirm !== 'function' || typeof appAlert !== 'function') return;
     if (typeof onLoadStats !== 'function' || typeof onLoadPhotos !== 'function') return;
@@ -1147,14 +1199,65 @@
       appAlert('操作失败：' + ((r && r.error) || '未知错误'));
       return;
     }
+    var deletedId = photo.id;
     state.previewPhotos.splice(idx, 1);
-    await onLoadStats();
+
+    // Incremental update: remove from current state and DOM instead of full reload
+    var needFullReload = false;
     var prevPage = state.page;
-    await onLoadPhotos();
+
+    // Remove from currentPhotos array
+    var originalLen = state.currentPhotos.length;
+    state.currentPhotos = state.currentPhotos.filter(function (p) {
+      return p.id !== deletedId;
+    });
+
     if (state.currentPhotos.length === 0 && prevPage > 1) {
+      // Current page is now empty, need to go to previous page
       state.page = prevPage - 1;
+      needFullReload = true;
+    } else if (state.currentPhotos.length !== originalLen) {
+      // Remove the deleted card from DOM
+      var photoCard = document.querySelector('.photo-card[data-photo-id="' + deletedId + '"]');
+      if (photoCard) {
+        photoCard.remove();
+      }
+      // Update cache: remove from cached result
+      if (state._photoBrowseCacheResult && state._photoBrowseCacheResult.photos) {
+        state._photoBrowseCacheResult.photos = state._photoBrowseCacheResult.photos.filter(function (p) {
+          return p.id !== deletedId;
+        });
+        state._photoBrowseCacheResult.total = (state._photoBrowseCacheResult.total || 0) - 1;
+        state._photoBrowseCacheResult.totalPages = Math.ceil(
+          state._photoBrowseCacheResult.total / (state.pageSize || 100)
+        );
+      }
+      // Update pagination in background
+      var cachedTotal = (state._photoBrowseCacheResult && state._photoBrowseCacheResult.total) || r.total || 0;
+      if (photoGridUi && typeof photoGridUi.renderPagination === 'function' && dom && dom.pagination) {
+        photoGridUi.renderPagination({
+          dom: dom,
+          result: {
+            page: state.page,
+            total: cachedTotal,
+            totalPages: Math.ceil(cachedTotal / (state.pageSize || 100)),
+          },
+          formatNumber: window.formatNumber,
+        });
+        if (dom.pageInfo) dom.pageInfo.textContent = window.formatNumber(cachedTotal) + ' 张';
+      }
+    } else {
+      // Photo not found in current page, need full reload
+      needFullReload = true;
+    }
+
+    // Always update stats in background (async)
+    onLoadStats();
+
+    if (needFullReload) {
       await onLoadPhotos();
     }
+
     if (state.previewPhotos.length === 0) {
       onClosePreview();
       return;

@@ -3035,23 +3035,6 @@
       <!-- Content -->
       <div class="content">
         <div class="toolbar" id="toolbar">
-          <div class="toolbar-path" id="toolbarPath">所有照片</div>
-          <button class="toolbar-filter-btn" id="mobileFilterBtn" onclick="openMobileFilterSheet()">
-            筛选
-          </button>
-          <select id="mediaFilterSelect" onchange="changeMediaFilter(this.value)">
-            <option value="all" selected>全部</option>
-            <option value="image">仅图片</option>
-            <option value="video">仅视频</option>
-          </select>
-          <select id="sortSelect" onchange="changeSort(this.value)">
-            <option value="date_taken|DESC">最新拍摄</option>
-            <option value="date_taken|ASC">最早拍摄</option>
-            <option value="file_name|ASC">文件名 A-Z</option>
-            <option value="file_name|DESC">文件名 Z-A</option>
-            <option value="file_size|DESC">体积从大到小</option>
-            <option value="file_size|ASC">体积从小到大</option>
-          </select>
         </div>
         <div class="photo-grid" id="photoGrid" style="position: relative">
           <div class="pull-refresh-indicator" id="pullRefreshIndicator"></div>
@@ -3072,28 +3055,6 @@
               随机
             </button>
             <span class="page-info" id="pageInfo"></span>
-          </div>
-          <div class="browse-footer-actions">
-            <div class="card-aspect-control" role="toolbar" aria-label="卡片比例">
-              <span class="card-aspect-label">比例</span>
-              <select
-                id="cardAspectSelect"
-                title="卡片比例"
-                aria-label="卡片比例"
-                onchange="changeCardAspectMode(this.value)"
-              >
-                <option value="masonry">原比例瀑布感</option>
-                <option value="uniform_1_1">1:1 固定</option>
-                <option value="uniform_4_3">4:3 固定</option>
-                <option value="uniform_3_4">3:4 固定</option>
-                <option value="uniform_16_9">16:9 固定</option>
-              </select>
-            </div>
-            <div class="zoom-control" role="toolbar" aria-label="缩略图格子大小">
-              <button onclick="changeCardSize(-1)" aria-label="缩小卡片">-</button>
-              <span class="zoom-label" id="zoomLabel">L</span>
-              <button onclick="changeCardSize(1)" aria-label="放大卡片">+</button>
-            </div>
           </div>
         </div>
       </div>
@@ -3117,6 +3078,10 @@
         <span class="nav-icon">🔍</span>
         <span class="nav-label">搜索</span>
       </div>
+      <div class="mobile-nav-item" data-tab="settings" onclick="openMobileFilterSheet()">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">设置</span>
+      </div>
     </div>
     <div class="mobile-filter-backdrop" id="mobileFilterBackdrop" onclick="closeMobileFilterSheet()"></div>
     <div class="mobile-filter-sheet" id="mobileFilterSheet">
@@ -3132,6 +3097,29 @@
           <option value="cherry_blossom">樱雾粉昼</option>
           <option value="arctic_mint">薄荷极光</option>
         </select>
+      </div>
+      <div class="sheet-row">
+        <label for="cardAspectSelect">卡片比例</label>
+        <select
+          id="cardAspectSelect"
+          title="卡片比例"
+          aria-label="卡片比例"
+          onchange="changeCardAspectMode(this.value)"
+        >
+          <option value="masonry">原比例瀑布流</option>
+          <option value="uniform_1_1">1:1 固定</option>
+          <option value="uniform_4_3">4:3 固定</option>
+          <option value="uniform_3_4">3:4 固定</option>
+          <option value="uniform_16_9">16:9 固定</option>
+        </select>
+      </div>
+      <div class="sheet-row">
+        <label>卡片大小</label>
+        <div class="sheet-buttons">
+          <button onclick="changeCardSize(-1)">缩小</button>
+          <span class="zoom-label" id="zoomLabel">L</span>
+          <button onclick="changeCardSize(1)">放大</button>
+        </div>
       </div>
       <div class="sheet-row">
         <label for="mobileMediaFilterSelect">媒体类型</label>
