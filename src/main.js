@@ -312,8 +312,8 @@ function duplicateHashBgLog(stage, detail, force) {
 var previewPlaybackActive = false;
 
 function yieldForPreviewPlaybackMs(ms) {
-  if (!previewPlaybackActive) return Promise.resolve();
   var t = typeof ms === 'number' && ms > 0 ? ms : 48;
+  // 总是让出，即使没有视频播放，保证后台任务不会霸占主线程卡住 UI
   return new Promise(function (resolve) {
     setTimeout(resolve, t);
   });
@@ -1203,7 +1203,10 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
 }
 
 async function runThumbnailBackfill(limit) {
+  const taskStart = Date.now();
+  console.log('[runThumbnailBackfill] task started, limit=', limit);
   if (thumbnailBackfill.running) {
+    console.log('[runThumbnailBackfill] already running, exiting');
     return { started: false, reason: 'running' };
   }
   thumbnailBackfill.running = true;
@@ -1214,39 +1217,79 @@ async function runThumbnailBackfill(limit) {
   thumbnailBackfill.currentFile = '';
   thumbnailBackfill.failedPaths = [];
   thumbnailBackfill.startedAt = Date.now();
+  thumbnailBackfill.total = 0;  // 流式处理，初始不计数，避免长时阻塞
   emitBackgroundTasksChangedThrottled(true);
+  console.log('[runThumbnailBackfill] state initialized');
 
   try {
-    var batchSize = 5000;
+    // 让出多次事件循环，让 UI 先更新状态再开始，避免启动就卡死
+    console.log('[runThumbnailBackfill] yielding for UI update');
+    const yieldStart = Date.now();
+    await yieldForPreviewPlaybackMs(50);
+    await yieldForPreviewPlaybackMs(50);
+    console.log('[runThumbnailBackfill] yielded after', Date.now() - yieldStart, 'ms');
+
+    var batchSize = 100;  // 更小批次，保证频繁让出
     var maxToProcess = typeof limit === 'number' && limit > 0 ? limit : null;
-    var missingTotal = db.getMissingThumbnailCount();
-    thumbnailBackfill.total =
-      maxToProcess != null ? Math.min(maxToProcess, missingTotal) : missingTotal;
 
     var processedInThisRun = 0;
     var afterId = 0;
-    var yieldEvery = 50;
+    var yieldEvery = 20;
+    console.log('[runThumbnailBackfill] starting main loop (streaming mode, no pre-count), batchSize=', batchSize);
 
     while (true) {
-      if (thumbnailBackfill.cancelled) break;
-      await yieldForPreviewPlaybackMs(72);
+      if (thumbnailBackfill.cancelled) {
+        console.log('[runThumbnailBackfill] cancelled, exiting loop');
+        break;
+      }
+
+      // 查询前先让出，让 UI 完全响应一次
+      await yieldForPreviewPlaybackMs(20);
+      await yieldForPreviewPlaybackMs(20);
+
       var fetchLimit = batchSize;
       if (maxToProcess != null) {
         var left = maxToProcess - processedInThisRun;
         if (left <= 0) break;
         fetchLimit = Math.min(batchSize, left);
       }
+      const queryStart = Date.now();
       var rows = db.getPhotosMissingThumbnailsAfter(afterId, fetchLimit);
-      if (rows.length === 0) break;
+      const queryTime = Date.now() - queryStart;
+      console.log('[runThumbnailBackfill] fetched', rows.length, 'rows after id', afterId, 'in', queryTime, 'ms');
+
+      // 累积总数，UI 会看到总数逐步增加
+      thumbnailBackfill.total += rows.length;
+
+      // 查询完成后立即让出，让 UI 更新总数
+      await yieldForPreviewPlaybackMs(10);
+      emitBackgroundTasksChangedThrottled(true);
+      await yieldForPreviewPlaybackMs(10);
+
+      if (rows.length === 0) {
+        console.log('[runThumbnailBackfill] no more rows, exiting loop');
+        break;
+      }
 
       if (thumbnailBackfill.cancelled) break;
+      const batchStart = Date.now();
       await runRowsWithThumbConcurrency(rows, yieldEvery);
+      console.log('[runThumbnailBackfill] processed batch of', rows.length, 'rows in', Date.now() - batchStart, 'ms');
       afterId = rows[rows.length - 1].id;
       processedInThisRun += rows.length;
+
+      // 每批处理完多次让出，保证 UI 持续响应
       emitBackgroundTasksChangedThrottled(false);
+      await yieldForPreviewPlaybackMs(20);
+      await yieldForPreviewPlaybackMs(20);
+
+      console.log('[runThumbnailBackfill] progress: processed', processedInThisRun, ', total estimated', thumbnailBackfill.total);
+
       if (maxToProcess != null && processedInThisRun >= maxToProcess) break;
     }
 
+    const totalTime = Date.now() - taskStart;
+    console.log('[runThumbnailBackfill] completed in', totalTime, 'ms, processed', processedInThisRun, 'total');
     return { started: true };
   } finally {
     thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(0, THUMB_BACKFILL_FAILED_PATHS_MAX);
@@ -1255,6 +1298,7 @@ async function runThumbnailBackfill(limit) {
     thumbnailBackfill.currentFile = '';
     thumbnailBackfill.startedAt = 0;
     emitBackgroundTasksChangedThrottled(true);
+    console.log('[runThumbnailBackfill] task cleanup done');
   }
 }
 
@@ -2697,16 +2741,27 @@ app
     });
 
     ipcMain.handle('start-thumbnail-backfill', async function (event, limit) {
+      const startTime = Date.now();
+      console.log('[start-thumbnail-backfill] IPC received, limit=', limit);
       if (isFolderScanRunning()) {
+        console.log('[start-thumbnail-backfill] rejected: scan running');
         return { success: false, error: '扫描进行中，请稍后再试' };
       }
-      try {
-        await runThumbnailBackfill(limit);
-        return { success: true };
-      } catch (err) {
-        thumbnailBackfill.running = false;
-        return { success: false, error: err.message };
+      if (thumbnailBackfill.running) {
+        console.log('[start-thumbnail-backfill] rejected: already running');
+        return { success: false, error: '补全已在进行中' };
       }
+      // 立即返回，任务在后台异步运行，不要阻塞 IPC 响应
+      setTimeout(() => {
+        console.log('[start-thumbnail-backfill] starting background task after IPC return');
+        runThumbnailBackfill(limit).catch(err => {
+          console.error('[start-thumbnail-backfill] task error:', err);
+          thumbnailBackfill.running = false;
+        });
+      }, 0);
+      const elapsed = Date.now() - startTime;
+      console.log('[start-thumbnail-backfill] IPC done in', elapsed, 'ms, returning success');
+      return { success: true };
     });
 
     ipcMain.handle('get-thumbnail-backfill-progress', function () {
@@ -2773,80 +2828,105 @@ app
       invalidCleanupTask.currentFile = '';
       invalidCleanupTask.startedAt = Date.now();
       emitBackgroundTasksChangedThrottled(true);
-      try {
-        try {
-          if (db && typeof db.getStartupDiagnostics === 'function') {
-            var d0 = db.getStartupDiagnostics();
-            invalidCleanupTask.total = Number(d0 && d0.photoCount) || 0;
+
+      // 立即返回，任务在后台异步运行，不要阻塞 IPC 响应导致界面卡死
+      setTimeout(() => {
+        (async function() {
+          try {
+            try {
+              if (db && typeof db.getStartupDiagnostics === 'function') {
+                var d0 = db.getStartupDiagnostics();
+                invalidCleanupTask.total = Number(d0 && d0.photoCount) || 0;
+              }
+            } catch (eDiag) {
+              void eDiag;
+            }
+            var totalChecked = 0;
+            var totalDeleted = 0;
+            var afterId = 0;
+            var chunks = 0;
+            var MAX_CHUNKS = 100000;
+            while (chunks < MAX_CHUNKS && invalidCleanupTask.running && !invalidCleanupTask.cancelled) {
+              var r = await db.cleanupMissingFilesYielding({
+                batchSize: 1200,
+                afterId: afterId,
+                existsSyncSlice: 64,
+              });
+              chunks++;
+              totalChecked += Number(r && r.checked) || 0;
+              totalDeleted += Number(r && r.deleted) || 0;
+              afterId = Number(r && r.lastId) > 0 ? Number(r.lastId) : afterId;
+              invalidCleanupTask.checked = totalChecked;
+              invalidCleanupTask.deleted = totalDeleted;
+              invalidCleanupTask.currentFile = afterId > 0 ? '已检查到记录 ID ' + afterId : '';
+              emitBackgroundTasksChangedThrottled(false);
+              if (!r || !r.hasMore || !r.checked) break;
+              // 短暂让出避免阻塞
+              await new Promise(resolve => setTimeout(resolve, 0));
+            }
+          } catch (err) {
+            console.error('Cleanup missing files error:', err);
+          } finally {
+            invalidCleanupTask.running = false;
+            invalidCleanupTask.currentFile = '';
+            invalidCleanupTask.startedAt = 0;
+            emitBackgroundTasksChangedThrottled(true);
           }
-        } catch (eDiag) {
-          void eDiag;
-        }
-        var totalChecked = 0;
-        var totalDeleted = 0;
-        var afterId = 0;
-        var chunks = 0;
-        var MAX_CHUNKS = 100000;
-        while (chunks < MAX_CHUNKS) {
-          var r = await db.cleanupMissingFilesYielding({
-            batchSize: 1200,
-            afterId: afterId,
-            existsSyncSlice: 64,
-          });
-          chunks++;
-          totalChecked += Number(r && r.checked) || 0;
-          totalDeleted += Number(r && r.deleted) || 0;
-          afterId = Number(r && r.lastId) > 0 ? Number(r.lastId) : afterId;
-          invalidCleanupTask.checked = totalChecked;
-          invalidCleanupTask.deleted = totalDeleted;
-          invalidCleanupTask.currentFile = afterId > 0 ? '已检查到记录 ID ' + afterId : '';
-          emitBackgroundTasksChangedThrottled(false);
-          if (!r || !r.hasMore || !r.checked) break;
-        }
-        var result = {
-          checked: totalChecked,
-          deleted: totalDeleted,
-          lastId: afterId,
-          chunks: chunks,
-        };
-        return { success: true, result: result };
-      } catch (err) {
-        return { success: false, error: err.message };
-      } finally {
-        invalidCleanupTask.running = false;
-        invalidCleanupTask.currentFile = '';
-        invalidCleanupTask.startedAt = 0;
-        emitBackgroundTasksChangedThrottled(true);
-      }
+        })();
+      }, 0);
+
+      return { success: true };
     });
 
-    ipcMain.handle('maintenance-rebuild-thumbnail-flags', function () {
+    ipcMain.handle('maintenance-rebuild-thumbnail-flags', async function () {
       if (isFolderScanRunning()) {
         return { success: false, error: '扫描进行中，请稍后再试' };
       }
-      try {
-        var result = db.rebuildThumbnailFlags();
-        return { success: true, result: result };
-      } catch (err) {
-        return { success: false, error: err.message };
+      if (optimizeTaskRunning) {
+        return { success: false, error: '另一项维护任务正在运行，请稍后再试' };
       }
+      optimizeTaskRunning = true;
+      emitBackgroundTasksChangedThrottled(true);
+
+      // 大库全表更新可能耗时较长，后台异步执行
+      setTimeout(() => {
+        try {
+          var result = db.rebuildThumbnailFlags();
+          console.log('Rebuild thumbnail flags done:', result);
+        } catch (err) {
+          console.error('Rebuild thumbnail flags error:', err);
+        } finally {
+          optimizeTaskRunning = false;
+          emitBackgroundTasksChangedThrottled(true);
+        }
+      }, 0);
+
+      return { success: true };
     });
 
     ipcMain.handle('maintenance-optimize-database', function () {
       if (isFolderScanRunning()) {
         return { success: false, error: '扫描进行中，请稍后再试' };
       }
+      if (optimizeTaskRunning) {
+        return { success: false, error: '优化已在进行中' };
+      }
       optimizeTaskRunning = true;
       emitBackgroundTasksChangedThrottled(true);
-      try {
-        db.optimizeDatabase();
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err.message };
-      } finally {
-        optimizeTaskRunning = false;
-        emitBackgroundTasksChangedThrottled(true);
-      }
+
+      // 大数据库 VACUUM 可能耗时很长，后台异步执行避免卡住界面
+      setTimeout(() => {
+        try {
+          db.optimizeDatabase();
+        } catch (err) {
+          console.error('Optimize database error:', err);
+        } finally {
+          optimizeTaskRunning = false;
+          emitBackgroundTasksChangedThrottled(true);
+        }
+      }, 0);
+
+      return { success: true };
     });
 
     ipcMain.handle('maintenance-start-duplicate-hash-detection', async function () {

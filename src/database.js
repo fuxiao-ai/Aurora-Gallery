@@ -175,6 +175,7 @@ class PhotoDatabase {
       CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(file_name);
       CREATE INDEX IF NOT EXISTS idx_photos_type ON photos(file_type);
       CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(is_favorite);
+      CREATE INDEX IF NOT EXISTS idx_photos_hasThumb ON photos(has_thumbnail);
     `);
   }
 
@@ -201,6 +202,7 @@ class PhotoDatabase {
     this.ensureCoreSchemaReady();
     this.ensurePhotosIsFavoriteColumn();
     this.ensureRootFolderStatsCacheSchema();
+    this.ensurePhotosThumbnailMissingIndex();
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
 
@@ -291,6 +293,23 @@ class PhotoDatabase {
       }
     } catch (e) {
       console.error('[db migration] ensure is_favorite column failed:', e && e.message ? e.message : e);
+      void e;
+    }
+  }
+
+  /**
+   * 缩略图补全查询加速：复合索引 (id, has_thumbnail) 让 `WHERE id > ? AND has_thumbnail = 0` 查询
+   * 不需要全表扫描，可以直接利用索引顺序快速定位。解决大库启动补全查询卡死一分钟以上问题。
+   */
+  ensurePhotosThumbnailMissingIndex() {
+    if (!this.hasTable('photos')) return;
+    try {
+      this.db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_photos_id_hasThumb ON photos(id, has_thumbnail);'
+      );
+      console.log('[db migration] created idx_photos_id_hasThumb index for thumbnail backfill');
+    } catch (e) {
+      console.error('[db migration] create thumbnail missing index failed:', e && e.message ? e.message : e);
       void e;
     }
   }
@@ -1115,6 +1134,11 @@ class PhotoDatabase {
     this.db.prepare(
       'UPDATE photos SET thumbnail = ?, has_thumbnail = 1 WHERE id = ?'
     ).run(thumbnailBuffer, photoId);
+  }
+
+  photoExists(photoId) {
+    var row = this.db.prepare('SELECT 1 FROM photos WHERE id = ?').get(photoId);
+    return !!row;
   }
 
   cleanupMissingFiles(options = {}) {
