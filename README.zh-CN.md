@@ -4,12 +4,12 @@
 
 **拂晓图库 / Aurora Gallery** 是一款基于 Electron 的**本地优先**相册应用：媒体与索引保存在本机，适合数万到百万级照片（含常见 RAW），并可选局域网浏览器访问与远程隧道。
 
-| | |
-|---|---|
-| **中文名** | 拂晓图库（界面与安装后应用名） |
-| **英文名** | Aurora Gallery（`package.json` 描述、安装包文件名、对外仓库名） |
-| **npm 包名** | `aurora-gallery` |
-| **Bundle ID**（`appId`） | `com.foredawn.aurora-gallery` |
+|                          |                                                                 |
+| ------------------------ | --------------------------------------------------------------- |
+| **中文名**               | 拂晓图库（界面与安装后应用名）                                  |
+| **英文名**               | Aurora Gallery（`package.json` 描述、安装包文件名、对外仓库名） |
+| **npm 包名**             | `aurora-gallery`                                                |
+| **Bundle ID**（`appId`） | `com.foredawn.aurora-gallery`                                   |
 
 **当前发布版本**：`1.0.2`（与根目录 [`package.json`](package.json) 的 `version` 字段一致；发版前请 bump 版本并同步「关于」等文案。）
 

@@ -24,7 +24,10 @@ function detectIssues(line) {
   if (/\?{2,}/.test(line) && (hasCjk(line) || isLikelyUiTextLine(line))) {
     issues.push('疑似问号占位乱码 (??...)');
   }
-  if ((/[\u3400-\u9fff]\?/.test(line) || /\?[\u3400-\u9fff]/.test(line)) && isLikelyUiTextLine(line)) {
+  if (
+    (/[\u3400-\u9fff]\?/.test(line) || /\?[\u3400-\u9fff]/.test(line)) &&
+    isLikelyUiTextLine(line)
+  ) {
     issues.push('中文与问号混杂，疑似缺字');
   }
   if (/(^|[^<])\/(div|span|option|button|label|strong)>/.test(line)) {

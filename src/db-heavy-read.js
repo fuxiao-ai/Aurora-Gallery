@@ -55,7 +55,7 @@ function runAggregateStatsForSingleRoot(db, rootId, options) {
   if (!isFinite(rootId) || rootId <= 0) return null;
   options = options || {};
   var media = String(options.mediaType || '').toLowerCase();
-  var mediaWhere = '';
+  var mediaWhere;
   if (media === 'image') {
     mediaWhere =
       "p.root_id = ? AND lower(replace(p.file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
@@ -250,14 +250,17 @@ function runGetStatsAgg(db) {
   // 统计人脸数据
   var faceStats = { totalFaces: 0, photosWithFaces: 0 };
   try {
-    var hasFacesTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='faces'").get();
+    var hasFacesTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='faces'")
+      .get();
     if (hasFacesTable) {
       // 总人脸数
-      var totalFacesRow = db.prepare("SELECT COUNT(*) AS c FROM faces").get();
+      var totalFacesRow = db.prepare('SELECT COUNT(*) AS c FROM faces').get();
       faceStats.totalFaces = totalFacesRow && totalFacesRow.c ? Number(totalFacesRow.c) : 0;
       // 包含至少一张人脸的图片数
-      var photosWithFacesRow = db.prepare("SELECT COUNT(DISTINCT photo_id) AS c FROM faces").get();
-      faceStats.photosWithFaces = photosWithFacesRow && photosWithFacesRow.c ? Number(photosWithFacesRow.c) : 0;
+      var photosWithFacesRow = db.prepare('SELECT COUNT(DISTINCT photo_id) AS c FROM faces').get();
+      faceStats.photosWithFaces =
+        photosWithFacesRow && photosWithFacesRow.c ? Number(photosWithFacesRow.c) : 0;
     }
   } catch (e) {
     // 表不存在忽略
@@ -281,23 +284,15 @@ function runGetStatsAgg(db) {
 }
 
 function sqlFileTypeIsImageExpr() {
-  return (
-    "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')"
-  );
+  return "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
 }
 
 function sqlFileTypeIsVideoExpr() {
-  return (
-    "lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')"
-  );
+  return "lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
 }
 
 function folderCoverPickOrderBySql() {
-  return (
-    'CASE WHEN ' +
-    sqlFileTypeIsImageExpr() +
-    ' THEN 0 ELSE 1 END ASC, file_name ASC, id ASC'
-  );
+  return 'CASE WHEN ' + sqlFileTypeIsImageExpr() + ' THEN 0 ELSE 1 END ASC, file_name ASC, id ASC';
 }
 
 /**
@@ -539,17 +534,15 @@ function runGetDatePhotos(db, dateStr, options) {
 
 /** 与 database 重复比对一致：非视频扩展视为图片侧 */
 function sqlDupImageTypeExpr() {
-  return (
-    "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')"
-  );
+  return "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
 }
 
 function sqlNeedsFileHashExpr() {
-  return '(file_hash IS NULL OR TRIM(file_hash) = \'\')';
+  return "(file_hash IS NULL OR TRIM(file_hash) = '')";
 }
 
 function sqlHasFileHashExpr() {
-  return 'file_hash IS NOT NULL AND TRIM(file_hash) != \'\'';
+  return "file_hash IS NOT NULL AND TRIM(file_hash) != ''";
 }
 
 /**

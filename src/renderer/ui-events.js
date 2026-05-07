@@ -179,10 +179,7 @@
       ) {
         void onPersistBrowsePrefs();
       }
-      if (
-        sid === 'settingFaceClusterThreshold' &&
-        typeof onPersistFacePrefs === 'function'
-      ) {
+      if (sid === 'settingFaceClusterThreshold' && typeof onPersistFacePrefs === 'function') {
         void onPersistFacePrefs();
       }
     });
@@ -192,33 +189,45 @@
     if (resetBtn && typeof onFaceResetScanStatus === 'function') {
       resetBtn.addEventListener('click', function (e) {
         e.preventDefault();
-        if (!confirm('确定要重置所有人脸扫描状态吗？\n\n这会让所有图片重新进行人脸识别，但是会保留已经合并好的人物分组。')) {
+        if (
+          !confirm(
+            '确定要重置所有人脸扫描状态吗？\n\n这会让所有图片重新进行人脸识别，但是会保留已经合并好的人物分组。',
+          )
+        ) {
           return;
         }
-        onFaceResetScanStatus().then(function (result) {
-          if (result && result.success) {
-            if (typeof appAlert === 'function') {
-              appAlert('已重置 ' + (result.resetCount || 0) + ' 张图片的扫描状态。现在可以重新开始人脸识别。');
-            }
-            // 更新人脸界面统计数字
-            setTimeout(function() {
-              if (typeof RendererFacesUI !== 'undefined' &&
+        onFaceResetScanStatus()
+          .then(function (result) {
+            if (result && result.success) {
+              if (typeof appAlert === 'function') {
+                appAlert(
+                  '已重置 ' +
+                    (result.resetCount || 0) +
+                    ' 张图片的扫描状态。现在可以重新开始人脸识别。',
+                );
+              }
+              // 更新人脸界面统计数字
+              setTimeout(function () {
+                if (
+                  typeof RendererFacesUI !== 'undefined' &&
                   typeof RendererFacesUI.updateFaceStats === 'function' &&
                   typeof api !== 'undefined' &&
-                  typeof formatNumber === 'function') {
-                RendererFacesUI.updateFaceStats(api, formatNumber);
+                  typeof formatNumber === 'function'
+                ) {
+                  RendererFacesUI.updateFaceStats(api, formatNumber);
+                }
+              }, 100);
+            } else {
+              if (typeof appAlert === 'function') {
+                appAlert('重置失败');
               }
-            }, 100);
-          } else {
-            if (typeof appAlert === 'function') {
-              appAlert('重置失败');
             }
-          }
-        }).catch(function (err) {
-          if (typeof appAlert === 'function') {
-            appAlert('重置失败：' + (err && err.message ? err.message : String(err)));
-          }
-        });
+          })
+          .catch(function (err) {
+            if (typeof appAlert === 'function') {
+              appAlert('重置失败：' + (err && err.message ? err.message : String(err)));
+            }
+          });
       });
     }
 
@@ -1045,7 +1054,8 @@
 
     if (dom.sidebarContent) {
       dom.sidebarContent.addEventListener('click', function (e) {
-        var dateSortBtn = e.target && e.target.closest ? e.target.closest('.date-sort-btn[data-date-sort]') : null;
+        var dateSortBtn =
+          e.target && e.target.closest ? e.target.closest('.date-sort-btn[data-date-sort]') : null;
         if (dateSortBtn && typeof onDateGroupsSortChange === 'function') {
           e.preventDefault();
           e.stopPropagation();

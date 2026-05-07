@@ -249,7 +249,8 @@
   function renderDuplicateNoGroupContent() {
     var wrap = document.getElementById('dupListWrap');
     if (!wrap) return;
-    wrap.innerHTML = '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
+    wrap.innerHTML =
+      '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
   }
 
   global.RendererDuplicatesUI = Object.assign({}, global.RendererDuplicatesUI || {}, {
@@ -316,7 +317,7 @@
     onRenderDuplicateSidebarLoading('正在加载重复组...', gate);
     try {
       if (typeof console !== 'undefined' && console && typeof console.log === 'function') {
-        console.log(
+        Logger.log(
           '[dup-ui] load groups start page=%d force=%s',
           reqPage,
           options.forceReload ? 'yes' : 'no',
@@ -333,7 +334,7 @@
       state.duplicateHasScanned = true;
       state.duplicateGroupsTotalPages = (r && r.totalPages) || 1;
       if (typeof console !== 'undefined' && console && typeof console.log === 'function') {
-        console.log(
+        Logger.log(
           '[dup-ui] load groups done groups=%d total=%d totalPages=%d',
           groups.length,
           Number(r && r.total) || 0,
@@ -391,7 +392,7 @@
       state._dupListLoadedGen = state._dupListGen;
     } catch (e) {
       if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
-        console.warn('[dup-ui] load groups failed:', e && e.message ? e.message : e);
+        Logger.warn('[dup-ui] load groups failed:', e && e.message ? e.message : e);
       }
       onRenderDuplicateSidebarLoading('加载失败，请稍后重试', gate);
     } finally {
@@ -434,7 +435,9 @@
     }
     if (!gate.isAlive()) return;
 
-    var rowsNow = Array.isArray(state.duplicatePhotosByHash[hash]) ? state.duplicatePhotosByHash[hash] : [];
+    var rowsNow = Array.isArray(state.duplicatePhotosByHash[hash])
+      ? state.duplicatePhotosByHash[hash]
+      : [];
     if (rowsNow.length < 2) {
       state.duplicateGroups = (state.duplicateGroups || []).filter(function (g) {
         return String((g && g.file_hash) || '') !== hash;
@@ -445,7 +448,8 @@
         onRenderDuplicateSidebar(gate);
         var wrapEmpty = document.getElementById('dupListWrap');
         if (wrapEmpty) {
-          wrapEmpty.innerHTML = '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
+          wrapEmpty.innerHTML =
+            '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
         }
         return;
       }
@@ -526,10 +530,16 @@
           return;
         }
         var curHash = String(state.currentDuplicateHash || '');
-        if (curHash && state.duplicatePhotosByHash && Array.isArray(state.duplicatePhotosByHash[curHash])) {
-          state.duplicatePhotosByHash[curHash] = state.duplicatePhotosByHash[curHash].filter(function (p) {
-            return Number(p && p.id) !== Number(photoId);
-          });
+        if (
+          curHash &&
+          state.duplicatePhotosByHash &&
+          Array.isArray(state.duplicatePhotosByHash[curHash])
+        ) {
+          state.duplicatePhotosByHash[curHash] = state.duplicatePhotosByHash[curHash].filter(
+            function (p) {
+              return Number(p && p.id) !== Number(photoId);
+            },
+          );
           if (state.duplicatePhotosByHash[curHash].length < 2) {
             delete state.duplicatePhotosByHash[curHash];
           }
@@ -602,7 +612,9 @@
         break;
       }
     }
-    var cachedRows = Array.isArray(state.duplicatePhotosByHash[h]) ? state.duplicatePhotosByHash[h] : [];
+    var cachedRows = Array.isArray(state.duplicatePhotosByHash[h])
+      ? state.duplicatePhotosByHash[h]
+      : [];
     var nextRows = cachedRows.filter(function (p) {
       return Number(p && p.id) !== Number(photoId);
     });
@@ -646,7 +658,9 @@
     await onSelectDuplicateGroup(state.currentDuplicateHash);
     // 不阻塞 UI：后台异步刷新统计与分组计数
     void onLoadStats().catch(function () {});
-    void onLoadDuplicateGroups(state.duplicateGroupsPage || 1, { forceReload: true }).catch(function () {});
+    void onLoadDuplicateGroups(state.duplicateGroupsPage || 1, { forceReload: true }).catch(
+      function () {},
+    );
   }
 
   async function openDuplicatePreview(options) {
@@ -661,14 +675,21 @@
     var h = String(hash || '');
     if (!h) return;
     var photos = state.duplicatePhotosByHash[h];
-    if ((!photos || !photos.length) && api && api.has && api.has('maintenanceGetPhotosByFileHash')) {
+    if (
+      (!photos || !photos.length) &&
+      api &&
+      api.has &&
+      api.has('maintenanceGetPhotosByFileHash')
+    ) {
       try {
         var rows = await api.maintenanceGetPhotosByFileHash(h);
         state.duplicatePhotosByHash[h] = Array.isArray(rows) ? rows : [];
         photos = state.duplicatePhotosByHash[h];
       } catch (eLoad) {
         if (typeof onSetDuplicateHashStatus === 'function') {
-          onSetDuplicateHashStatus('预览加载失败：' + (eLoad && eLoad.message ? eLoad.message : '未知错误'));
+          onSetDuplicateHashStatus(
+            '预览加载失败：' + (eLoad && eLoad.message ? eLoad.message : '未知错误'),
+          );
         }
         return;
       }

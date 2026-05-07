@@ -20,6 +20,7 @@ const Database = require('./database');
 const dbReadWorkerPool = require('./db-read-worker-pool');
 const { runDbReadWorkerOnly } = require('./db-read-runner');
 const { CatalogCacheDb, normalizeMediaKey } = require('./catalog-cache-db');
+const logger = require('./main/logger');
 
 /** 懒加载：避免冷启动即解析 ffmpeg-static 路径（磁盘/解压成本） */
 var cachedFfmpegStaticPath;
@@ -67,7 +68,7 @@ function escapePsSingleQuotedPath(filePath) {
 /** Windows：Electron shell.trashItem 失败时的备用路径（VB FileSystem 送回收站） */
 function moveFileToRecycleBinWindowsFallback(filePath) {
   var ps =
-    "Add-Type -AssemblyName Microsoft.VisualBasic; " +
+    'Add-Type -AssemblyName Microsoft.VisualBasic; ' +
     "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('" +
     escapePsSingleQuotedPath(filePath) +
     "', 'OnlyErrorDialog', 'SendToRecycleBin')";
@@ -118,9 +119,7 @@ async function shellTrashItemWithFallback(absPath) {
 function formatTrashFailureError(err) {
   var raw = err && err.message ? String(err.message) : String(err || '');
   if (isTrashAbortLikeError(err)) {
-    return (
-      '移入回收站失败（操作被系统中断）。请关闭可能占用该文件的程序后重试；网络路径或只读介质可能不支持回收站。'
-    );
+    return '移入回收站失败（操作被系统中断）。请关闭可能占用该文件的程序后重试；网络路径或只读介质可能不支持回收站。';
   }
   return raw || '移入回收站失败';
 }
@@ -267,7 +266,7 @@ function clearDuplicateHashGroupsCache(reason) {
   duplicateHashGroupsCache.pages = Object.create(null);
   duplicateHashGroupsCache.warmedAt = 0;
   if (isDev && reason) {
-    console.log('[dup-groups-cache] cleared reason=%s', String(reason));
+    logger.log('[dup-groups-cache] cleared reason=%s', String(reason));
   }
 }
 var duplicateHashBgLogLastAt = 0;
@@ -277,14 +276,15 @@ function duplicateHashBgLog(stage, detail, force) {
   var now = Date.now();
   if (!force && now - duplicateHashBgLogLastAt < DUP_HASH_BG_LOG_MIN_INTERVAL_MS) return;
   duplicateHashBgLogLastAt = now;
-  var elapsed = duplicateHashTask && duplicateHashTask.startedAt ? now - duplicateHashTask.startedAt : 0;
+  var elapsed =
+    duplicateHashTask && duplicateHashTask.startedAt ? now - duplicateHashTask.startedAt : 0;
   var done = Number(duplicateHashTask && duplicateHashTask.done) || 0;
   var total = Number(duplicateHashTask && duplicateHashTask.total) || 0;
   var hashed = Number(duplicateHashTask && duplicateHashTask.hashed) || 0;
   var failed = Number(duplicateHashTask && duplicateHashTask.failed) || 0;
   var skippedMissing = Number(duplicateHashTask && duplicateHashTask.skippedMissing) || 0;
   if (detail != null && String(detail).length > 0) {
-    console.log(
+    logger.log(
       '[dup-hash-bg +%dms] %s | %s | done=%d/%d hashed=%d failed=%d missing=%d',
       elapsed,
       stage,
@@ -296,7 +296,7 @@ function duplicateHashBgLog(stage, detail, force) {
       skippedMissing,
     );
   } else {
-    console.log(
+    logger.log(
       '[dup-hash-bg +%dms] %s | done=%d/%d hashed=%d failed=%d missing=%d',
       elapsed,
       stage,
@@ -353,10 +353,14 @@ function invalidateCatalogCacheForRootSafe(rootId) {
 function resolveRootIdByPath(rootPath) {
   try {
     if (!db || typeof db.getRootFolders !== 'function' || !rootPath) return null;
-    var target = String(rootPath || '').replace(/\//g, '\\').toLowerCase();
+    var target = String(rootPath || '')
+      .replace(/\//g, '\\')
+      .toLowerCase();
     var rows = db.getRootFolders({ lite: true }) || [];
     for (var i = 0; i < rows.length; i++) {
-      var p = String((rows[i] && rows[i].path) || '').replace(/\//g, '\\').toLowerCase();
+      var p = String((rows[i] && rows[i].path) || '')
+        .replace(/\//g, '\\')
+        .toLowerCase();
       if (p === target) return parseInt(rows[i].id, 10) || null;
     }
   } catch (e2) {
@@ -378,9 +382,9 @@ var startupStageT0 = Date.now();
 function startupStageLog(stage, detail) {
   var elapsed = Date.now() - startupStageT0;
   if (detail != null && String(detail).length > 0) {
-    console.log('[startup-stage +%dms] %s | %s', elapsed, stage, String(detail));
+    logger.log('[startup-stage +%dms] %s | %s', elapsed, stage, String(detail));
   } else {
-    console.log('[startup-stage +%dms] %s', elapsed, stage);
+    logger.log('[startup-stage +%dms] %s', elapsed, stage);
   }
 }
 var RAW_EXTENSIONS = new Set(['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw']);
@@ -438,7 +442,7 @@ function configureWritableAppPaths() {
     app.setPath('sessionData', sessionDataRoot);
   } catch (e) {
     // 回退到 Electron 默认路径，避免因路径设置失败阻断启动。
-    console.error('[path-init] failed, fallback to default:', e && e.message ? e.message : e);
+    logger.error('[path-init] failed, fallback to default:', e && e.message ? e.message : e);
   }
 }
 
@@ -583,12 +587,16 @@ function ensureSettingsShape() {
   settings.autoHashOnStartup = !!settings.autoHashOnStartup;
   settings.webLanEnabled = settings.webLanEnabled === true;
   settings.cloudflareTunnelAutoStart = !!settings.cloudflareTunnelAutoStart;
-  var subFamily = String(settings.subtitleFontFamily || '').trim().toLowerCase();
+  var subFamily = String(settings.subtitleFontFamily || '')
+    .trim()
+    .toLowerCase();
   if (['system', 'serif', 'mono'].indexOf(subFamily) < 0) subFamily = 'system';
   settings.subtitleFontFamily = subFamily;
   var subSizePx = parseInt(settings.subtitleFontSizePx, 10);
   if (isNaN(subSizePx)) {
-    var legacy = String(settings.subtitleFontSize || '').trim().toLowerCase();
+    var legacy = String(settings.subtitleFontSize || '')
+      .trim()
+      .toLowerCase();
     if (legacy === 'md') subSizePx = 18;
     else if (legacy === 'xl') subSizePx = 26;
     else subSizePx = 22;
@@ -596,13 +604,19 @@ function ensureSettingsShape() {
   if (subSizePx < 12) subSizePx = 12;
   if (subSizePx > 72) subSizePx = 72;
   settings.subtitleFontSizePx = subSizePx;
-  var subWeight = String(settings.subtitleFontWeight || '').trim().toLowerCase();
+  var subWeight = String(settings.subtitleFontWeight || '')
+    .trim()
+    .toLowerCase();
   if (['normal', 'medium', 'bold'].indexOf(subWeight) < 0) subWeight = 'medium';
   settings.subtitleFontWeight = subWeight;
-  var subBg = String(settings.subtitleBgOpacity || '').trim().toLowerCase();
+  var subBg = String(settings.subtitleBgOpacity || '')
+    .trim()
+    .toLowerCase();
   if (['none', 'soft', 'medium', 'strong'].indexOf(subBg) < 0) subBg = 'none';
   settings.subtitleBgOpacity = subBg;
-  var subColor = String(settings.subtitleColor || '').trim().toLowerCase();
+  var subColor = String(settings.subtitleColor || '')
+    .trim()
+    .toLowerCase();
   if (['white', 'yellow', 'cyan', 'green', 'orange', 'pink'].indexOf(subColor) < 0)
     subColor = 'white';
   settings.subtitleColor = subColor;
@@ -641,21 +655,19 @@ function ensureSettingsShape() {
   }
   settings.browseCardSize = snapped;
   var bcr = String(settings.browseCardRatio || '').trim();
-  if (
-    bcr !== '1 / 1' &&
-    bcr !== '3 / 4' &&
-    bcr !== '4 / 3' &&
-    bcr !== '9 / 16' &&
-    bcr !== '16 / 9'
-  )
+  if (bcr !== '1 / 1' && bcr !== '3 / 4' && bcr !== '4 / 3' && bcr !== '9 / 16' && bcr !== '16 / 9')
     bcr = '1 / 1';
   settings.browseCardRatio = bcr;
   settings.browseThumbCrop = !!settings.browseThumbCrop;
-  var bcl = String(settings.browseCardLayout || '').trim().toLowerCase();
+  var bcl = String(settings.browseCardLayout || '')
+    .trim()
+    .toLowerCase();
   if (bcl !== 'uniform' && bcl !== 'masonry') bcl = 'masonry';
   settings.browseCardLayout = bcl;
   settings.browseFolderIncludeSubfolders = settings.browseFolderIncludeSubfolders !== false;
-  var launchDefaultPage = String(settings.launchDefaultPage || '').trim().toLowerCase();
+  var launchDefaultPage = String(settings.launchDefaultPage || '')
+    .trim()
+    .toLowerCase();
   if (
     launchDefaultPage !== 'welcome' &&
     launchDefaultPage !== 'all_photos' &&
@@ -672,7 +684,9 @@ function ensureSettingsShape() {
   settings.scanMaxDepth = smd;
   if (typeof settings.scanSkipDirNames !== 'string') settings.scanSkipDirNames = '';
   if (typeof settings.scanIncludeRaw !== 'boolean') settings.scanIncludeRaw = true;
-  var scanDiskProfile = String(settings.scanDiskProfile || '').trim().toLowerCase();
+  var scanDiskProfile = String(settings.scanDiskProfile || '')
+    .trim()
+    .toLowerCase();
   if (scanDiskProfile !== 'hdd' && scanDiskProfile !== 'ssd' && scanDiskProfile !== 'auto') {
     scanDiskProfile = 'auto';
   }
@@ -867,10 +881,10 @@ function runFolderScanInWorker(normalizedRootPath) {
       lastHeartbeatAt = Date.now();
       if (!msg || !msg.type) return;
       if (msg.type === 'progress' && msg.p) {
-          workerScanProgress = Object.assign(
-            { current: 0, total: 0, status: 'scanning', currentFile: '' },
-            msg.p,
-          );
+        workerScanProgress = Object.assign(
+          { current: 0, total: 0, status: 'scanning', currentFile: '' },
+          msg.p,
+        );
       }
       if (msg.type === 'done') {
         if (msg.finalProgress) {
@@ -915,7 +929,7 @@ function loadSettings() {
     // 旧版 JSON 缺字段时用默认值补齐，避免读到半份对象导致行为像「没保存」
     settings = Object.assign(createDefaultSettings(), parsed);
   } catch (e) {
-    console.error('[settings] load failed, using defaults:', e && e.message ? e.message : e);
+    logger.error('[settings] load failed, using defaults:', e && e.message ? e.message : e);
     settings = createDefaultSettings();
     saveSettings();
   }
@@ -935,7 +949,7 @@ function reloadSettingsFromDiskSilently() {
     settings = Object.assign(createDefaultSettings(), parsed);
     ensureSettingsShape();
   } catch (e) {
-    console.error('[settings] reload from disk failed:', e && e.message ? e.message : e);
+    logger.error('[settings] reload from disk failed:', e && e.message ? e.message : e);
   }
 }
 
@@ -955,7 +969,7 @@ function saveSettings() {
       fs.renameSync(tmpPath, settingsFilePath);
     }
   } catch (e) {
-    console.error('[settings] save failed:', e && e.message ? e.message : e);
+    logger.error('[settings] save failed:', e && e.message ? e.message : e);
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch (e2) {}
@@ -1204,9 +1218,9 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
 
 async function runThumbnailBackfill(limit) {
   const taskStart = Date.now();
-  console.log('[runThumbnailBackfill] task started, limit=', limit);
+  logger.log('[runThumbnailBackfill] task started, limit=', limit);
   if (thumbnailBackfill.running) {
-    console.log('[runThumbnailBackfill] already running, exiting');
+    logger.log('[runThumbnailBackfill] already running, exiting');
     return { started: false, reason: 'running' };
   }
   thumbnailBackfill.running = true;
@@ -1217,29 +1231,32 @@ async function runThumbnailBackfill(limit) {
   thumbnailBackfill.currentFile = '';
   thumbnailBackfill.failedPaths = [];
   thumbnailBackfill.startedAt = Date.now();
-  thumbnailBackfill.total = 0;  // 流式处理，初始不计数，避免长时阻塞
+  thumbnailBackfill.total = 0; // 流式处理，初始不计数，避免长时阻塞
   emitBackgroundTasksChangedThrottled(true);
-  console.log('[runThumbnailBackfill] state initialized');
+  logger.log('[runThumbnailBackfill] state initialized');
 
   try {
     // 让出多次事件循环，让 UI 先更新状态再开始，避免启动就卡死
-    console.log('[runThumbnailBackfill] yielding for UI update');
+    logger.log('[runThumbnailBackfill] yielding for UI update');
     const yieldStart = Date.now();
     await yieldForPreviewPlaybackMs(50);
     await yieldForPreviewPlaybackMs(50);
-    console.log('[runThumbnailBackfill] yielded after', Date.now() - yieldStart, 'ms');
+    logger.log('[runThumbnailBackfill] yielded after', Date.now() - yieldStart, 'ms');
 
-    var batchSize = 100;  // 更小批次，保证频繁让出
+    var batchSize = 100; // 更小批次，保证频繁让出
     var maxToProcess = typeof limit === 'number' && limit > 0 ? limit : null;
 
     var processedInThisRun = 0;
     var afterId = 0;
     var yieldEvery = 20;
-    console.log('[runThumbnailBackfill] starting main loop (streaming mode, no pre-count), batchSize=', batchSize);
+    logger.log(
+      '[runThumbnailBackfill] starting main loop (streaming mode, no pre-count), batchSize=',
+      batchSize,
+    );
 
     while (true) {
       if (thumbnailBackfill.cancelled) {
-        console.log('[runThumbnailBackfill] cancelled, exiting loop');
+        logger.log('[runThumbnailBackfill] cancelled, exiting loop');
         break;
       }
 
@@ -1256,7 +1273,15 @@ async function runThumbnailBackfill(limit) {
       const queryStart = Date.now();
       var rows = db.getPhotosMissingThumbnailsAfter(afterId, fetchLimit);
       const queryTime = Date.now() - queryStart;
-      console.log('[runThumbnailBackfill] fetched', rows.length, 'rows after id', afterId, 'in', queryTime, 'ms');
+      logger.log(
+        '[runThumbnailBackfill] fetched',
+        rows.length,
+        'rows after id',
+        afterId,
+        'in',
+        queryTime,
+        'ms',
+      );
 
       // 累积总数，UI 会看到总数逐步增加
       thumbnailBackfill.total += rows.length;
@@ -1267,14 +1292,20 @@ async function runThumbnailBackfill(limit) {
       await yieldForPreviewPlaybackMs(10);
 
       if (rows.length === 0) {
-        console.log('[runThumbnailBackfill] no more rows, exiting loop');
+        logger.log('[runThumbnailBackfill] no more rows, exiting loop');
         break;
       }
 
       if (thumbnailBackfill.cancelled) break;
       const batchStart = Date.now();
       await runRowsWithThumbConcurrency(rows, yieldEvery);
-      console.log('[runThumbnailBackfill] processed batch of', rows.length, 'rows in', Date.now() - batchStart, 'ms');
+      logger.log(
+        '[runThumbnailBackfill] processed batch of',
+        rows.length,
+        'rows in',
+        Date.now() - batchStart,
+        'ms',
+      );
       afterId = rows[rows.length - 1].id;
       processedInThisRun += rows.length;
 
@@ -1283,22 +1314,36 @@ async function runThumbnailBackfill(limit) {
       await yieldForPreviewPlaybackMs(20);
       await yieldForPreviewPlaybackMs(20);
 
-      console.log('[runThumbnailBackfill] progress: processed', processedInThisRun, ', total estimated', thumbnailBackfill.total);
+      logger.log(
+        '[runThumbnailBackfill] progress: processed',
+        processedInThisRun,
+        ', total estimated',
+        thumbnailBackfill.total,
+      );
 
       if (maxToProcess != null && processedInThisRun >= maxToProcess) break;
     }
 
     const totalTime = Date.now() - taskStart;
-    console.log('[runThumbnailBackfill] completed in', totalTime, 'ms, processed', processedInThisRun, 'total');
+    logger.log(
+      '[runThumbnailBackfill] completed in',
+      totalTime,
+      'ms, processed',
+      processedInThisRun,
+      'total',
+    );
     return { started: true };
   } finally {
-    thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(0, THUMB_BACKFILL_FAILED_PATHS_MAX);
+    thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(
+      0,
+      THUMB_BACKFILL_FAILED_PATHS_MAX,
+    );
     thumbnailBackfill.failedPaths = [];
     thumbnailBackfill.running = false;
     thumbnailBackfill.currentFile = '';
     thumbnailBackfill.startedAt = 0;
     emitBackgroundTasksChangedThrottled(true);
-    console.log('[runThumbnailBackfill] task cleanup done');
+    logger.log('[runThumbnailBackfill] task cleanup done');
   }
 }
 
@@ -1542,7 +1587,11 @@ async function runDuplicateHashDetection() {
         await processDupHashRowsChunk(slice, yieldEvery);
       }
       afterId = rows[rows.length - 1].id;
-      duplicateHashBgLog('batch.done', 'afterId=' + String(afterId) + ' rows=' + String(rows.length), false);
+      duplicateHashBgLog(
+        'batch.done',
+        'afterId=' + String(afterId) + ' rows=' + String(rows.length),
+        false,
+      );
       emitBackgroundTasksChangedThrottled(false);
     }
     await totalPromise;
@@ -1554,12 +1603,20 @@ async function runDuplicateHashDetection() {
       await new Promise(function (resolve) {
         setImmediate(resolve);
       });
-      duplicateHashTask.duplicateGroups = await runDbReadWorkerOnly(readPathDup, 'getDuplicateGroupCountByHash', {
-        minCount: 2,
-      });
-      duplicateHashTask.duplicatePhotos = await runDbReadWorkerOnly(readPathDup, 'getDuplicatePhotoCountByHash', {
-        minCount: 2,
-      });
+      duplicateHashTask.duplicateGroups = await runDbReadWorkerOnly(
+        readPathDup,
+        'getDuplicateGroupCountByHash',
+        {
+          minCount: 2,
+        },
+      );
+      duplicateHashTask.duplicatePhotos = await runDbReadWorkerOnly(
+        readPathDup,
+        'getDuplicatePhotoCountByHash',
+        {
+          minCount: 2,
+        },
+      );
       try {
         var warm = await runDbReadWorkerOnly(readPathDup, 'getDuplicateHashGroupsBundle', {
           page: 1,
@@ -1571,7 +1628,7 @@ async function runDuplicateHashDetection() {
         duplicateHashGroupsCache.pages[1] = Array.isArray(warm && warm.groups) ? warm.groups : [];
         duplicateHashGroupsCache.warmedAt = Date.now();
         if (isDev) {
-          console.log(
+          logger.log(
             '[dup-groups-cache] warmed page=1 groups=%d total=%d',
             duplicateHashGroupsCache.pages[1].length,
             duplicateHashGroupsCache.total,
@@ -1622,7 +1679,7 @@ function scheduleAutoThumbnailBackfill() {
       await tryRunThumbnailBackfillWhenIdle();
     } catch (e) {
       if (isDev) {
-        console.error('[AUTO-THUMB-BACKFILL] failed:', e && e.message ? e.message : String(e));
+        logger.error('[AUTO-THUMB-BACKFILL] failed:', e && e.message ? e.message : String(e));
       }
     }
   }, 300);
@@ -1656,7 +1713,7 @@ function scheduleAutoDuplicateHashDetection() {
     } catch (e) {
       startupStageLog('auto-dup-hash.error', e && e.message ? e.message : String(e));
       if (isDev) {
-        console.error('[AUTO-DUP-HASH] failed:', e && e.message ? e.message : String(e));
+        logger.error('[AUTO-DUP-HASH] failed:', e && e.message ? e.message : String(e));
       }
     }
   }, 700);
@@ -1674,7 +1731,10 @@ function scheduleStartupInvalidCleanup() {
   var BATCH_SIZE = 400;
 
   function finish() {
-    startupStageLog('invalid-cleanup.finish', 'afterId=' + String(startupInvalidCleanupTask.afterId || 0));
+    startupStageLog(
+      'invalid-cleanup.finish',
+      'afterId=' + String(startupInvalidCleanupTask.afterId || 0),
+    );
     startupInvalidCleanupTask.running = false;
     if (startupInvalidCleanupTask.timer) {
       clearTimeout(startupInvalidCleanupTask.timer);
@@ -1699,18 +1759,17 @@ function scheduleStartupInvalidCleanup() {
       finish();
       return;
     }
-    db
-      .cleanupMissingFilesYielding({
-        batchSize: BATCH_SIZE,
-        afterId: startupInvalidCleanupTask.afterId,
-        existsSyncSlice: 64,
-      })
+    db.cleanupMissingFilesYielding({
+      batchSize: BATCH_SIZE,
+      afterId: startupInvalidCleanupTask.afterId,
+      existsSyncSlice: 64,
+    })
       .then(function (r) {
         if (!startupInvalidCleanupTask.running || !db) return finish();
         startupInvalidCleanupTask.afterId =
           Number(r && r.lastId) > 0 ? Number(r.lastId) : startupInvalidCleanupTask.afterId;
         if (isDev && r && r.checked) {
-          console.log(
+          logger.log(
             '[startup] invalid-cleanup chunk checked=%d deleted=%d lastId=%d',
             Number(r.checked) || 0,
             Number(r.deleted) || 0,
@@ -1723,7 +1782,7 @@ function scheduleStartupInvalidCleanup() {
         startupInvalidCleanupTask.timer = setTimeout(step, STEP_DELAY_MS);
       })
       .catch(function (e) {
-        console.error('[startup] invalid-cleanup failed:', e && e.message ? e.message : String(e));
+        logger.error('[startup] invalid-cleanup failed:', e && e.message ? e.message : String(e));
         finish();
       });
   }
@@ -1744,7 +1803,10 @@ function schedulePostWindowDeferredTasks() {
         startupStageLog('post-window-deferred.cache-pragma.done');
       }
     } catch (eP) {
-      console.error('[startup] deferred-cache-pragma failed:', eP && eP.message ? eP.message : String(eP));
+      logger.error(
+        '[startup] deferred-cache-pragma failed:',
+        eP && eP.message ? eP.message : String(eP),
+      );
     }
   }, 250);
   setTimeout(function () {
@@ -1754,7 +1816,10 @@ function schedulePostWindowDeferredTasks() {
         startupStageLog('post-window-deferred.mmap-pragma.done');
       }
     } catch (eM) {
-      console.error('[startup] deferred-mmap-pragma failed:', eM && eM.message ? eM.message : String(eM));
+      logger.error(
+        '[startup] deferred-mmap-pragma failed:',
+        eM && eM.message ? eM.message : String(eM),
+      );
     }
   }, 2200);
   setTimeout(function () {
@@ -1773,17 +1838,29 @@ function scheduleDeferredPhotoIndexesOnce(reason) {
   if (deferredPhotoIndexesScheduled) return;
   deferredPhotoIndexesScheduled = true;
   var firstDelay = reason === 'browse-ui-ready' ? 8000 : 3000;
-  startupStageLog('deferred-index.schedule', 'reason=' + String(reason || '') + ' firstDelay=' + firstDelay);
+  startupStageLog(
+    'deferred-index.schedule',
+    'reason=' + String(reason || '') + ' firstDelay=' + firstDelay,
+  );
   function runNextPhase() {
     if (!db) return;
     try {
-      if (deferredPhotoIndexesPhase === 0 && typeof db.ensurePhotosRootFolderCompositeIndex === 'function') {
+      if (
+        deferredPhotoIndexesPhase === 0 &&
+        typeof db.ensurePhotosRootFolderCompositeIndex === 'function'
+      ) {
         db.ensurePhotosRootFolderCompositeIndex();
         startupStageLog('deferred-index.phase0.done', 'ensurePhotosRootFolderCompositeIndex');
-      } else if (deferredPhotoIndexesPhase === 1 && typeof db.ensurePhotosAggPartialIndexes === 'function') {
+      } else if (
+        deferredPhotoIndexesPhase === 1 &&
+        typeof db.ensurePhotosAggPartialIndexes === 'function'
+      ) {
         db.ensurePhotosAggPartialIndexes();
         startupStageLog('deferred-index.phase1.done', 'ensurePhotosAggPartialIndexes');
-      } else if (deferredPhotoIndexesPhase === 2 && typeof db.ensurePhotosDupHashPendingIndex === 'function') {
+      } else if (
+        deferredPhotoIndexesPhase === 2 &&
+        typeof db.ensurePhotosDupHashPendingIndex === 'function'
+      ) {
         db.ensurePhotosDupHashPendingIndex();
         startupStageLog('deferred-index.phase2.done', 'ensurePhotosDupHashPendingIndex');
       } else {
@@ -1794,7 +1871,7 @@ function scheduleDeferredPhotoIndexesOnce(reason) {
         deferredPhotoIndexesTimer = setTimeout(runNextPhase, 1200);
       }
     } catch (eIdx) {
-      console.error(
+      logger.error(
         '[startup] deferred-photo-indexes (phase-%d) failed: %s',
         deferredPhotoIndexesPhase,
         eIdx && eIdx.message ? eIdx.message : String(eIdx),
@@ -1821,13 +1898,13 @@ function runAutoStartupTasksOnce() {
           for (var i = 0; i < roots.length; i++) {
             enqueueScanTask({ rootPath: roots[i].path, source: 'auto' }).then(function (result) {
               if (!result.success && !result.cancelled) {
-                console.error('Auto scan failed:', result.error || 'unknown error');
+                logger.error('Auto scan failed:', result.error || 'unknown error');
               }
             });
           }
         })
         .catch(function (eAuto) {
-          console.error(
+          logger.error(
             '[auto-scan-on-startup] getRootFolders worker failed:',
             eAuto && eAuto.message ? eAuto.message : eAuto,
           );
@@ -2227,7 +2304,7 @@ function createWindow(appIcon) {
 
   mainWindow.webContents.on('render-process-gone', function (event, details) {
     var d = details || {};
-    console.error(
+    logger.error(
       '[renderer] process gone reason=%s exitCode=%s',
       d.reason != null ? d.reason : '',
       d.exitCode != null ? d.exitCode : '',
@@ -2267,9 +2344,7 @@ function createWindow(appIcon) {
     var en = getNormalizedUiLocale() === 'en';
     var res = dialog.showMessageBoxSync(mainWindow, {
       type: 'question',
-      buttons: en
-        ? ['Run in background', 'Quit', 'Cancel']
-        : ['后台运行', '退出程序', '取消'],
+      buttons: en ? ['Run in background', 'Quit', 'Cancel'] : ['后台运行', '退出程序', '取消'],
       defaultId: 0,
       cancelId: 2,
       title: en ? 'Close Aurora Gallery' : '关闭拂晓图库',
@@ -2315,7 +2390,7 @@ app
         dbExists = true;
         dbSize = Number(st && st.size) || 0;
       } catch (e0) {}
-      console.log('[startup] db path=%s exists=%s size=%d', dbPath, dbExists ? 'yes' : 'no', dbSize);
+      logger.log('[startup] db path=%s exists=%s size=%d', dbPath, dbExists ? 'yes' : 'no', dbSize);
     }
     db = new Database(dbPath);
     try {
@@ -2323,12 +2398,15 @@ app
       catalogCache.gcExpired(Date.now());
     } catch (eCat) {
       catalogCache = null;
-      console.warn('[startup] catalog cache init failed:', eCat && eCat.message ? eCat.message : String(eCat));
+      console.warn(
+        '[startup] catalog cache init failed:',
+        eCat && eCat.message ? eCat.message : String(eCat),
+      );
     }
     if (isDev && db && typeof db.getStartupDiagnostics === 'function') {
       try {
         var d = db.getStartupDiagnostics();
-        console.log(
+        logger.log(
           '[startup] db schema root_folders=%s photos=%s roots=%d photos=%d',
           d && d.hasRootFolders ? 'ok' : 'missing',
           d && d.hasPhotos ? 'ok' : 'missing',
@@ -2336,7 +2414,10 @@ app
           Number(d && d.photoCount) || 0,
         );
       } catch (e1) {
-        console.warn('[startup] db diagnostics failed:', e1 && e1.message ? e1.message : String(e1));
+        console.warn(
+          '[startup] db diagnostics failed:',
+          e1 && e1.message ? e1.message : String(e1),
+        );
       }
     }
     loadSettings();
@@ -2417,7 +2498,10 @@ app
           var ext = path.extname(photo.file_path).toLowerCase();
           if (RAW_EXTENSIONS.has(ext)) {
             // RAW 文件浏览器通常无法直接渲染，动态转为 JPEG 预览
-            var rawJpeg = await loadSharp()(photo.file_path).rotate().jpeg({ quality: 88 }).toBuffer();
+            var rawJpeg = await loadSharp()(photo.file_path)
+              .rotate()
+              .jpeg({ quality: 88 })
+              .toBuffer();
             return new Response(rawJpeg, {
               headers: { 'Content-Type': 'image/jpeg' },
             });
@@ -2581,16 +2665,16 @@ app
           .then(function (port) {
             var localIP = webServer.getLocalIP();
             var webUrl = 'http://' + localIP + ':' + port;
-            console.log('Web server running at: ' + webUrl);
+            logger.log('Web server running at: ' + webUrl);
             startupStageLog('embedded-web-server.ready', webUrl);
             webServerReadyResolve(webUrl);
           })
           .catch(function (err) {
-            console.error('Failed to start web server:', err.message);
+            logger.error('Failed to start web server:', err.message);
             webServerReadyResolve('');
           });
       } catch (e) {
-        console.error('Failed to create web server:', e && e.message ? e.message : String(e));
+        logger.error('Failed to create web server:', e && e.message ? e.message : String(e));
         webServerReadyResolve('');
       }
     }
@@ -2742,25 +2826,25 @@ app
 
     ipcMain.handle('start-thumbnail-backfill', async function (event, limit) {
       const startTime = Date.now();
-      console.log('[start-thumbnail-backfill] IPC received, limit=', limit);
+      logger.log('[start-thumbnail-backfill] IPC received, limit=', limit);
       if (isFolderScanRunning()) {
-        console.log('[start-thumbnail-backfill] rejected: scan running');
+        logger.log('[start-thumbnail-backfill] rejected: scan running');
         return { success: false, error: '扫描进行中，请稍后再试' };
       }
       if (thumbnailBackfill.running) {
-        console.log('[start-thumbnail-backfill] rejected: already running');
+        logger.log('[start-thumbnail-backfill] rejected: already running');
         return { success: false, error: '补全已在进行中' };
       }
       // 立即返回，任务在后台异步运行，不要阻塞 IPC 响应
       setTimeout(() => {
-        console.log('[start-thumbnail-backfill] starting background task after IPC return');
-        runThumbnailBackfill(limit).catch(err => {
-          console.error('[start-thumbnail-backfill] task error:', err);
+        logger.log('[start-thumbnail-backfill] starting background task after IPC return');
+        runThumbnailBackfill(limit).catch((err) => {
+          logger.error('[start-thumbnail-backfill] task error:', err);
           thumbnailBackfill.running = false;
         });
       }, 0);
       const elapsed = Date.now() - startTime;
-      console.log('[start-thumbnail-backfill] IPC done in', elapsed, 'ms, returning success');
+      logger.log('[start-thumbnail-backfill] IPC done in', elapsed, 'ms, returning success');
       return { success: true };
     });
 
@@ -2831,7 +2915,7 @@ app
 
       // 立即返回，任务在后台异步运行，不要阻塞 IPC 响应导致界面卡死
       setTimeout(() => {
-        (async function() {
+        (async function () {
           try {
             try {
               if (db && typeof db.getStartupDiagnostics === 'function') {
@@ -2846,7 +2930,11 @@ app
             var afterId = 0;
             var chunks = 0;
             var MAX_CHUNKS = 100000;
-            while (chunks < MAX_CHUNKS && invalidCleanupTask.running && !invalidCleanupTask.cancelled) {
+            while (
+              chunks < MAX_CHUNKS &&
+              invalidCleanupTask.running &&
+              !invalidCleanupTask.cancelled
+            ) {
               var r = await db.cleanupMissingFilesYielding({
                 batchSize: 1200,
                 afterId: afterId,
@@ -2862,10 +2950,10 @@ app
               emitBackgroundTasksChangedThrottled(false);
               if (!r || !r.hasMore || !r.checked) break;
               // 短暂让出避免阻塞
-              await new Promise(resolve => setTimeout(resolve, 0));
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
           } catch (err) {
-            console.error('Cleanup missing files error:', err);
+            logger.error('Cleanup missing files error:', err);
           } finally {
             invalidCleanupTask.running = false;
             invalidCleanupTask.currentFile = '';
@@ -2892,9 +2980,9 @@ app
       setTimeout(() => {
         try {
           var result = db.rebuildThumbnailFlags();
-          console.log('Rebuild thumbnail flags done:', result);
+          logger.log('Rebuild thumbnail flags done:', result);
         } catch (err) {
-          console.error('Rebuild thumbnail flags error:', err);
+          logger.error('Rebuild thumbnail flags error:', err);
         } finally {
           optimizeTaskRunning = false;
           emitBackgroundTasksChangedThrottled(true);
@@ -2919,7 +3007,7 @@ app
         try {
           db.optimizeDatabase();
         } catch (err) {
-          console.error('Optimize database error:', err);
+          logger.error('Optimize database error:', err);
         } finally {
           optimizeTaskRunning = false;
           emitBackgroundTasksChangedThrottled(true);
@@ -2938,7 +3026,7 @@ app
       }
       /** 勿 await 整段 runDuplicateHashDetection：大库可能跑数小时，invoke 会一直挂起，设置页「开始获取」像无响应 */
       void runDuplicateHashDetection().catch(function (err) {
-        console.error('[duplicate-hash]', err);
+        logger.error('[duplicate-hash]', err);
         try {
           duplicateHashTask.running = false;
           duplicateHashTask.currentFile = '';
@@ -2995,7 +3083,7 @@ app
           totalPages: Number(duplicateHashGroupsCache.totalPages) || 0,
         };
         if (isDev) {
-          console.log(
+          logger.log(
             '[dup-groups] cache-hit page=%d pageSize=%d total=%d groups=%d elapsed=%dms',
             page,
             pageSize,
@@ -3007,7 +3095,7 @@ app
         return cachedResult;
       }
       if (isDev) {
-        console.log(
+        logger.log(
           '[dup-groups] request page=%d pageSize=%d minCount=%d force=%s',
           page,
           pageSize,
@@ -3021,7 +3109,7 @@ app
         minCount: minCount,
       });
       if (isDev) {
-        console.log(
+        logger.log(
           '[dup-groups] response groups=%d total=%d totalPages=%d elapsed=%dms',
           Array.isArray(result && result.groups) ? result.groups.length : 0,
           Number(result && result.total) || 0,
@@ -3029,7 +3117,10 @@ app
           Date.now() - startedAt,
         );
       }
-      if (minCount === duplicateHashGroupsCache.minCount && pageSize === duplicateHashGroupsCache.pageSize) {
+      if (
+        minCount === duplicateHashGroupsCache.minCount &&
+        pageSize === duplicateHashGroupsCache.pageSize
+      ) {
         duplicateHashGroupsCache.total = Number(result && result.total) || 0;
         duplicateHashGroupsCache.totalPages = Number(result && result.totalPages) || 0;
         duplicateHashGroupsCache.pages[String(page)] = Array.isArray(result && result.groups)
@@ -3239,22 +3330,11 @@ app
         if (!photo || !photo.file_path) {
           return { success: false, error: '照片记录不存在' };
         }
-        var rootIdOfPhoto = photo && photo.root_id != null ? parseInt(photo.root_id, 10) || null : null;
+        var rootIdOfPhoto =
+          photo && photo.root_id != null ? parseInt(photo.root_id, 10) || null : null;
         var fp = photo.file_path;
         if (fs.existsSync(fp)) {
           await shellTrashItemWithFallback(fp);
-        }
-        try {
-          var fsrv = getFaceService();
-          if (fsrv) {
-            var vids = db.getVectorIdsForPhoto(id);
-            var vi;
-            for (vi = 0; vi < vids.length; vi++) {
-              fsrv.index.removeByLabel(vids[vi]);
-            }
-          }
-        } catch (eFace) {
-          void eFace;
         }
         db.deletePhotoById(id);
         clearDuplicateHashGroupsCache('photo-move-to-trash');
@@ -3278,18 +3358,6 @@ app
         var photoMeta = db.getFullPhoto(id);
         var rootIdOfPhoto =
           photoMeta && photoMeta.root_id != null ? parseInt(photoMeta.root_id, 10) || null : null;
-        try {
-          var fsrv = getFaceService();
-          if (fsrv) {
-            var vids = db.getVectorIdsForPhoto(id);
-            var vi;
-            for (vi = 0; vi < vids.length; vi++) {
-              fsrv.index.removeByLabel(vids[vi]);
-            }
-          }
-        } catch (eFace) {
-          void eFace;
-        }
         db.deletePhotoById(id);
         clearDuplicateHashGroupsCache('photo-delete-record');
         if (rootIdOfPhoto) invalidateCatalogCacheForRootSafe(rootIdOfPhoto);
@@ -3346,11 +3414,15 @@ app
           throw new Error('get-root-folders: database path unavailable');
         }
         var mediaKey = normalizeMediaKey(options || {});
-        if (options.lite !== true && catalogCache && typeof catalogCache.getRootFolders === 'function') {
+        if (
+          options.lite !== true &&
+          catalogCache &&
+          typeof catalogCache.getRootFolders === 'function'
+        ) {
           var cachedRows = catalogCache.getRootFolders(options);
           if (Array.isArray(cachedRows) && cachedRows.length > 0) {
             if (isDev) {
-              console.log(
+              logger.log(
                 '[IPC:get-root-folders] cache hit count=%d elapsed=%dms media=%s',
                 cachedRows.length,
                 Date.now() - startedAt,
@@ -3362,7 +3434,7 @@ app
         }
         var rows = await runDbReadWorkerOnly(readPath, 'getRootFolders', options);
         if (isDev) {
-          console.log(
+          logger.log(
             '[IPC:get-root-folders] ok count=%d elapsed=%dms lite=%s',
             Array.isArray(rows) ? rows.length : 0,
             Date.now() - startedAt,
@@ -3396,7 +3468,7 @@ app
         return rows;
       } catch (err) {
         if (isDev) {
-          console.error(
+          logger.error(
             '[IPC:get-root-folders] fail elapsed=%dms error=%s',
             Date.now() - startedAt,
             err && err.message ? err.message : String(err),
@@ -3439,9 +3511,12 @@ app
       return await runDbReadWorkerOnly(readPath, 'getFolderCovers', opts);
     });
 
-    ipcMain.handle('get-immediate-subfolder-covers', function (event, parentPath, childPaths, options) {
-      return db.getImmediateSubfolderCovers(parentPath, childPaths, options || {});
-    });
+    ipcMain.handle(
+      'get-immediate-subfolder-covers',
+      function (event, parentPath, childPaths, options) {
+        return db.getImmediateSubfolderCovers(parentPath, childPaths, options || {});
+      },
+    );
 
     ipcMain.handle('get-photos', function (event, options) {
       return db.getPhotos(options);
@@ -3460,8 +3535,8 @@ app
       try {
         return await runDbReadWorkerOnly(sqliteDbPath, 'getDateGroups', options || {});
       } catch (e) {
-        console.error('get-date-groups worker failed:', e && e.message ? e.message : e);
-        throw new Error('get-date-groups failed: db_read_unavailable');
+        logger.error('get-date-groups worker failed:', e && e.message ? e.message : e);
+        throw new Error('get-date-groups failed: db_read_unavailable', { cause: e });
       }
     });
 
@@ -3470,8 +3545,8 @@ app
         var op = Object.assign({}, options || {}, { dateStr: dateStr });
         return await runDbReadWorkerOnly(sqliteDbPath, 'getDatePhotos', op);
       } catch (e) {
-        console.error('get-date-photos worker failed:', e && e.message ? e.message : e);
-        throw new Error('get-date-photos failed: db_read_unavailable');
+        logger.error('get-date-photos worker failed:', e && e.message ? e.message : e);
+        throw new Error('get-date-photos failed: db_read_unavailable', { cause: e });
       }
     });
 
@@ -3716,7 +3791,7 @@ app
   })
   .catch(function (err) {
     var msg = err && err.stack ? err.stack : String(err);
-    console.error('[startup] fatal initialization error:', msg);
+    logger.error('[startup] fatal initialization error:', msg);
     try {
       var en0 = getNormalizedUiLocale() === 'en';
       dialog.showErrorBox(

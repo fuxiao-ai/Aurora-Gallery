@@ -204,75 +204,75 @@
     var total = state.previewPhotos.length;
     var nextIndex;
     try {
-    if (state.slideshowRandom && total > 1) {
-      var onBatch = options.onSlideshowRandomAdvance;
-      if (typeof onBatch === 'function') {
-        try {
-          var batchHandled = await onBatch();
-          if (batchHandled) return;
-        } catch (eBatch) {}
-      }
-      var cur = state.previewPhotos[state.previewIndex];
-      var curId = cur && cur.id != null ? Number(cur.id) : 0;
-      var pf = state.slideshowPrefetchPhoto;
-      if (
-        curId > 0 &&
-        pf &&
-        pf.fromCurrentId === curId &&
-        pf.photo &&
-        Number(pf.photo.id) !== curId &&
-        typeof onOpenPreviewByPhoto === 'function'
-      ) {
-        state.slideshowPrefetchPhoto = null;
-        onOpenPreviewByPhoto(pf.photo);
-        return;
-      }
-      if (pf && pf.fromCurrentId !== curId) {
-        state.slideshowPrefetchPhoto = null;
-        state.slideshowPrefetchSeq = (state.slideshowPrefetchSeq || 0) + 1;
-      }
-      if (
-        curId > 0 &&
-        typeof buildReq === 'function' &&
-        typeof onOpenPreviewByPhoto === 'function' &&
-        api &&
-        api.has &&
-        api.has('getPreviewAdjacentPhoto')
-      ) {
-        var req = buildReq(curId);
-        if (req) {
+      if (state.slideshowRandom && total > 1) {
+        var onBatch = options.onSlideshowRandomAdvance;
+        if (typeof onBatch === 'function') {
           try {
-            var photo = await Promise.race([
-              api.getPreviewAdjacentPhoto(req),
-              new Promise(function (_, rej) {
-                setTimeout(function () {
-                  rej(new Error('timeout'));
-                }, PREVIEW_ADJACENT_TIMEOUT_MS);
-              }),
-            ]);
-            if (photo && photo.id != null && Number(photo.id) !== curId) {
-              onOpenPreviewByPhoto(photo);
-              return;
-            }
-          } catch (e0) {}
+            var batchHandled = await onBatch();
+            if (batchHandled) return;
+          } catch (eBatch) {}
+        }
+        var cur = state.previewPhotos[state.previewIndex];
+        var curId = cur && cur.id != null ? Number(cur.id) : 0;
+        var pf = state.slideshowPrefetchPhoto;
+        if (
+          curId > 0 &&
+          pf &&
+          pf.fromCurrentId === curId &&
+          pf.photo &&
+          Number(pf.photo.id) !== curId &&
+          typeof onOpenPreviewByPhoto === 'function'
+        ) {
+          state.slideshowPrefetchPhoto = null;
+          onOpenPreviewByPhoto(pf.photo);
+          return;
+        }
+        if (pf && pf.fromCurrentId !== curId) {
+          state.slideshowPrefetchPhoto = null;
+          state.slideshowPrefetchSeq = (state.slideshowPrefetchSeq || 0) + 1;
+        }
+        if (
+          curId > 0 &&
+          typeof buildReq === 'function' &&
+          typeof onOpenPreviewByPhoto === 'function' &&
+          api &&
+          api.has &&
+          api.has('getPreviewAdjacentPhoto')
+        ) {
+          var req = buildReq(curId);
+          if (req) {
+            try {
+              var photo = await Promise.race([
+                api.getPreviewAdjacentPhoto(req),
+                new Promise(function (_, rej) {
+                  setTimeout(function () {
+                    rej(new Error('timeout'));
+                  }, PREVIEW_ADJACENT_TIMEOUT_MS);
+                }),
+              ]);
+              if (photo && photo.id != null && Number(photo.id) !== curId) {
+                onOpenPreviewByPhoto(photo);
+                return;
+              }
+            } catch (e0) {}
+          }
+        }
+        nextIndex = pickNextRandomIndex(state);
+        if (nextIndex < 0) {
+          nextIndex = pickFallbackRandomNonVideoIndex(state);
+        }
+      } else {
+        nextIndex = -1;
+        for (var step = 0; step < total; step++) {
+          var cand = (state.previewIndex + 1 + step) % total;
+          if (!isPreviewVideoPhoto(state.previewPhotos[cand])) {
+            nextIndex = cand;
+            break;
+          }
         }
       }
-      nextIndex = pickNextRandomIndex(state);
-      if (nextIndex < 0) {
-        nextIndex = pickFallbackRandomNonVideoIndex(state);
-      }
-    } else {
-      nextIndex = -1;
-      for (var step = 0; step < total; step++) {
-        var cand = (state.previewIndex + 1 + step) % total;
-        if (!isPreviewVideoPhoto(state.previewPhotos[cand])) {
-          nextIndex = cand;
-          break;
-        }
-      }
-    }
-    if (nextIndex < 0) return;
-    onOpenPreview(nextIndex);
+      if (nextIndex < 0) return;
+      onOpenPreview(nextIndex);
     } finally {
       state.slideshowStepLoading = false;
     }

@@ -1,3 +1,4 @@
+const logger = require('./main/logger');
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
@@ -106,16 +107,12 @@ class PhotoDatabase {
    */
   /** 与封面选取、筛选共用：视为「图片侧」的扩展名（非下列视频扩展） */
   _sqlFileTypeIsImageExpr() {
-    return (
-      "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')"
-    );
+    return "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
   }
 
   /** 视频扩展集合（与 _sqlFileTypeIsImageExpr 互斥） */
   _sqlFileTypeIsVideoExpr() {
-    return (
-      "lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')"
-    );
+    return "lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
   }
 
   /**
@@ -283,16 +280,22 @@ class PhotoDatabase {
       if (!hasColumn) {
         // 添加列，默认 0（未收藏）
         this.db.exec('ALTER TABLE photos ADD COLUMN is_favorite INTEGER DEFAULT 0;');
-        console.log('[db migration] added missing is_favorite column to photos table');
+        logger.log('[db migration] added missing is_favorite column to photos table');
       }
       // 确保 is_favorite 有索引（旧版本可能缺少）
       try {
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(is_favorite);');
       } catch (eIdx) {
-        console.error('[db migration] create idx_photos_favorite failed:', eIdx && eIdx.message ? eIdx.message : eIdx);
+        logger.error(
+          '[db migration] create idx_photos_favorite failed:',
+          eIdx && eIdx.message ? eIdx.message : eIdx,
+        );
       }
     } catch (e) {
-      console.error('[db migration] ensure is_favorite column failed:', e && e.message ? e.message : e);
+      logger.error(
+        '[db migration] ensure is_favorite column failed:',
+        e && e.message ? e.message : e,
+      );
       void e;
     }
   }
@@ -305,11 +308,14 @@ class PhotoDatabase {
     if (!this.hasTable('photos')) return;
     try {
       this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_id_hasThumb ON photos(id, has_thumbnail);'
+        'CREATE INDEX IF NOT EXISTS idx_photos_id_hasThumb ON photos(id, has_thumbnail);',
       );
-      console.log('[db migration] created idx_photos_id_hasThumb index for thumbnail backfill');
+      logger.log('[db migration] created idx_photos_id_hasThumb index for thumbnail backfill');
     } catch (e) {
-      console.error('[db migration] create thumbnail missing index failed:', e && e.message ? e.message : e);
+      logger.error(
+        '[db migration] create thumbnail missing index failed:',
+        e && e.message ? e.message : e,
+      );
       void e;
     }
   }
@@ -446,7 +452,7 @@ class PhotoDatabase {
 
   /** 尚无 file_hash 的图片数量（非视频）；已有指纹的不重复计算 */
   _sqlNeedsFileHashExpr() {
-    return '(file_hash IS NULL OR TRIM(file_hash) = \'\')';
+    return "(file_hash IS NULL OR TRIM(file_hash) = '')";
   }
 
   getHashAllPhotoCount() {
@@ -494,13 +500,13 @@ class PhotoDatabase {
     if (!isFinite(id) || id <= 0) return { changes: 0 };
     if (digest == null || digest === '') {
       return this.db
-        .prepare('UPDATE photos SET file_hash = NULL, hash_mtime = NULL, hash_size = NULL WHERE id = ?')
+        .prepare(
+          'UPDATE photos SET file_hash = NULL, hash_mtime = NULL, hash_size = NULL WHERE id = ?',
+        )
         .run(id);
     }
     return this.db
-      .prepare(
-        'UPDATE photos SET file_hash = ?, hash_mtime = ?, hash_size = ? WHERE id = ?',
-      )
+      .prepare('UPDATE photos SET file_hash = ?, hash_mtime = ?, hash_size = ? WHERE id = ?')
       .run(
         String(digest),
         dateModified != null ? String(dateModified) : null,
@@ -590,9 +596,7 @@ class PhotoDatabase {
 
   addRootFolder(folderPath) {
     const name = path.basename(folderPath);
-    const stmt = this.db.prepare(
-      'INSERT OR IGNORE INTO root_folders (path, name) VALUES (?, ?)'
-    );
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO root_folders (path, name) VALUES (?, ?)');
     const result = stmt.run(folderPath, name);
     // INSERT OR IGNORE 不插入时 lastInsertRowid 为 0，需要重新查询
     if (result.lastInsertRowid) {
@@ -614,7 +618,9 @@ class PhotoDatabase {
   getRootFolders(options = {}) {
     /** 仅 root_folders 表，不做 photos 聚合；管理页可先秒开列表再异步补统计 */
     if (options.lite === true) {
-      var liteRows = this.db.prepare('SELECT id, path, name FROM root_folders ORDER BY name ASC').all();
+      var liteRows = this.db
+        .prepare('SELECT id, path, name FROM root_folders ORDER BY name ASC')
+        .all();
       if (liteRows && liteRows.length > 0) {
         for (var li = 0; li < liteRows.length; li++) {
           liteRows[li].photo_count = null;
@@ -634,7 +640,6 @@ class PhotoDatabase {
     }
     return aggRows;
   }
-
 
   getFolderTree(rootId) {
     return require('./db-heavy-read').runGetFolderTree(this.db, rootId);
@@ -704,25 +709,29 @@ class PhotoDatabase {
 
     const whereClause = 'WHERE 1=1' + (conditions.length ? ' AND ' + conditions.join(' AND ') : '');
 
-    const total = this.db.prepare(`SELECT COUNT(*) as count FROM photos ${whereClause}`).get(...params);
+    const total = this.db
+      .prepare(`SELECT COUNT(*) as count FROM photos ${whereClause}`)
+      .get(...params);
     const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type, 
+      ? `id, file_name, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type, 
+      : `id, file_name, file_path, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
-    const photos = this.db.prepare(
-      `SELECT ${photoCols}
+    const photos = this.db
+      .prepare(
+        `SELECT ${photoCols}
        FROM photos ${whereClause}
        ORDER BY ${order} ${dir} NULLS LAST
-       LIMIT ? OFFSET ?`
-    ).all(...params, pageSize, offset);
+       LIMIT ? OFFSET ?`,
+      )
+      .all(...params, pageSize, offset);
     this.applyNaturalNameTieSort(photos, order, dir);
 
     // 将 better-sqlite3 row 对象转为纯 JS 对象，避免 IPC 克隆失败
     const plainPhotos = photos.map(function (row) {
       var obj = {};
       for (var key in row) {
-        if (row.hasOwnProperty(key)) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) {
           obj[key] = row[key];
         }
       }
@@ -825,7 +834,15 @@ class PhotoDatabase {
       condParts.push(whereSql.replace(/^WHERE\s+/i, ''));
     }
     if (validEx.length) {
-      condParts.push('id NOT IN (' + validEx.map(function () { return '?'; }).join(',') + ')');
+      condParts.push(
+        'id NOT IN (' +
+          validEx
+            .map(function () {
+              return '?';
+            })
+            .join(',') +
+          ')',
+      );
       for (var j = 0; j < validEx.length; j++) qp.push(validEx[j]);
     }
     var cond = condParts.length ? 'WHERE ' + condParts.join(' AND ') : 'WHERE 1=1';
@@ -870,7 +887,8 @@ class PhotoDatabase {
     var sortDir = cmpIsAsc ? 'ASC' : 'DESC';
     var wrapDir = sortDir;
     var orderExpr = order === 'file_size' ? `COALESCE(${order}, 0)` : `COALESCE(${order}, '')`;
-    var currentOrderCmp = order === 'file_size' ? Number(currentOrderValue || 0) : String(currentOrderValue || '');
+    var currentOrderCmp =
+      order === 'file_size' ? Number(currentOrderValue || 0) : String(currentOrderValue || '');
 
     if (mode === 'random') {
       var seed = parseInt(options.seed, 10);
@@ -906,9 +924,7 @@ class PhotoDatabase {
       var minScoreSql = `SELECT MIN(${scoreExpr}) AS m FROM photos ${whereSql}`;
       var minScoreRow = this.db.prepare(minScoreSql).get(...params);
       var minScore =
-        minScoreRow && minScoreRow.m != null && minScoreRow.m !== ''
-          ? minScoreRow.m
-          : null;
+        minScoreRow && minScoreRow.m != null && minScoreRow.m !== '' ? minScoreRow.m : null;
       if (minScore == null) return null;
       var randWrapPickSql = `
         SELECT id, file_name, file_path, folder_path, file_size, file_type,
@@ -939,7 +955,15 @@ class PhotoDatabase {
     `;
     var seqRow = this.db
       .prepare(rowSql)
-      .get(...params, currentOrderCmp, currentOrderCmp, currentName, currentOrderCmp, currentName, currentId);
+      .get(
+        ...params,
+        currentOrderCmp,
+        currentOrderCmp,
+        currentName,
+        currentOrderCmp,
+        currentName,
+        currentId,
+      );
     if (seqRow) return seqRow;
 
     var seqWrapSql = `
@@ -972,17 +996,13 @@ class PhotoDatabase {
     // 标准化路径：统一使用反斜杠（Windows）
     const normalizedPath = folderPath.replace(/\//g, '\\');
     const incDesc = includeSubfolders !== false;
-    const pathBindArgs = incDesc
-      ? [normalizedPath, normalizedPath + '\\%']
-      : [normalizedPath];
+    const pathBindArgs = incDesc ? [normalizedPath, normalizedPath + '\\%'] : [normalizedPath];
 
     const mediaConds = [];
     this._pushMediaTypeCondition(mediaConds, mediaType);
     const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
 
-    const baseWhereSql = incDesc
-      ? '(folder_path = ? OR folder_path LIKE ?)'
-      : 'folder_path = ?';
+    const baseWhereSql = incDesc ? '(folder_path = ? OR folder_path LIKE ?)' : 'folder_path = ?';
     const whereSql = favoritesOnly
       ? `${baseWhereSql} AND is_favorite = 1${mediaSql}`
       : `${baseWhereSql}${mediaSql}`;
@@ -999,23 +1019,25 @@ class PhotoDatabase {
       )
       .get(...pathBindArgs);
     const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type, 
+      ? `id, file_name, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type, 
+      : `id, file_name, file_path, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
-    const photos = this.db.prepare(
-      `SELECT ${photoCols}
+    const photos = this.db
+      .prepare(
+        `SELECT ${photoCols}
        FROM photos WHERE ${whereSql}
        ORDER BY ${order} ${dir}
-       LIMIT ? OFFSET ?`
-    ).all(...pathBindArgs, pageSize, offset);
+       LIMIT ? OFFSET ?`,
+      )
+      .all(...pathBindArgs, pageSize, offset);
     this.applyNaturalNameTieSort(photos, order, dir);
 
     // 将 better-sqlite3 row 对象转为纯 JS 对象，避免 IPC 克隆失败
     var plainPhotos = photos.map(function (row) {
       var obj = {};
       for (var key in row) {
-        if (row.hasOwnProperty(key)) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) {
           obj[key] = row[key];
         }
       }
@@ -1043,12 +1065,16 @@ class PhotoDatabase {
       params.push(rootId);
     }
 
-    return this.db.prepare(`
-      SELECT date(date_taken) as date, COUNT(*) as count 
+    return this.db
+      .prepare(
+        `
+      SELECT date(date_taken) as date, COUNT(*) as count
       FROM photos ${whereClause}
       GROUP BY date(date_taken)
       ORDER BY date ${dir}
-    `).all(...params);
+    `,
+      )
+      .all(...params);
   }
 
   getDatePhotos(dateStr, options = {}) {
@@ -1071,27 +1097,39 @@ class PhotoDatabase {
     const whereSql = favoritesOnly
       ? 'date(date_taken) = ? AND is_favorite = 1' + mediaSql
       : 'date(date_taken) = ?' + mediaSql;
-    const total = this.db.prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`).get(dateStr);
+    const total = this.db
+      .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
+      .get(dateStr);
     const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type, 
+      ? `id, file_name, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type, 
+      : `id, file_name, file_path, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
-    const photos = this.db.prepare(`
+    const photos = this.db
+      .prepare(
+        `
       SELECT ${photoCols}
        FROM photos WHERE ${whereSql}
        ORDER BY ${sortBy} ${dir}
        LIMIT ? OFFSET ?
-    `).all(dateStr, pageSize, offset);
+    `,
+      )
+      .all(dateStr, pageSize, offset);
     this.applyNaturalNameTieSort(photos, sortBy, dir);
 
-    return { photos, total: total.count, page, pageSize, totalPages: Math.ceil(total.count / pageSize) };
+    return {
+      photos,
+      total: total.count,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total.count / pageSize),
+    };
   }
 
   getThumbnail(photoId) {
-    var photo = this.db.prepare(
-      'SELECT thumbnail, has_thumbnail FROM photos WHERE id = ?'
-    ).get(photoId);
+    var photo = this.db
+      .prepare('SELECT thumbnail, has_thumbnail FROM photos WHERE id = ?')
+      .get(photoId);
 
     if (!photo) return null;
 
@@ -1102,38 +1140,42 @@ class PhotoDatabase {
   }
 
   getMissingThumbnailCount() {
-    var row = this.db.prepare(
-      'SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0 OR thumbnail IS NULL'
-    ).get();
+    var row = this.db
+      .prepare('SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0 OR thumbnail IS NULL')
+      .get();
     return row ? row.count : 0;
   }
 
   getPhotosMissingThumbnails(limit = 20000) {
-    return this.db.prepare(
-      `SELECT id, file_path
+    return this.db
+      .prepare(
+        `SELECT id, file_path
        FROM photos
        WHERE has_thumbnail = 0 OR thumbnail IS NULL
        ORDER BY id ASC
-       LIMIT ?`
-    ).all(limit);
+       LIMIT ?`,
+      )
+      .all(limit);
   }
 
   /** 仅取 id > afterId 的缺失缩略图，避免同一轮补全对失败记录死循环重试 */
   getPhotosMissingThumbnailsAfter(afterId, limit) {
-    return this.db.prepare(
-      `SELECT id, file_path
+    return this.db
+      .prepare(
+        `SELECT id, file_path
        FROM photos
        WHERE id > ?
         AND (has_thumbnail = 0 OR thumbnail IS NULL)
        ORDER BY id ASC
-       LIMIT ?`
-    ).all(afterId, limit);
+       LIMIT ?`,
+      )
+      .all(afterId, limit);
   }
 
   updatePhotoThumbnail(photoId, thumbnailBuffer) {
-    this.db.prepare(
-      'UPDATE photos SET thumbnail = ?, has_thumbnail = 1 WHERE id = ?'
-    ).run(thumbnailBuffer, photoId);
+    this.db
+      .prepare('UPDATE photos SET thumbnail = ?, has_thumbnail = 1 WHERE id = ?')
+      .run(thumbnailBuffer, photoId);
   }
 
   photoExists(photoId) {
@@ -1317,16 +1359,20 @@ class PhotoDatabase {
   }
 
   rebuildThumbnailFlags() {
-    this.db.prepare(
-      `UPDATE photos
+    this.db
+      .prepare(
+        `UPDATE photos
        SET has_thumbnail = CASE
          WHEN thumbnail IS NOT NULL AND length(thumbnail) > 0 THEN 1
          ELSE 0
-       END`
-    ).run();
-    var row = this.db.prepare(
-      'SELECT COUNT(*) AS missing FROM photos WHERE has_thumbnail = 0 OR thumbnail IS NULL'
-    ).get();
+       END`,
+      )
+      .run();
+    var row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS missing FROM photos WHERE has_thumbnail = 0 OR thumbnail IS NULL',
+      )
+      .get();
     return { missing: row ? row.missing : 0 };
   }
 
@@ -1408,7 +1454,9 @@ class PhotoDatabase {
       }
     }
     // If not found, try with the parent - search for any photo under this path
-    var stmtLike = this.db.prepare('SELECT DISTINCT root_id FROM photos WHERE folder_path LIKE ? LIMIT 1');
+    var stmtLike = this.db.prepare(
+      'SELECT DISTINCT root_id FROM photos WHERE folder_path LIKE ? LIMIT 1',
+    );
     var rowLike = stmtLike.get(pathNorm + '/%');
     if (rowLike && rowLike.root_id) {
       return { rootId: Number(rowLike.root_id) };
@@ -1440,7 +1488,9 @@ class PhotoDatabase {
     `);
     var rows = stmt.all(rootId, parentPrefix + '%', parentPrefix, parentPrefix);
     // Normalize all output paths to forward slash
-    return rows.map(function (r) { return r.folder_path.replace(/\\/g, '/'); });
+    return rows.map(function (r) {
+      return r.folder_path.replace(/\\/g, '/');
+    });
   }
 
   /**
@@ -1479,13 +1529,13 @@ class PhotoDatabase {
           folder_photo_count: 0,
         };
       }
-      byChild[key].folder_photo_count += (row.photo_count || 0);
+      byChild[key].folder_photo_count += row.photo_count || 0;
     }
 
     // Convert to array
     var out = [];
     for (var k in byChild) {
-      if (byChild.hasOwnProperty(k)) {
+      if (Object.prototype.hasOwnProperty.call(byChild, k)) {
         out.push(byChild[k]);
       }
     }
@@ -1493,7 +1543,9 @@ class PhotoDatabase {
   }
 
   getFullPhoto(photoId) {
-    const photo = this.db.prepare('SELECT file_path, file_name, width, height FROM photos WHERE id = ?').get(photoId);
+    const photo = this.db
+      .prepare('SELECT file_path, file_name, width, height FROM photos WHERE id = ?')
+      .get(photoId);
     return photo || null;
   }
 
@@ -1525,31 +1577,38 @@ class PhotoDatabase {
     const whereSql = favoritesOnly
       ? `${namePathOr} AND is_favorite = 1${mediaSql}`
       : `${namePathOr}${mediaSql}`;
-    const total = this.db.prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`).get(
-      searchTerm,
-      searchTerm,
-    );
+    const total = this.db
+      .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
+      .get(searchTerm, searchTerm);
     const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type, 
+      ? `id, file_name, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type, 
+      : `id, file_name, file_path, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
-    const photos = this.db.prepare(
-      `SELECT ${photoCols}
+    const photos = this.db
+      .prepare(
+        `SELECT ${photoCols}
        FROM photos WHERE ${whereSql}
        ORDER BY date_taken DESC
        LIMIT ? OFFSET ?`,
-    ).all(searchTerm, searchTerm, pageSize, offset);
+      )
+      .all(searchTerm, searchTerm, pageSize, offset);
 
-    return { photos, total: total.count, page, pageSize, totalPages: Math.ceil(total.count / pageSize) };
+    return {
+      photos,
+      total: total.count,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total.count / pageSize),
+    };
   }
 
   // === Batch insert helpers for scanner ===
   // 获取指定根目录下所有已有文件的路径和修改时间（用于增量扫描去重）
   getExistingFiles(rootId) {
-    return this.db.prepare(
-      'SELECT file_path, date_modified, file_size FROM photos WHERE root_id = ?'
-    ).all(rootId);
+    return this.db
+      .prepare('SELECT file_path, date_modified, file_size FROM photos WHERE root_id = ?')
+      .all(rootId);
   }
 
   // 兼容扫描器的流式迭代调用，避免一次性加载大量记录
@@ -1573,22 +1632,31 @@ class PhotoDatabase {
 
   insertPhoto(photo) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO photos 
-        (root_id, folder_path, file_name, file_path, file_size, file_type, 
+      INSERT OR IGNORE INTO photos
+        (root_id, folder_path, file_name, file_path, file_size, file_type,
          width, height, date_taken, date_modified, thumbnail, has_thumbnail)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
-      photo.rootId, photo.folderPath, photo.fileName, photo.filePath,
-      photo.fileSize, photo.fileType, photo.width, photo.height,
-      photo.dateTaken, photo.dateModified, photo.thumbnail, photo.hasThumbnail ? 1 : 0
+      photo.rootId,
+      photo.folderPath,
+      photo.fileName,
+      photo.filePath,
+      photo.fileSize,
+      photo.fileType,
+      photo.width,
+      photo.height,
+      photo.dateTaken,
+      photo.dateModified,
+      photo.thumbnail,
+      photo.hasThumbnail ? 1 : 0,
     );
   }
 
   getInsertStmt() {
     return this.db.prepare(`
-      INSERT OR IGNORE INTO photos 
-        (root_id, folder_path, file_name, file_path, file_size, file_type, 
+      INSERT OR IGNORE INTO photos
+        (root_id, folder_path, file_name, file_path, file_size, file_type,
          width, height, date_taken, date_modified, thumbnail, has_thumbnail)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
@@ -1632,9 +1700,7 @@ class PhotoDatabase {
 
   // 兼容扫描器：扫描完成后删除该根目录下已不存在的旧记录
   cleanupStalePhotosForRoot(rootId, scannedPathSet) {
-    var rows = this.db
-      .prepare('SELECT id, file_path FROM photos WHERE root_id = ?')
-      .all(rootId);
+    var rows = this.db.prepare('SELECT id, file_path FROM photos WHERE root_id = ?').all(rootId);
     var delStmt = this.db.prepare('DELETE FROM photos WHERE id = ?');
     var deleted = 0;
     var checked = 0;

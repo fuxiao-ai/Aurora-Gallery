@@ -63,6 +63,7 @@ Task states (scan, thumbnail backfill, duplicate hashing) are maintained in the 
 ### ❗ Critical: Main Thread Blocking Issues
 
 Long-running CPU/SQL tasks **must not block the main event loop**:
+
 - Long-running maintenance tasks (thumbnail backfill, duplicate detection, cleanup) **must run asynchronously** with frequent yielding
 - `yieldForPreviewPlaybackMs(ms)` must be called between batches to let UI update
 - `yieldForPreviewPlaybackMs` **always yield**, the `previewPlaybackActive` check was a bug that caused deadlocks
@@ -72,6 +73,7 @@ Long-running CPU/SQL tasks **must not block the main event loop**:
 ### Database Indexing
 
 For performance-critical queries on large tables:
+
 - `photos` table has indexes on common query patterns
 - `idx_photos_id_hasThumb` on `(id, has_thumbnail)` accelerates thumbnail backfill
 - Partial indexes exist for duplicate hash detection (only indexes photos that need hashing)
@@ -80,6 +82,7 @@ For performance-critical queries on large tables:
 ### Media Serving Pipeline
 
 Video playback routing is non-trivial:
+
 - `playback-strategy.js` decides direct file serve vs HLS transcode
 - `hls-session-manager.js` manages HLS sessions and cache limits
 - `web-server.js` serves `/api/video-playback`, `/api/video-subtitle` (converting `.srt`/`.ass` to VTT)
@@ -93,6 +96,7 @@ Fully bilingual (zh-CN / en) as of v1.0.2. Locale key is `uiLocale` (`zh-CN` or 
 ### Refactoring in Progress
 
 `src/renderer/app.js` (~5400 lines) and `src/main.js` (~3700 lines) are acknowledged technical debt. New code is being modularized into:
+
 - `src/main/*.js` — IPC handlers, task scheduler, settings, utilities
 - `src/renderer/modules/*.js` — grid, navigation, favorites, utils
 
@@ -105,6 +109,7 @@ When editing these large files, prefer small, focused changes. When adding new f
 ### Common IPC Patterns
 
 For IPC handlers:
+
 - Quick queries (settings, stats) can be handled synchronously and return directly
 - Long-running background tasks must:
   1. Check if already running → reject if busy
@@ -116,6 +121,7 @@ For IPC handlers:
 ### Web App Structure
 
 The web app (`src/web/`) was recently refactored from inline scripts/styles into:
+
 - `src/web/js/app.js` — web app logic
 - `src/web/css/style.css` — extracted styles
 
@@ -124,6 +130,7 @@ The web app shares API parity with desktop (filters, preview, slideshow, mobile 
 ## ESLint Configuration
 
 `eslint.config.js` uses `@eslint/js` recommended rules with project-specific relaxations:
+
 - `no-var: off` (var is allowed)
 - `no-unused-vars: warn` with `^_` ignore pattern for intentionally unused args/vars
 - `no-empty: allowEmptyCatch`

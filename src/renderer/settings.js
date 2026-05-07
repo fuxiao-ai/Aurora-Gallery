@@ -76,11 +76,7 @@
     if (dom.settingsPage) dom.settingsPage.style.display = 'none';
     document.documentElement.classList.remove('settings-page-open');
     var restoreTab = state.tabBeforeSettings || state.prevTab || 'folders';
-    if (
-      restoreTab !== 'folders' &&
-      restoreTab !== 'dates' &&
-      restoreTab !== 'duplicates'
-    ) {
+    if (restoreTab !== 'folders' && restoreTab !== 'dates' && restoreTab !== 'duplicates') {
       restoreTab = 'folders';
     }
     state.currentTab = restoreTab;
@@ -92,9 +88,7 @@
     var sidebarResizer = document.getElementById('sidebarResizer');
     var softReturn =
       !state.mustReloadBrowseAfterSettings &&
-      (restoreTab === 'folders' ||
-        restoreTab === 'dates' ||
-        restoreTab === 'duplicates');
+      (restoreTab === 'folders' || restoreTab === 'dates' || restoreTab === 'duplicates');
     if (state.mustReloadBrowseAfterSettings) {
       if (dom.sidebarContent) dom.sidebarContent.innerHTML = '';
       if (dom.sidebarContentDuplicate) dom.sidebarContentDuplicate.innerHTML = '';
@@ -123,7 +117,7 @@
         options.onShowTabContent(state.currentTab, { softFromSettings: softReturn });
       } catch (eShow) {
         try {
-          console.error(eShow);
+          Logger.error(eShow);
         } catch (eLog) {}
       }
     }
@@ -172,7 +166,12 @@
   var BROWSE_GRID_STYLE_RATIOS = ['1 / 1', '3 / 4', '4 / 3', '9 / 16', '16 / 9'];
 
   function encodeBrowseGridStyleValue(layoutMode, cardRatio) {
-    var cl = String(layoutMode || '').trim().toLowerCase() === 'uniform' ? 'uniform' : 'masonry';
+    var cl =
+      String(layoutMode || '')
+        .trim()
+        .toLowerCase() === 'uniform'
+        ? 'uniform'
+        : 'masonry';
     var cr = String(cardRatio || '').trim();
     if (BROWSE_GRID_STYLE_RATIOS.indexOf(cr) < 0) cr = '1 / 1';
     if (cl === 'masonry') return 'masonry';
@@ -216,13 +215,7 @@
     if ([50, 100, 200, 300, 500].indexOf(ps) >= 0) state.pageSize = ps;
     var cs = snapBrowseCardBasis(settings.browseCardSize);
     var cr = String(settings.browseCardRatio || '').trim();
-    if (
-      cr !== '1 / 1' &&
-      cr !== '3 / 4' &&
-      cr !== '4 / 3' &&
-      cr !== '9 / 16' &&
-      cr !== '16 / 9'
-    )
+    if (cr !== '1 / 1' && cr !== '3 / 4' && cr !== '4 / 3' && cr !== '9 / 16' && cr !== '16 / 9')
       cr = '1 / 1';
     state.cardSize = cs;
     state.cardRatio = cr;
@@ -480,19 +473,27 @@
     )
       return;
     var tsV = onGetThemeStyleControlValue();
-    var subFamily = String(subFamilyEl.value || '').trim().toLowerCase();
+    var subFamily = String(subFamilyEl.value || '')
+      .trim()
+      .toLowerCase();
     if (['system', 'serif', 'mono'].indexOf(subFamily) < 0) subFamily = 'system';
     var subSize = parseInt(subSizeEl.value, 10);
     if (isNaN(subSize)) subSize = 22;
     if (subSize < 12) subSize = 12;
     if (subSize > 72) subSize = 72;
     if (subSizeEl.value !== String(subSize)) subSizeEl.value = String(subSize);
-    var subWeight = String(subWeightEl.value || '').trim().toLowerCase();
+    var subWeight = String(subWeightEl.value || '')
+      .trim()
+      .toLowerCase();
     if (['normal', 'medium', 'bold'].indexOf(subWeight) < 0) subWeight = 'medium';
-    var subColor = String(subColorEl.value || '').trim().toLowerCase();
+    var subColor = String(subColorEl.value || '')
+      .trim()
+      .toLowerCase();
     if (['white', 'yellow', 'cyan', 'green', 'orange', 'pink'].indexOf(subColor) < 0)
       subColor = 'white';
-    var launchDefaultPage = String(launchDefaultEl.value || '').trim().toLowerCase();
+    var launchDefaultPage = String(launchDefaultEl.value || '')
+      .trim()
+      .toLowerCase();
     if (
       launchDefaultPage !== 'welcome' &&
       launchDefaultPage !== 'all_photos' &&
@@ -585,7 +586,6 @@
       }
     }
   }
-
 
   function setLocaleSelectValuePair(uiLocale) {
     var v = uiLocale === 'en' ? 'en' : 'zh-CN';

@@ -245,12 +245,7 @@
     var showOpt = !!t.optimizing;
     var showDupHash = !!dupHash.running;
 
-    var showPanel =
-      showScanBlock ||
-      showThumb ||
-      showInvalidCleanup ||
-      showOpt ||
-      showDupHash;
+    var showPanel = showScanBlock || showThumb || showInvalidCleanup || showOpt || showDupHash;
     dom.scanProgress.style.display = showPanel ? 'block' : 'none';
 
     var scanEl = document.getElementById('taskScanSection');
@@ -311,7 +306,6 @@
       if (cancelBtn) cancelBtn.style.display = scanning ? '' : 'none';
     }
 
-
     if (showThumb) {
       var tpct = thumbs.total > 0 ? Math.round((thumbs.done / thumbs.total) * 100) : 0;
       var tfill = document.getElementById('thumbProgressFill');
@@ -326,9 +320,10 @@
     }
 
     if (showInvalidCleanup) {
-      var ipct = invalidCleanup.total > 0
-        ? Math.round((invalidCleanup.checked / invalidCleanup.total) * 100)
-        : 0;
+      var ipct =
+        invalidCleanup.total > 0
+          ? Math.round((invalidCleanup.checked / invalidCleanup.total) * 100)
+          : 0;
       var ifill = document.getElementById('invalidCleanupProgressFill');
       var icount = document.getElementById('invalidCleanupProgressCount');
       var ifile = document.getElementById('invalidCleanupProgressFile');
@@ -371,9 +366,7 @@
       if (dfile) dfile.textContent = dupHash.currentFile || '';
       if (dhash) {
         var h = String(dupHash.currentHash || '');
-        dhash.textContent = h
-          ? '当前编号：' + h.slice(0, 16) + '…'
-          : '正在读取当前文件…';
+        dhash.textContent = h ? '当前编号：' + h.slice(0, 16) + '…' : '正在读取当前文件…';
       }
       var dEta = document.getElementById('dupHashProgressEta');
       if (dEta) dEta.textContent = formatEtaLine(dupHash.etaSeconds);

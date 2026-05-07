@@ -50,8 +50,7 @@
   --dur-med: 0.26s;
   --card-border: color-mix(in srgb, var(--glass-border) 85%, transparent);
   --card-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.24),
-    0 0 0 1px color-mix(in srgb, #fff 4%, transparent) inset;
+    0 2px 8px rgba(0, 0, 0, 0.24), 0 0 0 1px color-mix(in srgb, #fff 4%, transparent) inset;
   --card-shadow-hover:
     0 14px 34px rgba(0, 0, 0, 0.42),
     0 0 24px color-mix(in srgb, var(--accent-dim) 70%, transparent),
@@ -90,9 +89,7 @@
   --file-name-shadow: none;
   --preview-info-text: color-mix(in srgb, #0f172a 90%, var(--text-primary));
   --preview-info-subtle: color-mix(in srgb, #475569 70%, var(--text-muted));
-  --card-shadow:
-    0 2px 10px rgba(26, 29, 46, 0.055),
-    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+  --card-shadow: 0 2px 10px rgba(26, 29, 46, 0.055), 0 0 0 1px rgba(255, 255, 255, 0.85) inset;
   --card-shadow-hover:
     0 12px 28px rgba(26, 29, 46, 0.1),
     0 0 20px color-mix(in srgb, var(--accent-dim) 70%, transparent),
@@ -568,6 +565,9 @@ html.settings-page-open .titlebar-logo {
   background: color-mix(in srgb, var(--danger) 88%, #b00018);
   color: color-mix(in srgb, #ffffff 96%, var(--danger));
 }
+.titlebar-btn:active {
+  transform: scale(0.92);
+}
 
 /* 下拉菜单 */
 .dropdown-menu {
@@ -1011,6 +1011,9 @@ html[data-theme='light'] .sidebar-resizer.is-dragging {
   background: var(--bg-hover);
   transform: translateY(-1px);
 }
+.btn:active {
+  transform: scale(0.97);
+}
 .btn-primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-2) 58%, var(--accent-3));
   border-color: transparent;
@@ -1100,10 +1103,10 @@ html[data-theme='light'] .sidebar-resizer.is-dragging {
 }
 .sidebar-content::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 3px;
+  border-radius: 999px;
 }
 .sidebar-content::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-active);
+  background: var(--accent);
 }
 
 /* 文件夹项（对齐网页端 folder-item，添加位移动画和 active 高亮*/
@@ -1131,7 +1134,11 @@ html[data-theme='light'] .sidebar-resizer.is-dragging {
   border-color: color-mix(in srgb, var(--glass-border) 70%, transparent);
 }
 .folder-item.active {
-  background: linear-gradient(90deg, var(--accent-dim) 0%, color-mix(in srgb, var(--accent-dim) 40%, transparent) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--accent-dim) 0%,
+    color-mix(in srgb, var(--accent-dim) 40%, transparent) 100%
+  );
   color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
   border-color: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -1249,7 +1256,11 @@ html[data-theme='light'] .sidebar-resizer.is-dragging {
   border-color: color-mix(in srgb, var(--glass-border) 70%, transparent);
 }
 .date-group.active {
-  background: linear-gradient(90deg, var(--accent-dim) 0%, color-mix(in srgb, var(--accent-dim) 40%, transparent) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--accent-dim) 0%,
+    color-mix(in srgb, var(--accent-dim) 40%, transparent) 100%
+  );
   color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
   border-color: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -1525,10 +1536,10 @@ select.ui-select option {
 }
 .photo-grid::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 4px;
+  border-radius: 999px;
 }
 .photo-grid::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-active);
+  background: var(--accent);
 }
 
 .grid {
@@ -1558,11 +1569,26 @@ select.ui-select option {
   will-change: transform;
   /* 交错入场动画 */
   opacity: 0;
-  animation: cardEnter 0.5s var(--ease-smooth) forwards;
+  animation: cardEnter 0.55s var(--ease-smooth) forwards;
+}
+.photo-card:nth-child(5n + 1) {
+  animation-delay: 0ms;
+}
+.photo-card:nth-child(5n + 2) {
+  animation-delay: 55ms;
+}
+.photo-card:nth-child(5n + 3) {
+  animation-delay: 110ms;
+}
+.photo-card:nth-child(5n + 4) {
+  animation-delay: 165ms;
+}
+.photo-card:nth-child(5n + 5) {
+  animation-delay: 220ms;
 }
 
 /* 统一高度模式：固定宽高比 */
-.grid:not([data-use-media-ratio="1"]) .photo-card {
+.grid:not([data-use-media-ratio='1']) .photo-card {
   aspect-ratio: var(--photo-card-ratio);
 }
 .photo-card:hover {
@@ -1673,13 +1699,12 @@ select.ui-select option {
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  background:
-    linear-gradient(
-      110deg,
-      color-mix(in srgb, var(--bg-hover) 88%, var(--bg-card)) 22%,
-      color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-card)) 50%,
-      color-mix(in srgb, var(--bg-hover) 88%, var(--bg-card)) 78%
-    );
+  background: linear-gradient(
+    110deg,
+    color-mix(in srgb, var(--bg-hover) 88%, var(--bg-card)) 22%,
+    color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-card)) 50%,
+    color-mix(in srgb, var(--bg-hover) 88%, var(--bg-card)) 78%
+  );
   background-size: 220% 100%;
   animation: thumbPlaceholderShimmer 1.35s ease-in-out infinite;
 }
@@ -1688,7 +1713,7 @@ select.ui-select option {
 .folder-cover-card.thumb-loaded .thumb-blur-placeholder,
 .folder-cover-card.thumb-failed .thumb-blur-placeholder {
   opacity: 0;
-  transition: opacity 220ms ease;
+  transition: opacity 0.45s var(--ease-smooth);
 }
 .photo-card img.loading {
   filter: blur(10px);
@@ -1901,7 +1926,11 @@ html[data-theme='light'] .folder-cover-card:hover {
 }
 .folder-cover-card .folder-cover-placeholder--default {
   background:
-    radial-gradient(ellipse 88% 68% at 50% 32%, color-mix(in srgb, var(--accent) 30%, transparent) 0%, transparent 64%),
+    radial-gradient(
+      ellipse 88% 68% at 50% 32%,
+      color-mix(in srgb, var(--accent) 30%, transparent) 0%,
+      transparent 64%
+    ),
     linear-gradient(
       168deg,
       color-mix(in srgb, var(--bg-secondary) 90%, var(--accent) 5%) 0%,
@@ -2187,7 +2216,9 @@ html[data-theme='light'] .folder-cover-card:hover {
   font-size: 64px;
   margin-bottom: 16px;
   opacity: 0.62;
-  filter: saturate(1.08) drop-shadow(0 8px 18px color-mix(in srgb, var(--accent-glow) 22%, transparent));
+  filter: saturate(1.08)
+    drop-shadow(0 8px 18px color-mix(in srgb, var(--accent-glow) 22%, transparent));
+  animation: emptyFloat 3s ease-in-out infinite;
 }
 .empty-state .title {
   font-size: 16px;
@@ -3137,8 +3168,7 @@ html[data-theme='dark'] {
 }
 .preview-overlay.is-fullscreen .preview-body-inner {
   background:
-    radial-gradient(140% 140% at 50% 50%, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0.72) 100%),
-    #000000;
+    radial-gradient(140% 140% at 50% 50%, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0.72) 100%), #000000;
 }
 .preview-overlay.is-fullscreen .preview-info {
   position: absolute;
@@ -3777,10 +3807,10 @@ html[data-theme='light'] #previewFavoriteBtn.active {
 }
 .settings-page::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 4px;
+  border-radius: 999px;
 }
 .settings-page::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-active);
+  background: var(--accent);
 }
 .settings-header {
   display: flex;
@@ -5102,6 +5132,15 @@ html[data-theme='light'] .app-dialog-actions .btn:hover {
 }
 
 /* === 目录 / 照片加载提示（侧边栏与主区域=== */
+@keyframes emptyFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
 @keyframes contentLoadingSpin {
   from {
     transform: rotate(0deg);
@@ -5173,4 +5212,3 @@ html[data-theme='light'] .app-dialog-actions .btn:hover {
   color: var(--text-secondary);
   font-size: 13px;
 }
-

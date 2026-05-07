@@ -145,13 +145,31 @@ function resolveScanRuntimeProfile(scanOpts) {
   if (isNaN(ioThrottleMs) || ioThrottleMs < 0) ioThrottleMs = 0;
   if (ioThrottleMs > 100) ioThrottleMs = 100;
   if (profile === 'hdd') {
-    return { profile: 'hdd', normalWorkers: 1, rawWorkers: 1, importChunk: 220, ioThrottleMs: Math.max(ioThrottleMs, 12) };
+    return {
+      profile: 'hdd',
+      normalWorkers: 1,
+      rawWorkers: 1,
+      importChunk: 220,
+      ioThrottleMs: Math.max(ioThrottleMs, 12),
+    };
   }
   if (profile === 'ssd') {
-    return { profile: 'ssd', normalWorkers: NORMAL_SCAN_WORKERS, rawWorkers: RAW_SCAN_WORKERS, importChunk: SCAN_IMPORT_CHUNK, ioThrottleMs: ioThrottleMs };
+    return {
+      profile: 'ssd',
+      normalWorkers: NORMAL_SCAN_WORKERS,
+      rawWorkers: RAW_SCAN_WORKERS,
+      importChunk: SCAN_IMPORT_CHUNK,
+      ioThrottleMs: ioThrottleMs,
+    };
   }
   // auto: 用保守配置兼容机械盘，避免随机 IO 抖动过大
-  return { profile: 'auto', normalWorkers: 2, rawWorkers: 1, importChunk: 320, ioThrottleMs: Math.max(ioThrottleMs, 4) };
+  return {
+    profile: 'auto',
+    normalWorkers: 2,
+    rawWorkers: 1,
+    importChunk: 320,
+    ioThrottleMs: Math.max(ioThrottleMs, 4),
+  };
 }
 
 function Scanner(db, deps) {
@@ -487,7 +505,8 @@ Scanner.prototype.processFileGroupInChunks = async function (
   ioThrottleMs,
 ) {
   if (!files || files.length === 0) return;
-  var chunkSize = parseInt(importChunkSize, 10) > 0 ? parseInt(importChunkSize, 10) : SCAN_IMPORT_CHUNK;
+  var chunkSize =
+    parseInt(importChunkSize, 10) > 0 ? parseInt(importChunkSize, 10) : SCAN_IMPORT_CHUNK;
   var throttle = parseInt(ioThrottleMs, 10) > 0 ? parseInt(ioThrottleMs, 10) : 0;
   for (var start = 0; start < files.length; start += chunkSize) {
     await this.waitIfPaused();

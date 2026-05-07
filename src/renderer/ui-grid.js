@@ -35,7 +35,9 @@
     var onApplyCardSize = options.onApplyCardSize;
     var mediaFilter = options.mediaFilter;
     var useMediaRatio = options.useMediaRatio !== false;
-    var subfolderSummaries = Array.isArray(options.subfolderSummaries) ? options.subfolderSummaries : [];
+    var subfolderSummaries = Array.isArray(options.subfolderSummaries)
+      ? options.subfolderSummaries
+      : [];
     if (!dom.photoGrid) return;
     if (
       typeof escapeHtml !== 'function' ||
@@ -163,7 +165,9 @@
     var row = photo || {};
     var mt = String(row.media_type || row.mediaType || '').toLowerCase();
     if (mt === 'video') return true;
-    var ft = String(row.file_type || '').toLowerCase().replace(/^\./, '');
+    var ft = String(row.file_type || '')
+      .toLowerCase()
+      .replace(/^\./, '');
     return (
       [
         'mp4',
@@ -259,7 +263,8 @@
       return placeholder;
     }
     placeholder.className = 'placeholder placeholder-fallback';
-    placeholder.innerHTML = '<div class="ext">\u26A0</div><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
+    placeholder.innerHTML =
+      '<div class="ext">\u26A0</div><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
     return placeholder;
   }
 
@@ -412,10 +417,7 @@
   function buildFolderCoverCardHtml(row, normalizePath, escapeHtml, escapeAttr, formatNumber) {
     var fp = normalizePath(row.folder_path || '');
     var coverId = parseInt(row.id, 10);
-    var thumbUrl =
-      !isNaN(coverId) && coverId > 0 && row.has_thumbnail
-        ? 'thumb://' + coverId
-        : '';
+    var thumbUrl = !isNaN(coverId) && coverId > 0 && row.has_thumbnail ? 'thumb://' + coverId : '';
     var base = folderDisplayBasename(fp, normalizePath);
     var cnt = row.folder_photo_count != null ? row.folder_photo_count : 0;
     var html =
@@ -481,7 +483,13 @@
     if (cn <= GRID_DOM_CHUNK_THRESHOLD) {
       var html = '<div class="grid">';
       for (var ci = 0; ci < cn; ci++) {
-        html += buildFolderCoverCardHtml(covers[ci], normalizePath, escapeHtml, escapeAttr, formatNumber);
+        html += buildFolderCoverCardHtml(
+          covers[ci],
+          normalizePath,
+          escapeHtml,
+          escapeAttr,
+          formatNumber,
+        );
       }
       html += '</div>';
       dom.photoGrid.innerHTML = html;
@@ -501,7 +509,13 @@
       var fend = Math.min(fstart + GRID_DOM_CHUNK_SIZE, cn);
       var fchunk = '';
       for (var fk = fstart; fk < fend; fk++) {
-        fchunk += buildFolderCoverCardHtml(covers[fk], normalizePath, escapeHtml, escapeAttr, formatNumber);
+        fchunk += buildFolderCoverCardHtml(
+          covers[fk],
+          normalizePath,
+          escapeHtml,
+          escapeAttr,
+          formatNumber,
+        );
       }
       var ftemp = document.createElement('div');
       ftemp.innerHTML = fchunk;

@@ -33,7 +33,9 @@ module.exports = async function afterPack(context) {
       fs.cpSync(modelsSrc, modelsDest, { recursive: true });
       console.log('[afterPack] bundled face models from project models/ ->', modelsDest);
     } else {
-      console.log('[afterPack] project models/ missing, skip face ONNX (run: node scripts/download-face-models.js)');
+      console.log(
+        '[afterPack] project models/ missing, skip face ONNX (run: node scripts/download-face-models.js)',
+      );
     }
   } catch (e) {
     console.warn('[afterPack] face models bundle failed:', e && e.message ? e.message : e);

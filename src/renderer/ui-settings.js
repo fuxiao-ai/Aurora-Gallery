@@ -23,12 +23,42 @@
       return zh;
     }
     var navItems = [
-      { id: 'settingsSectionFolders', icon: '\u{1F4C1}', key: 'settings.nav.folders', zh: '相册目录' },
-      { id: 'settingsSectionCloseBehavior', icon: '\u2716', key: 'settings.nav.close', zh: '关闭按钮' },
-      { id: 'settingsSectionGeneral', icon: '\u2699\uFE0F', key: 'settings.nav.general', zh: '通用设置' },
-      { id: 'settingsSectionBrowse', icon: '\u{1F5BC}\uFE0F', key: 'settings.nav.browse', zh: '浏览偏好' },
-      { id: 'settingsSectionMedia', icon: '\u{1F5C4}\uFE0F', key: 'settings.nav.media', zh: '后台任务与维护' },
-      { id: 'settingsSectionNetwork', icon: '\u{1F310}', key: 'settings.nav.network', zh: '局域网访问' },
+      {
+        id: 'settingsSectionFolders',
+        icon: '\u{1F4C1}',
+        key: 'settings.nav.folders',
+        zh: '相册目录',
+      },
+      {
+        id: 'settingsSectionCloseBehavior',
+        icon: '\u2716',
+        key: 'settings.nav.close',
+        zh: '关闭按钮',
+      },
+      {
+        id: 'settingsSectionGeneral',
+        icon: '\u2699\uFE0F',
+        key: 'settings.nav.general',
+        zh: '通用设置',
+      },
+      {
+        id: 'settingsSectionBrowse',
+        icon: '\u{1F5BC}\uFE0F',
+        key: 'settings.nav.browse',
+        zh: '浏览偏好',
+      },
+      {
+        id: 'settingsSectionMedia',
+        icon: '\u{1F5C4}\uFE0F',
+        key: 'settings.nav.media',
+        zh: '后台任务与维护',
+      },
+      {
+        id: 'settingsSectionNetwork',
+        icon: '\u{1F310}',
+        key: 'settings.nav.network',
+        zh: '局域网访问',
+      },
     ];
     var html = '';
     for (var i = 0; i < navItems.length; i++) {
@@ -144,7 +174,10 @@
 
     var thead = document.createElement('thead');
     var headTr = document.createElement('tr');
-    var headers = [tSet('settings.folderColPath', '路径'), tSet('settings.folderColActions', '操作')];
+    var headers = [
+      tSet('settings.folderColPath', '路径'),
+      tSet('settings.folderColActions', '操作'),
+    ];
     for (var hi = 0; hi < headers.length; hi++) {
       var th = document.createElement('th');
       th.scope = 'col';
@@ -206,8 +239,7 @@
 
   function formatThumbCurrentLine(size, quality) {
     if (window.I18n && typeof window.I18n.t === 'function') {
-      return window.I18n
-        .t('settings.thumbCurrentLineFmt')
+      return window.I18n.t('settings.thumbCurrentLineFmt')
         .replace('{size}', String(size))
         .replace('{quality}', String(quality));
     }

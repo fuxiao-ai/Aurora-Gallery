@@ -132,16 +132,17 @@ function WebServer(db, port, opts) {
 
   // RAW 预览：并发限制 + 缓存（避免高 CPU 与重复转码）
   this.rawPreview = {
-    maxConcurrent:
-      opts.rawPreviewMaxConcurrent != null ? Number(opts.rawPreviewMaxConcurrent) : 2,
+    maxConcurrent: opts.rawPreviewMaxConcurrent != null ? Number(opts.rawPreviewMaxConcurrent) : 2,
     maxQueue: opts.rawPreviewMaxQueue != null ? Number(opts.rawPreviewMaxQueue) : 20,
     cacheMaxBytes:
-      opts.rawPreviewCacheMaxBytes != null ? Number(opts.rawPreviewCacheMaxBytes) : 100 * 1024 * 1024,
+      opts.rawPreviewCacheMaxBytes != null
+        ? Number(opts.rawPreviewCacheMaxBytes)
+        : 100 * 1024 * 1024,
     cacheMaxEntries:
       opts.rawPreviewCacheMaxEntries != null ? Number(opts.rawPreviewCacheMaxEntries) : 48,
-    cacheTtlMs: opts.rawPreviewCacheTtlMs != null ? Number(opts.rawPreviewCacheTtlMs) : 10 * 60 * 1000,
-    jpegQuality:
-      opts.rawPreviewJpegQuality != null ? Number(opts.rawPreviewJpegQuality) : 88,
+    cacheTtlMs:
+      opts.rawPreviewCacheTtlMs != null ? Number(opts.rawPreviewCacheTtlMs) : 10 * 60 * 1000,
+    jpegQuality: opts.rawPreviewJpegQuality != null ? Number(opts.rawPreviewJpegQuality) : 88,
   };
   this._rawActive = 0;
   this._rawQueue = []; // { resolve, reject, createdAt }
@@ -589,7 +590,10 @@ WebServer.prototype.handleFolderPhotos = function (req, res, query) {
   }
   var options = this.parsePageOptions(query);
   options.lite = true;
-  if (options.includeSubfolders === undefined && typeof this.getBrowseFolderIncludeSubfolders === 'function') {
+  if (
+    options.includeSubfolders === undefined &&
+    typeof this.getBrowseFolderIncludeSubfolders === 'function'
+  ) {
     options.includeSubfolders = this.getBrowseFolderIncludeSubfolders();
   }
   var result = this.db.getFolderPhotos(folderPath, options);
@@ -797,14 +801,19 @@ WebServer.prototype.handleImmediateSubfolderCovers = function (req, res, query) 
                       folder_path: sum.folder_path,
                       folder_photo_count: sum.folder_photo_count,
                       id: cover ? cover.id : null,
-                      has_thumbnail: cover ? cover.has_thumbnail: false,
-                      file_name: cover ? cover.file_name: '',
+                      has_thumbnail: cover ? cover.has_thumbnail : false,
+                      file_name: cover ? cover.file_name : '',
                     });
                   }
                   self.jsonResponse(res, merged, 200, req);
                 })
                 .catch(function (e) {
-                  self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
+                  self.jsonResponse(
+                    res,
+                    { error: String(e && e.message ? e.message : e) },
+                    500,
+                    req,
+                  );
                 });
             })
             .catch(function (e) {
@@ -964,7 +973,14 @@ WebServer.prototype.handlePhoto = async function (req, res, idStr) {
         res.end('Not Found');
         return;
       }
-      this.serveFileWithRange(req, res, photo.file_path, st.size, contentType, 'public, max-age=3600');
+      this.serveFileWithRange(
+        req,
+        res,
+        photo.file_path,
+        st.size,
+        contentType,
+        'public, max-age=3600',
+      );
     } catch (e) {
       res.writeHead(500);
       res.end('Error reading file');
@@ -1158,7 +1174,9 @@ WebServer.prototype.srtToVtt = function (srtText) {
         var hh = String(parseInt(h, 10) || 0).padStart(2, '0');
         var mm = String(parseInt(m, 10) || 0).padStart(2, '0');
         var ss = String(parseInt(s, 10) || 0).padStart(2, '0');
-        var msec = String(parseInt(ms, 10) || 0).padStart(3, '0').slice(0, 3);
+        var msec = String(parseInt(ms, 10) || 0)
+          .padStart(3, '0')
+          .slice(0, 3);
         return hh + ':' + mm + ':' + ss + '.' + msec;
       }
       return norm(h1, m1, s1, ms1) + ' --> ' + norm(h2, m2, s2, ms2);
@@ -1176,7 +1194,9 @@ WebServer.prototype.normalizeVttTimeline = function (vttText) {
         var hh = String(parseInt(h, 10) || 0).padStart(2, '0');
         var mm = String(parseInt(m, 10) || 0).padStart(2, '0');
         var ss = String(parseInt(s, 10) || 0).padStart(2, '0');
-        var msec = String(parseInt(ms, 10) || 0).padStart(3, '0').slice(0, 3);
+        var msec = String(parseInt(ms, 10) || 0)
+          .padStart(3, '0')
+          .slice(0, 3);
         return hh + ':' + mm + ':' + ss + '.' + msec;
       }
       return norm(h1, m1, s1, ms1) + ' --> ' + norm(h2, m2, s2, ms2);
@@ -1186,7 +1206,9 @@ WebServer.prototype.normalizeVttTimeline = function (vttText) {
 
 WebServer.prototype.assTimeToVttTime = function (t) {
   // ASS: H:MM:SS.cc -> WebVTT: HH:MM:SS.mmm
-  var m = String(t || '').trim().match(/^(\d+):(\d{2}):(\d{2})\.(\d{1,2})$/);
+  var m = String(t || '')
+    .trim()
+    .match(/^(\d+):(\d{2}):(\d{2})\.(\d{1,2})$/);
   if (!m) return '';
   var hh = m[1].padStart(2, '0');
   var mm = m[2];
@@ -1269,7 +1291,8 @@ WebServer.prototype.decodeSubtitleBuffer = function (buf) {
     var score = 0;
     if (/WEBVTT\b/i.test(text)) score += 6;
     if (timelineCount > 0) score += 18 + Math.min(60, timelineCount);
-    else if (/-->\s*\d{2}:\d{2}:\d{2}/.test(text) || /\d{2}:\d{2}:\d{2}\s*-->/.test(text)) score += 6;
+    else if (/-->\s*\d{2}:\d{2}:\d{2}/.test(text) || /\d{2}:\d{2}:\d{2}\s*-->/.test(text))
+      score += 6;
     if (/^Dialogue:/im.test(text)) score += 5;
     var replacementCount = (text.match(/\ufffd/g) || []).length;
     score -= Math.min(8, replacementCount);
@@ -1297,62 +1320,66 @@ WebServer.prototype.convertSubtitleFileToVttByFfmpeg = function (subtitlePath, c
       cb(new Error('subtitle_not_found'));
       return;
     }
-  var child;
-  try {
-    child = childProcess.spawn(self.ffmpegPath, ['-v', 'error', '-i', subtitlePath, '-f', 'webvtt', '-'], {
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (e) {
-    cb(e);
-    return;
-  }
-  var out = '';
-  var err = '';
-  var done = false;
-  var maxBytes = 2 * 1024 * 1024;
-  var timer = setTimeout(function () {
-    if (done) return;
-    done = true;
+    var child;
     try {
-      child.kill('SIGKILL');
-    } catch (e0) {}
-    cb(new Error('subtitle_convert_timeout'));
-  }, 12000);
-  child.stdout.on('data', function (chunk) {
-    if (done) return;
-    out += chunk ? chunk.toString('utf8') : '';
-    if (Buffer.byteLength(out, 'utf8') > maxBytes) {
-      done = true;
-      clearTimeout(timer);
-      try {
-        child.kill('SIGKILL');
-      } catch (e1) {}
-      cb(new Error('subtitle_too_large'));
-    }
-  });
-  child.stderr.on('data', function (chunk) {
-    if (done) return;
-    err += chunk ? chunk.toString('utf8') : '';
-  });
-  child.on('error', function (e) {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    cb(e);
-  });
-  child.on('close', function (code) {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    var text = String(out || '').trim();
-    if (code !== 0 || !text) {
-      cb(new Error(err || 'subtitle_convert_failed'));
+      child = childProcess.spawn(
+        self.ffmpegPath,
+        ['-v', 'error', '-i', subtitlePath, '-f', 'webvtt', '-'],
+        {
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+    } catch (e) {
+      cb(e);
       return;
     }
-    if (!/^WEBVTT\b/i.test(text)) text = 'WEBVTT\n\n' + text;
-    cb(null, text + '\n');
-  });
+    var out = '';
+    var err = '';
+    var done = false;
+    var maxBytes = 2 * 1024 * 1024;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      try {
+        child.kill('SIGKILL');
+      } catch (e0) {}
+      cb(new Error('subtitle_convert_timeout'));
+    }, 12000);
+    child.stdout.on('data', function (chunk) {
+      if (done) return;
+      out += chunk ? chunk.toString('utf8') : '';
+      if (Buffer.byteLength(out, 'utf8') > maxBytes) {
+        done = true;
+        clearTimeout(timer);
+        try {
+          child.kill('SIGKILL');
+        } catch (e1) {}
+        cb(new Error('subtitle_too_large'));
+      }
+    });
+    child.stderr.on('data', function (chunk) {
+      if (done) return;
+      err += chunk ? chunk.toString('utf8') : '';
+    });
+    child.on('error', function (e) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cb(e);
+    });
+    child.on('close', function (code) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      var text = String(out || '').trim();
+      if (code !== 0 || !text) {
+        cb(new Error(err || 'subtitle_convert_failed'));
+        return;
+      }
+      if (!/^WEBVTT\b/i.test(text)) text = 'WEBVTT\n\n' + text;
+      cb(null, text + '\n');
+    });
   });
 };
 
@@ -1468,28 +1495,28 @@ WebServer.prototype.handleVideoSubtitleApi = async function (res, query) {
       hasFfStreamIndex ? ffStreamIndex : null,
       hasStreamIndex ? streamIndex : 0,
       function (err0, vtt0) {
-      if (err0 || !vtt0) {
-        self0.jsonResponse(
-          res,
-          {
-            error: 'subtitle_not_found',
-            debug: {
-              matchedExternal: !!subtitlePath,
-              selectedExternalName: subtitlePath ? path.basename(subtitlePath) : '',
-              externalCandidates: subtitleDebugCandidates,
-              requestedStream: hasStreamIndex ? streamIndex : null,
-              requestedFfStream: hasFfStreamIndex ? ffStreamIndex : null,
+        if (err0 || !vtt0) {
+          self0.jsonResponse(
+            res,
+            {
+              error: 'subtitle_not_found',
+              debug: {
+                matchedExternal: !!subtitlePath,
+                selectedExternalName: subtitlePath ? path.basename(subtitlePath) : '',
+                externalCandidates: subtitleDebugCandidates,
+                requestedStream: hasStreamIndex ? streamIndex : null,
+                requestedFfStream: hasFfStreamIndex ? ffStreamIndex : null,
+              },
             },
-          },
-          404,
-        );
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': 'text/vtt; charset=utf-8',
-        'Cache-Control': 'public, max-age=30',
-      });
-      res.end(vtt0);
+            404,
+          );
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/vtt; charset=utf-8',
+          'Cache-Control': 'public, max-age=30',
+        });
+        res.end(vtt0);
       },
     );
     return;
@@ -1542,7 +1569,10 @@ WebServer.prototype.handleVideoSubtitleStreamsApi = async function (res, query) 
         if (!exts[ext2]) continue;
         var stem = path.basename(name, ext2).toLowerCase();
         var stemNorm = normalizeStem(stem);
-        if (stem.indexOf(videoStem) >= 0 || (videoNorm && stemNorm && stemNorm.indexOf(videoNorm) >= 0)) {
+        if (
+          stem.indexOf(videoStem) >= 0 ||
+          (videoNorm && stemNorm && stemNorm.indexOf(videoNorm) >= 0)
+        ) {
           hasExternal = true;
           break;
         }
@@ -1558,11 +1588,18 @@ WebServer.prototype.handleVideoSubtitleStreamsApi = async function (res, query) 
       return;
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ tracks: Array.isArray(tracks) ? tracks : [], hasExternal: hasExternal }));
+    res.end(
+      JSON.stringify({ tracks: Array.isArray(tracks) ? tracks : [], hasExternal: hasExternal }),
+    );
   });
 };
 
-WebServer.prototype.extractEmbeddedSubtitleVtt = function (videoPath, ffStreamIndex, streamIndex, cb) {
+WebServer.prototype.extractEmbeddedSubtitleVtt = function (
+  videoPath,
+  ffStreamIndex,
+  streamIndex,
+  cb,
+) {
   cb = typeof cb === 'function' ? cb : function () {};
   if (!videoPath) {
     cb(new Error('video_not_found'));
@@ -1578,91 +1615,91 @@ WebServer.prototype.extractEmbeddedSubtitleVtt = function (videoPath, ffStreamIn
       cb(new Error('video_not_found'));
       return;
     }
-  var fsi = parseInt(ffStreamIndex, 10);
-  var si = parseInt(streamIndex, 10);
-  if (isNaN(si) || si < 0) si = 0;
-  function runExtractWithMap(mapArg, done) {
-    var args = ['-v', 'error', '-i', videoPath, '-map', mapArg, '-f', 'webvtt', '-'];
-    var child;
-    try {
-      child = childProcess.spawn(self.ffmpegPath, args, {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (e) {
-      done(e);
-      return;
-    }
-    var out = '';
-    var err = '';
-    var finished = false;
-    var maxBytes = 2 * 1024 * 1024;
-    var timeout = setTimeout(function () {
-      if (finished) return;
-      finished = true;
+    var fsi = parseInt(ffStreamIndex, 10);
+    var si = parseInt(streamIndex, 10);
+    if (isNaN(si) || si < 0) si = 0;
+    function runExtractWithMap(mapArg, done) {
+      var args = ['-v', 'error', '-i', videoPath, '-map', mapArg, '-f', 'webvtt', '-'];
+      var child;
       try {
-        child.kill('SIGKILL');
-      } catch (e0) {}
-      done(new Error('subtitle_extract_timeout'));
-    }, 12000);
-    child.stdout.on('data', function (chunk) {
-      if (finished) return;
-      out += chunk ? chunk.toString('utf8') : '';
-      if (Buffer.byteLength(out, 'utf8') > maxBytes) {
+        child = childProcess.spawn(self.ffmpegPath, args, {
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (e) {
+        done(e);
+        return;
+      }
+      var out = '';
+      var err = '';
+      var finished = false;
+      var maxBytes = 2 * 1024 * 1024;
+      var timeout = setTimeout(function () {
+        if (finished) return;
         finished = true;
-        clearTimeout(timeout);
         try {
           child.kill('SIGKILL');
-        } catch (e1) {}
-        done(new Error('subtitle_too_large'));
-      }
-    });
-    child.stderr.on('data', function (chunk) {
-      if (finished) return;
-      err += chunk ? chunk.toString('utf8') : '';
-    });
-    child.on('error', function (e) {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      done(e);
-    });
-    child.on('close', function (code) {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      var text = String(out || '').trim();
-      if (code !== 0 || !text) {
-        done(new Error(err || 'subtitle_extract_failed'));
-        return;
-      }
-      if (!/^WEBVTT\b/i.test(text)) text = 'WEBVTT\n\n' + text;
-      text = self.normalizeVttTimeline(text);
-      done(null, text + '\n');
-    });
-  }
-
-  var tried = [];
-  var preferredMap = !isNaN(fsi) && fsi >= 0 ? '0:' + String(fsi) : '0:s:' + String(si);
-  var fallbackMap = !isNaN(fsi) && fsi >= 0 ? '0:s:' + String(si) : '';
-  function next(errFromPrev) {
-    var mapArg = '';
-    if (tried.indexOf(preferredMap) < 0) mapArg = preferredMap;
-    else if (fallbackMap && tried.indexOf(fallbackMap) < 0) mapArg = fallbackMap;
-    if (!mapArg) {
-      cb(errFromPrev || new Error('subtitle_extract_failed'));
-      return;
+        } catch (e0) {}
+        done(new Error('subtitle_extract_timeout'));
+      }, 12000);
+      child.stdout.on('data', function (chunk) {
+        if (finished) return;
+        out += chunk ? chunk.toString('utf8') : '';
+        if (Buffer.byteLength(out, 'utf8') > maxBytes) {
+          finished = true;
+          clearTimeout(timeout);
+          try {
+            child.kill('SIGKILL');
+          } catch (e1) {}
+          done(new Error('subtitle_too_large'));
+        }
+      });
+      child.stderr.on('data', function (chunk) {
+        if (finished) return;
+        err += chunk ? chunk.toString('utf8') : '';
+      });
+      child.on('error', function (e) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        done(e);
+      });
+      child.on('close', function (code) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        var text = String(out || '').trim();
+        if (code !== 0 || !text) {
+          done(new Error(err || 'subtitle_extract_failed'));
+          return;
+        }
+        if (!/^WEBVTT\b/i.test(text)) text = 'WEBVTT\n\n' + text;
+        text = self.normalizeVttTimeline(text);
+        done(null, text + '\n');
+      });
     }
-    tried.push(mapArg);
-    runExtractWithMap(mapArg, function (err, vtt) {
-      if (!err && vtt) {
-        cb(null, vtt);
+
+    var tried = [];
+    var preferredMap = !isNaN(fsi) && fsi >= 0 ? '0:' + String(fsi) : '0:s:' + String(si);
+    var fallbackMap = !isNaN(fsi) && fsi >= 0 ? '0:s:' + String(si) : '';
+    function next(errFromPrev) {
+      var mapArg = '';
+      if (tried.indexOf(preferredMap) < 0) mapArg = preferredMap;
+      else if (fallbackMap && tried.indexOf(fallbackMap) < 0) mapArg = fallbackMap;
+      if (!mapArg) {
+        cb(errFromPrev || new Error('subtitle_extract_failed'));
         return;
       }
-      next(err);
-    });
-  }
-  next(null);
+      tried.push(mapArg);
+      runExtractWithMap(mapArg, function (err, vtt) {
+        if (!err && vtt) {
+          cb(null, vtt);
+          return;
+        }
+        next(err);
+      });
+    }
+    next(null);
   });
 };
 
@@ -1676,98 +1713,98 @@ WebServer.prototype.listEmbeddedSubtitleStreams = function (videoPath, cb) {
       cb(new Error('video_not_found'));
       return;
     }
-  var child;
-  try {
-    child = childProcess.spawn(self.ffmpegPath, ['-hide_banner', '-i', videoPath], {
-      windowsHide: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-  } catch (e) {
-    cb(e);
-    return;
-  }
-  var err = '';
-  var done = false;
-  var timer = setTimeout(function () {
-    if (done) return;
-    done = true;
+    var child;
     try {
-      child.kill('SIGKILL');
-    } catch (e0) {}
-    cb(new Error('subtitle_probe_timeout'));
-  }, 8000);
-  child.stderr.on('data', function (chunk) {
-    if (done) return;
-    err += chunk ? chunk.toString('utf8') : '';
-  });
-  child.on('error', function (e) {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    cb(e);
-  });
-  child.on('close', function () {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    var lines = String(err || '').split(/\r?\n/);
-    var tracks = [];
-    function normalizeLangCode(code) {
-      var c = String(code || '')
-        .trim()
-        .toLowerCase();
-      if (!c) return '';
-      c = c.replace(/_/g, '-');
-      return c;
-    }
-    function guessLangName(code) {
-      var c = normalizeLangCode(code);
-      if (!c) return '';
-      if (SUBTITLE_LANG_NAME_MAP[c]) return SUBTITLE_LANG_NAME_MAP[c];
-      var base = c.split('-')[0];
-      return SUBTITLE_LANG_NAME_MAP[base] || c;
-    }
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i];
-      if (!/Subtitle:/i.test(line)) continue;
-      var m = line.match(
-        /Stream #\d+:(\d+)(?:\[[^\]]+\])?(?:\(([^)]+)\))?:\s*Subtitle:\s*([^,\r\n]+)/i,
-      );
-      if (!m) continue;
-      var langCode = normalizeLangCode(m[2] ? String(m[2]) : '');
-      var codecName = m[3] ? String(m[3]).trim().toLowerCase() : '';
-      // 仅保留可稳定转为 WebVTT 的文本字幕，避免“可选但不显示”
-      var supportedCodec = {
-        subrip: true,
-        srt: true,
-        ass: true,
-        ssa: true,
-        mov_text: true,
-        webvtt: true,
-        text: true,
-        ttml: true,
-      };
-      if (!supportedCodec[codecName]) continue;
-      var title = '';
-      for (var j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        if (/^\s*Stream #/i.test(lines[j])) break;
-        var mt = lines[j].match(/^\s*title\s*:\s*(.+)\s*$/i);
-        if (mt && mt[1]) {
-          title = String(mt[1]).trim();
-          break;
-        }
-      }
-      tracks.push({
-        streamIndex: tracks.length,
-        ffIndex: parseInt(m[1], 10),
-        lang: langCode,
-        langName: guessLangName(langCode),
-        label: title,
-        codec: codecName,
+      child = childProcess.spawn(self.ffmpegPath, ['-hide_banner', '-i', videoPath], {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
       });
+    } catch (e) {
+      cb(e);
+      return;
     }
-    cb(null, tracks);
-  });
+    var err = '';
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      try {
+        child.kill('SIGKILL');
+      } catch (e0) {}
+      cb(new Error('subtitle_probe_timeout'));
+    }, 8000);
+    child.stderr.on('data', function (chunk) {
+      if (done) return;
+      err += chunk ? chunk.toString('utf8') : '';
+    });
+    child.on('error', function (e) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cb(e);
+    });
+    child.on('close', function () {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      var lines = String(err || '').split(/\r?\n/);
+      var tracks = [];
+      function normalizeLangCode(code) {
+        var c = String(code || '')
+          .trim()
+          .toLowerCase();
+        if (!c) return '';
+        c = c.replace(/_/g, '-');
+        return c;
+      }
+      function guessLangName(code) {
+        var c = normalizeLangCode(code);
+        if (!c) return '';
+        if (SUBTITLE_LANG_NAME_MAP[c]) return SUBTITLE_LANG_NAME_MAP[c];
+        var base = c.split('-')[0];
+        return SUBTITLE_LANG_NAME_MAP[base] || c;
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!/Subtitle:/i.test(line)) continue;
+        var m = line.match(
+          /Stream #\d+:(\d+)(?:\[[^\]]+\])?(?:\(([^)]+)\))?:\s*Subtitle:\s*([^,\r\n]+)/i,
+        );
+        if (!m) continue;
+        var langCode = normalizeLangCode(m[2] ? String(m[2]) : '');
+        var codecName = m[3] ? String(m[3]).trim().toLowerCase() : '';
+        // 仅保留可稳定转为 WebVTT 的文本字幕，避免“可选但不显示”
+        var supportedCodec = {
+          subrip: true,
+          srt: true,
+          ass: true,
+          ssa: true,
+          mov_text: true,
+          webvtt: true,
+          text: true,
+          ttml: true,
+        };
+        if (!supportedCodec[codecName]) continue;
+        var title = '';
+        for (var j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+          if (/^\s*Stream #/i.test(lines[j])) break;
+          var mt = lines[j].match(/^\s*title\s*:\s*(.+)\s*$/i);
+          if (mt && mt[1]) {
+            title = String(mt[1]).trim();
+            break;
+          }
+        }
+        tracks.push({
+          streamIndex: tracks.length,
+          ffIndex: parseInt(m[1], 10),
+          lang: langCode,
+          langName: guessLangName(langCode),
+          label: title,
+          codec: codecName,
+        });
+      }
+      cb(null, tracks);
+    });
   });
 };
 
@@ -2047,7 +2084,14 @@ WebServer.prototype.checkLoginRateLimit = function (req) {
   return { blocked: false };
 };
 
-WebServer.prototype.serveFileWithRange = function (req, res, filePath, size, contentType, cacheControl) {
+WebServer.prototype.serveFileWithRange = function (
+  req,
+  res,
+  filePath,
+  size,
+  contentType,
+  cacheControl,
+) {
   var range = req && req.headers && req.headers.range ? String(req.headers.range) : null;
   if (range && /^bytes=\d*-\d*$/.test(range)) {
     var m = range.match(/^bytes=(\d*)-(\d*)$/);
@@ -2213,7 +2257,11 @@ WebServer.prototype.handlePreviewImage = async function (req, res, idStr) {
         return;
       }
       var mimeGif =
-        ext === '.svg' ? 'image/svg+xml' : ext === '.gif' ? 'image/gif' : 'application/octet-stream';
+        ext === '.svg'
+          ? 'image/svg+xml'
+          : ext === '.gif'
+            ? 'image/gif'
+            : 'application/octet-stream';
       this.serveFileWithRange(req, res, fp, stGif.size, mimeGif, 'public, max-age=3600');
     } catch (eG) {
       res.writeHead(500);

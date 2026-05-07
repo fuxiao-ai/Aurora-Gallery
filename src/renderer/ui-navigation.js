@@ -105,10 +105,6 @@
     var onRenderDuplicatePageShell = options.onRenderDuplicatePageShell;
     var onRenderDuplicateSidebar = options.onRenderDuplicateSidebar;
     var onLoadDuplicateGroups = options.onLoadDuplicateGroups;
-    var onApplyFacesView = options.onApplyFacesView;
-    var onRenderFacesPageShell = options.onRenderFacesPageShell;
-    var onRenderFaceSidebar = options.onRenderFaceSidebar;
-    var onLoadFaceClusters = options.onLoadFaceClusters;
     var skipDeferFolderSidebar = !!options.skipDeferFolderSidebar;
 
     if (tab === 'folders') {
@@ -118,9 +114,7 @@
         var skipSidebarTree = false; // 相册页需拉子目录树；显式传入避免漏传第二参时误用 skipTree 快路径
         var shouldForceFresh = !!state._forceFreshFolderSidebarOnce;
         state._forceFreshFolderSidebarOnce = false;
-        var loadOpts = shouldForceFresh
-          ? { forceFetch: true, immediateHydrate: true }
-          : {};
+        var loadOpts = shouldForceFresh ? { forceFetch: true, immediateHydrate: true } : {};
         if (skipDeferFolderSidebar) {
           void onLoadRootFolders(silentRf, skipSidebarTree, loadOpts);
         } else {

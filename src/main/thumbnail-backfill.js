@@ -1,5 +1,10 @@
+const logger = require('./logger');
 const { getThumbOptions } = require('./settings');
-const { loadSharp, getFfmpegStaticPath: _getFfmpegStaticPath, getVideoFrameThumb: _getVideoFrameThumb } = require('./utils');
+const {
+  loadSharp,
+  getFfmpegStaticPath: _getFfmpegStaticPath,
+  getVideoFrameThumb: _getVideoFrameThumb,
+} = require('./utils');
 
 /** 单次补全任务记录的失败路径上限，避免极端情况下占用过多内存 */
 const THUMB_BACKFILL_FAILED_PATHS_MAX = 50000;
@@ -32,7 +37,7 @@ async function runRowsWithThumbConcurrency(
   buildVideoPlaceholderThumbnailFunc,
   extractVideoThumbnailWithFfmpegFunc,
   yieldForPreviewPlaybackMs,
-  emitBackgroundTasksChangedThrottled
+  emitBackgroundTasksChangedThrottled,
 ) {
   var n = rows.length;
   if (n === 0) return;
@@ -76,7 +81,7 @@ async function runRowsWithThumbConcurrency(
       result = { id: row.id, thumbnail: thumb };
     } catch (e) {
       // 任何错误都尝试生成占位图，尽可能减少缺失
-      console.error('Thumbnail generation failed for:', row.file_path, e.message);
+      logger.error('Thumbnail generation failed for:', row.file_path, e.message);
       try {
         var placeholder = await buildVideoPlaceholderThumbnailFunc(topts);
         thumbnailBackfill.success++;
@@ -92,7 +97,9 @@ async function runRowsWithThumbConcurrency(
     // 无论成功失败，计数都+1，确保进度准确
     thumbnailBackfill.done++;
     emitBackgroundTasksChangedThrottled(false);
-    await new Promise(function (resolve) { setImmediate(resolve); });
+    await new Promise(function (resolve) {
+      setImmediate(resolve);
+    });
     return result;
   }
 
@@ -106,7 +113,7 @@ async function runRowsWithThumbConcurrency(
       }
       db.commit();
     } catch (e) {
-      console.error('Mini-batch commit failed:', e.message);
+      logger.error('Mini-batch commit failed:', e.message);
       db.rollback();
       // 单条重试，减少失败
       for (var r2 of results) {
@@ -114,7 +121,7 @@ async function runRowsWithThumbConcurrency(
           db.updatePhotoThumbnail(r2.id, r2.thumbnail);
           thumbnailBackfill.success++;
         } catch (singleErr) {
-          console.error('Single update failed:', r2.id, singleErr.message);
+          logger.error('Single update failed:', r2.id, singleErr.message);
           thumbnailBackfill.failed++;
         }
       }
@@ -141,7 +148,9 @@ async function runRowsWithThumbConcurrency(
       // 定期让出保证进度更新到达UI
       if (next % yieldEvery === 0) {
         emitBackgroundTasksChangedThrottled(true);
-        await new Promise(function (resolve) { setImmediate(resolve); });
+        await new Promise(function (resolve) {
+          setImmediate(resolve);
+        });
       }
     }
   }
@@ -163,7 +172,7 @@ async function runThumbnailBackfill(
   buildVideoPlaceholderThumbnailFunc,
   extractVideoThumbnailWithFfmpegFunc,
   yieldForPreviewPlaybackMs,
-  emitBackgroundTasksChangedThrottled
+  emitBackgroundTasksChangedThrottled,
 ) {
   if (thumbnailBackfill.running) {
     return { started: false, reason: 'running' };
@@ -219,7 +228,7 @@ async function runThumbnailBackfill(
         buildVideoPlaceholderThumbnailFunc,
         extractVideoThumbnailWithFfmpegFunc,
         yieldForPreviewPlaybackMs,
-        emitBackgroundTasksChangedThrottled
+        emitBackgroundTasksChangedThrottled,
       );
       afterId = rows[rows.length - 1].id;
       processedInThisRun += rows.length;
@@ -229,7 +238,10 @@ async function runThumbnailBackfill(
 
     return { started: true };
   } finally {
-    thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(0, THUMB_BACKFILL_FAILED_PATHS_MAX);
+    thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(
+      0,
+      THUMB_BACKFILL_FAILED_PATHS_MAX,
+    );
     thumbnailBackfill.failedPaths = [];
     thumbnailBackfill.running = false;
     thumbnailBackfill.currentFile = '';

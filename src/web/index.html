@@ -41,9 +41,7 @@
         --shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
         --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
         --card-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
-        --card-shadow-hover:
-          0 18px 42px rgba(0, 0, 0, 0.45),
-          0 0 26px var(--accent-dim);
+        --card-shadow-hover: 0 18px 42px rgba(0, 0, 0, 0.45), 0 0 26px var(--accent-dim);
         --photo-card-ratio: 1 / 1;
         --glass: rgba(16, 16, 40, 0.7);
         --glass-border: rgba(123, 140, 255, 0.12);
@@ -740,7 +738,7 @@
       .grid.grid--masonry .photo-card:not(.folder-card) {
         align-self: start;
       }
-      .grid[data-use-media-ratio="1"] .photo-card:not(.folder-card) {
+      .grid[data-use-media-ratio='1'] .photo-card:not(.folder-card) {
         max-height: 70vh;
         max-aspect-ratio: 9/16;
       }
@@ -766,7 +764,7 @@
         content-visibility: auto;
         contain-intrinsic-size: 220px 275px;
       }
-      .grid:not([data-use-media-ratio="1"]) .photo-card {
+      .grid:not([data-use-media-ratio='1']) .photo-card {
         aspect-ratio: var(--photo-card-ratio);
       }
       .photo-card:hover {
@@ -790,7 +788,11 @@
         position: relative;
         overflow: hidden;
         background:
-          radial-gradient(ellipse 88% 68% at 50% 32%, color-mix(in srgb, var(--accent) 30%, transparent) 0%, transparent 64%),
+          radial-gradient(
+            ellipse 88% 68% at 50% 32%,
+            color-mix(in srgb, var(--accent) 30%, transparent) 0%,
+            transparent 64%
+          ),
           linear-gradient(
             168deg,
             color-mix(in srgb, var(--bg-secondary) 90%, var(--accent) 5%) 0%,
@@ -1793,10 +1795,7 @@
           display: flex !important;
         }
         .grid {
-          grid-template-columns: repeat(
-            auto-fill,
-            minmax(min(8.75rem, 46vw), 1fr)
-          );
+          grid-template-columns: repeat(auto-fill, minmax(min(8.75rem, 46vw), 1fr));
           gap: 8px;
         }
         .photo-card .photo-info {
@@ -2507,9 +2506,7 @@
       :root {
         --shell-gap: 16px;
         --shell-radius: 28px;
-        --panel-shadow:
-          0 18px 40px rgba(0, 0, 0, 0.28),
-          0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+        --panel-shadow: 0 18px 40px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
         --panel-shadow-strong:
           0 28px 72px rgba(0, 0, 0, 0.42),
           0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent) inset;
@@ -2522,11 +2519,8 @@
       }
       body {
         min-height: 100vh;
-        padding:
-          max(12px, env(safe-area-inset-top, 0px))
-          16px
-          max(16px, env(safe-area-inset-bottom, 0px))
-          16px;
+        padding: max(12px, env(safe-area-inset-top, 0px)) 16px
+          max(16px, env(safe-area-inset-bottom, 0px)) 16px;
         background:
           radial-gradient(
             1100px 620px at 50% -12%,
@@ -2893,11 +2887,8 @@
       }
       @media (max-width: 900px) {
         body {
-          padding:
-            max(10px, env(safe-area-inset-top, 0px))
-            12px
-            max(14px, env(safe-area-inset-bottom, 0px))
-            12px;
+          padding: max(10px, env(safe-area-inset-top, 0px)) 12px
+            max(14px, env(safe-area-inset-bottom, 0px)) 12px;
         }
         .header {
           min-height: 64px;
@@ -2924,11 +2915,8 @@
       }
       @media (max-width: 600px) {
         body {
-          padding:
-            max(8px, env(safe-area-inset-top, 0px))
-            8px
-            max(12px, env(safe-area-inset-bottom, 0px))
-            8px;
+          padding: max(8px, env(safe-area-inset-top, 0px)) 8px
+            max(12px, env(safe-area-inset-bottom, 0px)) 8px;
           gap: 8px;
         }
         .main {
@@ -2994,19 +2982,16 @@
 
     <!-- Header -->
     <div class="header">
-      <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="打开菜单">☰</button>
+      <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="打开菜单">
+        ☰
+      </button>
       <div class="header-title">拂晓图库 · Aurora Gallery</div>
       <div class="search-box">
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" placeholder="搜索照片..." aria-label="搜索照片" />
       </div>
       <div class="header-stats" id="headerStats"></div>
-      <select
-        id="webThemeStyle"
-        class="header-theme-select"
-        aria-label="主题风格"
-        title="主题风格"
-      >
+      <select id="webThemeStyle" class="header-theme-select" aria-label="主题风格" title="主题风格">
         <option value="midnight_classic">夜幕经典</option>
         <option value="ice_deep">深空冰蓝</option>
         <option value="amber_dawn">晨光琥珀</option>
@@ -3034,8 +3019,7 @@
 
       <!-- Content -->
       <div class="content">
-        <div class="toolbar" id="toolbar">
-        </div>
+        <div class="toolbar" id="toolbar"></div>
         <div class="photo-grid" id="photoGrid" style="position: relative">
           <div class="pull-refresh-indicator" id="pullRefreshIndicator"></div>
         </div>
@@ -3083,7 +3067,11 @@
         <span class="nav-label">设置</span>
       </div>
     </div>
-    <div class="mobile-filter-backdrop" id="mobileFilterBackdrop" onclick="closeMobileFilterSheet()"></div>
+    <div
+      class="mobile-filter-backdrop"
+      id="mobileFilterBackdrop"
+      onclick="closeMobileFilterSheet()"
+    ></div>
     <div class="mobile-filter-sheet" id="mobileFilterSheet">
       <div class="sheet-drag-handle" aria-hidden="true"></div>
       <div class="sheet-title">筛选与排序</div>
@@ -3165,7 +3153,11 @@
       <button class="preview-close" onclick="closePreview()" aria-label="关闭预览">×</button>
       <div class="preview-swipe-hint" id="previewSwipeHint">左右滑动切换</div>
       <div class="preview-body">
-        <button class="preview-nav preview-prev" onclick="navigatePreview(-1, event)" aria-label="上一张">
+        <button
+          class="preview-nav preview-prev"
+          onclick="navigatePreview(-1, event)"
+          aria-label="上一张"
+        >
           <
         </button>
         <div class="preview-loading" id="previewLoading">
@@ -3181,7 +3173,11 @@
           preload="metadata"
           style="display: none"
         ></video>
-        <button class="preview-nav preview-next" onclick="navigatePreview(1, event)" aria-label="下一张">
+        <button
+          class="preview-nav preview-next"
+          onclick="navigatePreview(1, event)"
+          aria-label="下一张"
+        >
           >
         </button>
       </div>
@@ -3194,7 +3190,6 @@
       </div>
     </div>
 
-    <script src="/vendor/hls.min.js"></script>
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
     <script src="/js/web-theme-shared.js"></script>

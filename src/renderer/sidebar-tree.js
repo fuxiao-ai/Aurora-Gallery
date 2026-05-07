@@ -388,7 +388,9 @@
           '<button type="button" class="sidebar-root-rescan" data-root-path="' +
           escapeAttr(root.path) +
           '" title="' +
-          escapeAttr(tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描')) +
+          escapeAttr(
+            tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描'),
+          ) +
           '" aria-label="' +
           escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
           '">↻</button>' +
@@ -519,8 +521,7 @@
       }
       root._hasSubFolders = tree.length > 0;
       var isActive =
-        st.currentView === 'folder' &&
-        normalizePath(st.currentPath) === normalizePath(root.path);
+        st.currentView === 'folder' && normalizePath(st.currentPath) === normalizePath(root.path);
       html += '<div class="tree-root">';
       html +=
         '<div class="folder-item tree-parent ' +
@@ -542,7 +543,9 @@
         '<button type="button" class="sidebar-root-rescan" data-root-path="' +
         escapeAttr(root.path) +
         '" title="' +
-        escapeAttr(tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描')) +
+        escapeAttr(
+          tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描'),
+        ) +
         '" aria-label="' +
         escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
         '">↻</button>' +
@@ -559,12 +562,17 @@
         (tree.length > 0 ? 'block' : 'none') +
         ';">';
       if (tree.length > 0) {
-        html += renderTreeNodes(tree, 1, {
-          state: st,
-          escapeAttr: escapeAttr,
-          escapeHtml: escapeHtml,
-          formatNumber: formatNumber,
-        }, globalBudget);
+        html += renderTreeNodes(
+          tree,
+          1,
+          {
+            state: st,
+            escapeAttr: escapeAttr,
+            escapeHtml: escapeHtml,
+            formatNumber: formatNumber,
+          },
+          globalBudget,
+        );
       }
       html += '</div></div>';
 
@@ -589,7 +597,10 @@
       sum += len;
       if (len > maxOne) maxOne = len;
     }
-    return sum >= SIDEBAR_TREE_PROGRESSIVE_FLAT_SUM_MIN || maxOne >= SIDEBAR_TREE_PROGRESSIVE_FLAT_ONE_MIN;
+    return (
+      sum >= SIDEBAR_TREE_PROGRESSIVE_FLAT_SUM_MIN ||
+      maxOne >= SIDEBAR_TREE_PROGRESSIVE_FLAT_ONE_MIN
+    );
   }
 
   async function prefetchFolderTreeMap(options) {
@@ -613,7 +624,7 @@
     for (r = 0; r < rootFolders.length; r++) {
       var root = rootFolders[r];
       if (allowMap && !allowMap[String(root && root.id)]) continue;
-      var folders = [];
+      var folders;
       try {
         var raw = await getFolderTree(root.id);
         folders = Array.isArray(raw) ? raw : [];

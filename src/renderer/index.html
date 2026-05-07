@@ -40,11 +40,13 @@
           <span data-i18n="menu.file">文件</span>
           <div class="dropdown-menu" id="menuFile">
             <div class="dropdown-item" data-menu-action="addFolder">
-              <span data-i18n="menu.file.addFolder">添加文件夹</span><span class="shortcut">Ctrl+O</span>
+              <span data-i18n="menu.file.addFolder">添加文件夹</span
+              ><span class="shortcut">Ctrl+O</span>
             </div>
             <div class="dropdown-sep"></div>
             <div class="dropdown-item" data-menu-action="hideToTray">
-              <span data-i18n="menu.file.hideTray">隐藏到托盘后台</span><span class="shortcut">Ctrl+Q</span>
+              <span data-i18n="menu.file.hideTray">隐藏到托盘后台</span
+              ><span class="shortcut">Ctrl+Q</span>
             </div>
             <div class="dropdown-item" data-menu-action="quitApp">
               <span data-i18n="menu.file.quit">退出拂晓图库</span>
@@ -67,7 +69,8 @@
             </div>
             <div class="dropdown-sep"></div>
             <div class="dropdown-item" data-menu-action="devtools">
-              <span data-i18n="menu.view.devtools">开发者工具</span><span class="shortcut">F12</span>
+              <span data-i18n="menu.view.devtools">开发者工具</span
+              ><span class="shortcut">F12</span>
             </div>
           </div>
         </div>
@@ -87,20 +90,10 @@
       <div class="titlebar-logo" data-i18n="brand">拂晓图库</div>
       <div class="titlebar-center"></div>
       <div class="titlebar-controls">
-        <button
-          class="titlebar-btn"
-          id="btnMinimize"
-          data-i18n-title="titlebar.min"
-          title="最小化"
-        >
+        <button class="titlebar-btn" id="btnMinimize" data-i18n-title="titlebar.min" title="最小化">
           ─
         </button>
-        <button
-          class="titlebar-btn"
-          id="btnMaximize"
-          data-i18n-title="titlebar.max"
-          title="最大化"
-        >
+        <button class="titlebar-btn" id="btnMaximize" data-i18n-title="titlebar.max" title="最大化">
           ☐
         </button>
         <button
@@ -161,7 +154,12 @@
         <option value="cherry_blossom" data-i18n="theme.cherry_blossom">樱雾粉昼</option>
         <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
       </select>
-      <button class="topbar-settings-btn" id="topbarSettingsBtn" type="button" data-i18n="topbar.manage">
+      <button
+        class="topbar-settings-btn"
+        id="topbarSettingsBtn"
+        type="button"
+        data-i18n="topbar.manage"
+      >
         管理设置
       </button>
     </div>
@@ -191,10 +189,20 @@
             <span id="progressText" data-i18n="task.scanning">正在扫描...</span>
             <div class="progress-actions">
               <span id="progressCount">0 / 0</span>
-              <button type="button" class="btn btn-sm" id="pauseResumeScanBtn" data-i18n="task.pause">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="pauseResumeScanBtn"
+                data-i18n="task.pause"
+              >
                 暂停
               </button>
-              <button type="button" class="btn btn-sm progress-cancel-btn" id="cancelScanBtn" data-i18n="task.stop">
+              <button
+                type="button"
+                class="btn btn-sm progress-cancel-btn"
+                id="cancelScanBtn"
+                data-i18n="task.stop"
+              >
                 停止
               </button>
             </div>
@@ -228,7 +236,9 @@
         </div>
         <div id="taskInvalidCleanupSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="invalidCleanupProgressTitle" data-i18n="task.invalidCleanup">清理无效文件记录</span>
+            <span id="invalidCleanupProgressTitle" data-i18n="task.invalidCleanup"
+              >清理无效文件记录</span
+            >
             <div class="progress-actions">
               <span id="invalidCleanupProgressCount">0 / 0</span>
             </div>
@@ -411,7 +421,9 @@
 
       <!-- 管理页面（独立于 content-area） -->
       <div class="settings-page" id="settingsPage" style="display: none">
-        <div class="settings-back" role="button" tabindex="0" data-i18n="settings.back">返回相册</div>
+        <div class="settings-back" role="button" tabindex="0" data-i18n="settings.back">
+          返回相册
+        </div>
         <div class="settings-header" id="settingsSectionFolders">
           <div>
             <div class="settings-title" data-i18n="settings.foldersTitle">相册目录管理</div>
@@ -452,7 +464,9 @@
           <div class="settings-section-title" data-i18n="settings.closeSection">关闭按钮</div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.closeLabel">点击标题栏 ✕ / Alt+F4 时：</div>
+              <div class="setting-label" data-i18n="settings.closeLabel">
+                点击标题栏 ✕ / Alt+F4 时：
+              </div>
               <div class="setting-desc" data-i18n="settings.closeDesc">
                 控制主窗口关闭按钮的默认动作；选「每次询问」将弹出与当前主题一致的选择对话框（仍可勾选「设为默认」写入此处选项）。修改下拉选项后立即写入配置并生效
               </div>
@@ -585,7 +599,9 @@
                 data-i18n-aria-label="settings.themeStyleAria"
                 aria-label="界面风格"
               >
-                <option value="midnight_classic" data-i18n="theme.midnight_classic">夜幕经典</option>
+                <option value="midnight_classic" data-i18n="theme.midnight_classic">
+                  夜幕经典
+                </option>
                 <option value="ice_deep" data-i18n="theme.ice_deep">深空冰蓝</option>
                 <option value="amber_dawn" data-i18n="theme.amber_dawn">晨光琥珀</option>
                 <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
@@ -625,26 +641,41 @@
                       class="setting-inline-label"
                       for="settingBrowseSort"
                       data-i18n="settings.browse.defaultSort"
-                      >默认排序</label>
+                      >默认排序</label
+                    >
                     <select id="settingBrowseSort" class="sort-select settings-browse-select-grow">
-                      <option value="date_taken|DESC" data-i18n="sort.dateTakenDesc">最新拍摄</option>
+                      <option value="date_taken|DESC" data-i18n="sort.dateTakenDesc">
+                        最新拍摄
+                      </option>
                       <option value="date_taken|ASC" data-i18n="sort.dateTakenAsc">最早拍摄</option>
-                      <option value="date_modified|DESC" data-i18n="settings.browse.sort.dateModifiedDesc">
+                      <option
+                        value="date_modified|DESC"
+                        data-i18n="settings.browse.sort.dateModifiedDesc"
+                      >
                         最近修改
                       </option>
-                      <option value="date_modified|ASC" data-i18n="settings.browse.sort.dateModifiedAsc">
+                      <option
+                        value="date_modified|ASC"
+                        data-i18n="settings.browse.sort.dateModifiedAsc"
+                      >
                         最早修改
                       </option>
                       <option value="file_name|ASC" data-i18n="sort.fileNameAsc">文件名 A-Z</option>
-                      <option value="file_name|DESC" data-i18n="sort.fileNameDesc">文件名 Z-A</option>
+                      <option value="file_name|DESC" data-i18n="sort.fileNameDesc">
+                        文件名 Z-A
+                      </option>
                       <option value="file_size|DESC" data-i18n="settings.browse.sort.largestFile">
                         最大文件
                       </option>
                       <option value="file_size|ASC" data-i18n="settings.browse.sort.smallestFile">
                         最小文件
                       </option>
-                      <option value="folder_path|ASC" data-i18n="settings.browse.sort.pathAsc">路径 A-Z</option>
-                      <option value="folder_path|DESC" data-i18n="settings.browse.sort.pathDesc">路径 Z-A</option>
+                      <option value="folder_path|ASC" data-i18n="settings.browse.sort.pathAsc">
+                        路径 A-Z
+                      </option>
+                      <option value="folder_path|DESC" data-i18n="settings.browse.sort.pathDesc">
+                        路径 Z-A
+                      </option>
                     </select>
                   </div>
                   <div class="settings-browse-field settings-browse-field--stack">
@@ -652,7 +683,8 @@
                       class="setting-inline-label"
                       for="settingBrowseFolderIncludeSubfolders"
                       data-i18n="settings.browse.folderScope"
-                      >目录浏览范围</label>
+                      >目录浏览范围</label
+                    >
                     <select
                       id="settingBrowseFolderIncludeSubfolders"
                       class="sort-select settings-browse-select-wide"
@@ -662,9 +694,14 @@
                       <option value="1" selected data-i18n="settings.browse.includeSubfolders">
                         包含子文件夹
                       </option>
-                      <option value="0" data-i18n="settings.browse.currentFolderOnly">仅当前文件夹</option>
+                      <option value="0" data-i18n="settings.browse.currentFolderOnly">
+                        仅当前文件夹
+                      </option>
                     </select>
-                    <p class="settings-browse-hint" data-i18n-html="settings.browse.folderScopeHintHtml"></p>
+                    <p
+                      class="settings-browse-hint"
+                      data-i18n-html="settings.browse.folderScopeHintHtml"
+                    ></p>
                   </div>
                 </div>
               </section>
@@ -685,7 +722,8 @@
                       class="setting-inline-label"
                       for="settingBrowsePageSize"
                       data-i18n="settings.browse.pageSize"
-                      >每页显示</label>
+                      >每页显示</label
+                    >
                     <select
                       id="settingBrowsePageSize"
                       class="sort-select"
@@ -704,14 +742,17 @@
                       class="setting-inline-label"
                       for="settingBrowseGridStyle"
                       data-i18n="settings.browse.gridStyle"
-                      >网格与比例</label>
+                      >网格与比例</label
+                    >
                     <select
                       id="settingBrowseGridStyle"
                       class="sort-select"
                       data-i18n-aria-label="settings.browse.gridStyleAria"
                       aria-label="网格布局与卡片比例"
                     >
-                      <option value="masonry" data-i18n="settings.browse.grid.opt.masonry">原比例瀑布流</option>
+                      <option value="masonry" data-i18n="settings.browse.grid.opt.masonry">
+                        原比例瀑布流
+                      </option>
                       <option value="uniform|1 / 1" data-i18n="settings.browse.grid.opt.u11">
                         统一高度 · 1:1
                       </option>
@@ -734,7 +775,8 @@
                       class="setting-inline-label"
                       for="settingBrowseCardSize"
                       data-i18n="settings.browse.cardTier"
-                      >网格卡片</label>
+                      >网格卡片</label
+                    >
                     <select
                       id="settingBrowseCardSize"
                       class="sort-select"
@@ -752,7 +794,8 @@
                       class="setting-inline-label"
                       for="settingBrowseThumbCrop"
                       data-i18n="settings.browse.thumbCrop"
-                      >缩微图裁剪</label>
+                      >缩微图裁剪</label
+                    >
                     <select
                       id="settingBrowseThumbCrop"
                       class="sort-select"
@@ -770,7 +813,9 @@
         </div>
 
         <div class="settings-section" id="settingsSectionMedia">
-          <div class="settings-section-title" data-i18n="settings.section.mediaData">缩略图、预览与数据</div>
+          <div class="settings-section-title" data-i18n="settings.section.mediaData">
+            缩略图、预览与数据
+          </div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
               <div class="setting-label" data-i18n="settings.previewInfo">预览信息显示</div>
@@ -778,10 +823,7 @@
                 大图预览底部一行信息（文件名、时间、大小等）可逐项关闭；勾选变更后立即写入配置
               </div>
             </div>
-            <div
-              class="preview-display-toggles"
-              style="display: flex; gap: 10px"
-            >
+            <div class="preview-display-toggles" style="display: flex; gap: 10px">
               <label class="setting-checkbox-row">
                 <input
                   type="checkbox"
@@ -831,7 +873,9 @@
           </div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.subtitleStyleSection">字幕字体样式</div>
+              <div class="setting-label" data-i18n="settings.subtitleStyleSection">
+                字幕字体样式
+              </div>
               <div class="setting-desc" data-i18n="settings.subtitleStyleDesc">
                 可调整预览视频字幕的字体、大小、粗细与颜色，修改后立即生效并保存。
               </div>
@@ -864,7 +908,9 @@
               </select>
               <span class="setting-inline-label" data-i18n="settings.subtitle.color">颜色</span>
               <select id="settingSubtitleColor" class="sort-select">
-                <option value="white" data-i18n="settings.subtitle.color.white">白色（默认）</option>
+                <option value="white" data-i18n="settings.subtitle.color.white">
+                  白色（默认）
+                </option>
                 <option value="yellow" data-i18n="settings.subtitle.color.yellow">淡黄</option>
                 <option value="cyan" data-i18n="settings.subtitle.color.cyan">浅青</option>
                 <option value="green" data-i18n="settings.subtitle.color.green">浅绿</option>
@@ -875,8 +921,14 @@
           </div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.thumbSizeQuality">缩略图尺寸与质量</div>
-              <div class="setting-desc" id="thumbSettingHint" data-i18n="settings.thumbSizeQualityDesc">
+              <div class="setting-label" data-i18n="settings.thumbSizeQuality">
+                缩略图尺寸与质量
+              </div>
+              <div
+                class="setting-desc"
+                id="thumbSettingHint"
+                data-i18n="settings.thumbSizeQualityDesc"
+              >
                 仅影响之后新生成的缩略图；已入库的缩略图不会自动变更。修改下拉后请点击「确认应用」写入配置。
               </div>
               <div class="thumb-settings-current" id="thumbSettingsCurrentLine" aria-live="polite">
@@ -958,11 +1010,27 @@
 
           <!-- 后台任务与维护（操作按钮统一对齐） -->
           <div class="settings-task-group">
-            <div class="setting-item settings-task-row" style="flex-direction: column; align-items: stretch; gap: 10px">
-              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px">
+            <div
+              class="setting-item settings-task-row"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
+            >
+              <div
+                style="
+                  display: flex;
+                  align-items: flex-start;
+                  justify-content: space-between;
+                  gap: 12px;
+                "
+              >
                 <div class="setting-info" style="flex: 1; min-width: 0">
-                  <div class="setting-label" data-i18n="settings.task.thumbBackfill">缩略图补全</div>
-                  <div class="setting-desc" id="thumbBackfillStatus" data-i18n="settings.task.thumbBackfillDesc">
+                  <div class="setting-label" data-i18n="settings.task.thumbBackfill">
+                    缩略图补全
+                  </div>
+                  <div
+                    class="setting-desc"
+                    id="thumbBackfillStatus"
+                    data-i18n="settings.task.thumbBackfillDesc"
+                  >
                     为尚无缩略图的照片后台补齐预览图
                   </div>
                 </div>
@@ -998,7 +1066,9 @@
                 </div>
               </div>
               <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
-                <span class="setting-inline-label" data-i18n="settings.task.thumbConcurrency">同时处理</span>
+                <span class="setting-inline-label" data-i18n="settings.task.thumbConcurrency"
+                  >同时处理</span
+                >
                 <select
                   id="settingThumbBackfillConcurrency"
                   class="sort-select"
@@ -1017,14 +1087,19 @@
                   class="setting-desc"
                   style="margin: 0"
                   data-i18n="settings.task.thumbConcurrencyHint"
-                  >越大越快，占用内存和磁盘读也更多</span>
+                  >越大越快，占用内存和磁盘读也更多</span
+                >
               </div>
             </div>
 
             <div class="setting-item settings-task-row">
               <div class="setting-info">
                 <div class="setting-label" data-i18n="settings.task.dupHash">重复照片比对</div>
-                <div class="setting-desc" id="duplicateHashStatus" data-i18n="settings.task.dupHashDesc">
+                <div
+                  class="setting-desc"
+                  id="duplicateHashStatus"
+                  data-i18n="settings.task.dupHashDesc"
+                >
                   比对照片文件内容，找出完全相同的重复项。只处理「还没比对过、且文件仍在电脑上」的照片；若都已比对过，无需再点。
                 </div>
               </div>
@@ -1054,8 +1129,14 @@
               style="flex-direction: column; align-items: stretch; gap: 10px"
             >
               <div class="setting-info">
-                <div class="setting-label" data-i18n="settings.task.maintenance">数据库维护工具</div>
-                <div class="setting-desc" id="maintenanceStatus" data-i18n="settings.task.maintenanceDesc">
+                <div class="setting-label" data-i18n="settings.task.maintenance">
+                  数据库维护工具
+                </div>
+                <div
+                  class="setting-desc"
+                  id="maintenanceStatus"
+                  data-i18n="settings.task.maintenanceDesc"
+                >
                   可清理失效记录、重建缩略图标记并优化数据库
                 </div>
               </div>
@@ -1124,7 +1205,8 @@
                     class="setting-status online"
                     id="webServerStatus"
                     data-i18n="settings.network.statusOn"
-                    >运行</span>
+                    >运行</span
+                  >
                 </div>
                 <div class="setting-desc" data-i18n="settings.network.urlDesc">
                   同一局域网内的设备可通过此地址访问相册
@@ -1137,7 +1219,9 @@
             </div>
             <div class="web-url-box" id="webUrlBox" role="button" tabindex="0">
               <span id="webUrlText" data-i18n="settings.network.starting">启动中...</span>
-              <span class="web-url-copy" id="webUrlCopy" data-i18n="settings.network.copy">点击复制</span>
+              <span class="web-url-copy" id="webUrlCopy" data-i18n="settings.network.copy"
+                >点击复制</span
+              >
             </div>
           </div>
           <div class="setting-item setting-item-password">
@@ -1148,7 +1232,8 @@
                   class="setting-status offline"
                   id="webPasswordStatusBadge"
                   data-i18n="settings.network.passwordUnsetBadge"
-                  >未设置</span>
+                  >未设置</span
+                >
               </div>
               <div class="setting-desc" data-i18n="settings.network.passwordDesc">
                 设置后浏览器访问需要输入密码（留空则无密码）；输入后请点击「确认应用」保存访问密码。
@@ -1197,12 +1282,15 @@
             >
               <div class="setting-info">
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-                  <div class="setting-label" data-i18n="settings.network.tunnel">Cloudflare Tunnel</div>
+                  <div class="setting-label" data-i18n="settings.network.tunnel">
+                    Cloudflare Tunnel
+                  </div>
                   <span
                     class="setting-status offline"
                     id="tunnelStatusBadge"
                     data-i18n="settings.network.tunnelOff"
-                    >未开启</span>
+                    >未开启</span
+                  >
                 </div>
                 <div class="setting-desc" data-i18n="settings.network.tunnelDesc">
                   开启后生成公网地址；为安全起见，必须先设置访问密码。此开关仅控制当前会话，不会默认随应用启动自动开启。
@@ -1213,10 +1301,19 @@
                 <span class="toggle-slider"></span>
               </label>
             </div>
-            <div class="setting-desc" id="tunnelBinaryPathText" data-i18n="settings.network.tunnelBinaryChecking">
+            <div
+              class="setting-desc"
+              id="tunnelBinaryPathText"
+              data-i18n="settings.network.tunnelBinaryChecking"
+            >
               cloudflared：检测中...
             </div>
-            <div class="setting-desc" id="tunnelLogHint" style="display: none" data-i18n="settings.network.tunnelLogHint">
+            <div
+              class="setting-desc"
+              id="tunnelLogHint"
+              style="display: none"
+              data-i18n="settings.network.tunnelLogHint"
+            >
               启动日志（仅失败时显示，可复制发给我排查）
             </div>
             <div
@@ -1241,13 +1338,20 @@
                   flex: 1;
                 "
               ></pre>
-              <button type="button" class="btn btn-sm" id="tunnelLogCopyBtn" data-i18n="settings.network.tunnelCopyLog">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="tunnelLogCopyBtn"
+                data-i18n="settings.network.tunnelCopyLog"
+              >
                 复制日志
               </button>
             </div>
             <div class="web-url-box" id="tunnelUrlBox" role="button" tabindex="0">
               <span id="tunnelUrlText" data-i18n="settings.network.tunnelUrlPending">未获取</span>
-              <span class="web-url-copy" id="tunnelUrlCopy" data-i18n="settings.network.copy">点击复制</span>
+              <span class="web-url-copy" id="tunnelUrlCopy" data-i18n="settings.network.copy"
+                >点击复制</span
+              >
             </div>
           </div>
         </div>
@@ -1291,7 +1395,12 @@
               </button>
             </div>
             <div class="preview-controls-group preview-controls-actions">
-              <button type="button" class="btn btn-sm" id="previewFullscreenBtn" data-i18n="preview.fullscreen">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewFullscreenBtn"
+                data-i18n="preview.fullscreen"
+              >
                 ⛶ 全屏
               </button>
               <button
@@ -1311,7 +1420,9 @@
                 aria-label="字幕来源"
                 style="display: none"
               >
-                <option value="external_auto" selected data-i18n="preview.subtitle.auto">字幕: 自动</option>
+                <option value="external_auto" selected data-i18n="preview.subtitle.auto">
+                  字幕: 自动
+                </option>
                 <option value="off" data-i18n="preview.subtitle.off">字幕: 关闭</option>
               </select>
               <button
@@ -1485,9 +1596,15 @@
         <div class="preview-info" id="previewInfo">
           <div class="preview-info-main" id="previewInfoMain"></div>
         </div>
-        <div class="preview-subtitle-settings-panel" id="previewSubtitleSettingsPanel" style="display: none">
+        <div
+          class="preview-subtitle-settings-panel"
+          id="previewSubtitleSettingsPanel"
+          style="display: none"
+        >
           <div class="row">
-            <label for="previewSubtitleSizeInput" data-i18n="preview.subtitlePanel.size">字号</label>
+            <label for="previewSubtitleSizeInput" data-i18n="preview.subtitlePanel.size"
+              >字号</label
+            >
             <input
               id="previewSubtitleSizeInput"
               type="number"
@@ -1499,7 +1616,9 @@
             <span>px</span>
           </div>
           <div class="row">
-            <label for="previewSubtitleWeightSelect" data-i18n="preview.subtitlePanel.weight">字重</label>
+            <label for="previewSubtitleWeightSelect" data-i18n="preview.subtitlePanel.weight"
+              >字重</label
+            >
             <select id="previewSubtitleWeightSelect" class="ui-select preview-toolbar-select">
               <option value="normal" data-i18n="settings.subtitle.weight.normal">常规</option>
               <option value="medium" data-i18n="settings.subtitle.weight.medium">中等</option>
@@ -1507,7 +1626,9 @@
             </select>
           </div>
           <div class="row">
-            <label for="previewSubtitleColorSelect" data-i18n="preview.subtitlePanel.color">颜色</label>
+            <label for="previewSubtitleColorSelect" data-i18n="preview.subtitlePanel.color"
+              >颜色</label
+            >
             <select id="previewSubtitleColorSelect" class="ui-select preview-toolbar-select">
               <option value="white" data-i18n="settings.subtitle.color.white">白色</option>
               <option value="yellow" data-i18n="settings.subtitle.color.yellow">淡黄</option>
@@ -1538,7 +1659,11 @@
         </div>
       </div>
       <div class="preview-zoom-box" id="previewZoomBox">
-        <div class="preview-zoom-tooltip" role="tooltip" data-i18n-html="preview.zoomHelpHtml"></div>
+        <div
+          class="preview-zoom-tooltip"
+          role="tooltip"
+          data-i18n-html="preview.zoomHelpHtml"
+        ></div>
         <div class="preview-zoom" id="previewZoom" tabindex="0">100%</div>
       </div>
     </div>
@@ -1579,7 +1704,12 @@
           >
             退出程序
           </button>
-          <button type="button" class="btn btn-sm" id="closeChoiceCancelBtn" data-i18n="closeOverlay.cancel">
+          <button
+            type="button"
+            class="btn btn-sm"
+            id="closeChoiceCancelBtn"
+            data-i18n="closeOverlay.cancel"
+          >
             取消
           </button>
         </div>
@@ -1599,10 +1729,20 @@
         <h3 class="app-dialog-title" id="appDialogTitle" data-i18n="dialog.title">提示</h3>
         <div class="app-dialog-message" id="appDialogMessage"></div>
         <div class="app-dialog-actions" id="appDialogActions">
-          <button type="button" class="btn btn-sm" id="appDialogCancelBtn" data-i18n="dialog.cancel">
+          <button
+            type="button"
+            class="btn btn-sm"
+            id="appDialogCancelBtn"
+            data-i18n="dialog.cancel"
+          >
             取消
           </button>
-          <button type="button" class="btn btn-sm btn-primary" id="appDialogOkBtn" data-i18n="dialog.ok">
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            id="appDialogOkBtn"
+            data-i18n="dialog.ok"
+          >
             确定
           </button>
         </div>
@@ -1611,6 +1751,7 @@
 
     <script src="i18n.js"></script>
     <script src="utils.js"></script>
+    <script src="logger.js"></script>
     <script src="api.js"></script>
     <script src="ui-navigation.js"></script>
     <script src="sidebar-tree.js"></script>
@@ -1619,7 +1760,6 @@
     <script src="ui-settings.js"></script>
     <script src="settings.js"></script>
     <script src="scan-flow.js"></script>
-    <script src="vendor/hls.min.js"></script>
     <script src="../hls-attach.js"></script>
     <script src="../playback-strategy.js"></script>
     <script src="preview-flow.js"></script>

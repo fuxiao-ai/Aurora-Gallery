@@ -154,8 +154,7 @@
       'closeOverlay.quit': '退出程序',
       'closeOverlay.cancel': '取消',
       'closeOverlay.remember': '将本次选择的按钮设为默认关闭方式',
-      'closeOverlay.hint':
-        '提示：文件菜单中的「隐藏到托盘后台」「退出拂晓图库」不受此项影响',
+      'closeOverlay.hint': '提示：文件菜单中的「隐藏到托盘后台」「退出拂晓图库」不受此项影响',
       'theme.midnight_classic': '夜幕经典',
       'theme.ice_deep': '深空冰蓝',
       'theme.amber_dawn': '晨光琥珀',
@@ -205,7 +204,8 @@
       'settings.themeStyleAria': '界面风格',
       'settings.section.browse': '浏览偏好',
       'settings.browse.defaultMode': '默认浏览方式',
-      'settings.browse.defaultModeDesc': '以下选项在更改后会自动保存并刷新当前相册视图（若在管理页中）。',
+      'settings.browse.defaultModeDesc':
+        '以下选项在更改后会自动保存并刷新当前相册视图（若在管理页中）。',
       'settings.browse.groupSort': '排序与目录范围',
       'settings.browse.defaultSort': '默认排序',
       'settings.browse.sort.dateModifiedDesc': '最近修改',
@@ -248,7 +248,8 @@
       'settings.previewShow.dimensions': '宽高（像素）',
       'settings.previewShow.position': '当前位置 [序号/总数]',
       'settings.subtitleStyleSection': '字幕字体样式',
-      'settings.subtitleStyleDesc': '可调整预览视频字幕的字体、大小、粗细与颜色，修改后立即生效并保存。',
+      'settings.subtitleStyleDesc':
+        '可调整预览视频字幕的字体、大小、粗细与颜色，修改后立即生效并保存。',
       'settings.subtitle.font': '字体',
       'settings.subtitle.font.system': '系统无衬线',
       'settings.subtitle.font.serif': '衬线字体',
@@ -293,7 +294,6 @@
       'settings.task.thumbExportFailTitle':
         '将当前或上一轮补全中失败文件的路径导出为 txt（每行一条）',
       'settings.task.thumbExportFailedPaths': '导出失败路径',
-      'settings.task.thumbExportFail': '导出失败路径',
       'settings.task.thumbConcurrency': '同时处理',
       'settings.task.thumbConcurrencyAria': '缩略图补全同时处理张数',
       'settings.task.thumbConcurrencyHint': '越大越快，占用内存和磁盘读也更多',
@@ -340,8 +340,7 @@
       'settings.folderEmptyTitle': '暂无相册目录',
       'settings.folderEmptyDesc': '点击上方「添加目录」按钮开始管理照片',
       'settings.folderRescan': '重新扫描',
-      'settings.folderRescanTitle':
-        '子文件夹移动、重命名或大量增删照片后，请重新扫描以同步索引',
+      'settings.folderRescanTitle': '子文件夹移动、重命名或大量增删照片后，请重新扫描以同步索引',
       'settings.folderRemove': '移除',
       'settings.network.statusNotReady': '未就绪',
       'settings.network.urlWhenOff': '未开启',
@@ -362,7 +361,8 @@
       'settings.network.passwordCleared': '访问密码已清除',
       'settings.network.passwordSaveFail': '保存访问密码失败：{error}',
       'settings.network.logCopied': '已复制',
-      'settings.task.hlsHintCurrentFmt': '当前生效：{gb}GB / {entries} 目录（磁盘上限 0GB 表示不限）',
+      'settings.task.hlsHintCurrentFmt':
+        '当前生效：{gb}GB / {entries} 目录（磁盘上限 0GB 表示不限）',
       'settings.task.thumbEtaPrefix': '，',
       'settings.task.thumbProgressRunning':
         '补全中 {done}/{total}（{pct}%），成功 {success}，失败 {failed}{eta}',
@@ -378,8 +378,7 @@
         '检测中 {done}/{total}（{pct}%），新算哈希 {hashed}，复用缓存 {reused}，失败 {failed}',
       'settings.task.dupProgressDone':
         '{doneLabel}：全量 {total}，新算哈希 {hashed}，复用缓存 {reused}，失败 {failed}；重复组 {groups}，重复照片 {photos}',
-      'settings.task.dupIdle':
-        '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
+      'settings.task.dupIdle': '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
       'settings.task.dupReadError': '重复检测状态读取失败',
       'settings.task.dupStarting': '正在启动重复检测任务...',
       'settings.task.dupStartFail': '启动失败：{error}',
@@ -700,8 +699,7 @@
       'settings.subtitle.color.pink': 'Pink',
       'settings.subtitle.sizeAria': 'Subtitle size',
       'settings.thumbSizeQuality': 'Thumbnail size & quality',
-      'settings.thumbSizeQualityDesc':
-        'Affects new thumbnails only. Use Apply to save changes.',
+      'settings.thumbSizeQualityDesc': 'Affects new thumbnails only. Use Apply to save changes.',
       'settings.thumbCurrentLineFmt': 'Current: max edge {size} px · JPEG quality {quality}',
       'settings.thumbCurrentLoading': 'Current: loading…',
       'settings.thumbPendingHint': 'Pending changes — click Apply to save',
@@ -726,7 +724,6 @@
       'settings.task.thumbExportFailTitle':
         'Export failed paths from the current or last run as .txt (one path per line)',
       'settings.task.thumbExportFailedPaths': 'Export failed paths',
-      'settings.task.thumbExportFail': 'Export failed paths',
       'settings.task.thumbConcurrency': 'Parallel jobs',
       'settings.task.thumbConcurrencyAria': 'Thumbnail backfill concurrency',
       'settings.task.thumbConcurrencyHint': 'Higher is faster but uses more RAM and disk I/O',
@@ -789,7 +786,8 @@
       'settings.network.tunnelBinaryReadError': 'cloudflared: read failed',
       'settings.network.webToggleFail': 'Could not toggle LAN access: {error}',
       'settings.network.tunnelPwdFirst': 'Set a web access password before enabling Tunnel.',
-      'settings.network.tunnelApplyPwdFirst': 'Click Apply to save the password before enabling Tunnel.',
+      'settings.network.tunnelApplyPwdFirst':
+        'Click Apply to save the password before enabling Tunnel.',
       'settings.network.tunnelToggleFail': 'Tunnel action failed: {error}',
       'settings.network.passwordSaved': 'Access password saved',
       'settings.network.passwordCleared': 'Access password cleared',
@@ -800,7 +798,8 @@
       'settings.task.thumbEtaPrefix': ', ',
       'settings.task.thumbProgressRunning':
         'Backfilling {done}/{total} ({pct}%), ok {success}, failed {failed}{eta}',
-      'settings.task.thumbProgressDone': '{doneLabel}: total {total}, ok {success}, failed {failed}',
+      'settings.task.thumbProgressDone':
+        '{doneLabel}: total {total}, ok {success}, failed {failed}',
       'settings.task.thumbStopped': 'Stopped',
       'settings.task.thumbCompleted': 'Done',
       'settings.task.thumbReadError': 'Could not read backfill status',
@@ -826,7 +825,8 @@
       'settings.task.maintRebuildRunning': 'Rebuilding thumbnail flags…',
       'settings.task.maintRebuildFail': 'Rebuild failed: {error}',
       'settings.task.maintRebuildDone': 'Done: still missing thumbnails: {missing}',
-      'settings.task.maintOptimizeConfirm': 'Optimize the database (may take a few seconds). Continue?',
+      'settings.task.maintOptimizeConfirm':
+        'Optimize the database (may take a few seconds). Continue?',
       'settings.task.maintOptimizing': 'Optimizing database…',
       'settings.task.maintOptimizeFail': 'Optimize failed: {error}',
       'settings.task.maintOptimizeDone': 'Database optimized',
@@ -879,7 +879,9 @@
   var current = 'zh-CN';
 
   function normalizeLocale(raw) {
-    var s = String(raw || '').trim().toLowerCase();
+    var s = String(raw || '')
+      .trim()
+      .toLowerCase();
     if (s === 'en' || s === 'en-us' || s === 'english') return 'en';
     return 'zh-CN';
   }

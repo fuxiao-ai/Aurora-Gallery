@@ -111,7 +111,9 @@
       if (window.I18n && typeof window.I18n.t === 'function') {
         btn.textContent = collapsed ? window.I18n.t('task.expand') : window.I18n.t('task.collapse');
       } else {
-        btn.textContent = collapsed ? tShell('task.expand', '展开') : tShell('task.collapse', '收起');
+        btn.textContent = collapsed
+          ? tShell('task.expand', '展开')
+          : tShell('task.collapse', '收起');
       }
       btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     }
@@ -358,7 +360,8 @@
         stEl.classList.remove('online');
         stEl.classList.add('offline');
       }
-      if (binEl) binEl.textContent = tNet('settings.network.tunnelBinaryReadError', 'cloudflared：读取失败');
+      if (binEl)
+        binEl.textContent = tNet('settings.network.tunnelBinaryReadError', 'cloudflared：读取失败');
     }
   }
 

@@ -83,7 +83,9 @@ class CatalogCacheDb {
   }
 
   keyFolderTree(rootId, mediaKey) {
-    return 'folderTree|root:' + String(parseInt(rootId, 10) || 0) + '|media:' + String(mediaKey || 'all');
+    return (
+      'folderTree|root:' + String(parseInt(rootId, 10) || 0) + '|media:' + String(mediaKey || 'all')
+    );
   }
 
   getRootFolders(options) {
@@ -103,11 +105,7 @@ class CatalogCacheDb {
 
   setFolderTree(rootId, rows, options, ttlMs) {
     var mediaKey = normalizeMediaKey(options || {});
-    this.setJson(
-      this.keyFolderTree(rootId, mediaKey),
-      Array.isArray(rows) ? rows : [],
-      ttlMs,
-    );
+    this.setJson(this.keyFolderTree(rootId, mediaKey), Array.isArray(rows) ? rows : [], ttlMs);
   }
 
   invalidateAllCatalogCaches() {
@@ -129,10 +127,11 @@ class CatalogCacheDb {
     }
     // 子目录树只删该 root 的缓存。
     for (i = 0; i < mediaKeys.length; i++) {
-      this.db.prepare('DELETE FROM kv_cache WHERE key = ?').run(this.keyFolderTree(rid, mediaKeys[i]));
+      this.db
+        .prepare('DELETE FROM kv_cache WHERE key = ?')
+        .run(this.keyFolderTree(rid, mediaKeys[i]));
     }
   }
 }
 
 module.exports = { CatalogCacheDb, normalizeMediaKey };
-

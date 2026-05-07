@@ -1,8 +1,48 @@
 /**
  * 使用 hls.js（或 Safari 原生 HLS）播放 m3u8
+ * hls.min.js 按需加载：首次需要 Hls 时才动态注入脚本，削减首屏 841KB。
  */
 (function (global) {
   'use strict';
+
+  var HLS_SCRIPT_URL = '../web/vendor/hls.min.js';
+  var _hlsLoading = false;
+  var _hlsCallbacks = [];
+
+  function loadHlsScript() {
+    if (typeof Hls !== 'undefined') return;
+    if (_hlsLoading) return;
+    _hlsLoading = true;
+    var script = document.createElement('script');
+    script.src = HLS_SCRIPT_URL;
+    script.onload = function () {
+      _hlsLoading = false;
+      _hlsCallbacks.forEach(function (cb) {
+        try {
+          cb();
+        } catch (_e) {}
+      });
+      _hlsCallbacks = [];
+    };
+    script.onerror = function () {
+      _hlsLoading = false;
+      _hlsCallbacks = [];
+    };
+    document.head.appendChild(script);
+  }
+
+  function whenHlsReady(callback) {
+    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+      try {
+        callback();
+      } catch (_e) {}
+      return;
+    }
+    if (typeof Hls === 'undefined') {
+      _hlsCallbacks.push(callback);
+      loadHlsScript();
+    }
+  }
 
   function sessionIdFromPlaylistUrl(u) {
     var m = String(u || '').match(/\/hls\/([a-f0-9]{24})\//);
@@ -51,7 +91,13 @@
       video.dataset.photoHlsSessionId = sid;
     }
 
-    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+    /* Safari 原生支持 HLS（hls.js 在 Safari 上 isSupported 返回 false） */
+    if (video.canPlayType && video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = playlistAbsoluteUrl;
+      return;
+    }
+
+    whenHlsReady(function () {
       var isFilePage = typeof location !== 'undefined' && location.protocol === 'file:';
       var hls = new Hls({
         enableWorker: !isFilePage,
@@ -69,15 +115,7 @@
       hls.loadSource(playlistAbsoluteUrl);
       hls.attachMedia(video);
       video._photoHls = hls;
-      return;
-    }
-
-    if (video.canPlayType && video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = playlistAbsoluteUrl;
-      return;
-    }
-
-    video.src = playlistAbsoluteUrl;
+    });
   }
 
   var api = { attach: attach, destroy: destroy };

@@ -109,7 +109,12 @@ contextBridge.exposeInMainWorld('photoAPI', {
     return ipcRenderer.invoke('get-folder-covers', options);
   },
   getImmediateSubfolderCovers: function (parentPath, childPaths, options) {
-    return ipcRenderer.invoke('get-immediate-subfolder-covers', parentPath, childPaths, options || {});
+    return ipcRenderer.invoke(
+      'get-immediate-subfolder-covers',
+      parentPath,
+      childPaths,
+      options || {},
+    );
   },
   getPhotos: function (options) {
     return ipcRenderer.invoke('get-photos', options);

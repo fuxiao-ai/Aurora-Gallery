@@ -4,12 +4,12 @@
 
 **Aurora Gallery** is an **Electron**-based, **local-first** photo library app. Media and indexes stay on your machine—suited for tens of thousands to millions of photos (including common RAW formats), with optional LAN browser access and remote tunneling.
 
-| | |
-|---|---|
-| **Chinese name** | 拂晓图库 (UI and installed app name) |
-| **English name** | Aurora Gallery (`package.json` description, installer filenames, repo name) |
-| **npm package** | `aurora-gallery` |
-| **Bundle ID** (`appId`) | `com.foredawn.aurora-gallery` |
+|                         |                                                                             |
+| ----------------------- | --------------------------------------------------------------------------- |
+| **Chinese name**        | 拂晓图库 (UI and installed app name)                                        |
+| **English name**        | Aurora Gallery (`package.json` description, installer filenames, repo name) |
+| **npm package**         | `aurora-gallery`                                                            |
+| **Bundle ID** (`appId`) | `com.foredawn.aurora-gallery`                                               |
 
 **Current release:** `1.0.2` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
 
@@ -88,16 +88,16 @@ npm run dev
 
 ## Scripts
 
-- `npm start` — launch desktop app  
-- `npm run dev` — dev mode  
-- `npm run rebuild-native` — rebuild native modules (`better-sqlite3`, `sharp`, `onnxruntime-node`)  
-- `npm run lint` — ESLint  
-- `npm run format` — Prettier  
-- `npm run pack` — unpacked dir (`electron-builder --dir`)  
-- `npm run dist` — installer for current platform (runs `download-cloudflared`)  
-- `npm run dist:win` — Windows installer (NSIS)  
-- `npm run dist:mac` — macOS DMG  
-- `npm run download-cloudflared` — fetch `cloudflared` for packaging or local tunnel  
+- `npm start` — launch desktop app
+- `npm run dev` — dev mode
+- `npm run rebuild-native` — rebuild native modules (`better-sqlite3`, `sharp`, `onnxruntime-node`)
+- `npm run lint` — ESLint
+- `npm run format` — Prettier
+- `npm run pack` — unpacked dir (`electron-builder --dir`)
+- `npm run dist` — installer for current platform (runs `download-cloudflared`)
+- `npm run dist:win` — Windows installer (NSIS)
+- `npm run dist:mac` — macOS DMG
+- `npm run download-cloudflared` — fetch `cloudflared` for packaging or local tunnel
 - `npm run smoke:db` — DB smoke test (`scripts/db-smoke.js`)
 
 ## Build artifacts
@@ -178,21 +178,21 @@ web/index.html
   -> hls-session-manager.js + playback-strategy.js
 ```
 
-- Desktop data paths go through `photoAPI` / IPC, not direct DB access from the renderer.  
-- Web traffic is served by `web-server.js` (API, media, subtitle conversion).  
+- Desktop data paths go through `photoAPI` / IPC, not direct DB access from the renderer.
+- Web traffic is served by `web-server.js` (API, media, subtitle conversion).
 - Playback path (direct vs HLS) is decided in `playback-strategy.js`; HLS sessions in `hls-session-manager.js`.
 
 ## Data & config
 
-- App data lives under the current user; do not commit `photos.db`.  
-- DB file: `photos.db` in the app data directory.  
-- Settings: managed by the main process.  
+- App data lives under the current user; do not commit `photos.db`.
+- DB file: `photos.db` in the app data directory.
+- Settings: managed by the main process.
 - Thumbnails: stored in `photos.thumbnail` in the database.
 
 ## Development notes
 
-- Run `npm run rebuild-native` before first start to avoid native ABI mismatches.  
-- `src/renderer/app.js` and `src/main.js` are large—prefer small, focused commits.  
+- Run `npm run rebuild-native` before first start to avoid native ABI mismatches.
+- `src/renderer/app.js` and `src/main.js` are large—prefer small, focused commits.
 - Scanning, hashing, and thumbnail jobs are heavy—watch progress and error paths.
 
 ## FAQ
@@ -214,13 +214,13 @@ npm run rebuild-native
 
 ### Some folders missing after scan
 
-- Confirm roots were added successfully.  
-- Check whether the scan was paused or cancelled.  
+- Confirm roots were added successfully.
+- Check whether the scan was paused or cancelled.
 - Review skip rules in scan settings.
 
 ### Incomplete thumbnails
 
-- Ensure files are indexed.  
+- Ensure files are indexed.
 - Run thumbnail backfill and wait for completion.
 
 ## License

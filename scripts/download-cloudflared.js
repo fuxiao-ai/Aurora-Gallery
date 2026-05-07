@@ -49,7 +49,13 @@ function resolveSpec(args) {
   var plat = args.target;
   if (!plat) {
     plat = process.platform;
-    if (plat === 'win32') return { plat: 'win32', kind: 'exe', asset: 'cloudflared-windows-amd64.exe', dest: 'cloudflared.exe' };
+    if (plat === 'win32')
+      return {
+        plat: 'win32',
+        kind: 'exe',
+        asset: 'cloudflared-windows-amd64.exe',
+        dest: 'cloudflared.exe',
+      };
     if (plat === 'darwin') {
       var da = normalizeArch(process.arch) === 'arm64' ? 'arm64' : 'amd64';
       return {
@@ -72,7 +78,12 @@ function resolveSpec(args) {
   }
 
   if (plat === 'win32') {
-    return { plat: 'win32', kind: 'exe', asset: 'cloudflared-windows-amd64.exe', dest: 'cloudflared.exe' };
+    return {
+      plat: 'win32',
+      kind: 'exe',
+      asset: 'cloudflared-windows-amd64.exe',
+      dest: 'cloudflared.exe',
+    };
   }
   if (plat === 'darwin') {
     var darch = args.archOpt ? normalizeArch(args.archOpt) : null;

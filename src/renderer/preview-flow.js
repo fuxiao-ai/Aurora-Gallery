@@ -240,7 +240,8 @@
     var embedded = Array.isArray(state.previewEmbeddedSubtitleStreams)
       ? state.previewEmbeddedSubtitleStreams
       : [];
-    if (!hasExternal && String(state.previewExternalSubtitleSourceName || '').trim()) hasExternal = true;
+    if (!hasExternal && String(state.previewExternalSubtitleSourceName || '').trim())
+      hasExternal = true;
     var hasEmbedded = embedded.length > 0;
     if (video && !video._subtitleUiReady && !hasExternal && !hasEmbedded) {
       sel.style.display = 'none';
@@ -252,7 +253,9 @@
     sel.style.display = '';
     if (styleBtn) styleBtn.style.display = '';
     refreshSubtitleTrackOptions(dom, state, video, hasExternal);
-    var targetMode = state.previewSubtitleEnabled ? state.previewSubtitleMode || 'external_auto' : 'off';
+    var targetMode = state.previewSubtitleEnabled
+      ? state.previewSubtitleMode || 'external_auto'
+      : 'off';
     if (!sel.querySelector('option[value="' + targetMode + '"]')) targetMode = 'off';
     sel.value = targetMode;
     var autoOpt = sel.querySelector('option[value="external_auto"]');
@@ -287,12 +290,16 @@
       return n;
     }
     function normalizeWeight(v) {
-      var s = String(v || '').trim().toLowerCase();
+      var s = String(v || '')
+        .trim()
+        .toLowerCase();
       if (s === 'normal' || s === 'bold') return s;
       return 'medium';
     }
     function normalizeColor(v) {
-      var s = String(v || '').trim().toLowerCase();
+      var s = String(v || '')
+        .trim()
+        .toLowerCase();
       if (['yellow', 'cyan', 'green', 'orange', 'pink'].indexOf(s) >= 0) return s;
       return 'white';
     }
@@ -450,7 +457,8 @@
     var embedded = Array.isArray(state.previewEmbeddedSubtitleStreams)
       ? state.previewEmbeddedSubtitleStreams
       : [];
-    if (!hasExternal && String(state.previewExternalSubtitleSourceName || '').trim()) hasExternal = true;
+    if (!hasExternal && String(state.previewExternalSubtitleSourceName || '').trim())
+      hasExternal = true;
     function displayLang(stream) {
       if (!stream) return '';
       var n = String(stream.langName || '').trim();
@@ -559,8 +567,13 @@
             window.location &&
             String(window.location.search || '').indexOf('--dev') >= 0) ||
           false;
-        if (isDev && typeof console !== 'undefined' && console && typeof console.log === 'function') {
-          console.log(
+        if (
+          isDev &&
+          typeof console !== 'undefined' &&
+          console &&
+          typeof console.log === 'function'
+        ) {
+          Logger.log(
             '[subtitle] skip external request: no external subtitle candidate for photo id=%s',
             photo && photo.id != null ? String(photo.id) : '',
           );
@@ -638,7 +651,8 @@
               onDone(false);
               return;
             }
-            state.previewExternalSubtitleSourceName = payload && payload.sourceName ? payload.sourceName : '';
+            state.previewExternalSubtitleSourceName =
+              payload && payload.sourceName ? payload.sourceName : '';
             clearManagedSubtitleTrack(video);
             var blob = new Blob([String((payload && payload.text) || '')], {
               type: 'text/vtt;charset=utf-8',
@@ -648,7 +662,8 @@
             var track = document.createElement('track');
             track.setAttribute('data-managed-subtitle', '1');
             track.kind = 'subtitles';
-            track.label = trackLabel || (streamIndex >= 0 ? '内嵌字幕 #' + (streamIndex + 1) : '外挂字幕');
+            track.label =
+              trackLabel || (streamIndex >= 0 ? '内嵌字幕 #' + (streamIndex + 1) : '外挂字幕');
             track.srclang = trackLang || 'zh';
             track.src = blobUrl;
             track.default = true;
@@ -769,7 +784,13 @@
       if (!state.previewSubtitleEnabled || mode === 'off') {
         clearManagedSubtitleTrack(video);
         setTextTracksMode(video, 'disabled');
-        syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: false, video: video });
+        syncSubtitleToolbar({
+          dom: dom,
+          state: state,
+          isVideo: true,
+          hasExternal: false,
+          video: video,
+        });
         return;
       }
       if (/^embedded_stream_\d+$/.test(mode) || /^embedded_ffstream_\d+$/.test(mode)) {
@@ -799,7 +820,8 @@
             if (isNaN(ffIdx) || ffIdx < 0)
               ffIdx =
                 streamFfIdx !== undefined && streamFfIdx !== null ? parseInt(streamFfIdx, 10) : -1;
-            if (!isNaN(ffIdx) && ffIdx >= 0) state.previewSubtitleMode = 'embedded_ffstream_' + ffIdx;
+            if (!isNaN(ffIdx) && ffIdx >= 0)
+              state.previewSubtitleMode = 'embedded_ffstream_' + ffIdx;
             else if (!isNaN(idx) && idx >= 0) state.previewSubtitleMode = 'embedded_stream_' + idx;
             break;
           }
@@ -834,7 +856,13 @@
         state: state,
         onDone: function (ok) {
           if (!ok) setTextTracksMode(video, 'disabled');
-          syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: ok, video: video });
+          syncSubtitleToolbar({
+            dom: dom,
+            state: state,
+            isVideo: true,
+            hasExternal: ok,
+            video: video,
+          });
         },
       });
     };
@@ -851,11 +879,18 @@
     video.addEventListener('loadedmetadata', function () {
       var cur = state.previewPhotos[state.previewIndex];
       if (!cur) return;
-      loadEmbeddedSubtitleStreams({ photo: cur, api: api, dom: dom, state: state, video: video }).then(function (
-        embedded,
-      ) {
+      loadEmbeddedSubtitleStreams({
+        photo: cur,
+        api: api,
+        dom: dom,
+        state: state,
+        video: video,
+      }).then(function (embedded) {
         var hasEmbedded = Array.isArray(embedded) && embedded.length > 0;
-        if (state.previewSubtitleEnabled && (!state.previewSubtitleMode || state.previewSubtitleMode === 'off')) {
+        if (
+          state.previewSubtitleEnabled &&
+          (!state.previewSubtitleMode || state.previewSubtitleMode === 'off')
+        ) {
           state.previewSubtitleMode = 'external_auto';
         } else if (
           /^embedded_stream_/.test(String(state.previewSubtitleMode || '')) ||
@@ -865,7 +900,13 @@
           if (!hasEmbedded) state.previewSubtitleMode = 'external_auto';
         }
         refreshSubtitleTrackOptions(dom, state, video, false);
-        syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: false, video: video });
+        syncSubtitleToolbar({
+          dom: dom,
+          state: state,
+          isVideo: true,
+          hasExternal: false,
+          video: video,
+        });
       });
     });
     video.addEventListener('loadeddata', function () {
@@ -873,7 +914,13 @@
     });
     video.addEventListener('play', function () {
       video._subtitleUiReady = true;
-      syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: false, video: video });
+      syncSubtitleToolbar({
+        dom: dom,
+        state: state,
+        isVideo: true,
+        hasExternal: false,
+        video: video,
+      });
     });
   }
 
@@ -913,7 +960,9 @@
     if (!photo) return;
 
     /** 在更新 previewIndex 之前判断：已在预览中则为左右切换，切到视频时默认不自动播放 */
-    var switchingPreview = !!(dom.previewOverlay && dom.previewOverlay.classList.contains('active'));
+    var switchingPreview = !!(
+      dom.previewOverlay && dom.previewOverlay.classList.contains('active')
+    );
 
     var isVideo = isVideoFileType(photo.file_type);
     var electronTier =
@@ -1000,7 +1049,13 @@
               dom: dom,
               state: state,
               onDone: function (ok) {
-                syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: ok, video: video });
+                syncSubtitleToolbar({
+                  dom: dom,
+                  state: state,
+                  isVideo: true,
+                  hasExternal: ok,
+                  video: video,
+                });
               },
             });
             if (video._syncVideoCenterPlay) video._syncVideoCenterPlay();
@@ -1093,7 +1148,9 @@
           video.style.display = '';
           video._subtitleUiReady = false;
           state.previewHasExternalSubtitle = null;
-          attachElectronVideo(photo, video, api, electronTier, state, dom, { pauseAfterLoad: false });
+          attachElectronVideo(photo, video, api, electronTier, state, dom, {
+            pauseAfterLoad: false,
+          });
           wireVideoCenterPlay(dom, video);
           wireSubtitleToolbar(dom, state, api, video);
           loadExternalSubtitle({
@@ -1103,7 +1160,13 @@
             dom: dom,
             state: state,
             onDone: function (ok) {
-              syncSubtitleToolbar({ dom: dom, state: state, isVideo: true, hasExternal: ok, video: video });
+              syncSubtitleToolbar({
+                dom: dom,
+                state: state,
+                isVideo: true,
+                hasExternal: ok,
+                video: video,
+              });
             },
           });
           if (video._syncVideoCenterPlay) video._syncVideoCenterPlay();
@@ -1224,17 +1287,25 @@
       }
       // Update cache: remove from cached result
       if (state._photoBrowseCacheResult && state._photoBrowseCacheResult.photos) {
-        state._photoBrowseCacheResult.photos = state._photoBrowseCacheResult.photos.filter(function (p) {
-          return p.id !== deletedId;
-        });
+        state._photoBrowseCacheResult.photos = state._photoBrowseCacheResult.photos.filter(
+          function (p) {
+            return p.id !== deletedId;
+          },
+        );
         state._photoBrowseCacheResult.total = (state._photoBrowseCacheResult.total || 0) - 1;
         state._photoBrowseCacheResult.totalPages = Math.ceil(
-          state._photoBrowseCacheResult.total / (state.pageSize || 100)
+          state._photoBrowseCacheResult.total / (state.pageSize || 100),
         );
       }
       // Update pagination in background
-      var cachedTotal = (state._photoBrowseCacheResult && state._photoBrowseCacheResult.total) || r.total || 0;
-      if (photoGridUi && typeof photoGridUi.renderPagination === 'function' && dom && dom.pagination) {
+      var cachedTotal =
+        (state._photoBrowseCacheResult && state._photoBrowseCacheResult.total) || r.total || 0;
+      if (
+        photoGridUi &&
+        typeof photoGridUi.renderPagination === 'function' &&
+        dom &&
+        dom.pagination
+      ) {
         photoGridUi.renderPagination({
           dom: dom,
           result: {
@@ -1403,8 +1474,7 @@
     } else if (newIndex < 0 && state.previewPageStart > 1) {
       onLoadPreviewAdjacentPage(-1, dir);
     } else if (newIndex >= len) {
-      var tailPage =
-        state.previewPageStart + Math.ceil(len / state.pageSize) - 1;
+      var tailPage = state.previewPageStart + Math.ceil(len / state.pageSize) - 1;
       if (tailPage < state.previewTotalPages) {
         onLoadPreviewAdjacentPage(1, dir);
       }
