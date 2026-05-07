@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Aurora Gallery (拂晓图库, npm `aurora-gallery`) is a local-first Electron photo library app with a built-in web server for LAN access. It handles large libraries (tens of thousands to millions of photos, including RAW) using SQLite (`better-sqlite3`, WAL mode) with worker threads for scanning and heavy DB reads.
 
-**Version**: 1.0.2 — release version lives in `package.json`; bump before shipping and sync "About" strings.
+**Version**: 1.0.3 — release version lives in `package.json`; bump before shipping and sync "About" strings.
 
 ## Requirements
 
@@ -89,16 +89,13 @@ Video playback routing is non-trivial:
 
 ### i18n
 
-Fully bilingual (zh-CN / en) as of v1.0.2. Locale key is `uiLocale` (`zh-CN` or `en`) stored in settings. `src/renderer/i18n.js` handles both static `data-i18n` attributes and dynamic UI strings. The web app has its own i18n implementation in `src/web/js/app.js`.
+Fully bilingual (zh-CN / en) as of v1.0.3. Locale key is `uiLocale` (`zh-CN` or `en`) stored in settings. `src/renderer/i18n.js` handles both static `data-i18n` attributes and dynamic UI strings. The web app has its own i18n implementation in `src/web/js/app.js`.
 
 ## Code Organization Notes
 
 ### Refactoring in Progress
 
-`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3700 lines) are acknowledged technical debt. New code is being modularized into:
-
-- `src/main/*.js` — IPC handlers, task scheduler, settings, utilities
-- `src/renderer/modules/*.js` — grid, navigation, favorites, utils
+`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3800 lines) are acknowledged technical debt. `main.js` has already been modularized into `src/main/*.js` (IPC handlers, task scheduler, settings, utilities, logging). `src/renderer/modules/*.js` was removed (orphaned dead code).
 
 When editing these large files, prefer small, focused changes. When adding new features, use the new modular locations.
 
@@ -135,6 +132,25 @@ The web app shares API parity with desktop (filters, preview, slideshow, mobile 
 - `no-unused-vars: warn` with `^_` ignore pattern for intentionally unused args/vars
 - `no-empty: allowEmptyCatch`
 - Globals are split between Node/CommonJS (`src/**/*.js`, `scripts/**/*.js`) and Browser (`src/renderer/**/*.js`, `src/web/**/*.js`, `src/hls-attach.js`, `src/playback-strategy.js`)
+- Additional browser globals declared: `requestIdleCallback`, `confirm`, `appAlert`, `appConfirm`, `Logger`, `RendererFacesUI`, `api`, `formatNumber`
+
+Current status: **0 errors, 6 warnings** (all unused-variable warnings for reserved callbacks/imports).
+
+## Logging
+
+Both main process and renderer have structured loggers with level control:
+
+- **Main process**: `src/main/logger.js`
+  - Default level: `warn` in production, `log` in dev
+  - Override: `LOG_LEVEL=debug npm start`
+  - Usage: `const logger = require('./main/logger'); logger.error(...); logger.warn(...); logger.info(...); logger.log(...); logger.debug(...)`
+
+- **Renderer**: `src/renderer/logger.js` (loaded via `<script src="logger.js">` before other scripts)
+  - Default level: `warn` in production, `log` in dev
+  - Override: `localStorage.setItem('photoManager.logLevel', 'debug')`
+  - Usage: `Logger.error(...); Logger.warn(...); Logger.info(...); Logger.log(...); Logger.debug(...)`
+
+Replace raw `console.log/error/warn` with `logger.*` / `Logger.*` in new code.
 
 ## Data & Config
 

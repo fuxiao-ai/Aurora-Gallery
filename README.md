@@ -38,7 +38,7 @@ High-level overview; details follow the in-app **Settings** pages.
 
 ### Startup & automation (General settings)
 
-- **UI language** (简体中文 / **English**): under **Settings → General**; applies immediately and saves `uiLocale` (`zh-CN` / `en`) in `settings.json`. Updates the window title, tray tooltip, **static** copy (`data-i18n`), and **dynamic** UI: sidebar (folders/dates, favorites, loading states), bottom **stats bar**, Settings management pages (library list, LAN/Tunnel, maintenance tasks, alerts), and related strings. A **top bar** language selector may appear next to the theme control (hidden on very narrow widths; language remains in Settings). Release **1.0.2** documents the full zh/EN pass in [`CHANGELOG.md`](CHANGELOG.md).
+- **UI language** (简体中文 / **English**): under **Settings → General**; applies immediately and saves `uiLocale` (`zh-CN` / `en`) in `settings.json`. Updates the window title, tray tooltip, **static** copy (`data-i18n`), and **dynamic** UI: sidebar (folders/dates, favorites, loading states), bottom **stats bar**, Settings management pages (library list, LAN/Tunnel, maintenance tasks, alerts), and related strings. A **top bar** language selector may appear next to the theme control (hidden on very narrow widths; language remains in Settings). Release **1.0.3** documents the full zh/EN pass in [`CHANGELOG.md`](CHANGELOG.md).
 - Optional: **scan on startup**, **backfill thumbnails after startup**, **find duplicates after startup** (coordinated with scan tasks).
 - **Startup page**: welcome, all photos, all folders, or **last location**.
 - **Close button**: title bar / Alt+F4 can ask every time, minimize to tray, or quit (see in-app shortcut help vs tray Quit).
@@ -109,7 +109,7 @@ npm install
 npm run dist:win
 ```
 
-Typical outputs (version matches `package.json`, e.g. `1.0.2`):
+Typical outputs (version matches `package.json`, e.g. `1.0.3`):
 
 - Installer: `release/AuroraGallery-Setup-<version>.exe`
 - Unpacked: `release/win-unpacked/`
@@ -126,11 +126,32 @@ Typical outputs:
 - DMG: `release/AuroraGallery-<version>.dmg`
 - Unpacked: `release/mac/` or `release/mac-arm64/`
 
+## CI / Automated builds
+
+Push a tag matching `v*` to trigger the GitHub Actions workflow (`.github/workflows/release.yml`). It builds **Windows** (`windows-latest`) and **macOS** (`macos-latest`) in parallel and uploads artifacts to a GitHub Release.
+
+```bash
+git tag v1.0.3
+git push origin v1.0.3
+```
+
+The workflow automatically downloads the correct `cloudflared` binary per platform, rebuilds native modules, runs `electron-builder`, and publishes the installers to the release page.
+
 ## Project layout
 
 ```text
 src/
-  main.js                # Electron main (windows, IPC, background work)
+  main.js                # Electron main entry (orchestrates modules below)
+  main/
+    ipc-handlers.js      # IPC handlers
+    task-scheduler.js    # Background task scheduling
+    settings.js          # Settings management
+    utils.js             # Main-process utilities
+    thumbnail-backfill.js
+    duplicate-detection.js
+    window-tray.js
+    cloudflare-tunnel.js
+    logger.js            # Structured logging with level control
   preload.js             # Secure bridge (photoAPI)
   web-server.js          # Built-in web (API, static, video/subtitles/HLS)
   database.js            # SQLite access
@@ -138,6 +159,7 @@ src/
     index.html            # Desktop shell
     styles.css
     app.js                # Desktop orchestration
+    logger.js             # Renderer-side logging
     api.js
     settings.js
     preview-flow.js
@@ -151,7 +173,9 @@ src/
     ui-duplicates.js
     scan-flow.js
   web/
-    index.html            # Web app (inline styles/scripts)
+    index.html            # Web app shell
+    css/style.css         # Extracted web styles
+    js/app.js             # Web app logic
     login.html
     vendor/hls.min.js
   scanner.js
