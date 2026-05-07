@@ -32,6 +32,15 @@
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC',
     'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+button:active,
+[role='button']:active {
+  transform: scale(0.97);
 }
 html,
 body {
@@ -130,6 +139,12 @@ body {
 .header.mobile-collapsed {
   transform: translateY(-100%);
   opacity: 0.01;
+}
+.header.scrolled {
+  background: linear-gradient(180deg, rgba(10, 10, 24, 0.95) 0%, rgba(10, 10, 24, 0.88) 100%);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
 }
 .header::after {
   content: '';
@@ -723,14 +738,22 @@ body {
   contain: layout paint style;
 }
 .grid.grid--masonry {
-  align-items: start;
+  display: block;
+  columns: calc(var(--grid-card-basis) * 1px);
+  column-gap: 12px;
+  align-items: initial;
 }
 .grid.grid--masonry .photo-card:not(.folder-card) {
-  align-self: start;
+  align-self: initial;
+  width: 100%;
+  margin-bottom: 12px;
+  break-inside: avoid;
+}
+.grid.grid--masonry .photo-card img {
+  height: auto;
 }
 .grid[data-use-media-ratio='1'] .photo-card:not(.folder-card) {
   max-height: 70vh;
-  max-aspect-ratio: 9/16;
 }
 .photo-card {
   position: relative;
@@ -773,7 +796,7 @@ body {
   aspect-ratio: var(--photo-card-ratio);
 }
 .photo-card:hover {
-  transform: translateY(-6px) scale(1.018);
+  transform: scale(1.008);
   box-shadow: var(--card-shadow-hover);
   border-color: color-mix(in srgb, var(--accent) 30%, var(--glass-border));
 }
@@ -870,7 +893,7 @@ body {
   color: var(--text-muted);
 }
 .photo-card:hover {
-  transform: translateY(-6px) scale(1.02);
+  transform: scale(1.01);
   border-color: color-mix(in srgb, var(--accent) 24%, var(--glass-border));
   z-index: 2;
 }
@@ -966,7 +989,7 @@ body {
   transform: scale(1.08);
 }
 .photo-card:hover img {
-  transform: scale(1.06);
+  transform: scale(1.04);
 }
 .photo-card .photo-info {
   position: absolute;
@@ -974,14 +997,17 @@ body {
   left: 0;
   right: 0;
   padding: 32px 12px 12px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  background: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(0, 0, 0, 0.25) 55%,
+    transparent 100%
+  );
   font-size: 11px;
   color: color-mix(in srgb, var(--text) 96%, #fff 4%);
   opacity: 0;
   transform: translateY(8px);
-  transition:
-    opacity 0.3s ease,
-    transform 0.3s ease;
+  transition: all 400ms var(--ease-out);
   z-index: 5;
 }
 .photo-card:hover .photo-info {
@@ -1257,10 +1283,10 @@ body {
   -webkit-backdrop-filter: blur(14px) saturate(1.28);
 }
 .pagination button {
-  min-width: 36px;
+  min-width: 40px;
   height: var(--browse-bar-control-h, 36px);
   min-height: var(--browse-bar-control-h, 36px);
-  padding: 0 11px;
+  padding: 0 13px;
   border: 1px solid color-mix(in srgb, var(--glass-border) 92%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-hover) 35%, transparent);
@@ -1753,7 +1779,7 @@ body {
     --browse-bar-pad-y: 6px;
     --browse-bar-control-h: 30px;
     /* 底部主导航 fixed，为底栏留出空间避免被遮挡 */
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: 64px;
   }
   /* comment cleaned */
   .sidebar {
@@ -1764,7 +1790,7 @@ body {
     position: fixed;
     top: 0;
     left: 0;
-    bottom: 80px;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
     z-index: 100;
     width: 280px;
     border-right: 1px solid var(--glass-border);
@@ -1938,7 +1964,7 @@ body {
   }
   .search-box input {
     padding: 8px 14px 8px 36px;
-    font-size: 13px;
+    font-size: 16px;
     border-radius: 999px;
   }
   .header-stats {
@@ -2790,7 +2816,7 @@ body {
   );
 }
 .photo-card:hover {
-  transform: translateY(-10px) scale(1.02);
+  transform: scale(1.01);
   box-shadow:
     0 30px 58px rgba(0, 0, 0, 0.26),
     0 0 0 1px color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.06)) inset;
@@ -2824,7 +2850,7 @@ body {
 }
 .browse-footer {
   padding: 14px 18px 16px;
-  margin-bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+  margin-bottom: 100px;
 }
 .pagination,
 .card-aspect-control,
@@ -2972,7 +2998,7 @@ body {
   }
   .content {
     border-radius: 24px;
-    padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: 110px;
   }
   .toolbar-path::before {
     display: none;
@@ -2991,4 +3017,30 @@ body {
     right: 8px;
     bottom: 8px;
   }
+}
+
+/* ── Toast ── */
+.web-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+  border: 1px solid var(--glass-border);
+  color: var(--text);
+  padding: 10px 24px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  opacity: 0;
+  transition: all 300ms var(--ease-out);
+  z-index: 1100;
+  pointer-events: none;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+.web-toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
 }

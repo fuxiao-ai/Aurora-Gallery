@@ -2158,7 +2158,10 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
       });
     });
   }
-  if (!silent && !snapReady && gate.isAlive()) {
+  var sidebarHasContent =
+    dom.sidebarContent &&
+    dom.sidebarContent.querySelector('.folder-item, .tree-root, [data-sidebar-all]');
+  if ((!silent || !sidebarHasContent) && !snapReady && gate.isAlive()) {
     gate.render(
       '<div class="sidebar-list-loading">' +
         '<div class="content-loading-spinner" aria-hidden="true"></div>' +
@@ -2219,15 +2222,30 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
         resolve();
       });
     });
-    sidebarTree.renderFolderTree({
-      state: state,
-      prefetchedByRootId: prefetched,
-      gate: gate,
-      sidebarContent: dom.sidebarContent,
-      formatNumber: formatNumber,
-      escapeAttr: escapeAttr,
-      escapeHtml: escapeHtml,
-    });
+    if (
+      typeof sidebarTree.folderTreeNeedsProgressiveRender === 'function' &&
+      sidebarTree.folderTreeNeedsProgressiveRender(prefetched, state.rootFolders)
+    ) {
+      await sidebarTree.renderFolderTreeProgressive({
+        state: state,
+        prefetchedByRootId: prefetched,
+        gate: gate,
+        sidebarContent: dom.sidebarContent,
+        formatNumber: formatNumber,
+        escapeAttr: escapeAttr,
+        escapeHtml: escapeHtml,
+      });
+    } else {
+      sidebarTree.renderFolderTree({
+        state: state,
+        prefetchedByRootId: prefetched,
+        gate: gate,
+        sidebarContent: dom.sidebarContent,
+        formatNumber: formatNumber,
+        escapeAttr: escapeAttr,
+        escapeHtml: escapeHtml,
+      });
+    }
     sidebarTree.scheduleExpandActiveFolder({
       state: state,
       onExpandTreeToFolder: function (targetPath) {

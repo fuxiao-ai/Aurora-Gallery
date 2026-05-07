@@ -82,7 +82,8 @@
           ]
         }
       ],
-      "category": "public.app-category.photography"
+      "category": "public.app-category.photography",
+      "identity": null
     },
     "nsis": {
       "oneClick": false,

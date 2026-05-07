@@ -315,15 +315,15 @@ function isWebSlideshowVideoPhoto(photo) {
   return false;
 }
 
-function getMediaAspectRatioValue(photo) {
+function getMediaAspectRatioDims(photo) {
   var row = photo || {};
   var w = parseFloat(row.width || row.pixel_width || row.file_width || row.media_width || 0);
   var h = parseFloat(row.height || row.pixel_height || row.file_height || row.media_height || 0);
-  if (!(w > 0 && h > 0)) return '';
+  if (!(w > 0 && h > 0)) return null;
   var r = w / h;
-  if (!isFinite(r) || r <= 0) return '';
-  if (r < 0.125 || r > 8) return '';
-  return String(w) + ' / ' + String(h);
+  if (!isFinite(r) || r <= 0) return null;
+  if (r < 0.125 || r > 8) return null;
+  return { w: Math.round(w), h: Math.round(h), ratio: String(w) + ' / ' + String(h) };
 }
 
 function syncSubtitleSettingsUi() {
@@ -779,11 +779,20 @@ function isStandaloneMode() {
   );
 }
 
+function showToast(msg, duration) {
+  var el = document.getElementById('webToast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  if (el._toastTimer) clearTimeout(el._toastTimer);
+  el._toastTimer = setTimeout(function () {
+    el.classList.remove('show');
+  }, duration || 2200);
+}
+
 function showInstallGuide() {
   if (isStandaloneMode()) {
-    window.alert(
-      '\u5DF2\u5B89\u88C5\u5230\u684C\u9762\uFF0C\u53EF\u76F4\u63A5\u5728\u624B\u673A\u684C\u9762\u6253\u5F00\u3002',
-    );
+    showToast('已安装到桌面，可直接在手机桌面打开。');
     return;
   }
   if (deferredInstallPrompt) {
@@ -794,18 +803,26 @@ function showInstallGuide() {
     return;
   }
   if (isIosSafari()) {
-    window.alert(
-      '\u8BF7\u70B9\u51FB Safari \u5E95\u90E8\u201C\u5206\u4EAB\u201D\u6309\u94AE\uFF0C\u7136\u540E\u9009\u62E9\u201C\u6DFB\u52A0\u5230\u4E3B\u5C4F\u5E55\u201D\u3002',
-    );
+    showToast('请点击 Safari 底部"分享"按钮，然后选择"添加到主屏幕"。');
     return;
   }
-  window.alert(
-    '\u8BF7\u70B9\u51FB\u6D4F\u89C8\u5668\u53F3\u4E0A\u89D2\u83DC\u5355\uFF0C\u9009\u62E9\u201C\u5B89\u88C5\u5E94\u7528\u201D\u6216\u201C\u6DFB\u52A0\u5230\u4E3B\u5C4F\u5E55\u201D\u3002',
-  );
+  showToast('请点击浏览器右上角菜单，选择"安装应用"或"添加到主屏幕"。');
 }
 
 function bindEvents() {
   var searchTimer;
+  /* header 滚动效果 */
+  var _pgEl = document.getElementById('photoGrid');
+  var _headerEl = document.querySelector('.header');
+  if (_pgEl && _headerEl) {
+    _pgEl.addEventListener(
+      'scroll',
+      function () {
+        _headerEl.classList.toggle('scrolled', _pgEl.scrollTop > 40);
+      },
+      { passive: true },
+    );
+  }
   window.addEventListener('beforeinstallprompt', function (e) {
     e.preventDefault();
     deferredInstallPrompt = e;
@@ -852,6 +869,15 @@ function bindEvents() {
       },
       { passive: true },
     );
+    mobileFilterSheet.addEventListener(
+      'touchcancel',
+      function () {
+        if (!state.isMobile || !mobileFilterSheet.classList.contains('show')) return;
+        state.mobileFilterTouchDeltaY = 0;
+        mobileFilterSheet.style.transform = '';
+      },
+      { passive: true },
+    );
   }
   $('#searchInput').addEventListener('input', function () {
     clearTimeout(searchTimer);
@@ -878,6 +904,7 @@ function bindEvents() {
   var glowClientY = 0;
   var glowTargetCard = null;
   document.addEventListener('mousemove', function (e) {
+    if (state.isMobile) return;
     glowClientX = e.clientX;
     glowClientY = e.clientY;
     glowTargetCard = e.target && e.target.closest ? e.target.closest('.photo-card') : null;
@@ -1112,7 +1139,7 @@ function bindEvents() {
         if (state.zoom > 1.05) return;
         var dx = e.touches[0].clientX - state.previewBodyTouchStartX;
         var dy = e.touches[0].clientY - state.previewBodyTouchStartY;
-        if (Math.abs(dy) < Math.abs(dx) * 1.15) return;
+        if (Math.abs(dy) < Math.abs(dx) * 1.8) return;
         if (dy <= 0) return;
         state.previewBodyTouchDy = dy;
         previewBody.style.transform = 'translateY(' + Math.min(dy, 180) + 'px)';
@@ -1288,12 +1315,16 @@ function bindEvents() {
   });
 
   // comment cleaned
+  var resizeTimer;
   window.addEventListener('resize', function () {
-    detectMobile();
-    if (window.innerWidth > 600) {
-      $('#sidebar').classList.remove('mobile-show');
-      $('#mobileBackdrop').classList.remove('show');
-    }
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      detectMobile();
+      if (window.innerWidth > 600) {
+        $('#sidebar').classList.remove('mobile-show');
+        $('#mobileBackdrop').classList.remove('show');
+      }
+    }, 150);
   });
   window.addEventListener('popstate', function (e) {
     var overlay = $('#previewOverlay');
@@ -1308,6 +1339,30 @@ function bindEvents() {
     }
     applyHistoryStateToView({ currentView: 'all' });
   });
+
+  /* 无限滚动：分页栏进入视口时自动加载下一页 */
+  var paginationEl = $('#pagination');
+  if (paginationEl && photoGridEl && 'IntersectionObserver' in window) {
+    var infiniteLoading = false;
+    state._infiniteScrollObserver = new window.IntersectionObserver(
+      function (entries) {
+        if (
+          entries[0].isIntersecting &&
+          state.page < state.previewTotalPages &&
+          !infiniteLoading &&
+          !state.isRefreshing
+        ) {
+          infiniteLoading = true;
+          state.page++;
+          loadPhotos().finally(function () {
+            infiniteLoading = false;
+          });
+        }
+      },
+      { root: photoGridEl, rootMargin: '200px', threshold: 0 },
+    );
+    state._infiniteScrollObserver.observe(paginationEl);
+  }
 }
 
 // === Mobile ===
@@ -1403,6 +1458,27 @@ function initPullRefresh() {
   );
 
   grid.addEventListener(
+    'touchmove',
+    function (e) {
+      if (!state.isPulling || state.isRefreshing) return;
+      var currentY = e.touches[0].clientY;
+      var pullDistance = currentY - state.pullStartY;
+
+      if (pullDistance > 0 && grid.scrollTop <= 0) {
+        var indicator = $('#pullRefreshIndicator');
+        var progress = Math.min(pullDistance / 80, 1);
+        indicator.style.display = 'block';
+        indicator.style.opacity = String(progress);
+        indicator.style.transform = 'translateX(-50%) rotate(' + progress * 360 + 'deg)';
+        if (pullDistance > 60) {
+          indicator.classList.add('show');
+        }
+      }
+    },
+    { passive: true },
+  );
+
+  grid.addEventListener(
     'touchend',
     function () {
       if (!state.isPulling) return;
@@ -1411,11 +1487,32 @@ function initPullRefresh() {
       var indicator = $('#pullRefreshIndicator');
       if (indicator.classList.contains('show')) {
         state.isRefreshing = true;
-        // comment cleaned
         loadPhotos().then(function () {
           state.isRefreshing = false;
           indicator.classList.remove('show');
+          indicator.style.display = '';
+          indicator.style.opacity = '';
+          indicator.style.transform = '';
         });
+      } else {
+        indicator.style.display = '';
+        indicator.style.opacity = '';
+        indicator.style.transform = '';
+      }
+    },
+    { passive: true },
+  );
+
+  grid.addEventListener(
+    'touchcancel',
+    function () {
+      state.isPulling = false;
+      var indicator = $('#pullRefreshIndicator');
+      if (indicator) {
+        indicator.classList.remove('show');
+        indicator.style.display = '';
+        indicator.style.opacity = '';
+        indicator.style.transform = '';
       }
     },
     { passive: true },
@@ -2380,17 +2477,19 @@ function renderPhotoGrid(photos) {
     var isVideo =
       isWebVideoFileType(photo.file_type) ||
       String(photo.media_type || '').toLowerCase() === 'video';
-    var ratio = isMasonryAspect ? getMediaAspectRatioValue(photo) : uniformAspect;
+    var ratioObj = isMasonryAspect ? getMediaAspectRatioDims(photo) : null;
+    var ratio = ratioObj ? ratioObj.ratio : uniformAspect;
     var thumbUrl = photo.has_thumbnail ? '/thumb/' + photo.id : '';
     // comment cleaned
     var delay = Math.min(i * 30, 600);
     var cardStyle = 'animation-delay:' + delay + 'ms;';
-    if (ratio) cardStyle += 'aspect-ratio:' + ratio + ';';
+    if (ratio && !isMasonryAspect) cardStyle += 'aspect-ratio:' + ratio + ';';
     html += '<div class="photo-card" style="' + cardStyle + '" onclick="startPreview(' + i + ')">';
     if (isVideo) {
       html += '<span class="media-type-badge media-type-badge-video">\u89C6\u9891</span>';
     }
     if (thumbUrl) {
+      var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
       html +=
         '<div class="thumb-blur-placeholder" aria-hidden="true"></div>' +
         '<div class="thumb-vignette" aria-hidden="true"></div>' +
@@ -2398,12 +2497,15 @@ function renderPhotoGrid(photos) {
         thumbUrl +
         '" alt="' +
         escapeHtml(photo.file_name) +
-        '" loading="lazy" class="loading grid-thumb" />';
+        '"' +
+        imgWH +
+        ' loading="lazy" class="loading grid-thumb" />';
     } else {
+      var phStyle =
+        'width:100%;display:flex;align-items:center;justify-content:center;background:var(--bg-hover);color:var(--text-muted);font-size:16px;font-weight:600;';
+      phStyle += isMasonryAspect ? 'min-height:160px;' : 'height:100%;';
       html +=
-        '<div class="placeholder" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--bg-hover);color:var(--text-muted);font-size:16px;font-weight:600;">' +
-        (photo.file_type || '?') +
-        '</div>';
+        '<div class="placeholder" style="' + phStyle + '">' + (photo.file_type || '?') + '</div>';
     }
     html +=
       '<div class="photo-info"><div class="photo-name">' +

@@ -618,27 +618,44 @@
       }
     }
 
-    /** 顺序拉取 + 根与根之间双 rAF，避免多根并行 getFolderTree 挤爆主进程/磁盘导致首屏卡顿 */
-    var out = {};
-    var r;
-    for (r = 0; r < rootFolders.length; r++) {
-      var root = rootFolders[r];
+    /** 先过滤出需要拉取的根目录 */
+    var filteredRoots = [];
+    for (var f = 0; f < rootFolders.length; f++) {
+      var root = rootFolders[f];
       if (allowMap && !allowMap[String(root && root.id)]) continue;
-      var folders;
-      try {
-        var raw = await getFolderTree(root.id);
-        folders = Array.isArray(raw) ? raw : [];
-      } catch (ePf) {
-        folders = [];
+      filteredRoots.push(root);
+    }
+
+    /** 并行拉取（每批最多3个，匹配 worker pool 大小）+ 批次间双 rAF，避免同步阻塞首屏 */
+    var out = {};
+    var batchSize = 3;
+    for (var i = 0; i < filteredRoots.length; i += batchSize) {
+      var batch = filteredRoots.slice(i, i + batchSize);
+      var results = await Promise.all(
+        batch.map(function (root) {
+          return getFolderTree(root.id)
+            .then(function (raw) {
+              return Array.isArray(raw) ? raw : [];
+            })
+            .catch(function () {
+              return [];
+            });
+        }),
+      );
+      for (var b = 0; b < batch.length; b++) {
+        out[batch[b].id] = results[b];
       }
-      out[root.id] = folders;
       /** 大 JSON 反序列化后让出主线程，减轻「拉完树数据窗口卡死」 */
-      if (folders.length >= 800) {
+      var hasLarge = results.some(function (r) {
+        return r.length >= 800;
+      });
+      if (hasLarge) {
         await new Promise(function (resolve) {
           setTimeout(resolve, 0);
         });
       }
-      if (r + 1 < rootFolders.length) {
+      /** 批次间让出，避免同步阻塞首屏 */
+      if (i + batchSize < filteredRoots.length) {
         await new Promise(function (resolve) {
           requestAnimationFrame(function () {
             requestAnimationFrame(resolve);
