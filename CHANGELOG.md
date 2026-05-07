@@ -1,14 +1,44 @@
 # Changelog
 
-All notable changes to **Aurora Gallery / 拂晓图库** are documented in this file.  
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).  
+All notable changes to **Aurora Gallery / 拂晓图库** are documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Release versions match the root [`package.json`](package.json) `version` field.
 
 ## [Unreleased]
 
 ### Planned
 
-- Bump `version` in `package.json` and sync in-app “About” text before each release.
+- Bump `version` in `package.json` and sync in-app "About" text before each release.
+
+---
+
+## [1.0.3] - 2026-05-07
+
+### Code Quality
+
+- **ESLint**: fixed all 70 errors (duplicate keys, undefined variables, prototype builtins, unused assignments); down to 0 errors.
+- **Dead code removal**: deleted 7 orphaned `src/renderer/modules/*` files and 2 `.bak` artifacts.
+- **Logging**: introduced `src/main/logger.js` and `src/renderer/logger.js` with level control (`LOG_LEVEL` env / `localStorage`), defaulting to `warn` in production.
+- **Face recognition cleanup**: removed residual `getFaceService` calls and unused face-related callbacks.
+
+### Performance & Build Size
+
+- **Removed duplicate `hls.min.js`**: eliminated the 841 KB duplicate in `src/renderer/vendor/`, saving the same amount from the packaged ASAR.
+- **On-demand HLS loading**: `hls.min.js` is now injected dynamically only when the first HLS video is played, reducing first-paint parse cost by ~841 KB.
+
+### UI Polish
+
+- **Photo load transition**: images now fade from `blur(10px) opacity(0.6)` to clear with a smooth 0.5 s `filter + opacity + transform` transition.
+- **Scrollbars**: capsule-shaped thumbs (`border-radius: 999px`) that glow with the active accent color on hover.
+- **Button micro-interaction**: `:active` states on `.btn` (`scale(0.97)`) and `.titlebar-btn` (`scale(0.92)`) for tactile feedback.
+- **Empty-state float**: the empty-state icon gently bobs with a 3 s `emptyFloat` keyframe animation.
+- **Stagger card entrance**: photo cards enter in a 5-column wave with 55 ms incremental delays.
+
+### Bug Fixes
+
+- Fixed trailing `</style>` tag in `src/web/css/style.css` that broke Prettier parsing.
+- Restored Safari native HLS fallback in `hls-attach.js` after refactoring to on-demand loading.
+- Added missing ESLint globals (`requestIdleCallback`, `confirm`, `Logger`, `RendererFacesUI`, `api`, `formatNumber`).
 
 ---
 
@@ -18,7 +48,7 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 - **Settings (Management)**: dynamic strings now use the same `uiLocale` as static `data-i18n` text—library folder list (empty state, columns, rescan/remove), LAN & Cloudflare Tunnel status and copy feedback, web password alerts, maintenance tasks (thumbnail backfill, duplicate hashing, DB tools), HLS hint, and save-error toasts for browse/general/locale/close-button.
 - **Sidebar**: folder and date sidebars (e.g. All photos, Favorites, All folders / All dates, sort buttons, loading and error lines, root rescan `title`/`aria-label`).
-- **Stats bar**: global and folder-scoped lines (photo counts, sizes, video counts, “N folders” in folder overview); updates when the interface language changes.
+- **Stats bar**: global and folder-scoped lines (photo counts, sizes, video counts, "N folders" in folder overview); updates when the interface language changes.
 - **Language switch**: `localechange` listeners refresh sidebar, stats bar, and parts of Settings so English does not leave mixed Chinese labels.
 
 ---
@@ -40,8 +70,8 @@ Release versions match the root [`package.json`](package.json) `version` field.
 ### Media filter consistency
 
 - Desktop and web support **All / Images only / Videos only**.
-- With image/video-only filters, directory tree and “All folders” hide folders that contain no matching media.
-- Sidebar counts for “All photos / All folders” follow the active filter.
+- With image/video-only filters, directory tree and "All folders" hide folders that contain no matching media.
+- Sidebar counts for "All photos / All folders" follow the active filter.
 
 ### Management UI
 
@@ -60,6 +90,36 @@ Release versions match the root [`package.json`](package.json) `version` field.
 ---
 
 ## 中文版本说明（与上方英文条目对应）
+
+### [1.0.3] - 2026-05-07
+
+**代码质量**
+
+- **ESLint**：修复全部 70 个错误（重复键、未定义变量、原型链污染、无用赋值），降至 0 错误。
+- **死代码清理**：删除 7 个孤儿模块文件 `src/renderer/modules/*` 及 2 个 `.bak` 备份文件。
+- **日志治理**：新增 `src/main/logger.js` 与 `src/renderer/logger.js`，支持级别控制（`LOG_LEVEL` 环境变量 / `localStorage`），生产环境默认 `warn`。
+- **人脸识别残留清理**：删除残留的 `getFaceService` 调用及未使用的人脸相关回调。
+
+**性能与构建体积**
+
+- **删除重复 `hls.min.js`**：移除 `src/renderer/vendor/` 下的 841 KB 重复文件，构建包同等减负。
+- **HLS 按需加载**：`hls.min.js` 改为首次播放 HLS 视频时动态注入，首屏解析成本降低约 841 KB。
+
+**界面美化**
+
+- **图片加载过渡**：照片从 `blur(10px) opacity(0.6)` 到清晰的过渡现在拥有平滑的 0.5 秒 `filter + opacity + transform` 动画。
+- **滚动条精致化**：胶囊形 thumb（`border-radius: 999px`），hover 时亮起当前 accent 主题色。
+- **按钮微交互**：`.btn` 按下 `scale(0.97)`、`.titlebar-btn` 按下 `scale(0.92)`，提供触觉反馈。
+- **空状态浮动**：空状态图标以 3 秒 `emptyFloat` 关键帧动画轻轻浮动。
+- **卡片交错入场**：照片卡片以 5 列波浪形式依次入场，每组递增 55 毫秒延迟。
+
+**Bug 修复**
+
+- 修复 `src/web/css/style.css` 末尾错误的 `</style>` 标签（导致 Prettier 解析失败）。
+- 在 `hls-attach.js` 按需加载重构后，恢复 Safari 原生 HLS 回退逻辑。
+- 补充 ESLint 缺失的全局变量声明（`requestIdleCallback`、`confirm`、`Logger`、`RendererFacesUI`、`api`、`formatNumber`）。
+
+---
 
 ### [1.0.2] - 2026-04-05
 
