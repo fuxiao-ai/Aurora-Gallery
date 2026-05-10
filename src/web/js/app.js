@@ -252,19 +252,21 @@ function applyHistoryStateToView(hs) {
     var mobileMediaSel = $('#mobileMediaFilterSelect');
     if (mobileMediaSel) mobileMediaSel.value = state.mediaFilter;
 
+    var headerTitle = $('#headerTitle');
+    var defaultTitle = '\u62C2\u6653\u56FE\u5E93 \u00B7 Aurora Gallery';
     if (state.currentView === 'folder_overview') {
-      $('#toolbarPath').textContent = '\u6240\u6709\u7167\u7247';
+      if (headerTitle) headerTitle.textContent = defaultTitle;
       updateSidebarActive();
       if (state.currentTab === 'folders') loadRootFolders();
       loadFolderCovers();
     } else if (state.currentView === 'folder') {
       var name = state.currentPath ? state.currentPath.split(/[\\/]/).pop() : '';
-      $('#toolbarPath').textContent = '\u6587\u4EF6\u5939: ' + (name || '\u76EE\u5F55');
+      if (headerTitle) headerTitle.textContent = '\u6587\u4EF6\u5939: ' + (name || '\u76EE\u5F55');
       updateSidebarActive();
       if (state.currentTab === 'folders') loadRootFolders();
       loadPhotos();
     } else if (state.currentView === 'date') {
-      $('#toolbarPath').textContent = '\u65E5\u671F: ' + formatDateLabel(state.currentDate || '');
+      if (headerTitle) headerTitle.textContent = '\u65E5\u671F: ' + formatDateLabel(state.currentDate || '');
       updateSidebarActive();
       if (state.currentTab === 'dates') loadDateGroups();
       loadPhotos();
@@ -276,12 +278,12 @@ function applyHistoryStateToView(hs) {
           break;
         }
       }
-      $('#toolbarPath').textContent = '\u6839\u76EE\u5F55: ' + (rootName || '\u6839\u76EE\u5F55');
+      if (headerTitle) headerTitle.textContent = '\u6839\u76EE\u5F55: ' + (rootName || '\u6839\u76EE\u5F55');
       updateSidebarActive();
       if (state.currentTab === 'folders') loadRootFolders();
       loadPhotos();
     } else if (state.currentView === 'search' && state.searchQuery) {
-      $('#toolbarPath').textContent = '\u641C\u7D22: ' + state.searchQuery;
+      if (headerTitle) headerTitle.textContent = '\u641C\u7D22: ' + state.searchQuery;
       updateSidebarActive();
       loadPhotos();
     } else {
@@ -289,7 +291,7 @@ function applyHistoryStateToView(hs) {
       state._rootId = undefined;
       state.currentPath = '';
       state.currentDate = '';
-      $('#toolbarPath').textContent = '\u6240\u6709\u7167\u7247';
+      if (headerTitle) headerTitle.textContent = defaultTitle;
       updateSidebarActive();
       loadPhotos();
     }
@@ -1965,7 +1967,8 @@ function viewRootFolder(rootId) {
       break;
     }
   }
-  $('#toolbarPath').textContent = '\u6839\u76EE\u5F55: ' + rootName;
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u6839\u76EE\u5F55: ' + rootName;
   updateSidebarActive();
   loadPhotos();
   pushViewHistoryState();
@@ -2054,7 +2057,8 @@ function viewAllPhotos() {
   state.currentDate = '';
   state.page = 1;
   state.previewTotalPages = 1;
-  $('#toolbarPath').textContent = '\u6240\u6709\u7167\u7247';
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u62C2\u6653\u56FE\u5E93 \u00B7 Aurora Gallery';
   updateSidebarActive();
   loadPhotos();
   pushViewHistoryState();
@@ -2067,7 +2071,8 @@ function viewFolderOverview() {
   state.currentDate = '';
   state.page = 1;
   state.previewTotalPages = 1;
-  $('#toolbarPath').textContent = '\u6240\u6709\u76EE\u5F55';
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u62C2\u6653\u56FE\u5E93 \u00B7 Aurora Gallery';
   updateSidebarActive();
   loadFolderCovers();
   pushViewHistoryState();
@@ -2084,7 +2089,8 @@ function viewFolder(folderPath) {
   var mobileSortSel = $('#mobileSortSelect');
   if (mobileSortSel) mobileSortSel.value = 'file_name|ASC';
   var name = folderPath.split(/[\\/]/).pop();
-  $('#toolbarPath').textContent = '\u6587\u4EF6\u5939: ' + name;
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u6587\u4EF6\u5939: ' + name;
   var pg = $('#photoGrid');
   if (pg) pg.scrollTop = 0;
   updateSidebarActive();
@@ -2097,7 +2103,8 @@ function viewDate(dateStr) {
   state.currentDate = dateStr;
   state.page = 1;
   state.previewTotalPages = 1;
-  $('#toolbarPath').textContent = '\u65E5\u671F: ' + formatDateLabel(dateStr);
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u65E5\u671F: ' + formatDateLabel(dateStr);
   updateSidebarActive();
   loadPhotos();
   pushViewHistoryState();
@@ -2391,7 +2398,8 @@ async function loadPhotos(extraParams) {
           '/api/search?q=' + encodeURIComponent(state.searchQuery) + baseParams,
         );
         if (requestSeq !== state.photosRequestSeq) return;
-        $('#toolbarPath').textContent = '\u641C\u7D22: ' + state.searchQuery;
+        var ht = $('#headerTitle');
+        if (ht) ht.textContent = '\u641C\u7D22: ' + state.searchQuery;
         break;
       case 'folder_overview':
         if (requestSeq !== state.photosRequestSeq) return;

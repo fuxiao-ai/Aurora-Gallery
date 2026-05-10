@@ -195,14 +195,19 @@
         }
       }
       .header-title {
-        font-size: 16px;
+        font-size: 15px;
         font-weight: 700;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+        max-width: 260px;
         background: linear-gradient(135deg, var(--accent), #b388ff);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
         letter-spacing: 0.3px;
+        transition: max-width 0.2s ease;
       }
       .search-box {
         flex: 1;
@@ -3946,7 +3951,7 @@
       <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="打开菜单">
         <svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg>
       </button>
-      <div class="header-title">拂晓图库 · Aurora Gallery</div>
+      <div class="header-title" id="headerTitle">拂晓图库 · Aurora Gallery</div>
       <div class="search-box">
         <span class="search-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
         <input type="text" id="searchInput" placeholder="搜索照片..." aria-label="搜索照片" />
@@ -3993,9 +3998,6 @@
 
       <!-- Content -->
       <div class="content">
-        <div class="toolbar" id="toolbar">
-          <span id="toolbarPath" class="toolbar-path"></span>
-        </div>
         <div class="photo-grid" id="photoGrid" style="position: relative">
           <div class="pull-refresh-indicator" id="pullRefreshIndicator"></div>
         </div>
