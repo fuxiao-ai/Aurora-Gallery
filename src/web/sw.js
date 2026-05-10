@@ -1,6 +1,6 @@
 /* global self, caches */
-/* Minimal service worker for installability and faster shell load. */
-var CACHE_NAME = 'aurora-gallery-shell-v5';
+/* Service worker for installability and faster shell load. */
+var CACHE_NAME = 'aurora-gallery-shell-v8';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -8,6 +8,11 @@ var SHELL_ASSETS = [
   '/apple-touch-icon.png?v=4',
   '/app-icon-192.png?v=4',
   '/app-icon-512.png?v=4',
+  '/app-icon.svg',
+  '/playback-strategy.js',
+  '/hls-attach.js',
+  '/js/web-theme-shared.js',
+  '/js/app.js',
 ];
 
 self.addEventListener('install', function (event) {

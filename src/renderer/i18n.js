@@ -175,7 +175,7 @@
       'web.badgeOff': '未设置',
       'help.aboutTitle': '关于',
       'help.aboutBody':
-        '拂晓图库 v1.0.2\n\n一款轻量级的本地相册应用（本地优先，索引与媒体保存在本机）\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
+        '拂晓图库 %VERSION%\n\n一款轻量级的本地相册应用（本地优先，索引与媒体保存在本机）\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
       'help.shortcutsTitle': '快捷键',
       'help.shortcutsBody':
         '浏览（主界面）\n\n' +
@@ -607,7 +607,7 @@
       'web.badgeOff': 'Off',
       'help.aboutTitle': 'About',
       'help.aboutBody':
-        'Aurora Gallery v1.0.2\n\nA lightweight, local-first photo gallery app.\nBrowse and search large libraries on your machine.\n\nAuthor: 拂晓AI\nhttps://foredawn.vip/',
+        'Aurora Gallery %VERSION%\n\nA lightweight, local-first photo gallery app.\nBrowse and search large libraries on your machine.\n\nAuthor: 拂晓AI\nhttps://foredawn.vip/',
       'help.shortcutsTitle': 'Shortcuts',
       'help.shortcutsBody':
         'Main window\n\n' +
@@ -877,6 +877,7 @@
   };
 
   var current = 'zh-CN';
+  var _appVersion = '';
 
   function normalizeLocale(raw) {
     var s = String(raw || '')
@@ -889,9 +890,14 @@
   function t(key) {
     var pack = M[current] || M['zh-CN'];
     var v = pack[key];
-    if (v != null && v !== '') return v;
-    var fb = M['zh-CN'][key];
-    return fb != null ? fb : key;
+    if (v == null || v === '') {
+      v = M['zh-CN'][key];
+    }
+    if (v == null) return key;
+    if (typeof v === 'string' && _appVersion && v.indexOf('%VERSION%') >= 0) {
+      v = v.split('%VERSION%').join(_appVersion);
+    }
+    return v;
   }
 
   function applyDom(root) {
@@ -975,5 +981,11 @@
     applyDom: applyDom,
     initFromSettings: initFromSettings,
     normalizeLocale: normalizeLocale,
+    setVersion: function (v) {
+      _appVersion = String(v || '');
+    },
+    getVersion: function () {
+      return _appVersion;
+    },
   };
 })(typeof window !== 'undefined' ? window : this);

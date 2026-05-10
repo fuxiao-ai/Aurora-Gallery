@@ -454,6 +454,108 @@ function runGetFolderCovers(db, options) {
 }
 
 /**
+ * Web 端目录浏览「直接子目录」封面：单次查询替代 N+1。
+ * 先根据 parentPath 找到 rootId，再 LIKE 找出所有直接子目录，最后窗口函数批量取封面。
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ parentPath?: string, mediaType?: string }} [options]
+ */
+function runGetImmediateSubfolderCovers(db, options) {
+  options = options || {};
+  var parentPath = String(options.parentPath || '')
+    .trim()
+    .replace(/\\/g, '/');
+  var mediaType = String(options.mediaType || '').toLowerCase();
+  if (!parentPath) return [];
+
+  // 1. Find rootId
+  var rootRow = db
+    .prepare('SELECT DISTINCT root_id FROM photos WHERE folder_path = ? LIMIT 1')
+    .get(parentPath);
+  var rootId = rootRow && rootRow.root_id ? Number(rootRow.root_id) : null;
+  if (!rootId) return [];
+
+  // 2. Build WHERE conditions
+  var conditions = ['root_id = ?', "folder_path LIKE ? ESCAPE '\\'", 'folder_path != ?'];
+  var baseParams = [rootId, parentPath + '/%', parentPath];
+  if (mediaType === 'image') {
+    conditions.push(sqlFileTypeIsImageExpr());
+  } else if (mediaType === 'video') {
+    conditions.push(sqlFileTypeIsVideoExpr());
+  }
+  var whereSql = conditions.join(' AND ');
+
+  // 3. Get all distinct folder_paths to find direct children
+  var allPaths = db
+    .prepare('SELECT DISTINCT folder_path FROM photos WHERE ' + whereSql)
+    .all(...baseParams);
+  var parentLen = parentPath.length;
+  var byChild = {};
+  for (var i = 0; i < allPaths.length; i++) {
+    var fp = allPaths[i].folder_path;
+    var rel = fp.slice(parentLen + 1);
+    var slash = rel.indexOf('/');
+    var childName = slash < 0 ? rel : rel.slice(0, slash);
+    if (!childName) continue;
+    var childPath = parentPath + '/' + childName;
+    if (!byChild[childPath]) {
+      byChild[childPath] = { folder_path: childPath, folder_photo_count: 0 };
+    }
+    byChild[childPath].folder_photo_count++;
+  }
+
+  var childPaths = Object.keys(byChild);
+  if (childPaths.length === 0) return [];
+
+  // 4. Batch get covers: IN + window function
+  var ph = childPaths.map(function () {
+    return '?';
+  });
+  var inWhere = 'WHERE ' + whereSql + ' AND folder_path IN (' + ph.join(',') + ')';
+  var inParams = baseParams.concat(childPaths);
+  var coverOrderSql = folderCoverPickOrderBySql();
+  var sql =
+    'WITH filtered AS (\n' +
+    '  SELECT id, file_name, folder_path, has_thumbnail, file_type\n' +
+    '  FROM photos\n' +
+    '  ' +
+    inWhere +
+    '\n),' +
+    'ranked AS (\n' +
+    '  SELECT\n' +
+    '    id, file_name, folder_path, has_thumbnail,\n' +
+    '    ROW_NUMBER() OVER (PARTITION BY folder_path ORDER BY ' +
+    coverOrderSql +
+    ') AS rn\n' +
+    '  FROM filtered\n' +
+    ')\n' +
+    'SELECT id, file_name, folder_path, has_thumbnail\n' +
+    'FROM ranked\n' +
+    'WHERE rn = 1\n' +
+    'ORDER BY folder_path ASC';
+
+  var covers = db.prepare(sql).all(...inParams);
+
+  // 5. Merge
+  var coverByPath = {};
+  for (var j = 0; j < covers.length; j++) {
+    coverByPath[covers[j].folder_path] = covers[j];
+  }
+  var out = [];
+  for (var k = 0; k < childPaths.length; k++) {
+    var cp = childPaths[k];
+    var cover = coverByPath[cp];
+    out.push({
+      folder_path: cp,
+      folder_photo_count: byChild[cp].folder_photo_count,
+      id: cover ? cover.id : null,
+      has_thumbnail: cover ? !!cover.has_thumbnail : false,
+      file_name: cover && cover.file_name != null ? cover.file_name : '',
+    });
+  }
+  return out;
+}
+
+/**
  * @param {import('better-sqlite3').Database} db
  * @param {{ rootId?: number, sortOrder?: string }} [options]
  */
@@ -652,6 +754,7 @@ module.exports = {
   runGetStatsAgg: runGetStatsAgg,
   runGetFolderTree: runGetFolderTree,
   runGetFolderCovers: runGetFolderCovers,
+  runGetImmediateSubfolderCovers: runGetImmediateSubfolderCovers,
   runGetDateGroups: runGetDateGroups,
   runGetDatePhotos: runGetDatePhotos,
   runGetHashAllPhotoCount: runGetHashAllPhotoCount,

@@ -8,7 +8,102 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 ### Planned
 
-- Bump `version` in `package.json` and sync in-app "About" text before each release.
+详见 [`docs/RELEASE_PLAN.md`](docs/RELEASE_PLAN.md)。
+
+- **1.1.0**（进行中）：P1 性能与体验 — 大图库性能埋点、预览体验增强、管理页紧凑布局。
+- **1.2.0**（架构重构）：`main.js` / `renderer/app.js` 模块化拆分，降低维护成本。
+- **1.3.0**（功能增强）：Web 侧能力补齐、发布流程标准化、数据安全工具化。
+
+---
+
+## [1.1.0] - 2026-05-10
+
+### Performance
+
+- **Scan performance telemetry**: `scanner.js` now records per-stage elapsed time (enumerate / partition / normal / raw / cleanup) via `logger.task()` and returns a `perf` summary in `scanResult`.
+- **Preview cache busting**: desktop (`photo://`, `video://`, `thumb://`) and web (`/photo/`, `/preview-image/`, `/thumb/`) preview URLs now include a `?v=` cache-buster based on `file_size` + `date_modified`.
+- **Web server ETag**: `/photo/` and `/video/` responses include `ETag` derived from file `mtime` + `size`, with `304 Not Modified` support.
+
+### UI
+
+- **Settings page compact layout**: added `@media (max-width: 960px)` breakpoint reducing padding, font sizes, and gaps.
+- **Settings page horizontal grouping**: "General" settings now use `settings-general-row` and `settings-toggle-row` flex-wrap layouts for dropdowns and toggles, reducing vertical scrolling.
+
+---
+
+### [1.1.0] - 2026-05-10（中文摘要）
+
+**性能**
+
+- 扫描阶段耗时埋点：`scanner.js` 各阶段（枚举、增量比对、普通文件、RAW 文件、清理提交）通过 `logger.task()` 输出结构化耗时日志，并在 `scanResult` 中返回性能摘要。
+- 预览缓存穿透：桌面端（`photo://` / `video://` / `thumb://`）与网页端（`/photo/` / `/preview-image/` / `/thumb/`）预览 URL 均附加基于 `file_size` + `date_modified` 的 `?v=` 版本号。
+- Web 服务端 ETag：`/photo/` 与 `/video/` 响应增加基于文件 `mtime+size` 的 `ETag`，支持 `304 Not Modified`。
+
+**界面**
+
+- 管理页紧凑布局：新增 `@media (max-width: 960px)` 断点，缩小间距、字号与控件尺寸。
+- 管理页横向分组：「通用设置」中的下拉框与开关改为 flex-wrap 横向排布，减少纵向滚动。
+
+---
+
+## [1.0.4] - 2026-05-10
+
+### Observability
+
+- **Structured task logging**: added `logger.task(name, phase, detail, meta)` in `src/main/logger.js` with a unified `[TASK:<name> +<elapsed>ms]` format.
+- **Scan task logs**: `runFolderScanInWorker` now logs `scan.start`, `scan.heartbeat.timeout`, and `scan.done/cancelled/error`.
+- **Thumbnail backfill logs**: `runThumbnailBackfill` logs `start`, `query.missingTotal`, `query.rows`, `batch.done`, `cancelled`, and `done`.
+- **Duplicate hash logs**: wrapped `runDuplicateHashDetection` with `logger.task('dup-hash', ...)` for `start`, `done`, and `error`.
+- **Web server logs**: `src/web-server.js` now uses the shared logger for startup, shutdown, and HLS cache prune events.
+- **Scan worker logs**: `src/scan-worker.js` outputs `console.log` at `worker.init`, `db.open`, `scan.start`, and `scan.done` for development visibility.
+
+### Data Safety
+
+- **README**: added **Data safety & backup** section with standard backup/restore steps and when to back up.
+- **Confirmation dialogs**: high-risk maintenance actions (`maintenance-cleanup-missing-files`, `maintenance-optimize-database`, `run-db-vacuum`) now show a warning dialog with a "backup first" reminder before proceeding.
+
+### Environment Lock
+
+- **README**: added **Environment lock** section documenting the recommended Node/Electron combination, upgrade strategy, and `ERR_DLOPEN_FAILED` troubleshooting steps.
+
+### Version Synchronization
+
+- **Dynamic version in UI**: `src/renderer/i18n.js` and `src/renderer/ui-shell.js` no longer hard-code the version; `help.aboutBody` uses a `%VERSION%` placeholder replaced at runtime via `api.getAppVersion()`.
+- **Version check script**: added `scripts/version-check.js` to scan `src/` and `README.md` for hard-coded version drift against `package.json`.
+- **npm script**: `npm run version-check` runs the drift check.
+
+### Bug Fixes
+
+- **README version drift**: corrected `Current release` from `1.0.2` to `1.0.3`.
+
+---
+
+### [1.0.4] - 2026-05-10（中文摘要）
+
+**可观测性**
+
+- 新增 `logger.task()` 结构化任务日志，统一格式 `[TASK:<name> +<elapsed>ms]`。
+- 扫描、缩略图补全、重复哈希、Web 服务各阶段增加结构化日志。
+- Worker 线程增加开发阶段日志。
+
+**数据安全**
+
+- README 新增「数据安全与备份」小节，包含标准备份/恢复流程。
+- 高风险维护操作（清理无效记录、优化数据库、VACUUM）增加二次确认弹窗，提示先备份。
+
+**环境固化**
+
+- README 新增「环境固化」小节，明确 Node/Electron 推荐组合、升级策略、原生模块排障步骤。
+
+**版本同步**
+
+- 应用内「关于」文案不再硬编码版本号，改为 `%VERSION%` 占位符，运行时通过 IPC 动态读取 `package.json`。
+- 新增 `scripts/version-check.js`，用于发布前检查硬编码版本漂移。
+- `npm run version-check` 一键校验。
+
+**Bug 修复**
+
+- 修复 README `Current release` 版本号漂移（1.0.2 → 1.0.3）。
 
 ---
 

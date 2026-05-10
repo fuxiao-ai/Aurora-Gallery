@@ -64,6 +64,15 @@ contextBridge.exposeInMainWorld('photoAPI', {
   maintenanceGetPhotosByFileHash: function (fileHash) {
     return ipcRenderer.invoke('maintenance-get-photos-by-file-hash', fileHash);
   },
+  maintenanceGetSimilarDhashGroups: function (options) {
+    return ipcRenderer.invoke('maintenance-get-similar-dhash-groups', options);
+  },
+  maintenanceGetPhotosByDhash: function (dhash) {
+    return ipcRenderer.invoke('maintenance-get-photos-by-dhash', dhash);
+  },
+  maintenanceFindSimilarPhotos: function (options) {
+    return ipcRenderer.invoke('maintenance-find-similar-photos', options);
+  },
   openDatabaseFolder: function () {
     return ipcRenderer.invoke('open-database-folder');
   },
@@ -240,5 +249,8 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   resolveWindowClose: function (payload) {
     ipcRenderer.send('resolve-window-close', payload);
+  },
+  getAppVersion: function () {
+    return ipcRenderer.invoke('get-app-version');
   },
 });

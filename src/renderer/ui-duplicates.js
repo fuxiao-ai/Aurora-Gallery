@@ -4,8 +4,15 @@
   function normalizeDuplicateGroups(rows) {
     if (!Array.isArray(rows)) return [];
     return rows.filter(function (g) {
-      return Number(g && g.duplicate_count) >= 2 && String((g && g.file_hash) || '').length > 0;
+      var key = String((g && g.file_hash) || '');
+      return Number(g && g.duplicate_count) >= 2 && key.length > 0;
     });
+  }
+
+  /** 判断当前使用的是相似检测模式（dHash）还是精确哈希模式（SHA-256） */
+  function isSimilarMode(hash) {
+    var h = String(hash || '');
+    return h.length === 16; // dHash = 16 hex chars, SHA-256 = 64 hex chars
   }
 
   // ===== duplicates-ui.js =====
@@ -16,6 +23,7 @@
     if (!dom.photoGrid) return;
 
     var scanned = !!state.duplicateHasScanned;
+    var mode = state.duplicateDetectionMode || 'hash';
     var defaultBody =
       '<div class="dup-empty">' +
       (scanned ? '请在左侧选一个分组查看。' : '还没有数据。点击下方开始查找内容相同的照片。') +
@@ -27,9 +35,21 @@
       '<div class="dup-page-head">' +
       '<div>' +
       '<div class="dup-page-title">重复照片</div>' +
-      '<div class="dup-page-desc">内容相同的照片会归为一组，界面会随主题自动切换</div>' +
+      '<div class="dup-page-desc">' +
+      (mode === 'similar'
+        ? '感知哈希相似的照片会归为一组（视觉相似，内容可能不同）'
+        : '内容相同的照片会归为一组，界面会随主题自动切换') +
+      '</div>' +
       '</div>' +
       '<div class="dup-toolbar">' +
+      '<div class="btn-group" style="margin-right:8px;">' +
+      '<button type="button" class="btn btn-sm ' +
+      (mode === 'hash' ? 'btn-primary' : '') +
+      '" data-dup-action="switch-mode" data-mode="hash">精确相同</button>' +
+      '<button type="button" class="btn btn-sm ' +
+      (mode === 'similar' ? 'btn-primary' : '') +
+      '" data-dup-action="switch-mode" data-mode="similar">视觉相似</button>' +
+      '</div>' +
       '<button type="button" class="btn btn-sm" data-dup-action="start-hash">' +
       (scanned ? '重新查找' : '查找重复照片') +
       '</button>' +
@@ -272,7 +292,11 @@
     var onRenderDuplicateSidebar = options.onRenderDuplicateSidebar;
     var onRenderDuplicateNoGroupContent = options.onRenderDuplicateNoGroupContent;
     var onSelectDuplicateGroup = options.onSelectDuplicateGroup;
-    if (!(api && api.has && api.has('maintenanceGetDuplicateHashGroups'))) return;
+    var useSimilar = state.duplicateDetectionMode === 'similar';
+    var hasApi = useSimilar
+      ? api && api.has && api.has('maintenanceGetSimilarDhashGroups')
+      : api && api.has && api.has('maintenanceGetDuplicateHashGroups');
+    if (!hasApi) return;
     if (typeof onCreateSidebarRequestGate !== 'function') return;
     if (typeof onRenderDuplicateSidebarLoading !== 'function') return;
     if (typeof onRenderDuplicateSidebar !== 'function') return;
@@ -323,13 +347,33 @@
           options.forceReload ? 'yes' : 'no',
         );
       }
-      var r = await api.maintenanceGetDuplicateHashGroups({
-        page: state.duplicateGroupsPage,
-        pageSize: 40,
-        minCount: 2,
-      });
+      var r;
+      if (useSimilar) {
+        r = await api.maintenanceGetSimilarDhashGroups({
+          page: state.duplicateGroupsPage,
+          pageSize: 40,
+        });
+      } else {
+        r = await api.maintenanceGetDuplicateHashGroups({
+          page: state.duplicateGroupsPage,
+          pageSize: 40,
+          minCount: 2,
+        });
+      }
       if (!gate.isAlive()) return;
-      var groups = normalizeDuplicateGroups((r && r.groups) || []);
+      var rawGroups = (r && r.groups) || [];
+      // 相似模式下将 dhash 映射到 file_hash 以保持兼容
+      if (useSimilar) {
+        rawGroups = rawGroups.map(function (g) {
+          return {
+            file_hash: g.dhash || '',
+            duplicate_count: g.duplicate_count || 0,
+            total_size: g.total_size || 0,
+            photos: g.photos || [],
+          };
+        });
+      }
+      var groups = normalizeDuplicateGroups(rawGroups);
       state.duplicateGroups = groups;
       state.duplicateHasScanned = true;
       state.duplicateGroupsTotalPages = (r && r.totalPages) || 1;
@@ -426,11 +470,30 @@
     wrap.innerHTML = '<div class="dup-empty">正在加载组内照片...</div>';
 
     if (!state.duplicatePhotosByHash[hash]) {
-      try {
-        var rows = await api.maintenanceGetPhotosByFileHash(hash);
-        state.duplicatePhotosByHash[hash] = Array.isArray(rows) ? rows : [];
-      } catch (e) {
-        state.duplicatePhotosByHash[hash] = [];
+      // 相似模式下优先使用预加载的 photos（第零层查询时已包含）
+      var preloaded = null;
+      if (isSimilarMode(hash) && Array.isArray(state.duplicateGroups)) {
+        var found = state.duplicateGroups.find(function (g) {
+          return String(g.file_hash || '') === hash;
+        });
+        if (found && Array.isArray(found.photos) && found.photos.length > 0) {
+          preloaded = found.photos;
+        }
+      }
+      if (preloaded) {
+        state.duplicatePhotosByHash[hash] = preloaded;
+      } else {
+        try {
+          var rows;
+          if (isSimilarMode(hash)) {
+            rows = await api.maintenanceGetPhotosByDhash(hash);
+          } else {
+            rows = await api.maintenanceGetPhotosByFileHash(hash);
+          }
+          state.duplicatePhotosByHash[hash] = Array.isArray(rows) ? rows : [];
+        } catch (e) {
+          state.duplicatePhotosByHash[hash] = [];
+        }
       }
     }
     if (!gate.isAlive()) return;
@@ -679,10 +742,15 @@
       (!photos || !photos.length) &&
       api &&
       api.has &&
-      api.has('maintenanceGetPhotosByFileHash')
+      (api.has('maintenanceGetPhotosByFileHash') || api.has('maintenanceGetPhotosByDhash'))
     ) {
       try {
-        var rows = await api.maintenanceGetPhotosByFileHash(h);
+        var rows;
+        if (isSimilarMode(h)) {
+          rows = await api.maintenanceGetPhotosByDhash(h);
+        } else {
+          rows = await api.maintenanceGetPhotosByFileHash(h);
+        }
         state.duplicatePhotosByHash[h] = Array.isArray(rows) ? rows : [];
         photos = state.duplicatePhotosByHash[h];
       } catch (eLoad) {

@@ -5,7 +5,7 @@
 (function (global) {
   'use strict';
 
-  var HLS_SCRIPT_URL = '../web/vendor/hls.min.js';
+  var HLS_SCRIPT_URL = '/vendor/hls.min.js';
   var _hlsLoading = false;
   var _hlsCallbacks = [];
 

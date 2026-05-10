@@ -1,6 +1,12 @@
 (function (global) {
   'use strict';
 
+  function photoCacheVersion(photo) {
+    if (!photo) return '';
+    var v = (photo.file_size || '') + '|' + (photo.date_modified || '');
+    return v.replace(/[^0-9]/g, '');
+  }
+
   function isVideoFileType(fileType) {
     var t = fileType != null ? String(fileType).toLowerCase() : '';
     if (!t) return false;
@@ -80,7 +86,7 @@
 
     var useHls = electronTier && electronTier.tier === 'hls_transcode';
     if (!useHls) {
-      video.src = 'video://' + photo.id;
+      video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
       try {
         video.load();
       } catch (e2) {}
@@ -89,7 +95,7 @@
     }
 
     if (!(api && api.has && api.has('getWebLocalBaseUrl'))) {
-      video.src = 'video://' + photo.id;
+      video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
       try {
         video.load();
       } catch (e4) {}
@@ -103,7 +109,7 @@
       var cur = state.previewPhotos[state.previewIndex];
       if (!cur || cur.id !== openedId) return;
       if (!base) {
-        video.src = 'video://' + photo.id;
+        video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
         try {
           video.load();
         } catch (e6) {}
@@ -122,7 +128,7 @@
           if (data.playlistUrl && global.PhotoHlsAttach) {
             global.PhotoHlsAttach.attach(video, root + data.playlistUrl);
           } else {
-            video.src = 'video://' + photo.id;
+            video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
             try {
               video.load();
             } catch (e9) {}
@@ -133,7 +139,7 @@
           if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
           var cur3 = state.previewPhotos[state.previewIndex];
           if (!cur3 || cur3.id !== openedId) return;
-          video.src = 'video://' + photo.id;
+          video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
           try {
             video.load();
           } catch (e11) {}
@@ -177,8 +183,9 @@
       var paused = !!video.paused || !!video.ended;
       btn.style.display = paused ? '' : 'none';
       btn.innerHTML = paused
-        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7v10l8-5z"></path></svg>'
-        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7h2.8v10H9zm4.2 0H16v10h-2.8z"></path></svg>';
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 19h2.8V5H8zm5.2 0H16V5h-2.8z"></path></svg>';
+      btn.setAttribute('data-state', paused ? 'play' : 'pause');
       btn.setAttribute('aria-label', paused ? '播放视频' : '暂停视频');
       btn.title = paused ? '播放' : '暂停';
     };
@@ -582,6 +589,31 @@
       state.previewExternalSubtitleSourceName = '';
       clearManagedSubtitleTrack(video);
       onDone(false);
+      return;
+    }
+    // 尚未检查字幕时，先检查再决定，避免无字幕视频产生 404
+    if (
+      !forceExternalCheck &&
+      streamIndex < 0 &&
+      ffStreamIndex < 0 &&
+      state.previewHasExternalSubtitle === null
+    ) {
+      loadEmbeddedSubtitleStreams({ photo: photo, api: api, dom: dom, state: state, video: video })
+        .then(function () {
+          if (
+            state.previewHasExternalSubtitle === false &&
+            !state.previewEmbeddedSubtitleStreams.length
+          ) {
+            state.previewExternalSubtitleSourceName = '';
+            clearManagedSubtitleTrack(video);
+            onDone(false);
+            return;
+          }
+          loadExternalSubtitle(options);
+        })
+        .catch(function () {
+          onDone(false);
+        });
       return;
     }
     if (!state.previewSubtitleEnabled || state.previewSubtitleMode === 'off') {
@@ -1087,7 +1119,7 @@
             img.removeAttribute('height');
             // 如果有缩略图，先加载缩略图作为占位，然后加载原图
             if (photo.has_thumbnail) {
-              img.src = 'thumb://' + photo.id;
+              img.src = 'thumb://' + photo.id + '?v=' + photoCacheVersion(photo);
             }
             // 并行加载原图，和web端一样加快显示速度
             var originalImg = new Image();
@@ -1122,7 +1154,7 @@
                 onPreloadAdjacentPages(index);
               }
             };
-            originalImg.src = 'photo://' + photo.id;
+            originalImg.src = 'photo://' + photo.id + '?v=' + photoCacheVersion(photo);
             // 如果缩略图已缓存，手动触发保证流程继续
             if (photo.has_thumbnail && img.complete && img.naturalWidth > 0) {
               // 已经加载完成，不影响，只是确保布局正确
@@ -1198,7 +1230,7 @@
           img.removeAttribute('height');
           // 如果有缩略图，先加载缩略图作为占位，然后加载原图
           if (photo.has_thumbnail) {
-            img.src = 'thumb://' + photo.id;
+            img.src = 'thumb://' + photo.id + '?v=' + photoCacheVersion(photo);
           }
           img.onload = onPreviewImageDecoded;
           // 并行加载原图，加快显示速度
@@ -1210,7 +1242,7 @@
           originalImg.onerror = function () {
             onPreviewImageDecoded();
           };
-          originalImg.src = 'photo://' + photo.id;
+          originalImg.src = 'photo://' + photo.id + '?v=' + photoCacheVersion(photo);
           // 如果缩略图已缓存，手动处理保证流程正确
           if (photo.has_thumbnail && img.complete && img.naturalWidth > 0) {
             onPreviewImageDecoded();
@@ -1284,6 +1316,11 @@
       var photoCard = document.querySelector('.photo-card[data-photo-id="' + deletedId + '"]');
       if (photoCard) {
         photoCard.remove();
+      }
+      // Re-index remaining cards so data-preview-index matches updated currentPhotos
+      var remainingCards = document.querySelectorAll('.photo-card[data-preview-index]');
+      for (var ci = 0; ci < remainingCards.length; ci++) {
+        remainingCards[ci].setAttribute('data-preview-index', ci);
       }
       // Update cache: remove from cached result
       if (state._photoBrowseCacheResult && state._photoBrowseCacheResult.photos) {

@@ -4,6 +4,21 @@
   box-sizing: border-box;
 }
 
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
 :root {
   /* 统一蓝黑调色板（更深邃的高级感） */
   --bg: #0a0a18;
@@ -732,6 +747,10 @@ html[data-theme='light'] .topbar .header-title {
   color: var(--text-muted);
   font-size: 14px;
   pointer-events: none;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+.topbar .search-box:focus-within .search-icon {
+  color: color-mix(in srgb, var(--accent) 80%, var(--text-muted));
 }
 .topbar .stats {
   font-size: 12px;
@@ -1082,6 +1101,7 @@ html[data-theme='light'] .sidebar-resizer.is-dragging {
     transparent 100%
   );
   font-weight: 600;
+  box-shadow: inset 0 -3px 8px color-mix(in srgb, var(--accent-glow) 14%, transparent);
 }
 
 /* 侧边栏内*/
@@ -2297,9 +2317,15 @@ html[data-theme='light'] .folder-cover-card:hover {
 }
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 50%, var(--accent) 100%);
+  background-size: 200% 100%;
   border-radius: 2px;
   transition: width 0.3s;
+  animation: progressShimmer 2s linear infinite;
+}
+@keyframes progressShimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
 .progress-file {
   font-size: 11px;
@@ -2971,38 +2997,51 @@ html[data-theme='light'] .folder-cover-card:hover {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 72px;
-  height: 72px;
+  width: 88px;
+  height: 88px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--glass-border) 78%, var(--accent) 22%);
-  background: color-mix(in srgb, var(--bg-primary) 44%, #000000);
-  backdrop-filter: blur(8px) saturate(1.2);
-  -webkit-backdrop-filter: blur(8px) saturate(1.2);
-  color: color-mix(in srgb, #ffffff 94%, var(--accent));
+  border: 1.5px solid color-mix(in srgb, #ffffff 28%, var(--accent) 12%);
+  background: color-mix(in srgb, var(--bg-primary) 28%, #000000 72%);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  color: #ffffff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 4;
-  box-shadow: 0 10px 26px color-mix(in srgb, var(--bg-primary) 72%, #000000);
+  box-shadow:
+    0 0 0 8px color-mix(in srgb, #000000 22%, transparent),
+    0 8px 32px color-mix(in srgb, #000000 55%, transparent),
+    0 0 48px color-mix(in srgb, var(--accent) 18%, transparent);
   transition:
-    transform var(--dur-fast) var(--ease-standard),
-    background var(--dur-fast) var(--ease-standard),
-    box-shadow var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.18s var(--ease-standard),
+    box-shadow 0.18s var(--ease-standard),
+    border-color 0.18s var(--ease-standard);
 }
 .preview-video-center-play svg {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   fill: currentColor;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.4));
+  margin-left: 3px; /* 视觉重心补偿 */
+}
+.preview-video-center-play[data-state="pause"] svg {
+  margin-left: 0;
 }
 .preview-video-center-play:hover {
-  transform: translate(-50%, -50%) scale(1.05);
-  background: color-mix(in srgb, var(--bg-primary) 38%, var(--accent-dim));
-  box-shadow: 0 12px 30px color-mix(in srgb, var(--bg-primary) 68%, #000000);
+  transform: translate(-50%, -50%) scale(1.08);
+  background: color-mix(in srgb, var(--accent) 30%, #000000 70%);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow:
+    0 0 0 10px color-mix(in srgb, #000000 18%, transparent),
+    0 12px 40px color-mix(in srgb, #000000 50%, transparent),
+    0 0 64px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .preview-video-center-play:active {
-  transform: translate(-50%, -50%) scale(0.96);
+  transform: translate(-50%, -50%) scale(0.94);
+  transition-duration: 0.08s;
 }
 .preview-subtitle-settings-panel {
   position: absolute;
@@ -4057,8 +4096,20 @@ html[data-theme='light'] #previewFavoriteBtn.active {
   color: var(--text-primary);
   margin-bottom: 8px;
   padding-bottom: 7px;
+  padding-left: 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 78%, var(--border));
   letter-spacing: 0.02em;
+  position: relative;
+}
+.settings-section-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 9px;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  border-radius: 2px;
 }
 .setting-item {
   display: flex;
@@ -4352,8 +4403,13 @@ html[data-theme='light'] .setting-checkbox-row input.preview-setting-checkbox:ho
   right: 0;
   bottom: 0;
   background: var(--bg-hover);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 80%, var(--border));
   border-radius: 12px;
-  transition: background 0.2s;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition:
+    background 0.22s var(--ease-standard),
+    border-color 0.22s var(--ease-standard),
+    box-shadow 0.22s var(--ease-standard);
 }
 .toggle-slider::before {
   content: '';
@@ -4364,16 +4420,21 @@ html[data-theme='light'] .setting-checkbox-row input.preview-setting-checkbox:ho
   top: 3px;
   background: var(--text-muted);
   border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition:
-    transform 0.2s,
-    background 0.2s;
+    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.22s var(--ease-standard),
+    box-shadow 0.22s var(--ease-standard);
 }
 .toggle-switch input:checked + .toggle-slider {
   background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 .toggle-switch input:checked + .toggle-slider::before {
   transform: translateX(20px);
   background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.25);
 }
 
 /* === 缩放控件：与 .browse-footer 内 .pagination 同一行，靠右 === */
@@ -5211,4 +5272,89 @@ html[data-theme='light'] .app-dialog-actions .btn:hover {
   padding: 14px 16px 10px;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+/* === 管理页窄窗口紧凑布局 === */
+@media (max-width: 960px) {
+  .settings-page {
+    padding: 10px 12px 12px;
+  }
+  .settings-section {
+    margin-top: 10px;
+    scroll-margin-top: 10px;
+  }
+  .settings-section-title {
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .setting-item {
+    padding: 7px 9px;
+    gap: 8px;
+  }
+  .setting-label {
+    font-size: 12px;
+  }
+  .setting-desc {
+    font-size: 10px;
+  }
+  .settings-back {
+    padding: 5px 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .settings-header {
+    margin-bottom: 10px;
+  }
+  .settings-browse-group-title {
+    font-size: 12px;
+  }
+  .settings-browse-field {
+    gap: 4px;
+  }
+  .setting-inline-label {
+    font-size: 11px;
+  }
+  .settings-number-input {
+    width: 120px;
+    min-height: 28px;
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+}
+
+/* === 管理页宽屏横向排布优化 === */
+.settings-general-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+}
+.settings-general-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 200px;
+}
+.settings-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+}
+.settings-toggle-col {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 1;
+  min-width: 240px;
+  padding: 8px 10px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-card) 94%, var(--accent-dim)) 0%,
+    color-mix(in srgb, var(--bg-card) 86%, transparent) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--glass-border) 74%, var(--border));
+  border-radius: var(--radius);
 }

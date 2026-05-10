@@ -550,10 +550,7 @@
         break;
       case 'about':
         await appAlert(
-          tMenu(
-            'help.aboutBody',
-            '拂晓图库 v1.0.2\n\n一款轻量级的本地相册应用（本地优先，索引与媒体保存在本机）\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/',
-          ),
+          tMenu('help.aboutBody', '拂晓图库\n\n一款轻量级的本地相册应用（本地优先，索引与媒体保存在本机）\n支持百万级照片浏览与检索\n\n作者：拂晓AI\nhttps://foredawn.vip/'),
           tMenu('help.aboutTitle', '关于'),
         );
         break;

@@ -21,6 +21,8 @@ class PhotoDatabase {
     this._rootStatsCacheSchemaDone = false;
     /** 聚合/重复比对辅助索引：首屏后再建，避免大库启动阶段长时间阻塞主线程 */
     this._deferredPhotoIndexesApplied = false;
+    /** 缩略图缺失索引 + 数据修复：首窗后再建，避免大库启动阶段长时间阻塞主线程 */
+    this._deferredThumbnailFixApplied = false;
     /** Intl.Collator 首次排序再创建 */
     this.fileNameNaturalCollator = null;
     this.init();
@@ -67,6 +69,36 @@ class PhotoDatabase {
       this._deferredPhotoIndexesApplied = false;
       throw e;
     }
+  }
+
+  /** 缩略图补全加速索引 + has_thumbnail 数据修复；在 Worker 线程中执行，避免阻塞主线程。幂等。 */
+  applyDeferredThumbnailFix() {
+    if (this._deferredThumbnailFixApplied) return;
+    this._deferredThumbnailFixApplied = true;
+    var dbPath = this._dbFilePath;
+    var path = require('path');
+    var Worker = require('worker_threads').Worker;
+    var worker = new Worker(path.join(__dirname, 'workers', 'thumbnail-fix-worker.js'), {
+      workerData: { dbPath: dbPath },
+    });
+    worker.on('message', function (msg) {
+      logger.log('[db migration] created thumbnail missing indexes');
+      var changes = msg && msg.changes;
+      if (changes > 0) {
+        logger.log(
+          '[db migration] fixed',
+          changes,
+          'rows with has_thumbnail=1 but thumbnail IS NULL',
+        );
+      }
+    });
+    worker.on('error', function (e) {
+      logger.error(
+        '[db migration] thumbnail-fix worker error:',
+        e && e.message ? e.message : e,
+      );
+    });
+    return Promise.resolve();
   }
 
   getNaturalCollator() {
@@ -160,6 +192,15 @@ class PhotoDatabase {
         thumbnail BLOB,
         has_thumbnail INTEGER DEFAULT 0,
         is_favorite INTEGER DEFAULT 0,
+        camera_make TEXT,
+        camera_model TEXT,
+        lens_model TEXT,
+        focal_length REAL,
+        aperture REAL,
+        iso_speed INTEGER,
+        shutter_speed TEXT,
+        gps_latitude REAL,
+        gps_longitude REAL,
         FOREIGN KEY (root_id) REFERENCES root_folders(id) ON DELETE CASCADE
       );
 
@@ -195,11 +236,12 @@ class PhotoDatabase {
   }
 
   init() {
-    this.createCoreSchema();
+    if (!this.hasTable('root_folders') || !this.hasTable('photos')) {
+      this.createCoreSchema();
+    }
     this.ensureCoreSchemaReady();
-    this.ensurePhotosIsFavoriteColumn();
     this.ensureRootFolderStatsCacheSchema();
-    this.ensurePhotosThumbnailMissingIndex();
+    // ensurePhotosIsFavoriteColumn: 首窗后延时调度，避免大库 PRAGMA/CREATE INDEX 阻塞启动
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
 
@@ -301,8 +343,11 @@ class PhotoDatabase {
   }
 
   /**
-   * 缩略图补全查询加速：复合索引 (id, has_thumbnail) 让 `WHERE id > ? AND has_thumbnail = 0` 查询
-   * 不需要全表扫描，可以直接利用索引顺序快速定位。解决大库启动补全查询卡死一分钟以上问题。
+   * 缩略图补全查询加速：
+   * 1. 部分索引 `idx_photos_missing_thumb ON photos(id) WHERE has_thumbnail = 0` 让查询直接
+   *    在极小索引上按 id 顺序扫描，无需回表，解决大库 BLOB 表全表扫描卡死问题。
+   * 2. 同时修复旧数据：has_thumbnail=1 但 thumbnail IS NULL 的行设为 has_thumbnail=0，
+   *    保证 `has_thumbnail = 0` 语义与 "缺失缩略图" 完全一致。
    */
   ensurePhotosThumbnailMissingIndex() {
     if (!this.hasTable('photos')) return;
@@ -310,13 +355,32 @@ class PhotoDatabase {
       this.db.exec(
         'CREATE INDEX IF NOT EXISTS idx_photos_id_hasThumb ON photos(id, has_thumbnail);',
       );
-      logger.log('[db migration] created idx_photos_id_hasThumb index for thumbnail backfill');
+      this.db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_photos_missing_thumb ON photos(id) WHERE has_thumbnail = 0;',
+      );
+      logger.log('[db migration] created thumbnail missing indexes');
     } catch (e) {
       logger.error(
         '[db migration] create thumbnail missing index failed:',
         e && e.message ? e.message : e,
       );
       void e;
+    }
+    try {
+      var r = this.db
+        .prepare(
+          'UPDATE photos SET has_thumbnail = 0 WHERE has_thumbnail = 1 AND thumbnail IS NULL',
+        )
+        .run();
+      if (r.changes > 0) {
+        logger.log(
+          '[db migration] fixed',
+          r.changes,
+          'rows with has_thumbnail=1 but thumbnail IS NULL',
+        );
+      }
+    } catch (eFix) {
+      void eFix;
     }
   }
 
@@ -448,6 +512,164 @@ class PhotoDatabase {
     try {
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_photos_file_hash ON photos(file_hash)');
     } catch (e) {}
+  }
+
+  /** 为感知哈希 dHash 扩展 photos 列与 LSH 辅助表（幂等） */
+  ensureDhashSchema() {
+    if (this._dhashSchemaDone) return;
+    this._dhashSchemaDone = true;
+    // photos 表新增列
+    try {
+      this.db.exec('ALTER TABLE photos ADD COLUMN dhash TEXT');
+    } catch (e) {}
+    try {
+      this.db.exec('ALTER TABLE photos ADD COLUMN dhash_mtime TEXT');
+    } catch (e) {}
+    try {
+      this.db.exec('ALTER TABLE photos ADD COLUMN dhash_size INTEGER');
+    } catch (e) {}
+    // dhash 索引
+    try {
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_photos_dhash ON photos(dhash)');
+    } catch (e) {}
+    try {
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_photos_dhash_pending ON photos(id) WHERE dhash IS NULL OR TRIM(dhash) = ''",
+      );
+    } catch (e) {}
+    // dHash 存量补充：覆盖索引让 ORDER BY file_path 无需回表
+    try {
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_photos_dhash_backfill ON photos(file_path) WHERE has_thumbnail = 1 AND (dhash IS NULL OR TRIM(dhash) = '')",
+      );
+    } catch (e) {}
+    // LSH 辅助表（WITHOUT ROWID 节省存储）
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS photo_dhash_lsh (
+          photo_id INTEGER NOT NULL,
+          band INTEGER NOT NULL,
+          bucket INTEGER NOT NULL,
+          PRIMARY KEY (photo_id, band),
+          FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE
+        ) WITHOUT ROWID
+      `);
+    } catch (e) {}
+    try {
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_lsh_lookup ON photo_dhash_lsh(band, bucket)');
+    } catch (e) {}
+  }
+
+  /**
+   * 写入 dHash 并同步更新 LSH 辅助表（同一事务）
+   * @param {number} photoId
+   * @param {string} dhash 16 位 hex
+   * @param {number[]} buckets 16 个 4-bit 整数
+   * @param {string} dateModified
+   * @param {number} fileSize
+   * @returns {{changes:number}}
+   */
+  updatePhotoDhash(photoId, dhash, buckets, dateModified, fileSize) {
+    this.ensureDhashSchema();
+    var id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return { changes: 0 };
+
+    var self = this;
+    var tx = this.db.transaction(function () {
+      // 1. 更新 photos 表
+      if (dhash == null || dhash === '') {
+        self.db
+          .prepare(
+            'UPDATE photos SET dhash = NULL, dhash_mtime = NULL, dhash_size = NULL WHERE id = ?',
+          )
+          .run(id);
+      } else {
+        self.db
+          .prepare('UPDATE photos SET dhash = ?, dhash_mtime = ?, dhash_size = ? WHERE id = ?')
+          .run(
+            String(dhash),
+            dateModified != null ? String(dateModified) : null,
+            Number(fileSize) || 0,
+            id,
+          );
+      }
+      // 2. 删除旧 LSH 记录（幂等：支持重新计算）
+      self.db.prepare('DELETE FROM photo_dhash_lsh WHERE photo_id = ?').run(id);
+      // 3. 插入新 LSH 记录（16 条）
+      if (dhash != null && dhash !== '' && Array.isArray(buckets) && buckets.length === 16) {
+        var insertLsh = self.db.prepare(
+          'INSERT INTO photo_dhash_lsh (photo_id, band, bucket) VALUES (?, ?, ?)',
+        );
+        for (var band = 0; band < 16; band++) {
+          insertLsh.run(id, band, buckets[band]);
+        }
+      }
+    });
+    tx();
+    return { changes: 1 };
+  }
+
+  /** 第零层：dHash 精确重复的组列表（SQL GROUP BY，秒级） */
+  getDuplicateDhashGroups(limit, offset) {
+    this.ensureDhashSchema();
+    var lim = Math.max(1, Math.min(parseInt(limit, 10) || 100, 500));
+    var off = Math.max(0, parseInt(offset, 10) || 0);
+    return this.db
+      .prepare(
+        `SELECT dhash, COUNT(*) AS duplicate_count, SUM(file_size) AS total_size
+         FROM photos
+         WHERE dhash IS NOT NULL AND TRIM(dhash) != ''
+         GROUP BY dhash
+         HAVING COUNT(*) > 1
+         ORDER BY duplicate_count DESC, dhash ASC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(lim, off);
+  }
+
+  /** 获取指定 dHash 的所有照片 */
+  getPhotosByDhash(dhash) {
+    this.ensureDhashSchema();
+    var h = dhash != null ? String(dhash) : '';
+    if (!h) return [];
+    return this.db
+      .prepare(
+        `SELECT id, file_name, file_path, folder_path, file_size, date_modified, has_thumbnail, file_type
+         FROM photos
+         WHERE dhash = ?
+         ORDER BY id ASC`,
+      )
+      .all(h);
+  }
+
+  /** 存量补充：有缩略图但无 dHash 的照片数量 */
+  getDhashBackfillPhotoCount() {
+    this.ensureDhashSchema();
+    var row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM photos WHERE has_thumbnail = 1 AND (dhash IS NULL OR TRIM(dhash) = '')",
+      )
+      .get();
+    return row && row.c != null ? Number(row.c) : 0;
+  }
+
+  /**
+   * 存量补充：按 file_path 顺序分批拉取「有缩略图但无 dHash」的照片
+   * 顺序读盘优化：同文件夹文件连续，利用操作系统预读
+   */
+  getDhashBackfillPhotosAfter(afterId, batchSize) {
+    this.ensureDhashSchema();
+    var aid = Math.max(0, parseInt(afterId, 10) || 0);
+    var lim = Math.max(1, Math.min(parseInt(batchSize, 10) || 2000, 5000));
+    return this.db
+      .prepare(
+        `SELECT id, file_path, file_name, file_size, date_modified, file_type
+         FROM photos
+         WHERE id > ? AND has_thumbnail = 1 AND (dhash IS NULL OR TRIM(dhash) = '') AND file_path != ''
+         ORDER BY file_path ASC
+         LIMIT ?`,
+      )
+      .all(aid, lim);
   }
 
   /** 尚无 file_hash 的图片数量（非视频）；已有指纹的不重复计算 */
@@ -1140,9 +1362,7 @@ class PhotoDatabase {
   }
 
   getMissingThumbnailCount() {
-    var row = this.db
-      .prepare('SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0 OR thumbnail IS NULL')
-      .get();
+    var row = this.db.prepare('SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0').get();
     return row ? row.count : 0;
   }
 
@@ -1162,10 +1382,9 @@ class PhotoDatabase {
   getPhotosMissingThumbnailsAfter(afterId, limit) {
     return this.db
       .prepare(
-        `SELECT id, file_path
+        `SELECT id, file_path, file_size, date_modified
        FROM photos
-       WHERE id > ?
-        AND (has_thumbnail = 0 OR thumbnail IS NULL)
+       WHERE id > ? AND has_thumbnail = 0
        ORDER BY id ASC
        LIMIT ?`,
       )
@@ -1549,6 +1768,19 @@ class PhotoDatabase {
     return photo || null;
   }
 
+  getPhotoInfo(photoId) {
+    const photo = this.db
+      .prepare(
+        `SELECT id, file_path, file_name, file_size, file_type, width, height,
+                date_taken, date_modified, is_favorite,
+                camera_make, camera_model, lens_model, focal_length, aperture,
+                iso_speed, shutter_speed, gps_latitude, gps_longitude
+         FROM photos WHERE id = ?`,
+      )
+      .get(photoId);
+    return photo || null;
+  }
+
   deletePhotoById(photoId) {
     const meta = this.db.prepare('SELECT root_id FROM photos WHERE id = ?').get(photoId);
     const r = this.db.prepare('DELETE FROM photos WHERE id = ?').run(photoId);
@@ -1618,6 +1850,10 @@ class PhotoDatabase {
       .iterate(rootId);
   }
 
+  prepare(sql) {
+    return this.db.prepare(sql);
+  }
+
   beginTransaction() {
     this.db.exec('BEGIN TRANSACTION');
   }
@@ -1630,12 +1866,52 @@ class PhotoDatabase {
     this.db.exec('ROLLBACK');
   }
 
+  /**
+   * 批量写入 dHash（单一事务，比逐条调用 updatePhotoDhash 快 10-50 倍）
+   * @param {Array<{id,dhash,buckets,mtime,size}>} batch
+   */
+  updatePhotoDhashBatch(batch) {
+    this.ensureDhashSchema();
+    if (!Array.isArray(batch) || batch.length === 0) return;
+    var self = this;
+    var stmtUpdate = this.db.prepare(
+      'UPDATE photos SET dhash = ?, dhash_mtime = ?, dhash_size = ? WHERE id = ?',
+    );
+    var stmtDeleteLsh = this.db.prepare('DELETE FROM photo_dhash_lsh WHERE photo_id = ?');
+    var stmtInsertLsh = this.db.prepare(
+      'INSERT INTO photo_dhash_lsh (photo_id, band, bucket) VALUES (?, ?, ?)',
+    );
+    var tx = this.db.transaction(function () {
+      for (var i = 0; i < batch.length; i++) {
+        var r = batch[i];
+        var id = parseInt(r.id, 10);
+        if (!isFinite(id) || id <= 0) continue;
+        stmtUpdate.run(
+          String(r.dhash),
+          r.mtime != null ? String(r.mtime) : null,
+          Number(r.size) || 0,
+          id,
+        );
+        stmtDeleteLsh.run(id);
+        if (Array.isArray(r.buckets) && r.buckets.length === 16) {
+          for (var band = 0; band < 16; band++) {
+            stmtInsertLsh.run(id, band, r.buckets[band]);
+          }
+        }
+      }
+    });
+    tx();
+    void self;
+  }
+
   insertPhoto(photo) {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO photos
         (root_id, folder_path, file_name, file_path, file_size, file_type,
-         width, height, date_taken, date_modified, thumbnail, has_thumbnail)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         width, height, date_taken, date_modified, thumbnail, has_thumbnail,
+         camera_make, camera_model, lens_model, focal_length, aperture,
+         iso_speed, shutter_speed, gps_latitude, gps_longitude)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       photo.rootId,
@@ -1650,6 +1926,15 @@ class PhotoDatabase {
       photo.dateModified,
       photo.thumbnail,
       photo.hasThumbnail ? 1 : 0,
+      photo.cameraMake || null,
+      photo.cameraModel || null,
+      photo.lensModel || null,
+      photo.focalLength || null,
+      photo.aperture || null,
+      photo.isoSpeed || null,
+      photo.shutterSpeed || null,
+      photo.gpsLatitude || null,
+      photo.gpsLongitude || null,
     );
   }
 
@@ -1657,8 +1942,10 @@ class PhotoDatabase {
     return this.db.prepare(`
       INSERT OR IGNORE INTO photos
         (root_id, folder_path, file_name, file_path, file_size, file_type,
-         width, height, date_taken, date_modified, thumbnail, has_thumbnail)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         width, height, date_taken, date_modified, thumbnail, has_thumbnail,
+         camera_make, camera_model, lens_model, focal_length, aperture,
+         iso_speed, shutter_speed, gps_latitude, gps_longitude)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
   }
 

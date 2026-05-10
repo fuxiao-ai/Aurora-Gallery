@@ -199,6 +199,7 @@ var state = {
   duplicateGroupsTotalPages: 1,
   duplicateGroupsLoading: false,
   duplicateHasScanned: false,
+  duplicateDetectionMode: 'hash', // 'hash' = SHA-256 精确, 'similar' = dHash 视觉相似
   currentDuplicateHash: '',
   duplicateExpanded: {},
   duplicatePhotosByHash: {},
@@ -624,6 +625,13 @@ async function applyInitialSettingsSnapshot() {
   });
   if (window.I18n && typeof window.I18n.initFromSettings === 'function') {
     window.I18n.initFromSettings(s0);
+  }
+  if (api && typeof api.getAppVersion === 'function') {
+    api.getAppVersion().then(function (v) {
+      if (window.I18n && typeof window.I18n.setVersion === 'function') {
+        window.I18n.setVersion(v);
+      }
+    }).catch(function () {});
   }
   syncTaskPanelCollapsedUI();
 }
@@ -1197,6 +1205,7 @@ function bindEvents() {
     onOpenDuplicatePreview: openDuplicatePreview,
     onShowPhotoInFolderById: showPhotoInFolderById,
     onDeleteDuplicatePhoto: deleteDuplicatePhoto,
+    onSwitchDuplicateMode: switchDuplicateMode,
   });
 
   uiEvents.bindPreviewBasicControls({
@@ -4192,6 +4201,15 @@ async function refreshDuplicateHashStatus() {
 }
 
 async function startDuplicateHashDetection() {
+  // 相似模式下 dHash 已在缩略图生成时同步计算，直接刷新列表即可
+  if (state.duplicateDetectionMode === 'similar') {
+    state.duplicateHasScanned = true;
+    invalidateTabSessionCaches({ duplicates: true });
+    if (state.currentTab === 'duplicates' || state.currentView === 'duplicates') {
+      await loadDuplicateGroups(1, { forceReload: true });
+    }
+    return;
+  }
   if (!(api && api.has('maintenanceStartDuplicateHashDetection'))) return;
   if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = true;
   if (dom.duplicateHashStatus)
@@ -5216,6 +5234,22 @@ async function showPhotoInFolderById(photoId) {
       if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = msg;
     },
   });
+}
+
+function switchDuplicateMode(mode) {
+  mode = mode === 'similar' ? 'similar' : 'hash';
+  if (state.duplicateDetectionMode === mode) return;
+  state.duplicateDetectionMode = mode;
+  state.duplicateGroups = [];
+  state.duplicateGroupsPage = 1;
+  state.duplicatePhotosByHash = {};
+  state.currentDuplicateHash = '';
+  state._dupListGen = (state._dupListGen || 0) + 1;
+  if (state.currentTab === 'duplicates' || state.currentView === 'duplicates') {
+    renderDuplicatePageShell();
+    renderDuplicateSidebar();
+    loadDuplicateGroups(1, { forceReload: true });
+  }
 }
 
 async function deleteDuplicatePhoto(photoId, hash) {

@@ -34,6 +34,8 @@ parentPort.on('message', function (msg) {
       result = heavy.runGetFolderTree(database, msg.options && msg.options.rootId);
     } else if (msg.op === 'getFolderCovers') {
       result = heavy.runGetFolderCovers(database, msg.options || {});
+    } else if (msg.op === 'getImmediateSubfolderCovers') {
+      result = heavy.runGetImmediateSubfolderCovers(database, msg.options || {});
     } else if (msg.op === 'getDateGroups') {
       result = heavy.runGetDateGroups(database, msg.options || {});
     } else if (msg.op === 'getDatePhotos') {

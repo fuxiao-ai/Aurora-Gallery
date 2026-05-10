@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; manifest-src 'self';"
+    />
     <meta name="theme-color" content="#0a0a18" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -12,12 +16,36 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/app-icon-192.png?v=4" />
     <link rel="icon" type="image/png" sizes="512x512" href="/app-icon-512.png?v=4" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />
+    <link rel="preload" href="/playback-strategy.js" as="script" />
+    <link rel="preload" href="/js/web-theme-shared.js?v=2" as="script" />
+    <link rel="preload" href="/js/app.js?v=2" as="script" />
     <title>拂晓图库 · Aurora Gallery</title>
     <style>
       * {
         margin: 0;
         padding: 0;
         box-sizing: border-box;
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 999px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: color-mix(in srgb, var(--accent) 55%, var(--border));
+      }
+      .icon {
+        display: inline-block;
+        width: 1em;
+        height: 1em;
+        vertical-align: middle;
+        flex-shrink: 0;
       }
       :root {
         /* comment cleaned */
@@ -42,6 +70,7 @@
         --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
         --card-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
         --card-shadow-hover: 0 18px 42px rgba(0, 0, 0, 0.45), 0 0 26px var(--accent-dim);
+        --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
         --photo-card-ratio: 1 / 1;
         --glass: rgba(16, 16, 40, 0.7);
         --glass-border: rgba(123, 140, 255, 0.12);
@@ -221,6 +250,77 @@
         pointer-events: none;
         opacity: 0.92;
       }
+
+      /* Search history dropdown */
+      .search-history {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        background: color-mix(in srgb, var(--bg-card) 94%, transparent);
+        border: 1px solid var(--glass-border);
+        border-radius: var(--radius);
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        z-index: 100;
+        overflow: hidden;
+        opacity: 0;
+        transform: translateY(-8px);
+        pointer-events: none;
+        transition: all 0.18s var(--ease-out);
+      }
+      .search-history.show {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .search-history-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px 6px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .search-history-clear {
+        font-size: 11px;
+        color: var(--text-muted);
+        cursor: pointer;
+        background: none;
+        border: none;
+        padding: 2px 6px;
+        border-radius: 4px;
+        transition: all 0.12s;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .search-history-clear:hover {
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 10%, transparent);
+      }
+      .search-history-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 14px;
+        font-size: 13px;
+        color: var(--text);
+        cursor: pointer;
+        transition: background 0.12s;
+      }
+      .search-history-item:hover {
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+      }
+      .search-history-item .icon {
+        width: 14px;
+        height: 14px;
+        color: var(--text-muted);
+        flex-shrink: 0;
+      }
       .header-stats {
         font-size: 11px;
         color: var(--text-secondary);
@@ -228,6 +328,7 @@
         max-width: min(420px, 36vw);
         overflow: hidden;
         text-overflow: ellipsis;
+        font-variant-numeric: tabular-nums;
       }
       .header-stats:not(:empty) {
         padding: 5px 12px;
@@ -262,6 +363,35 @@
         border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
       }
       .header-theme-select:focus {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+      }
+      .header-card-aspect-select {
+        min-width: 110px;
+        max-width: 140px;
+        border-radius: 999px;
+        font-size: 13px;
+        padding: 8px 30px 8px 14px;
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
+        color: var(--text);
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        background:
+          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
+            no-repeat right 12px center / 12px 12px,
+          linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--bg-card) 58%, transparent) 0%,
+            color-mix(in srgb, var(--glass) 78%, transparent) 100%
+          );
+        backdrop-filter: blur(16px) saturate(1.3);
+        -webkit-backdrop-filter: blur(16px) saturate(1.3);
+        transition: border-color 0.2s ease;
+      }
+      .header-card-aspect-select:hover {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
+      }
+      .header-card-aspect-select:focus {
         border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
       }
 
@@ -319,6 +449,7 @@
         color: var(--accent);
         background: color-mix(in srgb, var(--bg-card) 92%, transparent);
         border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+        box-shadow: 0 2px 10px color-mix(in srgb, var(--accent-glow) 22%, transparent);
       }
       .sidebar-content {
         flex: 1;
@@ -358,7 +489,7 @@
       .folder-item:hover {
         background: color-mix(in srgb, var(--bg-hover) 86%, transparent);
         border-color: color-mix(in srgb, var(--glass-border) 74%, transparent);
-        transform: translateX(1px);
+        transform: translateX(3px);
       }
       .folder-item.active {
         background: color-mix(in srgb, var(--accent-dim) 90%, transparent);
@@ -388,6 +519,7 @@
         text-align: center;
         padding: 2px 7px;
         border-radius: 999px;
+        font-variant-numeric: tabular-nums;
         font-variant-numeric: tabular-nums;
       }
 
@@ -476,6 +608,12 @@
         user-select: none;
         border-radius: 8px;
         line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .tree-toggle.expanded .tree-toggle-icon {
+        transform: rotate(90deg);
       }
       .tree-toggle:hover {
         color: var(--text);
@@ -709,17 +847,17 @@
         }
       }
       .photo-grid::-webkit-scrollbar {
-        width: 8px;
+        width: 6px;
       }
       .photo-grid::-webkit-scrollbar-track {
         background: transparent;
       }
       .photo-grid::-webkit-scrollbar-thumb {
         background: var(--border);
-        border-radius: 4px;
+        border-radius: 999px;
       }
       .photo-grid::-webkit-scrollbar-thumb:hover {
-        background: var(--bg-active);
+        background: color-mix(in srgb, var(--accent) 55%, var(--border));
       }
       .grid {
         display: grid;
@@ -733,12 +871,27 @@
         contain: layout paint style;
       }
       .grid.grid--masonry {
-        align-items: start;
+        display: block;
+        columns: calc(var(--grid-card-basis) * 1px);
+        column-gap: 12px;
+        align-items: initial;
       }
-      .grid.grid--masonry .photo-card:not(.folder-card) {
-        align-self: start;
+      .grid.grid--masonry .photo-card {
+        align-self: initial;
+        width: 100%;
+        margin-bottom: 12px;
+        break-inside: avoid;
+        content-visibility: visible;
+        contain-intrinsic-size: auto;
       }
-      .grid[data-use-media-ratio='1'] .photo-card:not(.folder-card) {
+      .grid.grid--masonry .photo-card img {
+        height: auto;
+      }
+      .grid.grid--masonry .photo-card:hover {
+        transform: translateY(-4px) scale(1.012);
+        z-index: 2;
+      }
+      .grid[data-use-media-ratio='1']:not(.grid--masonry) .photo-card:not(.folder-card) {
         max-height: 70vh;
         max-aspect-ratio: 9/16;
       }
@@ -761,8 +914,6 @@
         /* comment cleaned */
         opacity: 0;
         animation: cardEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        content-visibility: auto;
-        contain-intrinsic-size: 220px 275px;
       }
       .grid:not([data-use-media-ratio='1']) .photo-card {
         aspect-ratio: var(--photo-card-ratio);
@@ -915,7 +1066,7 @@
       @keyframes cardEnter {
         from {
           opacity: 0;
-          transform: translateY(24px) scale(0.96);
+          transform: translateY(16px) scale(0.98);
         }
         to {
           opacity: 1;
@@ -949,16 +1100,18 @@
         );
         background-size: 220% 100%;
         animation: thumbPlaceholderShimmer 1.35s ease-in-out infinite;
+        filter: blur(18px) saturate(1.15);
+        transform: scale(1.12);
       }
       .photo-card.thumb-loaded .thumb-blur-placeholder,
       .photo-card.thumb-failed .thumb-blur-placeholder {
         opacity: 0;
-        transition: opacity 220ms ease;
+        transition: opacity 0.5s ease;
       }
       .photo-card img.loading {
-        filter: blur(10px);
-        opacity: 0.6;
-        transform: scale(1.08);
+        filter: blur(6px);
+        opacity: 0.65;
+        transform: scale(1.05);
       }
       .photo-card:hover img {
         transform: scale(1.06);
@@ -971,6 +1124,7 @@
         padding: 32px 12px 12px;
         background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
         font-size: 11px;
+        line-height: 1.45;
         color: color-mix(in srgb, var(--text) 96%, #fff 4%);
         opacity: 0;
         transform: translateY(8px);
@@ -991,6 +1145,7 @@
       .photo-card .photo-date {
         color: color-mix(in srgb, var(--text-secondary) 78%, #fff 22%);
         margin-top: 2px;
+        font-variant-numeric: tabular-nums;
       }
       .media-type-badge {
         position: absolute;
@@ -1146,6 +1301,10 @@
           transform: translateY(0);
         }
       }
+      @keyframes emptyFloat {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-8px); }
+      }
       .empty-state {
         display: flex;
         flex-direction: column;
@@ -1161,28 +1320,32 @@
         animation: fadeIn 0.45s cubic-bezier(0.16, 1, 0.3, 1);
       }
       .empty-state-visual {
-        width: 100px;
-        height: 100px;
-        margin-bottom: 22px;
+        width: 120px;
+        height: 120px;
+        margin-bottom: 24px;
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 50%;
+        border-radius: 32px;
         background: radial-gradient(
           circle at 35% 28%,
-          color-mix(in srgb, var(--accent) 35%, transparent),
-          color-mix(in srgb, var(--bg-card) 88%, transparent) 62%
+          color-mix(in srgb, var(--accent) 40%, transparent),
+          color-mix(in srgb, var(--bg-card) 86%, transparent) 62%
         );
-        border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--glass-border));
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--glass-border));
+        box-shadow:
+          0 8px 32px color-mix(in srgb, var(--accent) 12%, transparent),
+          inset 0 1px 0 color-mix(in srgb, var(--accent) 15%, transparent);
+        animation: emptyFloat 4s ease-in-out infinite;
       }
       .empty-state .empty-state-icon {
         font-size: 42px;
         line-height: 1;
       }
       .empty-state .icon {
-        font-size: 64px;
         margin-bottom: 16px;
         opacity: 0.5;
+        color: var(--text-muted);
       }
       .empty-state .title {
         font-size: 17px;
@@ -1447,8 +1610,10 @@
         }
       }
       .preview-img {
-        max-width: 90vw;
-        max-height: 85vh;
+        width: 100%;
+        height: 100%;
+        max-width: 100vw;
+        max-height: 100vh;
         object-fit: contain;
         border-radius: 6px;
         transition:
@@ -1467,10 +1632,11 @@
         transform: scale(0.95);
       }
       .preview-video {
-        max-width: 90vw;
-        max-height: 85vh;
-        width: auto;
-        height: auto;
+        width: 100%;
+        height: 100%;
+        max-width: 100vw;
+        max-height: 100vh;
+        object-fit: contain;
         border-radius: 6px;
         background: #000;
       }
@@ -1522,30 +1688,170 @@
       .preview-info-bar {
         position: absolute;
         bottom: 24px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: color-mix(in srgb, var(--bg-card) 36%, transparent);
-        backdrop-filter: blur(22px) saturate(1.28);
-        -webkit-backdrop-filter: blur(22px) saturate(1.28);
-        border: 1px solid color-mix(in srgb, var(--glass-border) 90%, rgba(255, 255, 255, 0.12));
-        padding: 10px 24px;
-        border-radius: 24px;
+        left: 0;
+        right: 0;
+        transform: none;
+        background: color-mix(in srgb, var(--bg-card) 56%, transparent);
+        backdrop-filter: blur(28px) saturate(1.3);
+        -webkit-backdrop-filter: blur(28px) saturate(1.3);
+        border: none;
+        border-top: 1px solid color-mix(in srgb, var(--glass-border) 60%, rgba(255, 255, 255, 0.08));
+        padding: 14px 10vw;
+        border-radius: 0;
         font-size: 13px;
         color: var(--text);
         white-space: normal;
         line-height: 1.45;
-        max-width: 80vw;
+        max-width: none;
         overflow: hidden;
         text-overflow: clip;
         display: -webkit-box;
+        -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         line-clamp: 2;
-        -webkit-box-orient: vertical;
         text-align: center;
+        mask-image: linear-gradient(90deg, transparent 0%, black 12%, black 88%, transparent 100%);
+        -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 12%, black 88%, transparent 100%);
+        opacity: 1;
+        pointer-events: auto;
         z-index: 10;
         transition:
           opacity 0.2s ease,
           transform 0.2s ease;
+      }
+      .preview-overlay.mobile-ui-hidden .preview-info-bar {
+        opacity: 0;
+        pointer-events: none;
+      }
+      /* EXIF Info Panel */
+      .exif-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 340px;
+        max-width: 85vw;
+        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+        backdrop-filter: blur(28px) saturate(1.4);
+        -webkit-backdrop-filter: blur(28px) saturate(1.4);
+        border-left: 1px solid var(--glass-border);
+        z-index: 20;
+        overflow-y: auto;
+        transform: translateX(100%);
+        transition: transform 0.28s var(--ease-out);
+        padding: 0;
+      }
+      .exif-panel.open {
+        transform: translateX(0);
+      }
+      .exif-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 20px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 80%, transparent);
+        position: sticky;
+        top: 0;
+        background: color-mix(in srgb, var(--bg-card) 96%, transparent);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        z-index: 1;
+      }
+      .exif-panel-header h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .exif-panel-close {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+      }
+      .exif-panel-close:hover {
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        color: var(--text);
+      }
+      .exif-panel-close .icon {
+        width: 18px;
+        height: 18px;
+      }
+      .exif-section {
+        padding: 14px 20px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+      }
+      .exif-section-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+      }
+      .exif-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 4px 0;
+        gap: 12px;
+      }
+      .exif-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+      .exif-value {
+        font-size: 13px;
+        color: var(--text);
+        text-align: right;
+        word-break: break-all;
+        font-variant-numeric: tabular-nums;
+      }
+      .exif-panel-toggle {
+        position: absolute;
+        top: calc(12px + env(safe-area-inset-top, 0px));
+        right: 72px;
+        z-index: 12;
+        background: color-mix(in srgb, var(--bg-card) 36%, transparent);
+        border: 1px solid color-mix(in srgb, var(--glass-border) 90%, rgba(255, 255, 255, 0.12));
+        border-radius: 999px;
+        padding: 6px 10px;
+        backdrop-filter: blur(18px) saturate(1.25);
+        -webkit-backdrop-filter: blur(18px) saturate(1.25);
+        color: var(--text);
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.15s;
+      }
+      .exif-panel-toggle:hover {
+        background: color-mix(in srgb, var(--accent) 20%, transparent);
+        border-color: color-mix(in srgb, var(--accent) 40%, var(--glass-border));
+      }
+      .exif-panel-toggle .icon {
+        width: 14px;
+        height: 14px;
+      }
+      .exif-loading {
+        padding: 40px 20px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+      .exif-empty {
+        padding: 40px 20px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 13px;
       }
       .preview-slideshow-controls {
         position: absolute;
@@ -1588,6 +1894,27 @@
         background: color-mix(in srgb, var(--accent) 24%, var(--bg-card));
         color: color-mix(in srgb, var(--text) 88%, #fff 12%);
       }
+      .preview-action-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        padding: 0;
+        flex-shrink: 0;
+      }
+      .preview-action-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #fff;
+      }
+      .preview-action-btn.active { color: #ff6b81; }
+      .preview-action-btn .icon { width: 18px; height: 18px; }
       .preview-zoom-box {
         position: absolute;
         bottom: 24px;
@@ -1734,9 +2061,11 @@
           margin: 0 4px;
         }
         .preview-info-bar {
-          max-width: 90vw;
+          max-width: none;
           font-size: 12px;
-          padding: 6px 14px;
+          padding: 10px 8vw;
+          mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
+          -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
         }
       }
       @media (max-width: 600px) {
@@ -1862,22 +2191,44 @@
           pointer-events: auto;
         }
         .preview-info-bar {
-          left: 12px;
-          right: 12px;
+          left: 0;
+          right: 0;
           bottom: calc(72px + env(safe-area-inset-bottom, 0px));
           transform: none;
           max-width: none;
-          border-radius: 14px;
-          padding: 9px 12px;
+          border-radius: 16px 16px 0 0;
+          padding: 10px 16px;
           font-size: 12px;
-          text-align: left;
+          text-align: center;
           line-height: 1.45;
+          mask-image: none;
+          -webkit-mask-image: none;
+        }
+        .exif-panel {
+          width: 100%;
+          max-width: 100%;
+          border-left: none;
+          border-top: 1px solid var(--glass-border);
+          top: auto;
+          bottom: 0;
+          height: 70vh;
+          transform: translateY(100%);
+          border-radius: 16px 16px 0 0;
+        }
+        .exif-panel.open {
+          transform: translateY(0);
+        }
+        .exif-panel-toggle {
+          top: auto;
+          bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+          right: 12px;
         }
         .preview-overlay.mobile-ui-hidden .preview-slideshow-controls,
         .preview-overlay.mobile-ui-hidden .preview-close,
         .preview-overlay.mobile-ui-hidden .preview-info-bar,
         .preview-overlay.mobile-ui-hidden .preview-nav,
-        .preview-overlay.mobile-ui-hidden .preview-swipe-hint {
+        .preview-overlay.mobile-ui-hidden .preview-swipe-hint,
+        .preview-overlay.mobile-ui-hidden .exif-panel-toggle {
           opacity: 0;
           pointer-events: none;
         }
@@ -1935,19 +2286,14 @@
         .header-stats {
           display: none;
         }
-        .header-theme-select {
+        .header-theme-select,
+        .header-card-aspect-select {
           display: none;
         }
         .toolbar {
-          padding: 7px 10px;
-          gap: 6px;
+          display: none;
         }
-        .toolbar-path {
-          font-size: 12px;
-          padding: 4px 0 4px 11px;
-          border-left-width: 2px;
-        }
-        .toolbar select {
+        .search-box {
           display: none;
         }
         .toolbar-filter-btn {
@@ -2071,8 +2417,11 @@
         background: color-mix(in srgb, var(--accent) 80%, #fff 20%);
       }
       .mobile-nav-item .nav-icon {
-        font-size: 19px;
+        font-size: 20px;
         line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       .mobile-nav-item .nav-label {
         font-size: 11px;
@@ -2176,6 +2525,13 @@
       .mobile-filter-sheet .sheet-actions .btn-primary {
         border-color: color-mix(in srgb, var(--accent) 48%, var(--glass-border));
         background: color-mix(in srgb, var(--accent) 22%, var(--bg-hover));
+      }
+      .mobile-filter-sheet .sheet-buttons button.active {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+        background: color-mix(in srgb, var(--accent) 20%, var(--bg-hover));
+        color: var(--text);
+        font-weight: 600;
+        box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 25%, transparent);
       }
 
       /* comment cleaned */
@@ -2574,20 +2930,26 @@
         letter-spacing: 0.02em;
       }
       .header-title::before {
-        content: '✦';
+        content: '';
         display: inline-flex;
         align-items: center;
         justify-content: center;
         width: 34px;
         height: 34px;
         border-radius: 12px;
-        color: #fff;
-        font-size: 15px;
         background: linear-gradient(
           135deg,
           var(--accent),
           color-mix(in srgb, var(--accent-hover) 72%, white 28%)
         );
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4l-6.4 4.8 2.4-7.2-6-4.8h7.6z'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4l-6.4 4.8 2.4-7.2-6-4.8h7.6z'/%3E%3C/svg%3E");
+        -webkit-mask-size: 18px 18px;
+        mask-size: 18px 18px;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
         box-shadow: 0 10px 24px var(--accent-dim);
       }
       .header-title::after {
@@ -2959,9 +3321,528 @@
           bottom: 8px;
         }
       }
+
+      /* Toast */
+      .web-toast {
+        position: fixed;
+        bottom: 32px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column-reverse;
+        align-items: center;
+        gap: 8px;
+        z-index: 1100;
+        pointer-events: none;
+      }
+      .web-toast-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px 10px 16px;
+        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        color: var(--text);
+        font-size: 13px;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        white-space: nowrap;
+        pointer-events: auto;
+        opacity: 0;
+        transform: translateY(12px) scale(0.96);
+        transition: all 0.25s var(--ease-out);
+      }
+      .web-toast-item.show {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+      .web-toast-icon {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+        color: var(--accent);
+      }
+      .web-toast-text {
+        flex: 1;
+      }
+      .web-toast-close {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border: none;
+        background: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: 50%;
+        flex-shrink: 0;
+        padding: 0;
+        transition: all 0.15s;
+      }
+      .web-toast-close .icon {
+        width: 12px;
+        height: 12px;
+      }
+      .web-toast-close:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      @media (max-width: 600px) {
+        .web-toast {
+          bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        }
+        .web-toast-item {
+          font-size: 12px;
+          padding: 8px 10px 8px 14px;
+        }
+      }
+
+      /* Search Overlay */
+      .search-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2000;
+        background: color-mix(in srgb, var(--bg) 88%, rgba(0, 0, 0, 0.5));
+        backdrop-filter: blur(24px) saturate(1.1);
+        -webkit-backdrop-filter: blur(24px) saturate(1.1);
+        display: none;
+        align-items: flex-start;
+        justify-content: center;
+        padding-top: 22vh;
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      .search-overlay.show {
+        display: flex;
+        animation: fadeIn 0.25s ease;
+      }
+      .search-overlay-inner {
+        width: 100%;
+        max-width: 480px;
+      }
+      .search-overlay-input-wrap {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--bg-card) 94%, transparent);
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      }
+      .search-overlay-input-wrap input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        color: var(--text);
+        font-size: 17px;
+        outline: none;
+        min-width: 0;
+      }
+      .search-overlay-input-wrap input::placeholder {
+        color: var(--text-muted);
+      }
+      .search-overlay-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-muted);
+        flex-shrink: 0;
+      }
+      .search-overlay-icon .icon {
+        width: 22px;
+        height: 22px;
+      }
+      .search-overlay-close {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 0;
+        border-radius: 50%;
+        flex-shrink: 0;
+        transition: all 0.15s;
+      }
+      .search-overlay-close .icon {
+        width: 18px;
+        height: 18px;
+      }
+      .search-overlay-close:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .search-overlay-hint {
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 13px;
+        margin-top: 18px;
+        opacity: 0.8;
+      }
+
+      /* Context Menu */
+      .context-menu {
+        position: fixed;
+        z-index: 1200;
+        min-width: 180px;
+        padding: 6px 0;
+        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+        border: 1px solid var(--glass-border);
+        border-radius: var(--radius);
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
+        opacity: 0;
+        transform: scale(0.92) translateY(-8px);
+        transform-origin: top left;
+        pointer-events: none;
+        transition: opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+                    transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .context-menu.show {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+        pointer-events: auto;
+      }
+      .context-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 16px;
+        font-size: 13px;
+        color: var(--text);
+        cursor: pointer;
+        transition: background 0.12s;
+        user-select: none;
+      }
+      .context-menu-item:hover {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+      }
+      .context-menu-item .icon {
+        width: 16px;
+        height: 16px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+      .context-menu-item:hover .icon {
+        color: var(--accent);
+      }
+      .context-menu-divider {
+        height: 1px;
+        margin: 4px 8px;
+        background: var(--glass-border);
+      }
+
+      /* Photo card selected state */
+      .photo-card.selected {
+        box-shadow:
+          0 0 0 2px var(--accent),
+          0 0 24px color-mix(in srgb, var(--accent) 35%, transparent),
+          inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+        z-index: 3;
+      }
+      .grid.in-selection .photo-card:not(.selected) {
+        opacity: 0.55;
+        filter: brightness(0.65) saturate(0.7);
+        transform: scale(0.97);
+      }
+      .grid.in-selection .photo-card:not(.selected):hover {
+        opacity: 0.75;
+        filter: brightness(0.8) saturate(0.85);
+        transform: scale(0.99);
+      }
+      .photo-card.selected::after {
+        content: '';
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 4;
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpolyline points='5,12 10,17 19,7' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpolyline points='5,12 10,17 19,7' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        -webkit-mask-size: 14px 14px;
+        mask-size: 14px 14px;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+        animation: checkPop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+      }
+      @keyframes checkPop {
+        from { opacity: 0; transform: scale(0.3); }
+        to { opacity: 1; transform: scale(1); }
+      }
+
+      /* Selection Toolbar */
+      .selection-toolbar {
+        position: fixed;
+        bottom: -80px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1050;
+        transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+      }
+      .selection-toolbar.show {
+        bottom: 24px;
+        pointer-events: auto;
+      }
+      .selection-toolbar-inner {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        white-space: nowrap;
+      }
+      .selection-count {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent);
+        padding: 0 8px;
+        min-width: 70px;
+        font-variant-numeric: tabular-nums;
+      }
+      .selection-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 7px 14px;
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--bg-hover) 35%, transparent);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+        white-space: nowrap;
+      }
+      .selection-btn .icon {
+        width: 14px;
+        height: 14px;
+      }
+      .selection-btn:hover {
+        background: color-mix(in srgb, var(--accent) 14%, var(--bg-hover));
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+        color: var(--accent);
+      }
+      .selection-btn-accent {
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+        border-color: color-mix(in srgb, var(--accent) 30%, var(--glass-border));
+        color: var(--accent);
+      }
+      .selection-btn-accent:hover {
+        background: color-mix(in srgb, var(--accent) 30%, transparent);
+      }
+
+      /* Button active feedback */
+      button:active,
+      .selection-btn:active,
+      .context-menu-item:active {
+        transform: scale(0.96);
+      }
+      .pagination button:active {
+        transform: scale(0.94);
+      }
+
+      /* Back to top */
+      .back-to-top {
+        position: fixed;
+        bottom: 80px;
+        right: 20px;
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: 1px solid var(--glass-border);
+        background: color-mix(in srgb, var(--bg-card) 80%, transparent);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        color: var(--text-secondary);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transform: translateY(16px);
+        pointer-events: none;
+        transition: all 0.25s var(--ease-out);
+        z-index: 100;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      }
+      .back-to-top.show {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .back-to-top:hover {
+        background: color-mix(in srgb, var(--accent) 20%, var(--bg-card));
+        border-color: color-mix(in srgb, var(--accent) 40%, var(--glass-border));
+        color: var(--accent);
+      }
+      .back-to-top:active {
+        transform: scale(0.92);
+      }
+      @media (max-width: 600px) {
+        .back-to-top {
+          bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+          right: 14px;
+          width: 36px;
+          height: 36px;
+        }
+      }
+      @media (max-width: 600px) {
+        .selection-toolbar.show {
+          bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        }
+        .selection-toolbar-inner {
+          gap: 5px;
+          padding: 8px 10px;
+        }
+        .selection-btn {
+          padding: 6px 10px;
+          font-size: 11px;
+        }
+        .selection-count {
+          font-size: 12px;
+          min-width: 55px;
+        }
+      }
     </style>
   </head>
   <body>
+    <!-- SVG Icon Sprite -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+      <defs>
+        <!-- Search (magnifying glass) -->
+        <symbol id="icon-search" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
+          <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+        <!-- Photos (image frame) -->
+        <symbol id="icon-photos" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+          <circle cx="8.5" cy="8.5" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M21 15l-5-5L5 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Folder -->
+        <symbol id="icon-folder" viewBox="0 0 24 24">
+          <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" fill="none" stroke="currentColor" stroke-width="2"/>
+        </symbol>
+        <!-- Dates (calendar) -->
+        <symbol id="icon-dates" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+          <line x1="16" y1="2" x2="16" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="8" y1="2" x2="8" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" stroke-width="2"/>
+          <rect x="7" y="14" width="3" height="3" rx="0.5" fill="currentColor"/>
+        </symbol>
+        <!-- Settings (gear) -->
+        <symbol id="icon-settings" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+        <!-- Star (4-point) -->
+        <symbol id="icon-star" viewBox="0 0 24 24">
+          <path d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4l-6.4 4.8 2.4-7.2-6-4.8h7.6z" fill="currentColor"/>
+        </symbol>
+        <!-- Menu (hamburger) -->
+        <symbol id="icon-menu" viewBox="0 0 24 24">
+          <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="3" y1="18" x2="21" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+        <!-- Close (X) -->
+        <symbol id="icon-close" viewBox="0 0 24 24">
+          <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+        <!-- Play -->
+        <symbol id="icon-play" viewBox="0 0 24 24">
+          <polygon points="6,3 20,12 6,21" fill="currentColor"/>
+        </symbol>
+        <!-- Warning -->
+        <symbol id="icon-warning" viewBox="0 0 24 24">
+          <path d="M12 2L1 21h22L12 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <line x1="12" y1="9" x2="12" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="12" cy="18" r="1" fill="currentColor"/>
+        </symbol>
+        <!-- Chevron Right -->
+        <symbol id="icon-chevron-right" viewBox="0 0 24 24">
+          <polyline points="9,6 15,12 9,18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Chevron Left -->
+        <symbol id="icon-chevron-left" viewBox="0 0 24 24">
+          <polyline points="15,6 9,12 15,18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Chevron Down -->
+        <symbol id="icon-chevron-down" viewBox="0 0 24 24">
+          <polyline points="6,9 12,15 18,9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Chevron Up -->
+        <symbol id="icon-chevron-up" viewBox="0 0 24 24">
+          <polyline points="6,15 12,9 18,15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Page Prev -->
+        <symbol id="icon-page-prev" viewBox="0 0 24 24">
+          <polyline points="15,6 9,12 15,18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Page Next -->
+        <symbol id="icon-page-next" viewBox="0 0 24 24">
+          <polyline points="9,6 15,12 9,18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Favorite (heart) -->
+        <symbol id="icon-heart" viewBox="0 0 24 24">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="currentColor"/>
+        </symbol>
+        <!-- Download -->
+        <symbol id="icon-download" viewBox="0 0 24 24">
+          <path d="M12 3v12M12 15l-4-4M12 15l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+        <!-- Info (circle i) -->
+        <symbol id="icon-info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+          <line x1="12" y1="16" x2="12" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="12" cy="8" r="1" fill="currentColor"/>
+        </symbol>
+        <!-- Check -->
+        <symbol id="icon-check" viewBox="0 0 24 24">
+          <polyline points="5,12 10,17 19,7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Success checkmark -->
+        <symbol id="icon-success" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+          <polyline points="8,12 11,15 16,9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- Error (circle x) -->
+        <symbol id="icon-error" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+          <line x1="9" y1="9" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="15" y1="9" x2="9" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
+      </defs>
+    </svg>
+
     <div
       class="app-boot-loading"
       id="appBootLoading"
@@ -2983,14 +3864,27 @@
     <!-- Header -->
     <div class="header">
       <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="打开菜单">
-        ☰
+        <svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg>
       </button>
       <div class="header-title">拂晓图库 · Aurora Gallery</div>
       <div class="search-box">
-        <span class="search-icon">🔍</span>
+        <span class="search-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
         <input type="text" id="searchInput" placeholder="搜索照片..." aria-label="搜索照片" />
       </div>
       <div class="header-stats" id="headerStats"></div>
+      <select
+        id="headerCardAspectSelect"
+        class="header-card-aspect-select"
+        aria-label="卡片比例"
+        title="卡片比例"
+        onchange="changeCardAspectMode(this.value)"
+      >
+        <option value="masonry">原比例瀑布流</option>
+        <option value="uniform_1_1">1:1 固定</option>
+        <option value="uniform_4_3">4:3 固定</option>
+        <option value="uniform_3_4">3:4 固定</option>
+        <option value="uniform_16_9">16:9 固定</option>
+      </select>
       <select id="webThemeStyle" class="header-theme-select" aria-label="主题风格" title="主题风格">
         <option value="midnight_classic">夜幕经典</option>
         <option value="ice_deep">深空冰蓝</option>
@@ -3019,15 +3913,17 @@
 
       <!-- Content -->
       <div class="content">
-        <div class="toolbar" id="toolbar"></div>
+        <div class="toolbar" id="toolbar">
+          <span id="toolbarPath" class="toolbar-path"></span>
+        </div>
         <div class="photo-grid" id="photoGrid" style="position: relative">
           <div class="pull-refresh-indicator" id="pullRefreshIndicator"></div>
         </div>
         <div class="browse-footer" id="browseFooter">
           <div class="pagination" id="pagination">
-            <button type="button" id="prevPage" onclick="prevPage()">‹</button>
+            <button type="button" id="prevPage" onclick="prevPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-prev"/></svg></button>
             <div id="pageNumbers" class="page-numbers"></div>
-            <button type="button" id="nextPage" onclick="nextPage()">></button>
+            <button type="button" id="nextPage" onclick="nextPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-next"/></svg></button>
             <button
               type="button"
               id="randomPageBtn"
@@ -3047,23 +3943,23 @@
     <!-- Mobile Bottom Nav -->
     <div class="mobile-bottom-nav" id="mobileBottomNav">
       <div class="mobile-nav-item active" data-tab="browse" onclick="mobileNavSwitch('browse')">
-        <span class="nav-icon">🖼️</span>
+        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-photos"/></svg></span>
         <span class="nav-label">浏览</span>
       </div>
       <div class="mobile-nav-item" data-tab="folders" onclick="mobileNavSwitch('folders')">
-        <span class="nav-icon">📁</span>
+        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg></span>
         <span class="nav-label">文件夹</span>
       </div>
       <div class="mobile-nav-item" data-tab="dates" onclick="mobileNavSwitch('dates')">
-        <span class="nav-icon">📅</span>
+        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-dates"/></svg></span>
         <span class="nav-label">日期</span>
       </div>
       <div class="mobile-nav-item" data-tab="search" onclick="mobileNavSwitch('search')">
-        <span class="nav-icon">🔍</span>
+        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
         <span class="nav-label">搜索</span>
       </div>
       <div class="mobile-nav-item" data-tab="settings" onclick="openMobileFilterSheet()">
-        <span class="nav-icon">⚙️</span>
+        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></span>
         <span class="nav-label">设置</span>
       </div>
     </div>
@@ -3103,19 +3999,20 @@
       </div>
       <div class="sheet-row">
         <label>卡片大小</label>
-        <div class="sheet-buttons">
-          <button onclick="changeCardSize(-1)">缩小</button>
-          <span class="zoom-label" id="zoomLabel">L</span>
-          <button onclick="changeCardSize(1)">放大</button>
+        <div class="sheet-buttons" id="cardSizeButtons">
+          <button onclick="changeCardSizeTo(100)" data-size="100">S</button>
+          <button onclick="changeCardSizeTo(140)" data-size="140">M</button>
+          <button onclick="changeCardSizeTo(180)" data-size="180">L</button>
+          <button onclick="changeCardSizeTo(320)" data-size="320">XL</button>
         </div>
       </div>
       <div class="sheet-row">
-        <label for="mobileMediaFilterSelect">媒体类型</label>
-        <select id="mobileMediaFilterSelect" onchange="changeMediaFilter(this.value)">
-          <option value="all" selected>全部</option>
-          <option value="image">仅图片</option>
-          <option value="video">仅视频</option>
-        </select>
+        <label>媒体类型</label>
+        <div class="sheet-buttons" id="mediaFilterButtons">
+          <button onclick="changeMediaFilter('all')" data-filter="all">全部</button>
+          <button onclick="changeMediaFilter('image')" data-filter="image">图片</button>
+          <button onclick="changeMediaFilter('video')" data-filter="video">视频</button>
+        </div>
       </div>
       <div class="sheet-row">
         <label for="mobileSortSelect">排序方式</label>
@@ -3129,7 +4026,6 @@
         </select>
       </div>
       <div class="sheet-actions">
-        <button type="button" class="btn-primary" onclick="showInstallGuide()">安装到桌面</button>
         <button type="button" onclick="closeMobileFilterSheet()">关闭</button>
       </div>
     </div>
@@ -3137,7 +4033,7 @@
     <!-- Preview -->
     <div class="preview-overlay" id="previewOverlay">
       <div class="preview-slideshow-controls">
-        <button id="slideshowToggleBtn" onclick="toggleSlideshow()">▶ 播放</button>
+        <button id="slideshowToggleBtn" onclick="toggleSlideshow()"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg> 播放</button>
         <select id="slideshowIntervalSelect">
           <option value="2">2 秒</option>
           <option value="3" selected>3 秒</option>
@@ -3149,8 +4045,12 @@
         </button>
         <button id="previewSubtitleToggleBtn" onclick="toggleSubtitleEnabled()">字幕:开</button>
         <button id="previewFullscreenBtn" onclick="togglePreviewFullscreen()">全屏</button>
+        <button id="previewFavoriteBtn" class="preview-action-btn" title="收藏"
+          onclick="(function(){var p=state.previewPhotos&&state.previewPhotos[state.previewIndex];if(p)toggleFavoriteForPhoto(p.id);})()">
+          <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg>
+        </button>
       </div>
-      <button class="preview-close" onclick="closePreview()" aria-label="关闭预览">×</button>
+      <button class="preview-close" onclick="closePreview()" aria-label="关闭预览"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
       <div class="preview-swipe-hint" id="previewSwipeHint">左右滑动切换</div>
       <div class="preview-body">
         <button
@@ -3158,7 +4058,7 @@
           onclick="navigatePreview(-1, event)"
           aria-label="上一张"
         >
-          <
+          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-left"/></svg>
         </button>
         <div class="preview-loading" id="previewLoading">
           <span class="spinner" aria-hidden="true"></span>
@@ -3178,10 +4078,25 @@
           onclick="navigatePreview(1, event)"
           aria-label="下一张"
         >
-          >
+          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-right"/></svg>
         </button>
       </div>
       <div class="preview-info-bar" id="previewInfo"></div>
+      <button class="exif-panel-toggle" id="exifPanelToggle" onclick="toggleExifPanel()" title="照片信息">
+        <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+        <span>信息</span>
+      </button>
+      <div class="exif-panel" id="exifPanel">
+        <div class="exif-panel-header">
+          <h3>照片信息</h3>
+          <button class="exif-panel-close" onclick="toggleExifPanel()" aria-label="关闭">
+            <svg class="icon"><use href="#icon-close"/></svg>
+          </button>
+        </div>
+        <div id="exifPanelContent">
+          <div class="exif-empty">打开照片后查看信息</div>
+        </div>
+      </div>
       <div class="preview-zoom-box" id="previewZoomBox">
         <div class="preview-zoom-tooltip" role="tooltip">
           Ctrl（Mac：⌘）+ 滚轮缩放<br />键盘 + / − 缩放 · 触摸屏双指据合缩放
@@ -3190,11 +4105,74 @@
       </div>
     </div>
 
+    <!-- Context Menu -->
+    <div class="context-menu" id="contextMenu" role="menu" aria-hidden="true">
+      <div class="context-menu-item" data-action="preview" role="menuitem">
+        <svg class="icon" aria-hidden="true"><use href="#icon-photos"/></svg>
+        <span>预览</span>
+      </div>
+      <div class="context-menu-item" data-action="favorite" role="menuitem">
+        <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg>
+        <span>收藏</span>
+      </div>
+      <div class="context-menu-item" data-action="download" role="menuitem">
+        <svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg>
+        <span>下载</span>
+      </div>
+      <div class="context-menu-item" data-action="info" role="menuitem">
+        <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+        <span>照片信息</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" data-action="select" role="menuitem">
+        <svg class="icon" aria-hidden="true"><use href="#icon-check"/></svg>
+        <span>选择</span>
+      </div>
+    </div>
+
+    <!-- Selection Toolbar -->
+    <div class="selection-toolbar" id="selectionToolbar" aria-hidden="true">
+      <div class="selection-toolbar-inner">
+        <span class="selection-count" id="selectionCount">已选 0 张</span>
+        <button class="selection-btn" onclick="selectAllPhotos()" title="全选">
+          <svg class="icon" aria-hidden="true"><use href="#icon-check"/></svg> 全选
+        </button>
+        <button class="selection-btn" onclick="deselectAllPhotos()" title="取消">
+          <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg> 取消
+        </button>
+        <button class="selection-btn selection-btn-accent" onclick="downloadSelected()" title="下载">
+          <svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg> 下载
+        </button>
+        <button class="selection-btn selection-btn-accent" onclick="favoriteSelected()" title="收藏">
+          <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg> 收藏
+        </button>
+      </div>
+    </div>
+
+    <!-- Back to Top -->
+    <button class="back-to-top" id="backToTop" onclick="scrollToTop()" title="回到顶部" aria-label="回到顶部">
+      <svg class="icon" aria-hidden="true"><use href="#icon-chevron-up"/></svg>
+    </button>
+
     <div class="web-toast" id="webToast"></div>
+
+    <!-- 移动端搜索弹窗 -->
+    <div class="search-overlay" id="searchOverlay" onclick="closeSearchOverlay()">
+      <div class="search-overlay-inner" onclick="event.stopPropagation()">
+        <div class="search-overlay-input-wrap">
+          <span class="search-overlay-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
+          <input type="text" id="searchOverlayInput" placeholder="搜索照片..." aria-label="搜索照片" />
+          <button class="search-overlay-close" onclick="closeSearchOverlay()" aria-label="关闭">
+            <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>
+          </button>
+        </div>
+        <p class="search-overlay-hint">输入关键词后自动搜索</p>
+      </div>
+    </div>
 
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
-    <script src="/js/web-theme-shared.js"></script>
-    <script src="/js/app.js"></script>
+    <script src="/js/web-theme-shared.js?v=2"></script>
+    <script src="/js/app.js?v=2"></script>
   </body>
 </html>

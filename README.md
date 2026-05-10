@@ -11,7 +11,7 @@
 | **npm package**         | `aurora-gallery`                                                            |
 | **Bundle ID** (`appId`) | `com.foredawn.aurora-gallery`                                               |
 
-**Current release:** `1.0.2` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
+**Current release:** `1.0.3` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
 
 **Release notes:** see [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -64,6 +64,32 @@ High-level overview; details follow the in-app **Settings** pages.
 - **Data location**: per-user app data (dev vs packaged naming differs); do **not** commit `photos.db` to Git.
 - **Recommendation**: **back up** `photos.db` before large imports, migrations, or experimental cleanup.
 
+### Data safety & backup
+
+The database is a single SQLite file (`photos.db`). Backing it up is as simple as copying the file while the app is **not running**.
+
+**When to back up**
+
+- Before adding a very large folder for the first time
+- Before upgrading the app to a new version
+- Before running experimental cleanup or VACUUM in Settings
+
+**How to back up**
+
+1. Close the app completely (tray icon → Quit).
+2. Locate `photos.db`:
+   - **Dev**: in the OS app-data directory (Electron `app.getPath('userData')` with the dev app name).
+   - **Packaged**: in the per-user app data folder for `aurora-gallery`.
+3. Copy `photos.db` to your backup location.
+
+**How to restore**
+
+1. Close the app completely.
+2. Replace the current `photos.db` with your backup copy.
+3. Restart the app.
+
+> Do **not** commit `photos.db` to Git.
+
 ## Requirements
 
 - Windows 10/11, macOS (Apple Silicon / Intel)
@@ -71,6 +97,37 @@ High-level overview; details follow the in-app **Settings** pages.
 - npm 10+
 
 > Native deps include `better-sqlite3` and `sharp`; rebuild after changing Node/Electron versions.
+
+### Environment lock
+
+**Recommended stack**
+
+- Node.js `>=22.0.0 <23.0.0`
+- Electron `^41.5.0` (see `package.json`)
+
+**Upgrade strategy**
+
+1. Upgrade Node.js to the desired version (stay within the supported range).
+2. `npm install`
+3. `npm run rebuild-native`
+4. `npm start`
+
+**Native module troubleshooting**
+
+If you see `ERR_DLOPEN_FAILED` on start:
+
+```bash
+npm run rebuild-native
+```
+
+If it persists:
+
+```bash
+npm install
+npm run rebuild-native
+```
+
+This error means a native dependency was compiled for a different Node/Electron ABI. Rebuilding always fixes it when the Node version is within the supported range.
 
 ## Install & run
 

@@ -204,6 +204,15 @@
     maintenanceGetPhotosByFileHash: function (hash) {
       return call('maintenanceGetPhotosByFileHash', hash);
     },
+    maintenanceGetSimilarDhashGroups: function (payload) {
+      return call('maintenanceGetSimilarDhashGroups', payload);
+    },
+    maintenanceGetPhotosByDhash: function (dhash) {
+      return call('maintenanceGetPhotosByDhash', dhash);
+    },
+    maintenanceFindSimilarPhotos: function (payload) {
+      return call('maintenanceFindSimilarPhotos', payload);
+    },
     photoMoveToTrash: function (photoId) {
       return call('photoMoveToTrash', photoId);
     },

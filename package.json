@@ -8,6 +8,7 @@
     "dev": "electron . --dev",
     "lint": "eslint .",
     "smoke:db": "electron scripts/db-smoke.js",
+    "version-check": "node scripts/version-check.js",
     "download-face-models": "node scripts/download-face-models.js",
     "download-cloudflared": "node scripts/download-cloudflared.js",
     "format": "prettier -w .",
@@ -29,16 +30,17 @@
     "node": ">=22.0.0 <23.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
+    "better-sqlite3": "^12.9.0",
+    "exif-reader": "^2.0.3",
     "ffmpeg-static": "^5.3.0",
     "hls.js": "^1.5.7",
     "onnxruntime-node": "^1.24.3",
     "sharp": "^0.33.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.0",
+    "@electron/rebuild": "^4.0.4",
     "@eslint/js": "^10.0.1",
-    "electron": "^33.0.0",
+    "electron": "^41.5.0",
     "electron-builder": "^24.13.3",
     "eslint": "^10.1.0",
     "prettier": "^3.8.1"

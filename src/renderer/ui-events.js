@@ -682,6 +682,7 @@
     var onOpenDuplicatePreview = options.onOpenDuplicatePreview;
     var onShowPhotoInFolderById = options.onShowPhotoInFolderById;
     var onDeleteDuplicatePhoto = options.onDeleteDuplicatePhoto;
+    var onSwitchDuplicateMode = options.onSwitchDuplicateMode;
 
     document.addEventListener('click', function (e) {
       var el = e.target && e.target.closest ? e.target.closest('[data-dup-action]') : null;
@@ -691,6 +692,12 @@
       if (action === 'start-hash' && typeof onStartDuplicateHashDetection === 'function') {
         e.preventDefault();
         onStartDuplicateHashDetection();
+        return;
+      }
+      if (action === 'switch-mode' && typeof onSwitchDuplicateMode === 'function') {
+        e.preventDefault();
+        var mode = el.getAttribute('data-mode') || 'hash';
+        onSwitchDuplicateMode(mode);
         return;
       }
       if (action === 'load-groups' && typeof onLoadDuplicateGroups === 'function') {

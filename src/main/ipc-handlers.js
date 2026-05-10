@@ -293,6 +293,18 @@ function registerHandlers() {
   ipcMain.handle('run-db-vacuum', async function () {
     const main = require('../main');
     if (!main.db) return { ok: false, error: 'db not ready' };
+    var confirmRes = dialog.showMessageBoxSync(mainWindowRef, {
+      type: 'warning',
+      buttons: ['取消', '确认 VACUUM'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '数据库 VACUUM',
+      message: '即将执行数据库 VACUUM 整理。',
+      detail: '建议先备份数据库（复制 photos.db）。大库可能耗时较长，优化期间请勿关闭应用。确认后继续？',
+    });
+    if (confirmRes !== 1) {
+      return { ok: false, error: '用户取消' };
+    }
     try {
       main.db.vacuum();
       return { ok: true };

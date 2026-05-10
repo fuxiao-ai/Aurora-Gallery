@@ -49,9 +49,11 @@ parentPort.on('message', function (msg) {
     return;
   }
 
+  console.log('[scan-worker] init root=' + wd.rootPath);
   var db;
   try {
     db = new Database(wd.dbPath);
+    console.log('[scan-worker] db.open ok');
   } catch (e) {
     parentPort.postMessage({
       type: 'done',
@@ -86,9 +88,11 @@ parentPort.on('message', function (msg) {
   }, 300);
 
   try {
+    console.log('[scan-worker] scan.start root=' + wd.rootPath);
     var scanResult = await scanner.scanFolder(wd.rootPath);
     var fp = scanner.getProgress();
     var cancelled = fp.status === 'cancelled';
+    console.log('[scan-worker] scan.done status=' + fp.status + ' current=' + fp.current + ' total=' + fp.total);
     parentPort.postMessage({
       type: 'done',
       cancelled: cancelled,
@@ -97,6 +101,7 @@ parentPort.on('message', function (msg) {
       error: null,
     });
   } catch (err) {
+    console.error('[scan-worker] scan.error', err && err.message ? err.message : String(err));
     var fp2 = scanner
       ? scanner.getProgress()
       : { status: 'error', current: 0, total: 0, currentFile: '' };

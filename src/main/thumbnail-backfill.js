@@ -5,6 +5,7 @@ const {
   getFfmpegStaticPath: _getFfmpegStaticPath,
   getVideoFrameThumb: _getVideoFrameThumb,
 } = require('./utils');
+const { computeDhash, getDhashBuckets } = require('./perceptual-hash');
 
 /** 单次补全任务记录的失败路径上限，避免极端情况下占用过多内存 */
 const THUMB_BACKFILL_FAILED_PATHS_MAX = 50000;
@@ -94,6 +95,21 @@ async function runRowsWithThumbConcurrency(
         }
       }
     }
+
+    // 【新增】同步计算 dHash（仅图片，文件系统缓存大概率还热着）
+    if (result && result.thumbnail && !isVideoPathFunc(row.file_path)) {
+      try {
+        var dhash = await computeDhash(row.file_path);
+        if (dhash) {
+          result.dhash = dhash;
+          result.mtime = row.date_modified;
+          result.size = row.file_size;
+        }
+      } catch (eDhash) {
+        // dHash 失败不影响缩略图，静默跳过
+        logger.warn('dHash failed for:', row.file_path, eDhash && eDhash.message);
+      }
+    }
     // 无论成功失败，计数都+1，确保进度准确
     thumbnailBackfill.done++;
     emitBackgroundTasksChangedThrottled(false);
@@ -106,10 +122,14 @@ async function runRowsWithThumbConcurrency(
   async function commitMiniBatch() {
     if (results.length === 0) return;
     // 小批次事务提交，平衡锁竞争和内存
+    // 【新增】同时写入 thumbnail 和 dhash
     db.beginTransaction();
     try {
       for (var r of results) {
         db.updatePhotoThumbnail(r.id, r.thumbnail);
+        if (r.dhash) {
+          db.updatePhotoDhash(r.id, r.dhash, getDhashBuckets(r.dhash), r.mtime, r.size);
+        }
       }
       db.commit();
     } catch (e) {
@@ -119,6 +139,9 @@ async function runRowsWithThumbConcurrency(
       for (var r2 of results) {
         try {
           db.updatePhotoThumbnail(r2.id, r2.thumbnail);
+          if (r2.dhash) {
+            db.updatePhotoDhash(r2.id, r2.dhash, getDhashBuckets(r2.dhash), r2.mtime, r2.size);
+          }
           thumbnailBackfill.success++;
         } catch (singleErr) {
           logger.error('Single update failed:', r2.id, singleErr.message);
@@ -187,6 +210,7 @@ async function runThumbnailBackfill(
   thumbnailBackfill.startedAt = Date.now();
   thumbnailBackfill.total = 0;
   emitBackgroundTasksChangedThrottled(true);
+  logger.task('thumb-backfill', 'start', '', { startedAt: thumbnailBackfill.startedAt, limit: limit || 'all' });
 
   try {
     // 让出多次事件循环，让 UI 先更新状态再开始查询，避免启动就卡死
@@ -199,6 +223,7 @@ async function runThumbnailBackfill(
     thumbnailBackfill.total =
       maxToProcess != null ? Math.min(maxToProcess, missingTotal) : missingTotal;
     emitBackgroundTasksChangedThrottled(true);
+    logger.task('thumb-backfill', 'query.missingTotal', 'total=' + thumbnailBackfill.total, { startedAt: thumbnailBackfill.startedAt });
 
     var processedInThisRun = 0;
     var afterId = 0;
@@ -217,8 +242,12 @@ async function runThumbnailBackfill(
       // 让出事件循环让 UI 更新，查询后立即响应进度变化
       await yieldForPreviewPlaybackMs(10);
       if (rows.length === 0) break;
+      logger.task('thumb-backfill', 'query.rows', 'count=' + rows.length + ' afterId=' + afterId, { startedAt: thumbnailBackfill.startedAt });
 
-      if (thumbnailBackfill.cancelled) break;
+      if (thumbnailBackfill.cancelled) {
+        logger.task('thumb-backfill', 'cancelled', 'done=' + thumbnailBackfill.done + ' success=' + thumbnailBackfill.success + ' failed=' + thumbnailBackfill.failed, { startedAt: thumbnailBackfill.startedAt });
+        break;
+      }
       await runRowsWithThumbConcurrency(
         db,
         rows,
@@ -233,6 +262,7 @@ async function runThumbnailBackfill(
       afterId = rows[rows.length - 1].id;
       processedInThisRun += rows.length;
       emitBackgroundTasksChangedThrottled(false);
+      logger.task('thumb-backfill', 'batch.done', 'processed=' + processedInThisRun + ' done=' + thumbnailBackfill.done + ' success=' + thumbnailBackfill.success + ' failed=' + thumbnailBackfill.failed, { startedAt: thumbnailBackfill.startedAt });
       if (maxToProcess != null && processedInThisRun >= maxToProcess) break;
     }
 
@@ -245,6 +275,7 @@ async function runThumbnailBackfill(
     thumbnailBackfill.failedPaths = [];
     thumbnailBackfill.running = false;
     thumbnailBackfill.currentFile = '';
+    logger.task('thumb-backfill', 'done', 'success=' + thumbnailBackfill.success + ' failed=' + thumbnailBackfill.failed, { startedAt: thumbnailBackfill.startedAt });
     thumbnailBackfill.startedAt = 0;
     emitBackgroundTasksChangedThrottled(true);
   }

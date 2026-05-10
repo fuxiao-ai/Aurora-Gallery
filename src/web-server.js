@@ -23,6 +23,7 @@ function loadSharp() {
 var playbackStrategy = require('./playback-strategy');
 var HlsSessionManager = require('./hls-session-manager');
 var runDbReadWorkerOnly = require('./db-read-runner').runDbReadWorkerOnly;
+var logger = require('./main/logger');
 
 var RAW_EXTENSIONS = new Set(['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw']);
 
@@ -224,6 +225,7 @@ WebServer.prototype.start = function () {
     });
 
     self.server.listen(self.port, '0.0.0.0', function () {
+      logger.info('[web-server] started on port', self.port);
       if (self.hlsManager && typeof self.hlsManager.pruneHlsCacheLru === 'function') {
         self._runHlsPrune('startup');
         self._hlsPruneInterval = setInterval(
@@ -239,6 +241,7 @@ WebServer.prototype.start = function () {
 };
 
 WebServer.prototype.stop = function () {
+  logger.info('[web-server] stopping');
   if (this._hlsPruneInterval) {
     try {
       clearInterval(this._hlsPruneInterval);
@@ -268,7 +271,7 @@ WebServer.prototype._runHlsPrune = function (reason) {
     var pendingReruns = Number(r.pendingReruns || 0);
     if (removed > 0 || freed > 0 || pendingTriggers > 0 || pendingReruns > 0) {
       var mb = (freed / (1024 * 1024)).toFixed(1);
-      console.log(
+      logger.info(
         '[HLS] LRU prune (' +
           reason +
           ') removed=' +
@@ -285,7 +288,7 @@ WebServer.prototype._runHlsPrune = function (reason) {
       );
     }
   } catch (e) {
-    console.warn('[HLS] LRU prune failed (' + reason + '):', e && e.message ? e.message : e);
+    logger.warn('[HLS] LRU prune failed (' + reason + '):', e && e.message ? e.message : e);
   }
 };
 
@@ -406,28 +409,28 @@ WebServer.prototype.handleRequest = function (req, res) {
       res,
       'app-icon.svg',
       'image/svg+xml; charset=utf-8',
-      'no-store, max-age=0',
+      'public, max-age=604800',
     );
   } else if (pathname === '/apple-touch-icon.png') {
     this.serveWebBinary(
       res,
       path.join(this.webDir, 'apple-touch-icon.png'),
       'image/png',
-      'no-store, max-age=0',
+      'public, max-age=604800',
     );
   } else if (pathname === '/app-icon-192.png') {
     this.serveWebBinary(
       res,
       path.join(this.webDir, 'app-icon-192.png'),
       'image/png',
-      'no-store, max-age=0',
+      'public, max-age=604800',
     );
   } else if (pathname === '/app-icon-512.png') {
     this.serveWebBinary(
       res,
       path.join(this.webDir, 'app-icon-512.png'),
       'image/png',
-      'no-store, max-age=0',
+      'public, max-age=604800',
     );
   } else if (pathname === '/favicon.ico') {
     // 兜底：部分浏览器/启动器仍会优先请求 favicon.ico
@@ -435,7 +438,7 @@ WebServer.prototype.handleRequest = function (req, res) {
       res,
       path.join(this.webDir, 'app-icon-192.png'),
       'image/png',
-      'no-store, max-age=0',
+      'public, max-age=604800',
     );
   } else if (pathname === '/api/login') {
     this.handleLogin(req, res);
@@ -463,6 +466,12 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.handleImmediateSubfolderCovers(req, res, query);
   } else if (pathname === '/api/root-folders') {
     this.handleRootFolders(req, res, query);
+  } else if (pathname === '/api/toggle-favorite') {
+    this.handleToggleFavorite(req, res);
+  } else if (pathname === '/api/download') {
+    this.handleDownload(req, res, query);
+  } else if (pathname === '/api/photo-info') {
+    this.handlePhotoInfo(req, res, query);
   } else if (pathname === '/thumb') {
     // 缩略图：/thumb/123
     this.handleThumb(res, '');
@@ -494,18 +503,12 @@ WebServer.prototype.handleRequest = function (req, res) {
       'application/javascript; charset=utf-8',
     );
   } else if (pathname === '/js/app.js') {
-    this.serveStaticFile(
-      res,
-      path.join('js', 'app.js'),
-      'application/javascript; charset=utf-8',
-      'no-store, max-age=0',
-    );
+    this.serveStaticFile(res, path.join('js', 'app.js'), 'application/javascript; charset=utf-8');
   } else if (pathname === '/js/web-theme-shared.js') {
     this.serveStaticFile(
       res,
       path.join('js', 'web-theme-shared.js'),
       'application/javascript; charset=utf-8',
-      'no-store, max-age=0',
     );
   } else if (pathname.startsWith('/hls/')) {
     this.handleHlsFile(req, res, pathname);
@@ -528,6 +531,37 @@ WebServer.prototype.setLanEnabled = function (enabled) {
 };
 
 // === 静态文件服务 ===
+
+/** 检测请求是否支持 gzip */
+function acceptsGzip(req) {
+  var ae = req && req.headers && req.headers['accept-encoding'];
+  return typeof ae === 'string' && ae.indexOf('gzip') !== -1;
+}
+
+/** 发送 gzip 响应（若支持且有效） */
+function sendGzipped(res, data, headers, isBuffer) {
+  var req = res.req;
+  if (!acceptsGzip(req) || data.length <= 1024) {
+    headers['Content-Length'] = isBuffer ? data.length : Buffer.byteLength(data, 'utf8');
+    res.writeHead(200, headers);
+    res.end(data);
+    return;
+  }
+  zlib.gzip(data, function (err, compressed) {
+    if (err || !compressed || compressed.length >= data.length) {
+      headers['Content-Length'] = isBuffer ? data.length : Buffer.byteLength(data, 'utf8');
+      res.writeHead(200, headers);
+      res.end(data);
+      return;
+    }
+    headers['Content-Encoding'] = 'gzip';
+    headers['Content-Length'] = compressed.length;
+    headers['Vary'] = 'Accept-Encoding';
+    res.writeHead(200, headers);
+    res.end(compressed);
+  });
+}
+
 WebServer.prototype.serveRepoFile = function (res, basename, contentType) {
   var filePath = path.join(__dirname, basename);
   fs.readFile(filePath, 'utf8', function (err, data) {
@@ -536,13 +570,28 @@ WebServer.prototype.serveRepoFile = function (res, basename, contentType) {
       res.end('Not Found');
       return;
     }
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(data);
+    var etag = crypto.createHash('md5').update(data).digest('hex');
+    if (res.req && res.req.headers && res.req.headers['if-none-match'] === etag) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+    sendGzipped(
+      res,
+      data,
+      {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=3600',
+        ETag: etag,
+      },
+      false,
+    );
   });
 };
 
 WebServer.prototype.serveStaticFile = function (res, filename, contentType, cacheControl) {
   var filePath = path.join(this.webDir, filename);
+  var cc = cacheControl || 'public, max-age=86400';
 
   fs.readFile(filePath, 'utf8', function (err, data) {
     if (err) {
@@ -550,11 +599,22 @@ WebServer.prototype.serveStaticFile = function (res, filename, contentType, cach
       res.end('Error loading page');
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Cache-Control': cacheControl || 'public, max-age=60',
-    });
-    res.end(data);
+    var etag = crypto.createHash('md5').update(data).digest('hex');
+    if (res.req && res.req.headers && res.req.headers['if-none-match'] === etag) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+    sendGzipped(
+      res,
+      data,
+      {
+        'Content-Type': contentType,
+        'Cache-Control': cc,
+        ETag: etag,
+      },
+      false,
+    );
   });
 };
 
@@ -747,82 +807,12 @@ WebServer.prototype.handleImmediateSubfolderCovers = function (req, res, query) 
     return;
   }
   var mediaType = query.mediaType || query.media_filter || query.media;
-  var parentPathNormalized = parentPath.replace(/\\/g, '/');
-
-  // Find rootId first
-  runDbReadWorkerOnly(self.sqliteReadPath, 'findRootIdByPath', { path: parentPathNormalized })
-    .then(function (rootResult) {
-      var rootId = rootResult && rootResult.rootId ? parseInt(rootResult.rootId, 10) : null;
-      if (!rootId) {
-        self.jsonResponse(res, [], 200, req);
-        return;
-      }
-      // Get full folder tree for this root (same as folder-tree API)
-      runDbReadWorkerOnly(self.sqliteReadPath, 'getFolderTree', rootId)
-        .then(function (folderTreeResult) {
-          var flatRows = Array.isArray(folderTreeResult) ? folderTreeResult : [];
-          if (!Array.isArray(flatRows) || flatRows.length === 0) {
-            self.jsonResponse(res, [], 200, req);
-            return;
-          }
-          // Aggregate to get immediate child folder summaries (same as desktop)
-          runDbReadWorkerOnly(self.sqliteReadPath, 'aggregateImmediateSubfolderSummaries', {
-            parentPath: parentPathNormalized,
-            flatRows: flatRows,
-          })
-            .then(function (summaries) {
-              if (!Array.isArray(summaries) || summaries.length === 0) {
-                self.jsonResponse(res, [], 200, req);
-                return;
-              }
-              var childPaths = summaries.map(function (s) {
-                return s.folder_path;
-              });
-              // Now get covers
-              runDbReadWorkerOnly(self.sqliteReadPath, 'getImmediateSubfolderCovers', {
-                parentPath: parentPathNormalized,
-                childPaths: childPaths,
-                rootId: rootId,
-                mediaType: mediaType,
-              })
-                .then(function (covers) {
-                  // Merge summary counts from summaries with covers
-                  var merged = [];
-                  for (var i = 0; i < summaries.length; i++) {
-                    var sum = summaries[i];
-                    var cover = null;
-                    for (var j = 0; j < covers.length; j++) {
-                      if (covers[j].folder_path === sum.folder_path) {
-                        cover = covers[j];
-                        break;
-                      }
-                    }
-                    merged.push({
-                      folder_path: sum.folder_path,
-                      folder_photo_count: sum.folder_photo_count,
-                      id: cover ? cover.id : null,
-                      has_thumbnail: cover ? cover.has_thumbnail : false,
-                      file_name: cover ? cover.file_name : '',
-                    });
-                  }
-                  self.jsonResponse(res, merged, 200, req);
-                })
-                .catch(function (e) {
-                  self.jsonResponse(
-                    res,
-                    { error: String(e && e.message ? e.message : e) },
-                    500,
-                    req,
-                  );
-                });
-            })
-            .catch(function (e) {
-              self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
-            });
-        })
-        .catch(function (e) {
-          self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
-        });
+  runDbReadWorkerOnly(self.sqliteReadPath, 'getImmediateSubfolderCovers', {
+    parentPath: parentPath,
+    mediaType: mediaType,
+  })
+    .then(function (covers) {
+      self.jsonResponse(res, covers || [], 200, req);
     })
     .catch(function (e) {
       self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
@@ -931,6 +921,72 @@ WebServer.prototype.handleThumb = function (res, idStr) {
       })();
       return;
     }
+
+    // RAW：与 serveRawPreviewJpeg 一致走 RAW 并发队列，避免与普通 JPEG 抢 preview 槽位且确保可解码
+    if (RAW_EXTENSIONS.has(ext)) {
+      void (async function () {
+        try {
+          await self._rawAcquire();
+        } catch (eRawQ) {
+          sendPngFallback();
+          return;
+        }
+        try {
+          var sharpRaw = loadSharp();
+          var jpegRaw = await sharpRaw(full.file_path)
+            .rotate()
+            .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 75 })
+            .toBuffer();
+          try {
+            self.db.updatePhotoThumbnail(photoId, jpegRaw);
+          } catch (eUp) {}
+          res.writeHead(200, {
+            'Content-Type': 'image/jpeg',
+            'Content-Length': jpegRaw.length,
+            'Cache-Control': 'public, max-age=86400',
+          });
+          res.end(jpegRaw);
+        } catch (e) {
+          sendPngFallback();
+        } finally {
+          self._rawRelease();
+        }
+      })();
+      return;
+    }
+
+    // 普通图片：用 Sharp 按需生成缩略图并写回 DB（复用 previewJpeg 信号量限制并发）
+    void (async function () {
+      try {
+        await self._previewJpegAcquire();
+      } catch (eAc) {
+        sendPngFallback();
+        return;
+      }
+      try {
+        var sharp = loadSharp();
+        var jpeg = await sharp(full.file_path)
+          .rotate()
+          .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 75 })
+          .toBuffer();
+        try {
+          self.db.updatePhotoThumbnail(photoId, jpeg);
+        } catch (eUp) {}
+        res.writeHead(200, {
+          'Content-Type': 'image/jpeg',
+          'Content-Length': jpeg.length,
+          'Cache-Control': 'public, max-age=86400',
+        });
+        res.end(jpeg);
+      } catch (e) {
+        sendPngFallback();
+      } finally {
+        self._previewJpegRelease();
+      }
+    })();
+    return;
   }
 
   sendPngFallback();
@@ -973,6 +1029,12 @@ WebServer.prototype.handlePhoto = async function (req, res, idStr) {
         res.end('Not Found');
         return;
       }
+      var etag = '"' + (st.mtime ? st.mtime.getTime() : 0) + '-' + st.size + '"';
+      if (req.headers && req.headers['if-none-match'] === etag) {
+        res.writeHead(304);
+        res.end();
+        return;
+      }
       this.serveFileWithRange(
         req,
         res,
@@ -980,6 +1042,7 @@ WebServer.prototype.handlePhoto = async function (req, res, idStr) {
         st.size,
         contentType,
         'public, max-age=3600',
+        etag,
       );
     } catch (e) {
       res.writeHead(500);
@@ -1040,6 +1103,12 @@ WebServer.prototype.serveVideoStream = async function (req, res, filePath) {
   }
 
   var range = req.headers && req.headers.range ? String(req.headers.range) : null;
+  var etag = '"' + (stat.mtime ? stat.mtime.getTime() : 0) + '-' + size + '"';
+  if (req.headers && req.headers['if-none-match'] === etag) {
+    res.writeHead(304);
+    res.end();
+    return;
+  }
 
   if (range && /^bytes=\d*-\d*$/.test(range)) {
     var m = range.match(/^bytes=(\d*)-(\d*)$/);
@@ -1063,6 +1132,7 @@ WebServer.prototype.serveVideoStream = async function (req, res, filePath) {
       'Content-Length': chunkSize,
       'Content-Type': contentType,
       'Cache-Control': 'public, max-age=3600',
+      'ETag': etag,
     });
     var rs = fs.createReadStream(filePath, { start: start, end: end });
     rs.on('error', function () {
@@ -1079,6 +1149,7 @@ WebServer.prototype.serveVideoStream = async function (req, res, filePath) {
     'Content-Length': size,
     'Content-Type': contentType,
     'Cache-Control': 'public, max-age=3600',
+    'ETag': etag,
   });
   var rs2 = fs.createReadStream(filePath);
   rs2.on('error', function () {
@@ -1832,18 +1903,29 @@ WebServer.prototype.isLoopback = function (req) {
 };
 
 WebServer.prototype.serveWebBinary = function (res, absPath, contentType, cacheControl) {
+  var cc = cacheControl || 'public, max-age=86400';
   fs.readFile(absPath, function (err, data) {
     if (err) {
       res.writeHead(404);
       res.end('Not Found');
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Content-Length': data.length,
-      'Cache-Control': cacheControl || 'public, max-age=86400',
-    });
-    res.end(data);
+    var etag = crypto.createHash('md5').update(data).digest('hex');
+    if (res.req && res.req.headers && res.req.headers['if-none-match'] === etag) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+    sendGzipped(
+      res,
+      data,
+      {
+        'Content-Type': contentType,
+        'Cache-Control': cc,
+        ETag: etag,
+      },
+      true,
+    );
   });
 };
 
@@ -2091,6 +2173,7 @@ WebServer.prototype.serveFileWithRange = function (
   size,
   contentType,
   cacheControl,
+  etag,
 ) {
   var range = req && req.headers && req.headers.range ? String(req.headers.range) : null;
   if (range && /^bytes=\d*-\d*$/.test(range)) {
@@ -2106,13 +2189,15 @@ WebServer.prototype.serveFileWithRange = function (
     }
     if (end >= size) end = size - 1;
     var chunkSize = end - start + 1;
-    res.writeHead(206, {
+    var headers206 = {
       'Content-Range': 'bytes ' + start + '-' + end + '/' + size,
       'Accept-Ranges': 'bytes',
       'Content-Length': chunkSize,
       'Content-Type': contentType,
       'Cache-Control': cacheControl || 'public, max-age=3600',
-    });
+    };
+    if (etag) headers206['ETag'] = etag;
+    res.writeHead(206, headers206);
     var rs = fs.createReadStream(filePath, { start: start, end: end });
     rs.on('error', function () {
       try {
@@ -2123,12 +2208,14 @@ WebServer.prototype.serveFileWithRange = function (
     return;
   }
 
-  res.writeHead(200, {
+  var headers200 = {
     'Accept-Ranges': 'bytes',
     'Content-Length': size,
     'Content-Type': contentType,
     'Cache-Control': cacheControl || 'public, max-age=3600',
-  });
+  };
+  if (etag) headers200['ETag'] = etag;
+  res.writeHead(200, headers200);
   var rs2 = fs.createReadStream(filePath);
   rs2.on('error', function () {
     try {
@@ -2513,6 +2600,95 @@ WebServer.prototype.jsonResponse = function (res, data, statusCode, req) {
   headers['Content-Length'] = buf.length;
   res.writeHead(status, headers);
   res.end(buf);
+};
+
+WebServer.prototype.handleToggleFavorite = function (req, res) {
+  var self = this;
+  if (req.method !== 'POST') {
+    res.writeHead(405);
+    res.end();
+    return;
+  }
+  var body = '';
+  req.on('data', function (chunk) { body += chunk; });
+  req.on('end', function () {
+    try {
+      var data = JSON.parse(body);
+      var id = parseInt(data.id, 10);
+      if (isNaN(id) || id <= 0) {
+        self.jsonResponse(res, { error: 'invalid id' }, 400, req);
+        return;
+      }
+      var result = self.db.togglePhotoFavorite(id);
+      if (!result) {
+        self.jsonResponse(res, { error: 'photo not found' }, 404, req);
+        return;
+      }
+      self.jsonResponse(res, result, 200, req);
+    } catch (e) {
+      self.jsonResponse(res, { error: 'invalid request' }, 400, req);
+    }
+  });
+};
+
+WebServer.prototype.handleDownload = async function (req, res, query) {
+  var id = parseInt(query.id, 10);
+  if (isNaN(id) || id <= 0) {
+    res.writeHead(400);
+    res.end('Bad Request');
+    return;
+  }
+  var photo = this.db.getFullPhoto(id);
+  if (!photo || !photo.file_path) {
+    res.writeHead(404);
+    res.end('Not Found');
+    return;
+  }
+  try {
+    if (!(await fileExists(photo.file_path))) {
+      res.writeHead(404);
+      res.end('Not Found');
+      return;
+    }
+    var ext = path.extname(photo.file_path).toLowerCase();
+    var mimeMap = {
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+      '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+      '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v',
+      '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+    };
+    var contentType = mimeMap[ext] || 'application/octet-stream';
+    var fileName = path.basename(photo.file_path);
+    var st = await fs.promises.stat(photo.file_path);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': st.size,
+      'Content-Disposition': 'attachment; filename="' + encodeURIComponent(fileName) + '"',
+    });
+    fs.createReadStream(photo.file_path).pipe(res);
+  } catch (e) {
+    res.writeHead(500);
+    res.end('Internal Server Error');
+  }
+};
+
+WebServer.prototype.handlePhotoInfo = function (req, res, query) {
+  var self = this;
+  var id = parseInt(query.id, 10);
+  if (isNaN(id) || id <= 0) {
+    self.jsonResponse(res, { error: 'invalid id' }, 400, req);
+    return;
+  }
+  try {
+    var photo = self.db.getPhotoInfo(id);
+    if (!photo) {
+      self.jsonResponse(res, { error: 'not found' }, 404, req);
+      return;
+    }
+    self.jsonResponse(res, photo, 200, req);
+  } catch (e) {
+    self.jsonResponse(res, { error: 'internal error' }, 500, req);
+  }
 };
 
 module.exports = WebServer;

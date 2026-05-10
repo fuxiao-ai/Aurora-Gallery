@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const crypto = require('crypto');
+const exifReader = require('exif-reader');
+const logger = require('./main/logger');
 
 var IMAGE_EXTENSIONS = new Set([
   '.jpg',
@@ -274,15 +276,21 @@ Scanner.prototype.scanFolder = async function (rootPath) {
   this.lastScanSummary = { cleanupDeleted: 0 };
   var perfStartedAt = Date.now();
   var perfLastAt = perfStartedAt;
+  var perfMarks = [];
   function perfMark(label) {
-    if (!SCAN_PERF_LOG) return;
     var now = Date.now();
-    console.log(
-      '[scan-perf] %s elapsed=%dms step=%dms',
-      label,
-      now - perfStartedAt,
-      now - perfLastAt,
-    );
+    var step = now - perfLastAt;
+    var elapsed = now - perfStartedAt;
+    perfMarks.push({ label: label, elapsed: elapsed, step: step });
+    if (SCAN_PERF_LOG) {
+      console.log(
+        '[scan-perf] %s elapsed=%dms step=%dms',
+        label,
+        elapsed,
+        step,
+      );
+    }
+    logger.task('scan', label, 'elapsed=' + elapsed + 'ms step=' + step + 'ms', { startedAt: perfStartedAt });
     perfLastAt = now;
   }
 
@@ -443,7 +451,9 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     perfMark('cleanup-and-commit');
     this.progress.status = 'done';
     this.progress.cleanupDeleted = this.lastScanSummary.cleanupDeleted;
-    return Object.assign({}, this.lastScanSummary);
+    var result = Object.assign({}, this.lastScanSummary);
+    result.perf = perfMarks;
+    return result;
   } catch (err) {
     this.progress.status = 'error';
     this.progress.error = err.message;
@@ -644,6 +654,15 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
     var width = 0;
     var height = 0;
     var thumbnail = null;
+    var cameraMake = null;
+    var cameraModel = null;
+    var lensModel = null;
+    var focalLength = null;
+    var aperture = null;
+    var isoSpeed = null;
+    var shutterSpeed = null;
+    var gpsLatitude = null;
+    var gpsLongitude = null;
 
     if (GENERATE_THUMBNAILS_DURING_SCAN) {
       // 对所有图片格式都尝试读取元数据和生成缩略图（含 RAW）
@@ -653,8 +672,39 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
         if (metadata.width) width = metadata.width;
         if (metadata.height) height = metadata.height;
 
-        if (metadata.exif && metadata.exif.DateTimeOriginal) {
-          dateTaken = this.parseExifDate(metadata.exif.DateTimeOriginal);
+        // Parse EXIF from raw Buffer using exif-reader
+        if (metadata.exif) {
+          try {
+            var exif = exifReader(metadata.exif);
+            var tags = exif.Photo || exif.tags || exif;
+
+            if (tags.DateTimeOriginal) {
+              dateTaken = this.parseExifDate(String(tags.DateTimeOriginal));
+            } else if (tags.DateTimeDigitized) {
+              dateTaken = this.parseExifDate(String(tags.DateTimeDigitized));
+            }
+
+            cameraMake = tags.Make || null;
+            cameraModel = tags.Model || null;
+            lensModel = tags.LensModel || null;
+            focalLength = tags.FocalLength || null;
+            aperture = tags.FNumber || tags.ApertureValue || null;
+            isoSpeed = tags.ISOSpeedRatings || null;
+
+            if (tags.ExposureTime) {
+              var exp = tags.ExposureTime;
+              if (typeof exp === 'number') {
+                shutterSpeed = exp >= 1 ? String(exp) + 's' : '1/' + Math.round(1 / exp);
+              } else {
+                shutterSpeed = String(exp);
+              }
+            }
+
+            if (tags.GPSLatitude && tags.GPSLongitude) {
+              gpsLatitude = tags.GPSLatitude;
+              gpsLongitude = tags.GPSLongitude;
+            }
+          } catch (e) {}
         }
 
         try {
@@ -743,6 +793,15 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
       dateModified,
       thumbnail || null,
       thumbnail ? 1 : 0,
+      cameraMake,
+      cameraModel,
+      lensModel,
+      focalLength,
+      aperture,
+      isoSpeed,
+      shutterSpeed,
+      gpsLatitude,
+      gpsLongitude,
     );
     this._maybeCommitScanBatch();
     return ir && ir.changes > 0 ? 'inserted' : 'ignored';

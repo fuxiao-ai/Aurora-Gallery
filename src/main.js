@@ -10,6 +10,12 @@ const {
   nativeImage,
   globalShortcut,
 } = require('electron');
+console.log(
+  '[startup] Electron version:',
+  process.versions.electron,
+  'ABI:',
+  process.versions.modules,
+);
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -21,6 +27,7 @@ const dbReadWorkerPool = require('./db-read-worker-pool');
 const { runDbReadWorkerOnly } = require('./db-read-runner');
 const { CatalogCacheDb, normalizeMediaKey } = require('./catalog-cache-db');
 const logger = require('./main/logger');
+const similarDetection = require('./main/similar-detection');
 
 /** 懒加载：避免冷启动即解析 ffmpeg-static 路径（磁盘/解压成本） */
 var cachedFfmpegStaticPath;
@@ -260,6 +267,25 @@ var duplicateHashGroupsCache = {
   pages: Object.create(null),
   warmedAt: 0,
 };
+
+/** 相似检测（dHash）第零层精确匹配缓存 */
+var similarDhashGroupsCache = {
+  pageSize: 40,
+  total: null,
+  totalPages: null,
+  pages: Object.create(null),
+  warmedAt: 0,
+};
+function clearSimilarDhashGroupsCache(reason) {
+  similarDhashGroupsCache.total = null;
+  similarDhashGroupsCache.totalPages = null;
+  similarDhashGroupsCache.pages = Object.create(null);
+  similarDhashGroupsCache.warmedAt = 0;
+  if (isDev && reason) {
+    logger.log('[similar-dhash-cache] cleared reason=%s', String(reason));
+  }
+}
+
 function clearDuplicateHashGroupsCache(reason) {
   duplicateHashGroupsCache.total = null;
   duplicateHashGroupsCache.totalPages = null;
@@ -801,6 +827,7 @@ function runFolderScanInWorker(normalizedRootPath) {
     workerScanIsActive = true;
     workerScanStartedAt = Date.now();
     workerScanProgress = { current: 0, total: 0, status: 'scanning', currentFile: '' };
+    logger.task('scan', 'start', 'root=' + normalizedRootPath, { startedAt: workerScanStartedAt });
     var lastHeartbeatAt = Date.now();
     var heartbeatWatchTimer = null;
 
@@ -867,6 +894,7 @@ function runFolderScanInWorker(normalizedRootPath) {
       // Worker 在加载大库映射 / 全量枚举时可能数秒～数十秒无消息；过短会误杀。真死锁仍会被终止。
       var scanWorkerHeartbeatMs = 120000;
       if (silentMs > scanWorkerHeartbeatMs) {
+        logger.task('scan', 'heartbeat.timeout', 'silentMs=' + silentMs, { startedAt: workerScanStartedAt });
         finish({
           cancelled: false,
           error:
@@ -893,6 +921,8 @@ function runFolderScanInWorker(normalizedRootPath) {
             msg.finalProgress,
           );
         }
+        var scanStatus = msg.error ? 'error' : (msg.cancelled ? 'cancelled' : 'done');
+        logger.task('scan', scanStatus, msg.error || '', { startedAt: workerScanStartedAt, current: msg.finalProgress ? msg.finalProgress.current : 0, total: msg.finalProgress ? msg.finalProgress.total : 0 });
         finish({
           cancelled: !!msg.cancelled,
           error: msg.error || null,
@@ -1044,6 +1074,11 @@ async function processScanQueue() {
               ? Number(wr.scanResult.cleanupDeleted)
               : 0,
         };
+        if (wr && wr.scanResult && wr.scanResult.perf && wr.scanResult.perf.length > 0) {
+          var perf = wr.scanResult.perf;
+          var totalMs = perf[perf.length - 1] ? perf[perf.length - 1].elapsed : 0;
+          logger.task('scan', 'perf.summary', perf.map(function (p) { return p.label + '=' + p.step + 'ms'; }).join(' '), { startedAt: workerScanStartedAt || Date.now(), totalMs: totalMs });
+        }
       }
       // 无论成功/失败/取消，都发送完成信号，让渲染层退出“准备中...”
       if (mainWindow && mainWindow.webContents) {
@@ -1532,6 +1567,7 @@ async function runDuplicateHashDetection() {
   duplicateHashTask.startedAt = Date.now();
   duplicateHashBgLogLastAt = 0;
   duplicateHashBgLog('start', '', true);
+  logger.task('dup-hash', 'start', '', { startedAt: duplicateHashTask.startedAt });
   emitBackgroundTasksChangedThrottled(true);
   try {
     /** 先让出主循环；待比对总数与收尾统计走只读 Worker，避免大库 COUNT/GROUP BY 占死主进程 */
@@ -1649,9 +1685,11 @@ async function runDuplicateHashDetection() {
       duplicateHashBgLog('cancelled', '', true);
     }
     duplicateHashBgLog('finish', '', true);
+    logger.task('dup-hash', 'done', 'hashed=' + duplicateHashTask.hashed + ' failed=' + duplicateHashTask.failed + ' groups=' + duplicateHashTask.duplicateGroups, { startedAt: duplicateHashTask.startedAt });
     return { started: true };
   } catch (eRun) {
     duplicateHashBgLog('error', eRun && eRun.message ? eRun.message : String(eRun), true);
+    logger.task('dup-hash', 'error', eRun && eRun.message ? eRun.message : String(eRun), { startedAt: duplicateHashTask.startedAt });
     throw eRun;
   } finally {
     duplicateHashTask.running = false;
@@ -1811,6 +1849,18 @@ function schedulePostWindowDeferredTasks() {
   }, 250);
   setTimeout(function () {
     try {
+      if (db && typeof db.ensurePhotosIsFavoriteColumn === 'function') {
+        db.ensurePhotosIsFavoriteColumn();
+      }
+    } catch (eFav) {
+      logger.error(
+        '[startup] deferred-favorite-column failed:',
+        eFav && eFav.message ? eFav.message : String(eFav),
+      );
+    }
+  }, 250);
+  setTimeout(function () {
+    try {
       if (db && typeof db.applyDeferredMmapPragma === 'function') {
         db.applyDeferredMmapPragma();
         startupStageLog('post-window-deferred.mmap-pragma.done');
@@ -1825,14 +1875,25 @@ function schedulePostWindowDeferredTasks() {
   setTimeout(function () {
     scheduleStartupInvalidCleanup();
   }, 2200);
+  setTimeout(function () {
+    try {
+      if (db && typeof db.applyDeferredThumbnailFix === 'function') {
+        db.applyDeferredThumbnailFix();
+        startupStageLog('post-window-deferred.thumbnail-fix.start');
+      }
+    } catch (eT) {
+      logger.error(
+        '[startup] deferred-thumbnail-fix failed:',
+        eT && eT.message ? eT.message : String(eT),
+      );
+    }
+  }, 5000);
 }
 
 /** 自动扫描 / 补图 / 人脸等：等侧栏目录树首屏渲染完成后再启动，避免与目录 IPC 抢时序；12s 兜底仍可能触发 */
 var autoStartupTasksRan = false;
 var browseUiReadyStartupTimer = null;
 var deferredPhotoIndexesScheduled = false;
-var deferredPhotoIndexesTimer = null;
-var deferredPhotoIndexesPhase = 0;
 
 function scheduleDeferredPhotoIndexesOnce(reason) {
   if (deferredPhotoIndexesScheduled) return;
@@ -1842,43 +1903,23 @@ function scheduleDeferredPhotoIndexesOnce(reason) {
     'deferred-index.schedule',
     'reason=' + String(reason || '') + ' firstDelay=' + firstDelay,
   );
-  function runNextPhase() {
-    if (!db) return;
-    try {
-      if (
-        deferredPhotoIndexesPhase === 0 &&
-        typeof db.ensurePhotosRootFolderCompositeIndex === 'function'
-      ) {
-        db.ensurePhotosRootFolderCompositeIndex();
-        startupStageLog('deferred-index.phase0.done', 'ensurePhotosRootFolderCompositeIndex');
-      } else if (
-        deferredPhotoIndexesPhase === 1 &&
-        typeof db.ensurePhotosAggPartialIndexes === 'function'
-      ) {
-        db.ensurePhotosAggPartialIndexes();
-        startupStageLog('deferred-index.phase1.done', 'ensurePhotosAggPartialIndexes');
-      } else if (
-        deferredPhotoIndexesPhase === 2 &&
-        typeof db.ensurePhotosDupHashPendingIndex === 'function'
-      ) {
-        db.ensurePhotosDupHashPendingIndex();
-        startupStageLog('deferred-index.phase2.done', 'ensurePhotosDupHashPendingIndex');
-      } else {
-        return;
-      }
-      deferredPhotoIndexesPhase++;
-      if (deferredPhotoIndexesPhase < 3) {
-        deferredPhotoIndexesTimer = setTimeout(runNextPhase, 1200);
-      }
-    } catch (eIdx) {
+  setTimeout(function () {
+    if (!sqliteDbPath) return;
+    var path = require('path');
+    var Worker = require('worker_threads').Worker;
+    var worker = new Worker(path.join(__dirname, 'workers', 'deferred-index-worker.js'), {
+      workerData: { dbPath: sqliteDbPath },
+    });
+    worker.on('message', function (msg) {
+      startupStageLog('deferred-index.worker.done', JSON.stringify(msg));
+    });
+    worker.on('error', function (eIdx) {
       logger.error(
-        '[startup] deferred-photo-indexes (phase-%d) failed: %s',
-        deferredPhotoIndexesPhase,
+        '[startup] deferred-photo-indexes worker error:',
         eIdx && eIdx.message ? eIdx.message : String(eIdx),
       );
-    }
-  }
-  deferredPhotoIndexesTimer = setTimeout(runNextPhase, firstDelay);
+    });
+  }, firstDelay);
 }
 
 function runAutoStartupTasksOnce() {
@@ -2373,6 +2414,13 @@ function createWindow(appIcon) {
   });
 }
 
+// 必须在 app.ready 之前注册，否则 <video> 等媒体元素拒绝从自定义协议加载流
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'video', privileges: { secure: true, supportFetchAPI: true, stream: true, bypassCSP: true, corsEnabled: true } },
+  { scheme: 'photo', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } },
+  { scheme: 'thumb', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } },
+]);
+
 app
   .whenReady()
   .then(function () {
@@ -2393,6 +2441,7 @@ app
       logger.log('[startup] db path=%s exists=%s size=%d', dbPath, dbExists ? 'yes' : 'no', dbSize);
     }
     db = new Database(dbPath);
+    startupStageLog('db.init.done');
     try {
       catalogCache = new CatalogCacheDb(catalogCachePath);
       catalogCache.gcExpired(Date.now());
@@ -2403,22 +2452,26 @@ app
         eCat && eCat.message ? eCat.message : String(eCat),
       );
     }
-    if (isDev && db && typeof db.getStartupDiagnostics === 'function') {
-      try {
-        var d = db.getStartupDiagnostics();
-        logger.log(
-          '[startup] db schema root_folders=%s photos=%s roots=%d photos=%d',
-          d && d.hasRootFolders ? 'ok' : 'missing',
-          d && d.hasPhotos ? 'ok' : 'missing',
-          Number(d && d.rootCount) || 0,
-          Number(d && d.photoCount) || 0,
-        );
-      } catch (e1) {
-        console.warn(
-          '[startup] db diagnostics failed:',
-          e1 && e1.message ? e1.message : String(e1),
-        );
-      }
+    if (isDev) {
+      setTimeout(function () {
+        if (db && typeof db.getStartupDiagnostics === 'function') {
+          try {
+            var d = db.getStartupDiagnostics();
+            logger.log(
+              '[startup] db schema root_folders=%s photos=%s roots=%d photos=%d',
+              d && d.hasRootFolders ? 'ok' : 'missing',
+              d && d.hasPhotos ? 'ok' : 'missing',
+              Number(d && d.rootCount) || 0,
+              Number(d && d.photoCount) || 0,
+            );
+          } catch (e1) {
+            console.warn(
+              '[startup] db diagnostics failed:',
+              e1 && e1.message ? e1.message : String(e1),
+            );
+          }
+        }
+      }, 100);
     }
     loadSettings();
 
@@ -2902,6 +2955,18 @@ app
       if (invalidCleanupTask.running) {
         return { success: false, error: '清理任务已在运行' };
       }
+      var confirmRes = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        buttons: ['取消', '确认清理'],
+        defaultId: 0,
+        cancelId: 0,
+        title: '清理无效记录',
+        message: '即将清理数据库中已不存在的文件记录。',
+        detail: '建议先备份数据库（复制 photos.db）。此操作不可撤销，确认后继续？',
+      });
+      if (confirmRes !== 1) {
+        return { success: false, error: '用户取消' };
+      }
       if (typeof db.cleanupMissingFilesYielding !== 'function') {
         return { success: false, error: '当前版本不支持分批清理' };
       }
@@ -2998,6 +3063,18 @@ app
       }
       if (optimizeTaskRunning) {
         return { success: false, error: '优化已在进行中' };
+      }
+      var confirmRes = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        buttons: ['取消', '确认优化'],
+        defaultId: 0,
+        cancelId: 0,
+        title: '优化数据库',
+        message: '即将执行数据库 VACUUM 优化。',
+        detail: '建议先备份数据库（复制 photos.db）。大库可能耗时较长，优化期间请勿关闭应用。确认后继续？',
+      });
+      if (confirmRes !== 1) {
+        return { success: false, error: '用户取消' };
       }
       optimizeTaskRunning = true;
       emitBackgroundTasksChangedThrottled(true);
@@ -3134,6 +3211,112 @@ app
     ipcMain.handle('maintenance-get-photos-by-file-hash', function (event, fileHash) {
       if (!fileHash) return [];
       return db.getPhotosByFileHash(String(fileHash));
+    });
+
+    // ── 相似照片检测（dHash）IPC ──
+
+    /** 第零层：dHash 精确匹配分组（秒级 SQL） */
+    ipcMain.handle('maintenance-get-similar-dhash-groups', async function (event, options) {
+      options = options || {};
+      if (!db) throw new Error('database not initialized');
+      db.ensureDhashSchema();
+      var pageSize = Math.max(1, Math.min(500, parseInt(options.pageSize, 10) || 40));
+      var page = Math.max(1, parseInt(options.page, 10) || 1);
+      var forceReload = options.forceReload === true;
+      var startedAt = Date.now();
+
+      if (
+        !forceReload &&
+        similarDhashGroupsCache.total != null &&
+        Object.prototype.hasOwnProperty.call(similarDhashGroupsCache.pages, String(page))
+      ) {
+        var cached = similarDhashGroupsCache.pages[String(page)] || [];
+        if (isDev) {
+          logger.log(
+            '[similar-dhash] cache-hit page=%d groups=%d elapsed=%dms',
+            page,
+            cached.length,
+            Date.now() - startedAt,
+          );
+        }
+        return {
+          groups: cached,
+          total: Number(similarDhashGroupsCache.total) || 0,
+          page: page,
+          pageSize: pageSize,
+          totalPages: Number(similarDhashGroupsCache.totalPages) || 0,
+          mode: 'exact_dhash',
+        };
+      }
+
+      var rows = similarDetection.getExactDhashGroups(db, page, pageSize);
+      var groups = [];
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (!r || !r.dhash) continue;
+        var photos = db.getPhotosByDhash(r.dhash);
+        groups.push({
+          dhash: r.dhash,
+          duplicate_count: Number(r.duplicate_count) || 0,
+          total_size: Number(r.total_size) || 0,
+          photos: photos,
+        });
+      }
+
+      var total = 0;
+      try {
+        var countRow = db.db
+          .prepare(
+            "SELECT COUNT(*) as c FROM (SELECT dhash FROM photos WHERE dhash IS NOT NULL AND TRIM(dhash) != '' GROUP BY dhash HAVING COUNT(*) > 1)",
+          )
+          .get();
+        total = Number(countRow && countRow.c) || 0;
+      } catch (eCount) {
+        if (isDev) logger.log('[similar-dhash] count error:', eCount && eCount.message);
+      }
+      var totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+      similarDhashGroupsCache.total = total;
+      similarDhashGroupsCache.totalPages = totalPages;
+      similarDhashGroupsCache.pages[String(page)] = groups;
+      similarDhashGroupsCache.warmedAt = Date.now();
+
+      if (isDev) {
+        logger.log(
+          '[similar-dhash] page=%d groups=%d total=%d elapsed=%dms',
+          page,
+          groups.length,
+          total,
+          Date.now() - startedAt,
+        );
+      }
+      return {
+        groups: groups,
+        total: total,
+        page: page,
+        pageSize: pageSize,
+        totalPages: totalPages,
+        mode: 'exact_dhash',
+      };
+    });
+
+    /** 按 dHash 获取照片列表 */
+    ipcMain.handle('maintenance-get-photos-by-dhash', function (event, dhash) {
+      if (!dhash) return [];
+      if (!db) return [];
+      db.ensureDhashSchema();
+      return db.getPhotosByDhash(String(dhash));
+    });
+
+    /** 第二层：单张照片的跨文件夹相似查询（按需实时） */
+    ipcMain.handle('maintenance-find-similar-photos', function (event, options) {
+      options = options || {};
+      if (!db) return [];
+      db.ensureDhashSchema();
+      var photoId = parseInt(options.photoId, 10);
+      var threshold = parseInt(options.threshold, 10) || 12;
+      if (!isFinite(photoId) || photoId <= 0) return [];
+      return similarDetection.findSimilarPhotos(db, photoId, threshold);
     });
 
     ipcMain.handle('get-background-tasks', function () {
@@ -3338,6 +3521,7 @@ app
         }
         db.deletePhotoById(id);
         clearDuplicateHashGroupsCache('photo-move-to-trash');
+        clearSimilarDhashGroupsCache('photo-move-to-trash');
         if (rootIdOfPhoto) invalidateCatalogCacheForRootSafe(rootIdOfPhoto);
         else invalidateCatalogCachesSafe();
         return { success: true };
@@ -3360,6 +3544,7 @@ app
           photoMeta && photoMeta.root_id != null ? parseInt(photoMeta.root_id, 10) || null : null;
         db.deletePhotoById(id);
         clearDuplicateHashGroupsCache('photo-delete-record');
+        clearSimilarDhashGroupsCache('photo-delete-record');
         if (rootIdOfPhoto) invalidateCatalogCacheForRootSafe(rootIdOfPhoto);
         else invalidateCatalogCachesSafe();
         return { success: true };
