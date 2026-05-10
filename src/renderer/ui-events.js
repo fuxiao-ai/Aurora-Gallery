@@ -528,25 +528,22 @@
     var onLoadPhotos = options.onLoadPhotos;
     var onLoadRootFolders = options.onLoadRootFolders;
 
-    var searchTimer;
     if (dom.searchInput) {
-      dom.searchInput.addEventListener('input', function () {
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(function () {
-          var state = typeof getState === 'function' ? getState() : null;
-          if (!state) return;
-          if (state.currentTab === 'duplicates') return;
-          state.searchQuery = dom.searchInput.value.trim();
-          if (state.currentView === 'favorites') {
-            state.page = 1;
-            if (typeof onLoadPhotos === 'function') onLoadPhotos();
-            return;
-          }
-          if (state.searchQuery) state.currentView = 'search';
-          else if (state.currentView !== 'folder_overview') state.currentView = 'all';
+      dom.searchInput.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        var state = typeof getState === 'function' ? getState() : null;
+        if (!state) return;
+        if (state.currentTab === 'duplicates') return;
+        state.searchQuery = dom.searchInput.value.trim();
+        if (state.currentView === 'favorites') {
           state.page = 1;
           if (typeof onLoadPhotos === 'function') onLoadPhotos();
-        }, 300);
+          return;
+        }
+        if (state.searchQuery) state.currentView = 'search';
+        else if (state.currentView !== 'folder_overview') state.currentView = 'all';
+        state.page = 1;
+        if (typeof onLoadPhotos === 'function') onLoadPhotos();
       });
     }
 

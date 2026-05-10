@@ -834,7 +834,6 @@ function showInstallGuide() {
 }
 
 function bindEvents() {
-  var searchTimer;
   /* header 滚动效果 */
   var _pgEl = document.getElementById('photoGrid');
   var _headerEl = document.querySelector('.header');
@@ -903,31 +902,28 @@ function bindEvents() {
       { passive: true },
     );
   }
-  $('#searchInput').addEventListener('input', function () {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(function () {
+  $('#searchInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
       state.searchQuery = $('#searchInput').value.trim();
       state.currentView = state.searchQuery ? 'search' : 'all';
       state.page = 1;
       loadPhotos();
       pushViewHistoryState();
-    }, 300);
+    }
   });
   var searchOverlayInput = $('#searchOverlayInput');
   if (searchOverlayInput) {
-    searchOverlayInput.addEventListener('input', function () {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(function () {
+    searchOverlayInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        closeSearchOverlay();
+      } else if (e.key === 'Enter') {
         state.searchQuery = searchOverlayInput.value.trim();
         state.currentView = state.searchQuery ? 'search' : 'all';
         state.page = 1;
         loadPhotos();
         pushViewHistoryState();
         closeSearchOverlay();
-      }, 400);
-    });
-    searchOverlayInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeSearchOverlay();
+      }
     });
   }
   var photoGridEl = $('#photoGrid');
