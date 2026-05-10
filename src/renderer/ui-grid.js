@@ -104,8 +104,10 @@
       return;
     }
 
+    var gridClass = 'grid' + (useMediaRatio ? ' grid--masonry' : '');
+    var gridAttr = ' data-use-media-ratio="' + (useMediaRatio ? '1' : '0') + '"';
     if (n <= GRID_DOM_CHUNK_THRESHOLD) {
-      var html = prefixHtml + photosLabelHtml + '<div class="grid">';
+      var html = prefixHtml + photosLabelHtml + '<div class="' + gridClass + '"' + gridAttr + '>';
       for (var i = 0; i < n; i++) {
         html += buildSinglePhotoCardHtml(
           photos[i],
@@ -125,7 +127,8 @@
 
     dom.photoGrid.innerHTML = prefixHtml + photosLabelHtml;
     var grid = document.createElement('div');
-    grid.className = 'grid';
+    grid.className = gridClass;
+    grid.dataset.useMediaRatio = useMediaRatio ? '1' : '0';
     dom.photoGrid.appendChild(grid);
 
     var start = 0;
@@ -188,25 +191,26 @@
     );
   }
 
-  function getMediaAspectRatioValue(photo) {
+  function getMediaAspectRatioDims(photo) {
     var row = photo || {};
     var w = parseFloat(row.width || row.pixel_width || row.file_width || row.media_width || 0);
     var h = parseFloat(row.height || row.pixel_height || row.file_height || row.media_height || 0);
-    if (!(w > 0 && h > 0)) return '';
+    if (!(w > 0 && h > 0)) return null;
     var r = w / h;
-    if (!isFinite(r) || r <= 0) return '';
-    if (r < 0.125 || r > 8) return '';
-    return String(w) + ' / ' + String(h);
+    if (!isFinite(r) || r <= 0) return null;
+    if (r < 0.125 || r > 8) return null;
+    return { w: Math.round(w), h: Math.round(h), ratio: String(w) + ' / ' + String(h) };
   }
 
   function buildSinglePhotoCardHtml(photo, i, useMediaRatio, escapeHtml, truncate, formatDateTime) {
     var isVideo = isVideoPhoto(photo);
-    var ratio = useMediaRatio ? getMediaAspectRatioValue(photo) : '';
+    var ratioObj = useMediaRatio ? getMediaAspectRatioDims(photo) : null;
+    var ratio = ratioObj ? ratioObj.ratio : '';
     var thumbUrl = photo.has_thumbnail ? 'thumb://' + photo.id : '';
     var delay = Math.min(i * 30, 600);
     var favChar = photo.is_favorite ? '\u2605' : '\u2606';
     var cardStyle = 'animation-delay:' + delay + 'ms;';
-    if (ratio) cardStyle += 'aspect-ratio:' + ratio + ';';
+    if (ratio && !useMediaRatio) cardStyle += 'aspect-ratio:' + ratio + ';';
     var html =
       '<div class="photo-card" data-photo-id="' +
       photo.id +
@@ -224,13 +228,14 @@
       html += '<span class="media-type-badge media-type-badge-video">视频</span>';
     }
     if (thumbUrl) {
+      var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
       html +=
         '<div class="thumb-blur-placeholder" aria-hidden="true"></div>' +
         '<img src="' +
         thumbUrl +
         '" alt="' +
         escapeHtml(photo.file_name) +
-        '" loading="lazy" class="loading grid-thumb" />';
+        '" loading="lazy" class="loading grid-thumb"' + imgWH + ' />';
     } else {
       html +=
         '<div class="placeholder"><div class="ext">' +

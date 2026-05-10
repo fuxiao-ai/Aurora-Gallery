@@ -1570,6 +1570,25 @@ select.ui-select option {
   align-items: center;
 }
 
+/* Masonry waterfall (column-wise) — matches web */
+.grid.grid--masonry {
+  display: block;
+  columns: calc(var(--grid-card-basis) * 1px);
+  column-gap: 12px;
+  align-items: initial;
+}
+.grid.grid--masonry .photo-card {
+  align-self: initial;
+  width: 100%;
+  margin-bottom: 12px;
+  break-inside: avoid;
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+.grid.grid--masonry .photo-card img {
+  height: auto;
+}
+
 /* 照片卡片（对齐网页端 photo-card 精致样式*/
 .photo-card {
   position: relative;
