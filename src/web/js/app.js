@@ -2621,22 +2621,13 @@ function showSkeleton(gridHint) {
       : '\u6B63\u5728\u52A0\u8F7D\u56FE\u7247';
   var html =
     '<div class="grid-loading" role="status" aria-live="polite">' +
-    '<div class="grid-loading-hint">' +
-    '<span class="grid-loading-spinner" aria-hidden="true"></span>' +
-    '<span class="grid-loading-text">' +
-    hint +
-    '</span>' +
-    '<span class="grid-loading-dots" aria-hidden="true">' +
-    '<span></span><span></span><span></span>' +
-    '</span>' +
+    '<div class="grid-loading-spinner-wrap" aria-hidden="true">' +
+    '<span class="grid-loading-spinner"></span>' +
+    '<span class="grid-loading-spinner-inner"></span>' +
     '</div>' +
-    '<div class="grid">';
-  for (var i = 0; i < 12; i++) {
-    html += '<div class="skeleton" style="--sk:' + i + '"></div>';
-  }
-  html += '</div></div>';
+    '<div class="grid-loading-text">' + hint + '</div>' +
+    '</div>';
   $('#photoGrid').innerHTML = html;
-  applyCardSize();
 }
 
 function renderPagination(result) {

@@ -1195,110 +1195,45 @@
           transform: none;
         }
       }
-      /* comment cleaned */
+      /* Loading state: centered dual-ring spinner, no skeleton grid */
       .grid-loading {
-        padding: 6px 2px 10px;
-        min-height: min(40vh, 340px);
-      }
-      .grid-loading-hint {
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        margin-bottom: 14px;
-        font-size: 13px;
+        min-height: 50vh;
+        gap: 18px;
+      }
+      .grid-loading-spinner-wrap {
+        position: relative;
+        width: 48px;
+        height: 48px;
+      }
+      .grid-loading-spinner {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 3px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+        border-top-color: var(--accent);
+        animation: spin 0.9s cubic-bezier(0.4, 0.1, 0.3, 0.9) infinite;
+      }
+      .grid-loading-spinner-inner {
+        position: absolute;
+        inset: 8px;
+        border-radius: 50%;
+        border: 2.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+        border-bottom-color: var(--accent);
+        animation: spin 1.2s cubic-bezier(0.4, 0.1, 0.3, 0.9) infinite reverse;
+      }
+      .grid-loading-text {
+        font-size: 14px;
+        font-weight: 500;
         color: var(--text-secondary);
         letter-spacing: 0.02em;
       }
-      .grid-loading-hint .grid-loading-spinner {
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        border: 2px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
-        border-top-color: var(--accent);
-        animation: spin 0.68s linear infinite;
-        flex-shrink: 0;
-      }
-      .grid-loading-hint .grid-loading-dots {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        margin-left: 2px;
-      }
-      .grid-loading-hint .grid-loading-dots > span {
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: var(--accent);
-        opacity: 0.4;
-        animation: gridDotBounce 0.95s ease-in-out infinite;
-      }
-      .grid-loading-hint .grid-loading-dots > span:nth-child(1) {
-        animation-delay: 0ms;
-      }
-      .grid-loading-hint .grid-loading-dots > span:nth-child(2) {
-        animation-delay: 130ms;
-      }
-      .grid-loading-hint .grid-loading-dots > span:nth-child(3) {
-        animation-delay: 260ms;
-      }
-      @keyframes gridDotBounce {
-        0%,
-        78%,
-        100% {
-          transform: translateY(0);
-          opacity: 0.4;
-        }
-        38% {
-          transform: translateY(-6px);
-          opacity: 1;
-        }
-      }
-
-      .skeleton {
-        border-radius: var(--radius);
-        background: var(--bg-card);
-        aspect-ratio: var(--photo-card-ratio);
-        overflow: hidden;
-        position: relative;
-        animation: skeletonPulse 1.55s ease-in-out infinite alternate;
-        animation-delay: calc(var(--sk, 0) * 45ms);
-      }
-      .skeleton::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(
-          105deg,
-          transparent 28%,
-          rgba(255, 255, 255, 0.08) 50%,
-          transparent 72%
-        );
-        animation: shimmer 1.55s ease-in-out infinite;
-        animation-delay: calc(var(--sk, 0) * 50ms);
-      }
-      @keyframes shimmer {
-        0% {
-          transform: translateX(-150%);
-        }
-        100% {
-          transform: translateX(150%);
-        }
-      }
-      @keyframes thumbPlaceholderShimmer {
-        0% {
-          background-position: 120% 0;
-        }
-        100% {
-          background-position: -30% 0;
-        }
-      }
-      @keyframes skeletonPulse {
-        from {
-          opacity: 0.5;
-        }
+      @keyframes spin {
         to {
-          opacity: 1;
+          transform: rotate(360deg);
         }
       }
       @keyframes fadeIn {
@@ -1613,11 +1548,6 @@
         border: 2px solid color-mix(in srgb, var(--glass-border) 76%, transparent);
         border-top-color: var(--accent);
         animation: spin 0.65s linear infinite;
-      }
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
       }
       .preview-img {
         width: 100%;
