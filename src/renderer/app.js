@@ -288,6 +288,7 @@ var dom = {
   previewPrev: $('#previewPrev'),
   previewNext: $('#previewNext'),
   previewZoom: $('#previewZoom'),
+  previewToast: $('#previewToast'),
   slideshowToggleBtn: $('#slideshowToggleBtn'),
   slideshowIntervalSelect: $('#slideshowIntervalSelect'),
   slideshowRandomBtn: $('#slideshowRandomBtn'),
@@ -350,6 +351,20 @@ function appAlert(message, title) {
 
 function appConfirm(message, title) {
   return dialogUi.appConfirm(message, title);
+}
+
+var _previewToastTimer = null;
+function showPreviewToast(message, duration) {
+  duration = duration || 1500;
+  var el = dom.previewToast;
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.add('show');
+  if (_previewToastTimer) clearTimeout(_previewToastTimer);
+  _previewToastTimer = setTimeout(function () {
+    el.classList.remove('show');
+    _previewToastTimer = null;
+  }, duration);
 }
 
 function normalizeThemeStyle(id) {
@@ -5381,6 +5396,13 @@ function navigatePreview(dir) {
         fetchPhotosPage: fetchPhotosPage,
         onOpenPreview: openPreview,
       });
+    },
+    onBoundary: function (boundary) {
+      if (boundary === 'first') {
+        showPreviewToast('已是第一张');
+      } else if (boundary === 'last') {
+        showPreviewToast('已是最后一张');
+      }
     },
   });
 }

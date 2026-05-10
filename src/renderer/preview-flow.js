@@ -1501,6 +1501,7 @@
     var dir = options.dir || 0;
     var onOpenPreview = options.onOpenPreview;
     var onLoadPreviewAdjacentPage = options.onLoadPreviewAdjacentPage;
+    var onBoundary = options.onBoundary;
     if (typeof onOpenPreview !== 'function' || typeof onLoadPreviewAdjacentPage !== 'function')
       return;
 
@@ -1508,10 +1509,25 @@
     var newIndex = state.previewIndex + dir;
     if (newIndex >= 0 && newIndex < len) {
       onOpenPreview(newIndex);
-    } else if (newIndex < 0 && state.previewPageStart > 1) {
+      return;
+    }
+    var boundary = null;
+    var tailPage = 0;
+    if (newIndex < 0 && state.previewPageStart <= 1) {
+      boundary = 'first';
+    } else if (newIndex >= len) {
+      tailPage = state.previewPageStart + Math.ceil(len / state.pageSize) - 1;
+      if (tailPage >= state.previewTotalPages) {
+        boundary = 'last';
+      }
+    }
+    if (boundary && typeof onBoundary === 'function') {
+      onBoundary(boundary);
+    }
+    if (newIndex < 0 && state.previewPageStart > 1) {
       onLoadPreviewAdjacentPage(-1, dir);
     } else if (newIndex >= len) {
-      var tailPage = state.previewPageStart + Math.ceil(len / state.pageSize) - 1;
+      if (!tailPage) tailPage = state.previewPageStart + Math.ceil(len / state.pageSize) - 1;
       if (tailPage < state.previewTotalPages) {
         onLoadPreviewAdjacentPage(1, dir);
       }
