@@ -5101,37 +5101,59 @@ html[data-theme='light'] .app-dialog-overlay {
 }
 .app-dialog-card {
   width: 100%;
-  max-width: 480px;
-  padding: 22px 22px 18px;
-  border-radius: 16px;
-  background: var(--glass);
-  border: 1px solid var(--glass-border);
+  max-width: 440px;
+  padding: 24px 24px 20px;
+  border-radius: 18px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-card) 90%, transparent) 0%,
+    color-mix(in srgb, var(--bg-primary) 85%, transparent) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--glass-border) 80%, var(--accent) 8%);
   box-shadow:
-    0 24px 80px color-mix(in srgb, var(--bg-primary) 74%, #000000),
-    0 0 48px var(--accent-dim);
-  backdrop-filter: blur(28px) saturate(1.35);
-  -webkit-backdrop-filter: blur(28px) saturate(1.35);
-  animation: closeChoiceIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    0 28px 88px color-mix(in srgb, var(--bg-primary) 70%, #000000),
+    0 0 56px color-mix(in srgb, var(--accent-dim) 80%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--glass-border) 40%, transparent) inset;
+  backdrop-filter: blur(32px) saturate(1.45);
+  -webkit-backdrop-filter: blur(32px) saturate(1.45);
+  animation: closeChoiceIn 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 html[data-theme='light'] .app-dialog-card {
   box-shadow:
-    0 20px 64px color-mix(in srgb, var(--text-primary) 14%, transparent),
-    0 0 32px color-mix(in srgb, var(--accent) 16%, transparent);
+    0 24px 72px color-mix(in srgb, var(--text-primary) 12%, transparent),
+    0 0 40px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--glass-border) 50%, transparent) inset;
 }
 .app-dialog-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text-primary);
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.app-dialog-title::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .app-dialog-message {
   font-size: 13px;
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
-  margin: 0 0 18px;
+  margin: 0 0 20px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-primary) 50%, transparent);
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
 }
 .app-dialog-actions {
   display: flex;
@@ -5140,42 +5162,44 @@ html[data-theme='light'] .app-dialog-card {
   flex-wrap: wrap;
 }
 .app-dialog-actions .btn {
-  min-width: 92px;
+  min-width: 96px;
   justify-content: center;
-  border-color: color-mix(in srgb, var(--glass-border) 72%, var(--border));
+  border-color: color-mix(in srgb, var(--glass-border) 70%, var(--border));
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--bg-card) 94%, var(--accent-dim)) 0%,
-    color-mix(in srgb, var(--bg-card) 86%, transparent) 100%
+    color-mix(in srgb, var(--bg-card) 92%, var(--accent-dim)) 0%,
+    color-mix(in srgb, var(--bg-card) 82%, transparent) 100%
   );
   color: var(--text-secondary);
   box-shadow:
     0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent) inset,
-    0 6px 16px color-mix(in srgb, var(--bg-primary) 82%, #000000);
+    0 8px 20px color-mix(in srgb, var(--bg-primary) 78%, #000000);
+  transition: all 0.2s;
 }
 .app-dialog-actions .btn:hover {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
   color: var(--accent);
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--bg-hover) 82%, var(--accent-dim)) 0%,
-    color-mix(in srgb, var(--bg-card) 90%, var(--accent-dim)) 100%
+    color-mix(in srgb, var(--bg-hover) 78%, var(--accent-dim)) 0%,
+    color-mix(in srgb, var(--bg-card) 88%, var(--accent-dim)) 100%
   );
   box-shadow:
     0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent) inset,
-    0 10px 20px color-mix(in srgb, var(--bg-primary) 78%, #000000),
-    0 0 14px color-mix(in srgb, var(--accent-glow) 24%, transparent);
+    0 12px 24px color-mix(in srgb, var(--bg-primary) 72%, #000000),
+    0 0 16px color-mix(in srgb, var(--accent-glow) 28%, transparent);
+  transform: translateY(-1px);
 }
 html[data-theme='light'] .app-dialog-actions .btn {
   box-shadow:
     0 1px 0 color-mix(in srgb, #ffffff 95%, var(--text-primary)) inset,
-    0 6px 14px color-mix(in srgb, var(--text-primary) 6%, transparent);
+    0 8px 18px color-mix(in srgb, var(--text-primary) 5%, transparent);
 }
 html[data-theme='light'] .app-dialog-actions .btn:hover {
   box-shadow:
     0 1px 0 color-mix(in srgb, #ffffff 98%, var(--accent)) inset,
-    0 10px 18px color-mix(in srgb, var(--text-primary) 8%, transparent),
-    0 0 12px var(--accent-dim);
+    0 12px 22px color-mix(in srgb, var(--text-primary) 7%, transparent),
+    0 0 14px var(--accent-dim);
 }
 
 /* 简洁界面：收起顶栏、侧栏与全局任务条（桌面端，Ctrl+B / 菜单*/

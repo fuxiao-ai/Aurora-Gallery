@@ -1723,22 +1723,29 @@
         opacity: 0;
         pointer-events: none;
       }
-      /* EXIF Info Panel */
+      /* EXIF Info Panel — refined glassmorphism */
       .exif-panel {
         position: absolute;
         top: 0;
         right: 0;
         bottom: 0;
-        width: 340px;
+        width: 360px;
         max-width: 85vw;
-        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
-        backdrop-filter: blur(28px) saturate(1.4);
-        -webkit-backdrop-filter: blur(28px) saturate(1.4);
-        border-left: 1px solid var(--glass-border);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 85%, transparent) 0%,
+          color-mix(in srgb, var(--bg-primary) 78%, transparent) 100%
+        );
+        backdrop-filter: blur(40px) saturate(1.6);
+        -webkit-backdrop-filter: blur(40px) saturate(1.6);
+        border-left: 1px solid color-mix(in srgb, var(--glass-border) 70%, var(--accent) 10%);
+        box-shadow:
+          -8px 0 40px color-mix(in srgb, var(--bg-primary) 60%, transparent),
+          0 0 0 1px color-mix(in srgb, var(--glass-border) 30%, transparent) inset;
         z-index: 20;
         overflow-y: auto;
         transform: translateX(100%);
-        transition: transform 0.28s var(--ease-out);
+        transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
         padding: 0;
       }
       .exif-panel.open {
@@ -1748,64 +1755,104 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 16px 20px;
-        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 80%, transparent);
+        padding: 18px 22px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
         position: sticky;
         top: 0;
-        background: color-mix(in srgb, var(--bg-card) 96%, transparent);
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 92%, transparent) 0%,
+          color-mix(in srgb, var(--bg-card) 80%, transparent) 100%
+        );
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
         z-index: 1;
       }
       .exif-panel-header h3 {
         margin: 0;
-        font-size: 14px;
-        font-weight: 600;
+        font-size: 15px;
+        font-weight: 700;
         color: var(--text);
+        letter-spacing: 0.01em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .exif-panel-header h3::before {
+        content: '';
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
       }
       .exif-panel-close {
         background: none;
         border: none;
         color: var(--text-muted);
         cursor: pointer;
-        padding: 4px;
-        border-radius: 6px;
+        padding: 6px;
+        border-radius: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: all 0.15s;
+        transition: all 0.2s;
       }
       .exif-panel-close:hover {
-        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
         color: var(--text);
+        transform: rotate(90deg);
       }
       .exif-panel-close .icon {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
       }
       .exif-section {
-        padding: 14px 20px;
-        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+        padding: 16px 22px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 50%, transparent);
+      }
+      .exif-section:last-child {
+        border-bottom: none;
       }
       .exif-section-title {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-muted);
-        letter-spacing: 0.05em;
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 0.08em;
         text-transform: uppercase;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .exif-section-title::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--accent) 25%, transparent),
+          transparent
+        );
       }
       .exif-row {
         display: flex;
         justify-content: space-between;
         align-items: baseline;
-        padding: 4px 0;
-        gap: 12px;
+        padding: 6px 0;
+        gap: 16px;
+        border-radius: 6px;
+        transition: background 0.15s;
+      }
+      .exif-row:hover {
+        background: color-mix(in srgb, var(--accent) 4%, transparent);
       }
       .exif-label {
         font-size: 12px;
         color: var(--text-secondary);
         flex-shrink: 0;
+        font-weight: 500;
       }
       .exif-value {
         font-size: 13px;
@@ -1813,45 +1860,73 @@
         text-align: right;
         word-break: break-all;
         font-variant-numeric: tabular-nums;
+        font-weight: 500;
+        line-height: 1.4;
+      }
+      .exif-value--highlight {
+        color: var(--accent);
+        font-weight: 600;
       }
       .exif-panel-toggle {
         position: absolute;
         top: calc(12px + env(safe-area-inset-top, 0px));
         right: 72px;
         z-index: 12;
-        background: color-mix(in srgb, var(--bg-card) 36%, transparent);
-        border: 1px solid color-mix(in srgb, var(--glass-border) 90%, rgba(255, 255, 255, 0.12));
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 44%, transparent) 0%,
+          color-mix(in srgb, var(--bg-card) 28%, transparent) 100%
+        );
+        border: 1px solid color-mix(in srgb, var(--glass-border) 80%, var(--accent) 12%);
         border-radius: 999px;
-        padding: 6px 10px;
-        backdrop-filter: blur(18px) saturate(1.25);
-        -webkit-backdrop-filter: blur(18px) saturate(1.25);
+        padding: 7px 12px;
+        backdrop-filter: blur(20px) saturate(1.35);
+        -webkit-backdrop-filter: blur(20px) saturate(1.35);
         color: var(--text);
         font-size: 12px;
+        font-weight: 500;
         cursor: pointer;
         display: flex;
         align-items: center;
         gap: 6px;
-        transition: all 0.15s;
+        transition: all 0.2s;
+        box-shadow: 0 4px 16px color-mix(in srgb, var(--bg-primary) 50%, transparent);
       }
       .exif-panel-toggle:hover {
-        background: color-mix(in srgb, var(--accent) 20%, transparent);
-        border-color: color-mix(in srgb, var(--accent) 40%, var(--glass-border));
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+          color-mix(in srgb, var(--accent) 12%, transparent) 100%
+        );
+        border-color: color-mix(in srgb, var(--accent) 50%, var(--glass-border));
+        box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 20%, transparent);
+        transform: translateY(-1px);
       }
       .exif-panel-toggle .icon {
-        width: 14px;
-        height: 14px;
+        width: 15px;
+        height: 15px;
       }
       .exif-loading {
-        padding: 40px 20px;
+        padding: 48px 24px;
         text-align: center;
         color: var(--text-muted);
         font-size: 13px;
       }
       .exif-empty {
-        padding: 40px 20px;
+        padding: 48px 24px;
         text-align: center;
         color: var(--text-muted);
         font-size: 13px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+      .exif-empty::before {
+        content: '📷';
+        font-size: 32px;
+        opacity: 0.4;
+        filter: grayscale(0.6);
       }
       .preview-slideshow-controls {
         position: absolute;
