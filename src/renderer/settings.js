@@ -212,7 +212,7 @@
     if (sb && allowed.indexOf(sb) >= 0) state.sortBy = sb;
     if (so === 'ASC' || so === 'DESC') state.sortOrder = so;
     var ps = parseInt(settings.browsePageSize, 10);
-    if ([50, 100, 200, 300, 500].indexOf(ps) >= 0) state.pageSize = ps;
+    if ([10, 20, 50, 80, 100, 200].indexOf(ps) >= 0) state.pageSize = ps;
     var cs = snapBrowseCardBasis(settings.browseCardSize);
     var cr = String(settings.browseCardRatio || '').trim();
     if (cr !== '1 / 1' && cr !== '3 / 4' && cr !== '4 / 3' && cr !== '9 / 16' && cr !== '16 / 9')
@@ -281,7 +281,7 @@
     if (allowed.indexOf(sb) < 0) return;
     if (so !== 'ASC' && so !== 'DESC') so = 'DESC';
     var ps = parseInt(psEl.value, 10);
-    if ([50, 100, 200, 300, 500].indexOf(ps) < 0) ps = 100;
+    if ([10, 20, 50, 80, 100, 200].indexOf(ps) < 0) ps = 20;
     var cs = snapBrowseCardBasis(csEl.value);
     var parsedGs = parseBrowseGridStyleValue(gsEl.value);
     var cl = parsedGs.layout === 'uniform' ? 'uniform' : 'masonry';
@@ -337,86 +337,6 @@
   }
 
   // 扫描选项 UI 已从管理界面移除（相关同步逻辑已下线）
-
-  function revertPreviewDisplayCheckboxesToApplied(options) {
-    options = options || {};
-    var state = options.state || {};
-    var onApplyPreviewDisplayCheckboxesFromSlice = options.onApplyPreviewDisplayCheckboxesFromSlice;
-    if (typeof onApplyPreviewDisplayCheckboxesFromSlice !== 'function') return;
-    var applied = state.previewDisplayApplied;
-    if (!applied) return;
-    onApplyPreviewDisplayCheckboxesFromSlice(applied);
-  }
-
-  async function persistPreviewDisplayFromControls(options) {
-    options = options || {};
-    var state = options.state || {};
-    var api = options.api || null;
-    var previewDisplayUiBindings = options.previewDisplayUiBindings || [];
-    var previewDisplaySettingKeys = options.previewDisplaySettingKeys || [];
-    var onPreviewDisplaySliceFromSettings = options.onPreviewDisplaySliceFromSettings;
-    var onWritePreviewDisplayLocalStorage = options.onWritePreviewDisplayLocalStorage;
-    var onSyncPreviewDisplayOptionsFromSettings = options.onSyncPreviewDisplayOptionsFromSettings;
-    var onApplyPreviewDisplayToOpenPreview = options.onApplyPreviewDisplayToOpenPreview;
-    var onSaveLastSettingsSectionId = options.onSaveLastSettingsSectionId;
-    var onRenderSettingsNav = options.onRenderSettingsNav;
-    var onRevertPreviewDisplayCheckboxesToApplied =
-      options.onRevertPreviewDisplayCheckboxesToApplied;
-    var appAlert = options.appAlert;
-    if (!(api && api.has && api.has('updateSettings'))) return;
-    if (typeof onPreviewDisplaySliceFromSettings !== 'function') return;
-    if (typeof onWritePreviewDisplayLocalStorage !== 'function') return;
-    if (
-      typeof onSyncPreviewDisplayOptionsFromSettings !== 'function' ||
-      typeof onApplyPreviewDisplayToOpenPreview !== 'function'
-    )
-      return;
-    if (
-      typeof onSaveLastSettingsSectionId !== 'function' ||
-      typeof onRenderSettingsNav !== 'function'
-    )
-      return;
-    if (typeof onRevertPreviewDisplayCheckboxesToApplied !== 'function') return;
-
-    var applied = state.previewDisplayApplied;
-    var patch = {};
-    for (var i = 0; i < previewDisplayUiBindings.length; i++) {
-      var b = previewDisplayUiBindings[i];
-      var el = document.getElementById(b.id);
-      if (!el) return;
-      patch[b.key] = !!el.checked;
-    }
-    if (applied) {
-      var unchanged = true;
-      for (var j = 0; j < previewDisplaySettingKeys.length; j++) {
-        var pk = previewDisplaySettingKeys[j];
-        if (!!patch[pk] !== !!applied[pk]) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) return;
-    }
-    try {
-      var r = await api.updateSettings(patch);
-      state.previewDisplayApplied = onPreviewDisplaySliceFromSettings(r);
-      onWritePreviewDisplayLocalStorage(state.previewDisplayApplied);
-      onSyncPreviewDisplayOptionsFromSettings(r);
-      onApplyPreviewDisplayToOpenPreview();
-      onSaveLastSettingsSectionId('settingsSectionMedia');
-      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionMedia');
-    } catch (e) {
-      if (typeof appAlert === 'function')
-        appAlert(
-          tStFmt(
-            'settings.save.previewDisplayFail',
-            { error: e && e.message ? e.message : String(e) },
-            '保存预览信息显示失败：' + (e && e.message ? e.message : String(e)),
-          ),
-        );
-      onRevertPreviewDisplayCheckboxesToApplied();
-    }
-  }
 
   async function persistGeneralSettingsFromControls(options) {
     options = options || {};
@@ -752,8 +672,6 @@
     applyBrowsePreferencesFromSettings: applyBrowsePreferencesFromSettings,
     syncBrowsePrefsFormFromRuntimeState: syncBrowsePrefsFormFromRuntimeState,
     persistBrowsePrefsFromForm: persistBrowsePrefsFromForm,
-    revertPreviewDisplayCheckboxesToApplied: revertPreviewDisplayCheckboxesToApplied,
-    persistPreviewDisplayFromControls: persistPreviewDisplayFromControls,
     persistGeneralSettingsFromControls: persistGeneralSettingsFromControls,
     persistUiLocaleFromControl: persistUiLocaleFromControl,
     setLocaleSelectValuePair: setLocaleSelectValuePair,

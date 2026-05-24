@@ -108,6 +108,12 @@ contextBridge.exposeInMainWorld('photoAPI', {
   openPhotoExternal: function (photoId) {
     return ipcRenderer.invoke('open-photo-external', photoId);
   },
+  getPhotoInfo: function (photoId) {
+    return ipcRenderer.invoke('get-photo-info', photoId);
+  },
+  getPhotoDimensions: function (photoId) {
+    return ipcRenderer.invoke('get-photo-dimensions', photoId);
+  },
   getRootFolders: function (options) {
     return ipcRenderer.invoke('get-root-folders', options);
   },

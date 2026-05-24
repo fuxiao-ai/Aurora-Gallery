@@ -241,6 +241,7 @@ class PhotoDatabase {
     }
     this.ensureCoreSchemaReady();
     this.ensureRootFolderStatsCacheSchema();
+    this.ensureFtsSchema();
     // ensurePhotosIsFavoriteColumn: 首窗后延时调度，避免大库 PRAGMA/CREATE INDEX 阻塞启动
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
@@ -404,6 +405,78 @@ class PhotoDatabase {
       this._rootStatsCacheSchemaDone = false;
       throw e;
     }
+  }
+
+  /**
+   * FTS5 全文索引：对 file_name + folder_path 建立分词索引，搜索从 O(N) LIKE 扫描变为 O(1) 查找。
+   * content='photos' + content_rowid='id' 只存索引不存原文，触发器自动同步增删改。
+   * 首次调用时 rebuild 一次，后续幂等跳过。
+   */
+  ensureFtsSchema() {
+    if (this._ftsSchemaDone) return;
+    if (!this.hasTable('photos')) return;
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
+          file_name,
+          folder_path,
+          content='photos',
+          content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS photos_fts_ai AFTER INSERT ON photos BEGIN
+          INSERT INTO photos_fts(rowid, file_name, folder_path)
+          VALUES (new.id, new.file_name, new.folder_path);
+        END;
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS photos_fts_ad AFTER DELETE ON photos BEGIN
+          INSERT INTO photos_fts(photos_fts, rowid, file_name, folder_path)
+          VALUES ('delete', old.id, old.file_name, old.folder_path);
+        END;
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS photos_fts_au AFTER UPDATE OF file_name, folder_path ON photos BEGIN
+          INSERT INTO photos_fts(photos_fts, rowid, file_name, folder_path)
+          VALUES ('delete', old.id, old.file_name, old.folder_path);
+          INSERT INTO photos_fts(rowid, file_name, folder_path)
+          VALUES (new.id, new.file_name, new.folder_path);
+        END;
+      `);
+      this._ftsAvailable = true;
+      this._ftsSchemaDone = true;
+      logger.log('[db] FTS5 schema ready');
+    } catch (e) {
+      this._ftsAvailable = false;
+      this._ftsSchemaDone = true;
+      logger.warn('[db] FTS5 not available, falling back to LIKE:', e && e.message ? e.message : e);
+    }
+  }
+
+  /** 首次升级后重建 FTS 索引；幂等，重复调用无副作用。 */
+  rebuildFtsIndex() {
+    if (!this._ftsAvailable) return;
+    try {
+      var t = Date.now();
+      this.db.exec("INSERT INTO photos_fts(photos_fts) VALUES('rebuild');");
+      logger.log('[db] FTS5 rebuild done in', Date.now() - t, 'ms');
+    } catch (e) {
+      logger.error('[db] FTS5 rebuild failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /** 构建 FTS5 MATCH 表达式：每个 token 加前缀匹配 *，多 token 用 AND 连接。 */
+  _buildFtsQuery(query) {
+    if (!query) return '';
+    var tokens = query.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return '';
+    return tokens
+      .map(function (t) {
+        return '"' + t.replace(/"/g, '""') + '"*';
+      })
+      .join(' ');
   }
 
   rootFolderStatsCacheMediaKey(options) {
@@ -1010,9 +1083,17 @@ class PhotoDatabase {
     } else if (view === 'search') {
       var q = options.q ? String(options.q) : '';
       if (q) {
-        var term = '%' + q + '%';
-        where.push('(file_name LIKE ? OR folder_path LIKE ?)');
-        params.push(term, term);
+        if (this._ftsAvailable) {
+          var ftsQ = this._buildFtsQuery(q);
+          if (ftsQ) {
+            where.push('photos.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)');
+            params.push(ftsQ);
+          }
+        } else {
+          var term = '%' + q + '%';
+          where.push('(file_name LIKE ? OR folder_path LIKE ?)');
+          params.push(term, term);
+        }
       }
     } else if (view === 'favorites') {
       where.push('is_favorite = 1');
@@ -1796,15 +1877,58 @@ class PhotoDatabase {
     return r.changes > 0;
   }
 
+  updatePhotoDimensions(photoId, width, height) {
+    const stmt = this.db.prepare('UPDATE photos SET width = ?, height = ? WHERE id = ?');
+    const r = stmt.run(width, height, photoId);
+    return r.changes > 0;
+  }
+
   searchPhotos(query, options = {}) {
     const { page = 1, pageSize = 100, favoritesOnly, mediaType, lite = false } = options;
     const offset = (page - 1) * pageSize;
-    const searchTerm = `%${query}%`;
 
     const mediaConds = [];
     this._pushMediaTypeCondition(mediaConds, mediaType);
     const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
 
+    const photoCols = lite
+      ? `id, file_name, folder_path, file_size, file_type,
+              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
+      : `id, file_name, file_path, folder_path, file_size, file_type,
+              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
+
+    // FTS5 primary path
+    if (this._ftsAvailable) {
+      const ftsQuery = this._buildFtsQuery(query);
+      if (!ftsQuery) {
+        return { photos: [], total: 0, page, pageSize, totalPages: 0 };
+      }
+      const ftsSub = `photos.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)`;
+      const whereSql = favoritesOnly
+        ? `${ftsSub} AND is_favorite = 1${mediaSql}`
+        : `${ftsSub}${mediaSql}`;
+      const total = this.db
+        .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
+        .get(ftsQuery);
+      const photos = this.db
+        .prepare(
+          `SELECT ${photoCols}
+         FROM photos WHERE ${whereSql}
+         ORDER BY date_taken DESC
+         LIMIT ? OFFSET ?`,
+        )
+        .all(ftsQuery, pageSize, offset);
+      return {
+        photos,
+        total: total.count,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total.count / pageSize),
+      };
+    }
+
+    // LIKE fallback
+    const searchTerm = `%${query}%`;
     const namePathOr = '(file_name LIKE ? OR folder_path LIKE ?)';
     const whereSql = favoritesOnly
       ? `${namePathOr} AND is_favorite = 1${mediaSql}`
@@ -1812,11 +1936,6 @@ class PhotoDatabase {
     const total = this.db
       .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
       .get(searchTerm, searchTerm);
-    const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
     const photos = this.db
       .prepare(
         `SELECT ${photoCols}

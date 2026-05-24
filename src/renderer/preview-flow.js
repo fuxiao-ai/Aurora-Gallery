@@ -67,7 +67,7 @@
     }, 2000);
   }
 
-  /** 桌面端：Direct Stream 用 video://；需转码时用本机 HTTP + HLS 边转边播 */
+  /** 桌面端：通过内嵌 HTTP 服务器串流视频（与 Web 端共用 /video/{id} 路由，原生支持 Range） */
   function attachElectronVideo(photo, video, api, electronTier, state, dom, attachOpts) {
     attachOpts = attachOpts || {};
     var pauseAfterLoad = !!attachOpts.pauseAfterLoad;
@@ -84,9 +84,31 @@
       } catch (e1) {}
     }
 
-    var useHls = electronTier && electronTier.tier === 'hls_transcode';
-    if (!useHls) {
-      video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
+    var openedId = photo.id;
+    var v = '?v=' + photoCacheVersion(photo);
+
+    function applyVideoSrc(httpBase) {
+      var root = String(httpBase).replace(/\/$/, '');
+      video.src = root + '/video/' + photo.id + v;
+      try {
+        video.load();
+      } catch (e) {}
+      applyPauseVideoAfterSwitch(video, pauseAfterLoad);
+    }
+
+    function attachHls(httpBase, data) {
+      var root = String(httpBase).replace(/\/$/, '');
+      if (data.playlistUrl && global.PhotoHlsAttach) {
+        global.PhotoHlsAttach.attach(video, root + data.playlistUrl);
+      } else {
+        applyVideoSrc(httpBase);
+      }
+      applyPauseVideoAfterSwitch(video, pauseAfterLoad);
+    }
+
+    // 无 IPC 能力时无法获取 HTTP 地址，回退到 video:// 自定义协议
+    if (!(api && api.has && api.has('getWebLocalBaseUrl'))) {
+      video.src = 'video://' + photo.id + v;
       try {
         video.load();
       } catch (e2) {}
@@ -94,28 +116,20 @@
       return;
     }
 
-    if (!(api && api.has && api.has('getWebLocalBaseUrl'))) {
-      video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
-      try {
-        video.load();
-      } catch (e4) {}
-      applyPauseVideoAfterSwitch(video, pauseAfterLoad);
-      return;
-    }
-
-    var openedId = photo.id;
     api.call('getWebLocalBaseUrl').then(function (base) {
       if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
       var cur = state.previewPhotos[state.previewIndex];
       if (!cur || cur.id !== openedId) return;
       if (!base) {
-        video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
+        video.src = 'video://' + photo.id + v;
         try {
           video.load();
-        } catch (e6) {}
+        } catch (e3) {}
         applyPauseVideoAfterSwitch(video, pauseAfterLoad);
         return;
       }
+
+      // 对所有视频都先查询播放策略（服务器会探测编码格式）
       var root = String(base).replace(/\/$/, '');
       fetch(root + '/api/video-playback?id=' + photo.id)
         .then(function (r) {
@@ -125,25 +139,19 @@
           if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
           var cur2 = state.previewPhotos[state.previewIndex];
           if (!cur2 || cur2.id !== openedId) return;
-          if (data.playlistUrl && global.PhotoHlsAttach) {
-            global.PhotoHlsAttach.attach(video, root + data.playlistUrl);
+          // HLS 播放（转码或重封装）
+          if (data.mode === 'hls' && data.ready && data.playlistUrl) {
+            attachHls(base, data);
           } else {
-            video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
-            try {
-              video.load();
-            } catch (e9) {}
+            // 直链播放或兜底
+            applyVideoSrc(base);
           }
-          applyPauseVideoAfterSwitch(video, pauseAfterLoad);
         })
         .catch(function () {
           if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
           var cur3 = state.previewPhotos[state.previewIndex];
           if (!cur3 || cur3.id !== openedId) return;
-          video.src = 'video://' + photo.id + '?v=' + photoCacheVersion(photo);
-          try {
-            video.load();
-          } catch (e11) {}
-          applyPauseVideoAfterSwitch(video, pauseAfterLoad);
+          applyVideoSrc(base);
         });
     });
   }
@@ -962,9 +970,6 @@
     var dom = options.dom || {};
     var api = options.api || null;
     var index = options.index;
-    var onSyncPreviewDisplayOptionsFromSettings = options.onSyncPreviewDisplayOptionsFromSettings;
-    var onPreviewDisplaySliceFromSettings = options.onPreviewDisplaySliceFromSettings;
-    var onBuildPreviewMainLine = options.onBuildPreviewMainLine;
     var onSyncRandomButton = options.onSyncRandomButton;
     var onResetZoom = options.onResetZoom;
     var onPreviewImageDecoded = options.onPreviewImageDecoded;
@@ -972,9 +977,6 @@
     var onSyncFullscreenButton = options.onSyncFullscreenButton;
     var onSyncPreviewFavoriteButton = options.onSyncPreviewFavoriteButton;
     var onPreloadAdjacentPages = options.onPreloadAdjacentPages;
-    if (typeof onSyncPreviewDisplayOptionsFromSettings !== 'function') return;
-    if (typeof onPreviewDisplaySliceFromSettings !== 'function') return;
-    if (typeof onBuildPreviewMainLine !== 'function') return;
     if (typeof onSyncRandomButton !== 'function' || typeof onResetZoom !== 'function') return;
     if (
       typeof onPreviewImageDecoded !== 'function' ||
@@ -1008,30 +1010,6 @@
                 : 'hls_transcode'
               : 'none',
           };
-
-    if (state.previewDisplayApplied) {
-      onSyncPreviewDisplayOptionsFromSettings(state.previewDisplayApplied);
-    } else {
-      onSyncPreviewDisplayOptionsFromSettings({});
-      if (api && api.has && api.has('getSettings')) {
-        var openedPhotoId = photo.id;
-        api
-          .getSettings()
-          .then(function (s) {
-            if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
-            var cur = state.previewPhotos[state.previewIndex];
-            if (!cur || cur.id !== openedPhotoId) return;
-            state.previewDisplayApplied = onPreviewDisplaySliceFromSettings(s);
-            onSyncPreviewDisplayOptionsFromSettings(s);
-            var p = state.previewPhotos[state.previewIndex];
-            if (p && dom.previewInfoMain)
-              dom.previewInfoMain.textContent = onBuildPreviewMainLine(p, state.previewIndex);
-            else if (p && dom.previewInfo)
-              dom.previewInfo.textContent = onBuildPreviewMainLine(p, state.previewIndex);
-          })
-          .catch(function () {});
-      }
-    }
 
     state.previewIndex = index;
     if (dom.slideshowIntervalSelect) {
@@ -1130,9 +1108,6 @@
                 if (typeof options.onPreviewMainLinePrepare === 'function') {
                   options.onPreviewMainLinePrepare(photo, index);
                 }
-                var ml = onBuildPreviewMainLine(photo, index);
-                if (dom.previewInfoMain) dom.previewInfoMain.textContent = ml;
-                else if (dom.previewInfo) dom.previewInfo.textContent = ml;
                 onSyncFullscreenButton();
                 onSyncPreviewFavoriteButton();
                 onPreloadAdjacentPages(index);
@@ -1146,9 +1121,6 @@
                 if (typeof options.onPreviewMainLinePrepare === 'function') {
                   options.onPreviewMainLinePrepare(photo, index);
                 }
-                var ml2 = onBuildPreviewMainLine(photo, index);
-                if (dom.previewInfoMain) dom.previewInfoMain.textContent = ml2;
-                else if (dom.previewInfo) dom.previewInfo.textContent = ml2;
                 onSyncFullscreenButton();
                 onSyncPreviewFavoriteButton();
                 onPreloadAdjacentPages(index);
@@ -1256,9 +1228,6 @@
       if (typeof options.onPreviewMainLinePrepare === 'function') {
         options.onPreviewMainLinePrepare(photo, index);
       }
-      var mainLine = onBuildPreviewMainLine(photo, index);
-      if (dom.previewInfoMain) dom.previewInfoMain.textContent = mainLine;
-      else if (dom.previewInfo) dom.previewInfo.textContent = mainLine;
       onSyncFullscreenButton();
       onSyncPreviewFavoriteButton();
       onPreloadAdjacentPages(index);
@@ -1331,7 +1300,7 @@
         );
         state._photoBrowseCacheResult.total = (state._photoBrowseCacheResult.total || 0) - 1;
         state._photoBrowseCacheResult.totalPages = Math.ceil(
-          state._photoBrowseCacheResult.total / (state.pageSize || 100),
+          state._photoBrowseCacheResult.total / (state.pageSize || 20),
         );
       }
       // Update pagination in background
@@ -1348,7 +1317,7 @@
           result: {
             page: state.page,
             total: cachedTotal,
-            totalPages: Math.ceil(cachedTotal / (state.pageSize || 100)),
+            totalPages: Math.ceil(cachedTotal / (state.pageSize || 20)),
           },
           formatNumber: window.formatNumber,
         });

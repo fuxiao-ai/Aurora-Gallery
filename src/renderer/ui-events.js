@@ -243,6 +243,7 @@
       if (!el || typeof handler !== 'function') return;
       el.addEventListener('click', function (e) {
         if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
         handler(e);
       });
     }
@@ -286,6 +287,8 @@
     bindClick('previewShowInFolderBtn', options.onPreviewShowInFolder);
     bindClick('previewOpenExternalBtn', options.onPreviewOpenExternal);
     bindClick('previewMoveToTrashBtn', options.onPreviewMoveToTrash);
+    bindClick('previewInfoToggle', options.onTogglePreviewInfoPanel);
+    bindClick('previewInfoPanelClose', options.onTogglePreviewInfoPanel);
     bindClick('closeChoiceTrayBtn', function () {
       if (typeof options.onSubmitCloseChoice === 'function') options.onSubmitCloseChoice('tray');
     });
@@ -890,19 +893,29 @@
       { passive: true },
     );
 
-    document.addEventListener('mouseup', function () {
+    document.addEventListener('mouseup', function (e) {
       var state = typeof getState === 'function' ? getState() : null;
       if (!state || !state.isDragging) return;
       state.isDragging = false;
       dom.previewImage.classList.remove('dragging');
-      if (!state.hasDragged && typeof onZoomToActual === 'function') {
+      var target = e.target;
+      var insidePanel =
+        target && typeof target.closest === 'function'
+          ? target.closest('.preview-info-panel, .preview-info-toggle')
+          : null;
+      if (!insidePanel && !state.hasDragged && typeof onZoomToActual === 'function') {
         onZoomToActual();
       }
     });
 
-    document.addEventListener('touchend', function () {
+    document.addEventListener('touchend', function (e) {
       var state = typeof getState === 'function' ? getState() : null;
       if (!state) return;
+      var target = e.target;
+      var insidePanel =
+        target && typeof target.closest === 'function'
+          ? target.closest('.preview-info-panel, .preview-info-toggle')
+          : null;
       if (state.isDragging) {
         state.isDragging = false;
         if (state.isSwiping) {
@@ -916,7 +929,7 @@
             if (typeof onUpdatePreviewTransform === 'function') onUpdatePreviewTransform();
           }
           state.isSwiping = false;
-        } else if (!state.hasDragged && typeof onZoomToActual === 'function') {
+        } else if (!insidePanel && !state.hasDragged && typeof onZoomToActual === 'function') {
           onZoomToActual();
         }
       }

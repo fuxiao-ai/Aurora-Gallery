@@ -184,7 +184,7 @@ function ensureSettingsShape(settings) {
   if (settings.browseSortOrder !== 'ASC' && settings.browseSortOrder !== 'DESC')
     settings.browseSortOrder = 'DESC';
   var bps = parseInt(settings.browsePageSize, 10);
-  if ([50, 100, 200, 300, 500].indexOf(bps) < 0) settings.browsePageSize = 100;
+  if ([10, 20, 50, 80, 100, 200].indexOf(bps) < 0) settings.browsePageSize = 20;
   else settings.browsePageSize = bps;
   var bcs = parseInt(settings.browseCardSize, 10);
   if (isNaN(bcs) || bcs < 80) bcs = 180;

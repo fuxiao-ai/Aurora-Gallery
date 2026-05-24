@@ -226,8 +226,14 @@ HlsSessionManager.prototype._afterSessionUse = function (sessionId) {
  * @param {object} photo — db row，含 id, file_path
  * @param {function(Error|null, { sessionId: string }?)} cb
  */
-HlsSessionManager.prototype.ensureSession = function (photo, cb) {
+HlsSessionManager.prototype.ensureSession = function (photo, opts, cb) {
   var self = this;
+  if (typeof opts === 'function') {
+    cb = opts;
+    opts = {};
+  }
+  opts = opts || {};
+  var mode = opts.mode === 'remux' ? 'remux' : 'transcode';
   if (!this.ffmpegPath || !this.rootDir) {
     cb(new Error('hls_unavailable'));
     return;
@@ -246,7 +252,7 @@ HlsSessionManager.prototype.ensureSession = function (photo, cb) {
     return;
   }
 
-  var key = String(photo.id) + '\0' + st.mtimeMs + '\0' + st.size;
+  var key = String(photo.id) + '\0' + st.mtimeMs + '\0' + st.size + '\0' + mode;
   var sessionId = crypto.createHash('sha256').update(key).digest('hex').slice(0, 24);
   if (!/^[a-f0-9]{24}$/.test(sessionId)) {
     cb(new Error('session_id'));
@@ -293,20 +299,44 @@ HlsSessionManager.prototype.ensureSession = function (photo, cb) {
     '-hide_banner',
     '-loglevel',
     'warning',
+    '-progress',
+    'pipe:1',
     '-i',
     srcPath,
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '23',
-    '-pix_fmt',
-    'yuv420p',
-    '-c:a',
-    'aac',
-    '-b:a',
-    '128k',
+  ];
+
+  // 根据视频分辨率选择预设和超时时间
+  var videoHeight = opts.videoHeight || 0;
+  var preset = 'veryfast';
+  var timeoutMs = 30000; // 默认 30 秒
+
+  if (mode === 'remux') {
+    args = args.concat(['-c', 'copy']);
+  } else {
+    // 4K 及以上使用更快的预设
+    if (videoHeight >= 2160) {
+      preset = 'ultrafast';
+      timeoutMs = 90000; // 4K 视频给 90 秒
+    } else if (videoHeight >= 1440) {
+      preset = 'superfast';
+      timeoutMs = 60000; // 2K 视频给 60 秒
+    }
+    args = args.concat([
+      '-c:v',
+      'libx264',
+      '-preset',
+      preset,
+      '-crf',
+      '23',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+    ]);
+  }
+  args = args.concat([
     '-f',
     'hls',
     '-hls_time',
@@ -318,7 +348,7 @@ HlsSessionManager.prototype.ensureSession = function (photo, cb) {
     '-hls_segment_filename',
     'seg%03d.ts',
     path.join(dir, 'stream.m3u8'),
-  ];
+  ]);
 
   var child;
   try {
@@ -328,19 +358,47 @@ HlsSessionManager.prototype.ensureSession = function (photo, cb) {
     return;
   }
 
+  console.log('[HLS] Starting FFmpeg: mode=%s preset=%s timeout=%dms height=%d sessionId=%s',
+    mode, preset, timeoutMs, videoHeight, sessionId);
+
   var rec = { child: child, photoId: photo.id };
   this.sessions.set(sessionId, rec);
 
-  child.on('error', function () {
+  var stderrChunks = [];
+  var lastProgressTime = 0;
+  child.on('error', function (err) {
+    console.error('[HLS] FFmpeg process error for session', sessionId, ':', err.message);
     if (self.sessions.get(sessionId) === rec) self.sessions.delete(sessionId);
   });
-  child.stderr.on('data', function () {});
-  child.on('close', function () {
+  child.stderr.on('data', function (chunk) {
+    stderrChunks.push(chunk);
+    // 限制内存使用，只保留最后 8KB
+    if (stderrChunks.length > 16) stderrChunks.splice(0, stderrChunks.length - 8);
+  });
+  // 解析 FFmpeg 进度输出
+  child.stdout.on('data', function (chunk) {
+    var now = Date.now();
+    if (now - lastProgressTime < 2000) return; // 每 2 秒最多记录一次
+    lastProgressTime = now;
+    var str = String(chunk);
+    var timeMatch = str.match(/out_time_us=(\d+)/);
+    if (timeMatch) {
+      var us = parseInt(timeMatch[1], 10);
+      var sec = (us / 1000000).toFixed(1);
+      console.log('[HLS] FFmpeg progress: session=%s encoded=%ss', sessionId, sec);
+    }
+  });
+  child.on('close', function (code, signal) {
+    if (code !== 0 && code !== null) {
+      var stderr = Buffer.concat(stderrChunks).toString('utf8').slice(-4096);
+      console.error('[HLS] FFmpeg exited with code', code, 'signal', signal, 'for session', sessionId);
+      if (stderr) console.error('[HLS] FFmpeg stderr (last 4KB):\n', stderr);
+    }
     rec.child = null;
     if (self.sessions.get(sessionId) === rec) self.sessions.delete(sessionId);
   });
 
-  this._waitForHlsReady(playlistPath, 20000, function (err) {
+  this._waitForHlsReady(playlistPath, timeoutMs, function (err) {
     if (err) {
       try {
         child.kill();

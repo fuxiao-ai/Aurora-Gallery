@@ -30,6 +30,20 @@ var WEB_DIRECT_STREAM_TYPES = {
   webm: true,
 };
 
+var BROWSER_DIRECT_VIDEO_CODECS = {
+  h264: true,
+  vp8: true,
+  vp9: true,
+};
+
+var BROWSER_DIRECT_AUDIO_CODECS = {
+  '': true,
+  aac: true,
+  mp3: true,
+  opus: true,
+  vorbis: true,
+};
+
 function normalizeFileType(fileType) {
   if (fileType == null) return '';
   return String(fileType).toLowerCase().replace(/^\./, '');
@@ -41,26 +55,58 @@ function isVideoFileType(fileType) {
   return VIDEO_FILE_TYPES.indexOf(t) >= 0;
 }
 
-/**
- * @returns {{ tier: 'none' } | { tier: 'direct_stream' } | { tier: 'hls_transcode' }}
- */
-function resolveElectronVideoPlayback(fileType) {
+function normalizeCodec(codec) {
+  return String(codec || '').trim().toLowerCase();
+}
+
+function canDirectPlayCodecs(videoCodec, audioCodec) {
+  var v = normalizeCodec(videoCodec);
+  var a = normalizeCodec(audioCodec);
+  return !!(BROWSER_DIRECT_VIDEO_CODECS[v] && BROWSER_DIRECT_AUDIO_CODECS[a]);
+}
+
+function canRemuxForBrowser(videoCodec, audioCodec) {
+  var v = normalizeCodec(videoCodec);
+  var a = normalizeCodec(audioCodec);
+  if (!v) return false;
+  if (v === 'h264' && (!a || a === 'aac' || a === 'mp3')) return true;
+  return false;
+}
+
+function resolveVideoPlayback(fileType, probe) {
   var t = normalizeFileType(fileType);
   if (!t || !isVideoFileType(t)) return { tier: 'none' };
-  if (t === 'ts' || t === 'm2ts' || t === 'avi') {
+
+  if (probe && probe.canDirectPlay && WEB_DIRECT_STREAM_TYPES[t]) {
+    return { tier: 'direct_stream' };
+  }
+  if (probe && probe.canRemuxForBrowser) {
+    if (WEB_DIRECT_STREAM_TYPES[t] && probe.canDirectPlay) return { tier: 'direct_stream' };
+    return { tier: 'hls_remux' };
+  }
+  if (probe && (probe.videoCodec || probe.audioCodec)) {
     return { tier: 'hls_transcode' };
   }
-  return { tier: 'direct_stream' };
+
+  if (WEB_DIRECT_STREAM_TYPES[t]) return { tier: 'direct_stream' };
+  if (t === 'mkv' || t === 'ts' || t === 'm2ts') return { tier: 'hls_remux' };
+  return { tier: 'hls_transcode' };
 }
 
 /**
- * @returns {{ tier: 'none' } | { tier: 'direct_stream' } | { tier: 'transcode' }}
+ * @returns {{ tier: 'none' } | { tier: 'direct_stream' } | { tier: 'hls_remux' } | { tier: 'hls_transcode' }}
  */
-function resolveWebVideoPlayback(fileType) {
-  var t = normalizeFileType(fileType);
-  if (!t || !isVideoFileType(t)) return { tier: 'none' };
-  if (WEB_DIRECT_STREAM_TYPES[t]) return { tier: 'direct_stream' };
-  return { tier: 'transcode' };
+function resolveElectronVideoPlayback(fileType, probe) {
+  return resolveVideoPlayback(fileType, probe);
+}
+
+/**
+ * @returns {{ tier: 'none' } | { tier: 'direct_stream' } | { tier: 'hls_remux' } | { tier: 'transcode' }}
+ */
+function resolveWebVideoPlayback(fileType, probe) {
+  var r = resolveVideoPlayback(fileType, probe);
+  if (r.tier === 'hls_transcode') return { tier: 'transcode' };
+  return r;
 }
 
 function electronVideoUrl(photoId) {
@@ -78,6 +124,9 @@ function hlsPlaylistPath(sessionId) {
 var api = {
   VIDEO_FILE_TYPES: VIDEO_FILE_TYPES,
   isVideoFileType: isVideoFileType,
+  canDirectPlayCodecs: canDirectPlayCodecs,
+  canRemuxForBrowser: canRemuxForBrowser,
+  resolveVideoPlayback: resolveVideoPlayback,
   resolveElectronVideoPlayback: resolveElectronVideoPlayback,
   resolveWebVideoPlayback: resolveWebVideoPlayback,
   electronVideoUrl: electronVideoUrl,

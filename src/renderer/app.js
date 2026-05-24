@@ -104,7 +104,7 @@ var state = {
   sortOrder: 'DESC',
   mediaFilter: 'all', // all | image | video
   page: 1,
-  pageSize: 100,
+  pageSize: 20,
   cardSize: 180, // 网格卡片基准（仅取 CARD_SIZE_TIERS 中的值，与 S/M/L/XL 对应）
   cardRatio: '1 / 1',
   thumbCrop: false,
@@ -185,10 +185,6 @@ var state = {
   /** 已写入配置的缩略图参数 */
   thumbAppliedSize: null,
   thumbAppliedQuality: null,
-  /** 预览底部信息条（与设置同步，见 syncPreviewDisplayOptionsFromSettings） */
-  previewDisplayOptions: null,
-  /** 已写入主进程的预览底部主行开关 */
-  previewDisplayApplied: null,
   /** 已写入主进程的关闭主窗口行为（与 #settingWindowClose 同步） */
   windowCloseBehaviorApplied: null,
   /** 已保存的浏览偏好快照 */
@@ -259,6 +255,8 @@ var $$ = function (sel) {
 var dom = {
   sidebarContent: $('#sidebarContent'),
   sidebarContentDuplicate: $('#sidebarContentDuplicate'),
+  folderNavBar: $('#folderNavBar'),
+  folderNavUp: $('#folderNavUp'),
   searchInput: $('#searchInput'),
   statsBar: $('#statsBar'),
   scanProgress: $('#taskPanel'),
@@ -282,8 +280,6 @@ var dom = {
   previewImage: $('#previewImage'),
   previewVideo: $('#previewVideo'),
   previewVideoCenterPlay: $('#previewVideoCenterPlay'),
-  previewInfo: $('#previewInfo'),
-  previewInfoMain: $('#previewInfoMain'),
   previewClose: $('#previewClose'),
   previewPrev: $('#previewPrev'),
   previewNext: $('#previewNext'),
@@ -316,6 +312,10 @@ var dom = {
   maintenanceOptimizeBtn: $('#maintenanceOptimizeBtn'),
   previewFavoriteBtn: $('#previewFavoriteBtn'),
   previewShowInFolderBtn: $('#previewShowInFolderBtn'),
+  previewInfoToggle: $('#previewInfoToggle'),
+  previewInfoPanel: $('#previewInfoPanel'),
+  previewInfoPanelClose: $('#previewInfoPanelClose'),
+  previewInfoPanelContent: $('#previewInfoPanelContent'),
 };
 
 /** 主浏览区（#photoGrid）滚到顶部，分页/下一页后立即对齐网格起点 */
@@ -626,8 +626,6 @@ async function applyInitialSettingsSnapshot() {
     dom.sidebarContentDuplicate.style.display = 'none';
   }
   var s0 = await (api && api.has('getSettings') ? api.getSettings() : Promise.resolve({}));
-  s0 = await hydratePreviewDisplaySettings(s0);
-  state.previewDisplayApplied = previewDisplaySliceFromSettings(s0);
   syncLiveSettingsWidgetsFromObject(s0);
   applyThumbAppliedStateFromSettings(s0);
   settingsSync.applyBrowsePreferencesFromSettings({
@@ -954,8 +952,6 @@ function bindEvents() {
   dom.settingsAddBtn.addEventListener('click', handleAddFolder);
 
   uiEvents.bindSettingsDelegates({
-    previewBindings: PREVIEW_DISPLAY_UI_BINDINGS,
-    onPersistPreviewDisplay: persistPreviewDisplayFromControls,
     onPersistWindowClose: function () {
       return settingsSync.persistWindowCloseSetting({
         state: state,
@@ -1033,6 +1029,7 @@ function bindEvents() {
     onPreviewShowInFolder: previewShowInFolder,
     onPreviewOpenExternal: previewOpenExternal,
     onPreviewMoveToTrash: previewMoveToTrash,
+    onTogglePreviewInfoPanel: togglePreviewInfoPanel,
     onSubmitCloseChoice: submitCloseChoice,
     onExportRootFoldersList: exportRootFoldersList,
     onImportRootFoldersList: importRootFoldersList,
@@ -1292,6 +1289,7 @@ function bindEvents() {
     onClosePreview: closePreview,
     onNavigatePreview: navigatePreview,
     onPreviewMoveToTrash: previewMoveToTrash,
+    onTogglePreviewInfoPanel: togglePreviewInfoPanel,
     onPreviewToggleFavorite: previewToggleFavorite,
     onToggleSlideshow: toggleSlideshow,
     onResetZoom: function () {
@@ -1397,6 +1395,17 @@ function bindEvents() {
     },
     onCloseMobileSidebar: sidebarUi.closeMobileSidebar,
   });
+
+  if (dom.folderNavUp) {
+    dom.folderNavUp.addEventListener('click', function () {
+      var parentPath = dom.folderNavUp.getAttribute('data-parent-path');
+      if (parentPath) {
+        viewFolder(parentPath);
+      } else {
+        viewAllFolderCovers();
+      }
+    });
+  }
 
   uiEvents.bindCardShineTracking();
 
@@ -2100,9 +2109,9 @@ async function loadStats() {
   var stats = await api.getStats();
   state.stats = stats || {};
   if (stats.totalPhotos > 0) {
-    dom.statsBar.textContent = formatGlobalStatsBarText(stats);
+    if (dom.statsBar) dom.statsBar.textContent = formatGlobalStatsBarText(stats);
   } else {
-    dom.statsBar.textContent = '';
+    if (dom.statsBar) dom.statsBar.textContent = '';
   }
   updateFavoriteCountInSidebar();
 }
@@ -2491,8 +2500,8 @@ function viewDuplicates() {
   }
   // 先把右侧立即切到重复项页面，避免被旧的普通列表回写覆盖
   renderDuplicatePageShell();
-  dom.toolbar.style.display = 'none';
-  dom.pagination.style.display = 'none';
+  if (dom.toolbar) dom.toolbar.style.display = 'none';
+  if (dom.pagination) dom.pagination.style.display = 'none';
   var zc = document.getElementById('zoomControl');
   if (zc) zc.style.display = 'none';
   showTabContent('duplicates');
@@ -2615,7 +2624,7 @@ async function loadFaceAllPersonsView() {
   await yieldToPaint();
   var clusters = Array.isArray(state.faceClusters) ? state.faceClusters : [];
   var total = clusters.length;
-  var ps = state.pageSize > 0 ? state.pageSize : 100;
+  var ps = state.pageSize > 0 ? state.pageSize : 20;
   var totalPages = total > 0 ? Math.max(1, Math.ceil(total / ps)) : 1;
   if (state.page > totalPages) state.page = totalPages;
   if (state.page < 1) state.page = 1;
@@ -2696,7 +2705,7 @@ async function loadFaceFolderFilesView(folderPath) {
   var title = cid ? getFacePersonTitle(cid) : '';
   facesUi.setFaceBreadcrumb([title, folderPath], escapeHtml);
   try {
-    var fPs = state.pageSize > 0 ? state.pageSize : 100;
+    var fPs = state.pageSize > 0 ? state.pageSize : 20;
     var result = await api.getFolderPhotos(folderPath, {
       page: 1,
       pageSize: fPs,
@@ -2870,8 +2879,8 @@ function viewFaces() {
       return sidebarUi.ensureDuplicateSidebarVisible(dom);
     },
   });
-  dom.toolbar.style.display = 'none';
-  dom.pagination.style.display = 'none';
+  if (dom.toolbar) dom.toolbar.style.display = 'none';
+  if (dom.pagination) dom.pagination.style.display = 'none';
   var zc = document.getElementById('zoomControl');
   if (zc) zc.style.display = 'none';
   showTabContent('faces');
@@ -2908,11 +2917,12 @@ function viewFolder(folderPath) {
   state.page = 1;
   state.sortBy = 'file_name';
   state.sortOrder = 'ASC';
-  dom.sortSelect.value = 'file_name|ASC';
+  if (dom.sortSelect) dom.sortSelect.value = 'file_name|ASC';
   if (dom.photoGrid) {
     dom.photoGrid.scrollTop = 0;
   }
   updateSidebarActive();
+  updateFolderNavBar();
   scheduleBrowseReload(function () {
     if (state.currentTab === 'folders' && state.currentPath) {
       sidebarTree.expandTreeToFolder(state.currentPath);
@@ -2993,6 +3003,7 @@ function formatFolderCountLabel(n) {
 }
 
 function updateBrowsePathLabel() {
+  if (!dom.currentPath) return;
   switch (state.currentView) {
     case 'duplicates':
       dom.currentPath.textContent = tUi('path.duplicates', '重复照片（哈希）');
@@ -3062,6 +3073,42 @@ function syncFolderSidebarHighlight() {
       ? sidebarTree.findFolderSidebarItemEl(path)
       : null;
   if (hit) hit.classList.add('active');
+}
+
+function updateFolderNavBar() {
+  var bar = dom.folderNavBar;
+  var btn = dom.folderNavUp;
+  if (!bar || !btn) return;
+  if (state.currentView !== 'folder' || !state.currentPath) {
+    bar.style.display = 'none';
+    return;
+  }
+  var path = sidebarTree.normalizePath(state.currentPath);
+  var lastSep = path.lastIndexOf('\\');
+  var parentPath = '';
+  if (lastSep > 0) {
+    parentPath = path.substring(0, lastSep);
+  }
+  var isRoot = false;
+  if (Array.isArray(state.rootFolders)) {
+    for (var i = 0; i < state.rootFolders.length; i++) {
+      if (sidebarTree.normalizePath(state.rootFolders[i].path) === path) {
+        isRoot = true;
+        break;
+      }
+    }
+  }
+  if (isRoot || !parentPath) {
+    bar.style.display = 'none';
+    return;
+  }
+  var label = btn.querySelector('span');
+  var name = parentPath;
+  var nameSep = parentPath.lastIndexOf('\\');
+  if (nameSep >= 0) name = parentPath.substring(nameSep + 1);
+  if (label) label.textContent = name || '返回上级';
+  btn.setAttribute('data-parent-path', parentPath);
+  bar.style.display = '';
 }
 
 function syncDateSidebarHighlight() {
@@ -3176,7 +3223,7 @@ async function handleSettingsRescan(rootPath) {
   }
   state.isScanning = true;
   state.isScanPaused = false;
-  dom.scanProgress.style.display = 'block';
+  if (dom.scanProgress) dom.scanProgress.style.display = 'block';
   startScanLiveRefresh();
   var cancelBtn = document.getElementById('cancelScanBtn');
   var pauseResumeBtn = document.getElementById('pauseResumeScanBtn');
@@ -3332,7 +3379,7 @@ async function applyThumbSettings() {
 function setBrowseAppliedSnapshotFromObject(s) {
   if (!s) return;
   var ps = parseInt(s.browsePageSize, 10);
-  if ([50, 100, 200, 300, 500].indexOf(ps) < 0) ps = 100;
+  if ([10, 20, 50, 100, 200, 300, 500].indexOf(ps) < 0) ps = 100;
   var cs = snapBrowseCardBasis(s.browseCardSize);
   var cr = normalizeBrowseCardRatio(s.browseCardRatio);
   var tc = normalizeBrowseThumbCrop(s.browseThumbCrop);
@@ -3503,156 +3550,11 @@ async function persistBrowsePrefsFromForm() {
 
 // === 扫描选项（已下线） ===
 
-function revertPreviewDisplayCheckboxesToApplied() {
-  return settingsSync.revertPreviewDisplayCheckboxesToApplied({
-    state: state,
-    onApplyPreviewDisplayCheckboxesFromSlice: applyPreviewDisplayCheckboxesFromSlice,
-  });
-}
 
-async function persistPreviewDisplayFromControls() {
-  return settingsSync.persistPreviewDisplayFromControls({
-    state: state,
-    api: api,
-    previewDisplayUiBindings: PREVIEW_DISPLAY_UI_BINDINGS,
-    previewDisplaySettingKeys: PREVIEW_DISPLAY_SETTING_KEYS,
-    onPreviewDisplaySliceFromSettings: previewDisplaySliceFromSettings,
-    onWritePreviewDisplayLocalStorage: writePreviewDisplayLocalStorage,
-    onSyncPreviewDisplayOptionsFromSettings: syncPreviewDisplayOptionsFromSettings,
-    onApplyPreviewDisplayToOpenPreview: applyPreviewDisplayToOpenPreview,
-    onSaveLastSettingsSectionId: saveLastSettingsSectionId,
-    onRenderSettingsNav: renderSettingsNav,
-    onRevertPreviewDisplayCheckboxesToApplied: revertPreviewDisplayCheckboxesToApplied,
-    appAlert: appAlert,
-  });
-}
-
-/** 与主进程 settings 键名一致，用于本地缓存与合并 */
-var PREVIEW_DISPLAY_SETTING_KEYS = [
-  'previewShowFileName',
-  'previewShowDateTaken',
-  'previewShowFileSize',
-  'previewShowDimensions',
-  'previewShowPosition',
-];
-/** 设置页复选框 id：setting + 首字母大写的 settings 键名 */
-var PREVIEW_DISPLAY_UI_BINDINGS = (function () {
-  var out = [];
-  for (var i = 0; i < PREVIEW_DISPLAY_SETTING_KEYS.length; i++) {
-    var key = PREVIEW_DISPLAY_SETTING_KEYS[i];
-    out.push({ id: 'setting' + key.charAt(0).toUpperCase() + key.slice(1), key: key });
-  }
-  return out;
-})();
-var PREVIEW_DISPLAY_LS_KEY = 'photoManager.previewDisplay.v1';
-
-function applyPreviewDisplayCheckboxesFromSlice(slice) {
-  if (!slice) return;
-  for (var i = 0; i < PREVIEW_DISPLAY_UI_BINDINGS.length; i++) {
-    var b = PREVIEW_DISPLAY_UI_BINDINGS[i];
-    var el = document.getElementById(b.id);
-    if (!el) continue;
-    var on = !!slice[b.key];
-    el.checked = on;
-    if (on) el.setAttribute('checked', 'checked');
-    else el.removeAttribute('checked');
-  }
-}
-
-function readPreviewDisplayLocalStorage() {
-  try {
-    var raw = localStorage.getItem(PREVIEW_DISPLAY_LS_KEY);
-    if (!raw) return null;
-    var o = JSON.parse(raw);
-    return o && typeof o === 'object' ? o : null;
-  } catch (e) {
-    return null;
-  }
-}
-
-function writePreviewDisplayLocalStorage(mergedSix) {
-  try {
-    localStorage.setItem(PREVIEW_DISPLAY_LS_KEY, JSON.stringify(mergedSix));
-  } catch (e) {}
-}
-
-function previewDisplaySliceFromSettings(s) {
-  if (!s) s = {};
-  var out = {};
-  for (var i = 0; i < PREVIEW_DISPLAY_SETTING_KEYS.length; i++) {
-    var k = PREVIEW_DISPLAY_SETTING_KEYS[i];
-    out[k] = typeof s[k] === 'boolean' ? s[k] : true;
-  }
-  return out;
-}
-
-/**
- * 合并策略：**磁盘（主进程 getSettings）优先**，避免旧版 localStorage 覆盖用户已写入的 false。
- * 仅当磁盘上该键不是布尔（极旧配置）时，才用 localStorage，最后用默认 true。
- */
-function mergePreviewDisplayDiskFirst(diskS, localO) {
-  var out = {};
-  for (var i = 0; i < PREVIEW_DISPLAY_SETTING_KEYS.length; i++) {
-    var k = PREVIEW_DISPLAY_SETTING_KEYS[i];
-    var d = diskS[k];
-    if (typeof d === 'boolean') out[k] = d;
-    else if (localO && typeof localO[k] === 'boolean') out[k] = localO[k];
-    else out[k] = true;
-  }
-  return out;
-}
-
-function previewDisplayPatchIfDiskDiffers(diskS, mergedSix) {
-  var patch = {};
-  for (var i = 0; i < PREVIEW_DISPLAY_SETTING_KEYS.length; i++) {
-    var k = PREVIEW_DISPLAY_SETTING_KEYS[i];
-    if ((diskS[k] !== false) !== mergedSix[k]) patch[k] = mergedSix[k];
-  }
-  return patch;
-}
-
-function applyPreviewSixOntoSettings(s, mergedSix) {
-  for (var i = 0; i < PREVIEW_DISPLAY_SETTING_KEYS.length; i++) {
-    var k = PREVIEW_DISPLAY_SETTING_KEYS[i];
-    s[k] = mergedSix[k];
-  }
-}
-
-/** 启动或打开管理页时：磁盘优先合并本地缓存，必要时 updateSettings，并刷新预览选项 */
-async function hydratePreviewDisplaySettings(diskS) {
-  if (!diskS) diskS = {};
-  var local = readPreviewDisplayLocalStorage();
-  var merged = mergePreviewDisplayDiskFirst(diskS, local);
-  var patch = previewDisplayPatchIfDiskDiffers(diskS, merged);
-  var out = diskS;
-  if (Object.keys(patch).length && api.has('updateSettings')) {
-    try {
-      out = await api.updateSettings(patch);
-      // 与用户在 await 期间再次勾选/取消的 IPC 交错时，必须用主进程返回的最新值，不能用 await 前的 merged 覆盖 out
-      merged = previewDisplaySliceFromSettings(out);
-    } catch (e) {}
-  }
-  applyPreviewSixOntoSettings(out, merged);
-  writePreviewDisplayLocalStorage(merged);
-  syncPreviewDisplayOptionsFromSettings(out);
-  return out;
-}
-
-function syncPreviewDisplayOptionsFromSettings(s) {
-  if (!s) s = {};
-  var slice = previewDisplaySliceFromSettings(s);
-  state.previewDisplayOptions = {
-    fileName: slice.previewShowFileName,
-    dateTaken: slice.previewShowDateTaken,
-    fileSize: slice.previewShowFileSize,
-    dimensions: slice.previewShowDimensions,
-    position: slice.previewShowPosition,
-  };
-}
 
 /** 在全库/当前视图总数中的 1-based 序号（与分页一致，非仅当前缓冲区内下标） */
 function previewGlobalPositionOne(index) {
-  var ps = state.pageSize > 0 ? state.pageSize : 100;
+  var ps = state.pageSize > 0 ? state.pageSize : 20;
   var start = state.previewPageStart > 0 ? state.previewPageStart : 1;
   var i = typeof index === 'number' && index >= 0 ? index : 0;
   return (start - 1) * ps + i + 1;
@@ -3679,46 +3581,177 @@ function refreshPreviewRandomPositionNum() {
   }
 }
 
-function buildPreviewMainLine(photo, index) {
-  var o = state.previewDisplayOptions;
-  if (!o) {
-    o = {
-      fileName: true,
-      dateTaken: true,
-      fileSize: true,
-      dimensions: true,
-      position: true,
-    };
+function togglePreviewInfoPanel() {
+  var panel = dom.previewInfoPanel;
+  if (!panel) return;
+  var isOpen = panel.classList.contains('open');
+  if (isOpen) {
+    panel.classList.remove('open');
+    _removePreviewInfoPanelListeners();
+  } else {
+    panel.classList.add('open');
+    var photo = state.previewPhotos && state.previewPhotos[state.previewIndex];
+    if (photo) loadPreviewInfoPanel(photo);
+    setTimeout(_addPreviewInfoPanelListeners, 0);
   }
-  var parts = [];
-  if (o.fileName && photo.file_name) parts.push(photo.file_name);
-  if (o.dateTaken) {
-    var d = formatDateTime(photo.date_taken);
-    if (d) parts.push(d);
-  }
-  if (o.fileSize) parts.push(formatSize(photo.file_size));
-  if (o.dimensions && photo.width) parts.push(photo.width + 'x' + (photo.height || 0));
-  var line = parts.join(' | ');
-  if (o.position && state.previewTotalPhotos > 0) {
-    var num = state.slideshowRandom
-      ? state.previewRandomPositionNum > 0
-        ? state.previewRandomPositionNum
-        : previewGlobalPositionOne(index)
-      : previewGlobalPositionOne(index);
-    var pos = '[' + num + '/' + state.previewTotalPhotos + ']';
-    line = line ? line + ' ' + pos : pos;
-  }
-  return line;
 }
 
-/** 设置项变更时，若预览已打开则立即刷新信息条（无需切换照片） */
-function applyPreviewDisplayToOpenPreview() {
-  if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return;
-  var photo = state.previewPhotos[state.previewIndex];
-  if (!photo) return;
-  var mainLine = buildPreviewMainLine(photo, state.previewIndex);
-  if (dom.previewInfoMain) dom.previewInfoMain.textContent = mainLine;
-  else if (dom.previewInfo) dom.previewInfo.textContent = mainLine;
+function _closePreviewInfoPanelOnOutside(e) {
+  var panel = dom.previewInfoPanel;
+  var toggle = dom.previewInfoToggle;
+  if (!panel || !toggle) return;
+  if (panel.contains(e.target) || toggle.contains(e.target)) return;
+  panel.classList.remove('open');
+  _removePreviewInfoPanelListeners();
+}
+
+function _closePreviewInfoPanelOnEsc(e) {
+  if (e.key === 'Escape') {
+    var panel = dom.previewInfoPanel;
+    if (panel && panel.classList.contains('open')) {
+      panel.classList.remove('open');
+      _removePreviewInfoPanelListeners();
+    }
+  }
+}
+
+function _addPreviewInfoPanelListeners() {
+  document.addEventListener('click', _closePreviewInfoPanelOnOutside);
+  document.addEventListener('keydown', _closePreviewInfoPanelOnEsc);
+}
+
+function _removePreviewInfoPanelListeners() {
+  document.removeEventListener('click', _closePreviewInfoPanelOnOutside);
+  document.removeEventListener('keydown', _closePreviewInfoPanelOnEsc);
+}
+
+function escapeHtmlRenderer(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatSizeRenderer(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  var units = ['B', 'KB', 'MB', 'GB'];
+  var i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return bytes.toFixed(i === 0 ? 0 : 2) + ' ' + units[i];
+}
+
+function loadPreviewInfoPanel(photo) {
+  var contentEl = dom.previewInfoPanelContent;
+  if (!contentEl) return;
+  function renderSections(info) {
+    var sections = [];
+    function startSection(title) {
+      sections.push('<div class="preview-info-section"><div class="preview-info-section-title">' + escapeHtmlRenderer(title) + '</div>');
+    }
+    function endSection() {
+      sections.push('</div>');
+    }
+    function addToSection(label, value) {
+      if (value == null || value === '' || value === 0) return;
+      sections.push('<div class="preview-info-row"><span class="preview-info-label">' + escapeHtmlRenderer(label) + '</span><span class="preview-info-value">' + escapeHtmlRenderer(String(value)) + '</span></div>');
+    }
+    var hasBasic = info.file_name || info.file_path || info.file_type || (info.width && info.height) || info.file_size;
+    if (hasBasic) {
+      startSection('基本信息');
+      addToSection('文件名', info.file_name);
+      addToSection('路径', info.file_path);
+      addToSection('类型', info.file_type);
+      if (info.width != null && info.height != null && info.width > 0 && info.height > 0) addToSection('尺寸', info.width + ' × ' + info.height + ' px');
+      if (info.file_size) addToSection('大小', formatSizeRenderer(info.file_size));
+      endSection();
+    }
+    var hasTime = info.date_taken || info.date_modified;
+    if (hasTime) {
+      startSection('时间');
+      addToSection('拍摄时间', info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '');
+      addToSection('修改时间', info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '');
+      endSection();
+    }
+    var hasParam = info.focal_length || info.aperture || info.iso_speed || info.shutter_speed;
+    if (hasParam) {
+      startSection('拍摄参数');
+      addToSection('焦距', info.focal_length ? info.focal_length + ' mm' : '');
+      addToSection('光圈', info.aperture ? 'f/' + info.aperture : '');
+      addToSection('ISO', info.iso_speed);
+      addToSection('快门速度', info.shutter_speed);
+      endSection();
+    }
+    var hasDevice = info.camera_make || info.camera_model || info.lens_model;
+    if (hasDevice) {
+      startSection('设备');
+      addToSection('相机品牌', info.camera_make);
+      addToSection('相机型号', info.camera_model);
+      addToSection('镜头', info.lens_model);
+      endSection();
+    }
+    if (info.gps_latitude != null && info.gps_longitude != null) {
+      startSection('位置');
+      addToSection('GPS', Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6));
+      endSection();
+    }
+    if (state.previewTotalPhotos > 0) {
+      var posNum = state.slideshowRandom
+        ? state.previewRandomPositionNum > 0
+          ? state.previewRandomPositionNum
+          : previewGlobalPositionOne(state.previewIndex)
+        : previewGlobalPositionOne(state.previewIndex);
+      startSection('浏览');
+      addToSection('位置', posNum + ' / ' + state.previewTotalPhotos);
+      endSection();
+    }
+    contentEl.innerHTML = sections.length ? sections.join('') : '<div class="preview-info-empty">无可用信息</div>';
+  }
+  function pickPhotoDim(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var v = obj[keys[i]];
+      if (v != null && v > 0) return v;
+    }
+    return null;
+  }
+  var baseInfo = {
+    file_name: photo.file_name || '',
+    file_path: photo.file_path || '',
+    file_type: photo.file_type || '',
+    width: pickPhotoDim(photo, ['width', 'pixel_width', 'file_width', 'media_width']),
+    height: pickPhotoDim(photo, ['height', 'pixel_height', 'file_height', 'media_height']),
+    file_size: photo.file_size || 0,
+    date_taken: photo.date_taken || '',
+    date_modified: photo.date_modified || ''
+  };
+  renderSections(baseInfo);
+  if (window.photoAPI && window.photoAPI.getPhotoInfo) {
+    window.photoAPI.getPhotoInfo(photo.id).then(function (apiInfo) {
+      if (apiInfo) {
+        var merged = {};
+        for (var k in baseInfo) merged[k] = baseInfo[k];
+        for (var k2 in apiInfo) merged[k2] = apiInfo[k2];
+        renderSections(merged);
+      }
+    }).catch(function () {});
+  }
+  // 数据库无尺寸时，用 sharp 实时读取并回补
+  if (window.photoAPI && window.photoAPI.getPhotoDimensions && (baseInfo.width == null || baseInfo.height == null)) {
+    window.photoAPI.getPhotoDimensions(photo.id).then(function (dims) {
+      if (dims && dims.width > 0 && dims.height > 0) {
+        baseInfo.width = dims.width;
+        baseInfo.height = dims.height;
+        // 同步更新内存中的 photo 对象，避免重复读取
+        photo.width = dims.width;
+        photo.height = dims.height;
+        renderSections(baseInfo);
+      }
+    }).catch(function () {});
+  }
 }
 
 /** 主题 / 自动扫描 / 关闭按钮：与主进程一致（须在 loadSettingsUI 末尾再拉一次，避免 hydrate 期间用户已保存却被旧快照覆盖） */
@@ -3770,13 +3803,11 @@ function syncLiveSettingsWidgetsFromObject(s) {
 
 async function loadSettingsUI() {
   var s = await api.getSettings();
-  s = await hydratePreviewDisplaySettings(s);
   // hydrate 内有 await：再读一次主进程，避免与 updateSettings 交错得到旧快照
   try {
     s = await api.getSettings();
   } catch (e) {}
 
-  syncPreviewDisplayOptionsFromSettings(s);
   syncLiveSettingsWidgetsFromObject(s);
   applyThumbAppliedStateFromSettings(s);
   var ts = document.getElementById('settingThumbSize');
@@ -3820,15 +3851,6 @@ async function loadSettingsUI() {
     state: state,
   });
 
-  var previewSlice = previewDisplaySliceFromSettings(s);
-  applyPreviewDisplayCheckboxesFromSlice(previewSlice);
-  state.previewDisplayApplied = previewSlice;
-  syncPreviewDisplayOptionsFromSettings(s);
-
-  requestAnimationFrame(function () {
-    applyPreviewDisplayCheckboxesFromSlice(previewSlice);
-  });
-
   // 局域网 / 隧道 / 补全与哈希状态：延后到首帧绘制后，避免拖慢管理页首屏
   requestAnimationFrame(function () {
     setTimeout(function () {
@@ -3858,7 +3880,7 @@ async function refreshThumbnailBackfillStatus() {
         var line = scanFlow.formatEtaLine(es);
         if (line) eta = tUi('settings.task.thumbEtaPrefix', '，') + line;
       }
-      dom.thumbBackfillStatus.textContent = tUiFmt(
+      if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUiFmt(
         'settings.task.thumbProgressRunning',
         {
           done: p.done,
@@ -3890,7 +3912,7 @@ async function refreshThumbnailBackfillStatus() {
         var doneText = p.cancelled
           ? tUi('settings.task.thumbStopped', '已停止')
           : tUi('settings.task.thumbCompleted', '已完成');
-        dom.thumbBackfillStatus.textContent = tUiFmt(
+        if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUiFmt(
           'settings.task.thumbProgressDone',
           {
             doneLabel: doneText,
@@ -3901,7 +3923,7 @@ async function refreshThumbnailBackfillStatus() {
           doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed,
         );
       } else {
-        dom.thumbBackfillStatus.textContent = tUi(
+        if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUi(
           'settings.task.thumbBackfillDesc',
           '为尚无缩略图的照片后台补齐预览图',
         );
@@ -3911,7 +3933,7 @@ async function refreshThumbnailBackfillStatus() {
       stopThumbnailBackfillPolling();
     }
   } catch (e) {
-    dom.thumbBackfillStatus.textContent = tUi('settings.task.thumbReadError', '补全状态读取失败');
+    if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUi('settings.task.thumbReadError', '补全状态读取失败');
     if (dom.thumbBackfillExportFailedBtn) dom.thumbBackfillExportFailedBtn.disabled = true;
     stopThumbnailBackfillPolling();
   }
@@ -4141,7 +4163,7 @@ async function refreshDuplicateHashStatus() {
     state._dupHashProgressRunning = running;
     if (p.running) {
       var pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-      dom.duplicateHashStatus.textContent = tUiFmt(
+      if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUiFmt(
         'settings.task.dupProgressRunning',
         {
           done: p.done,
@@ -4174,7 +4196,7 @@ async function refreshDuplicateHashStatus() {
         var dupDoneLabel = p.cancelled
           ? tUi('settings.task.thumbStopped', '已停止')
           : tUi('settings.task.thumbCompleted', '已完成');
-        dom.duplicateHashStatus.textContent = tUiFmt(
+        if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUiFmt(
           'settings.task.dupProgressDone',
           {
             doneLabel: dupDoneLabel,
@@ -4200,7 +4222,7 @@ async function refreshDuplicateHashStatus() {
             (p.duplicatePhotos || 0),
         );
       } else {
-        dom.duplicateHashStatus.textContent = tUi(
+        if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUi(
           'settings.task.dupIdle',
           '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
         );
@@ -4210,7 +4232,7 @@ async function refreshDuplicateHashStatus() {
       stopDuplicateHashPolling();
     }
   } catch (e) {
-    dom.duplicateHashStatus.textContent = tUi('settings.task.dupReadError', '重复检测状态读取失败');
+    if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUi('settings.task.dupReadError', '重复检测状态读取失败');
     stopDuplicateHashPolling();
   }
 }
@@ -4227,11 +4249,12 @@ async function startDuplicateHashDetection() {
   }
   if (!(api && api.has('maintenanceStartDuplicateHashDetection'))) return;
   if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = true;
-  if (dom.duplicateHashStatus)
+  if (dom.duplicateHashStatus) {
     dom.duplicateHashStatus.textContent = tUi(
       'settings.task.dupStarting',
       '正在启动重复检测任务...',
     );
+  }
   try {
     var r = await api.maintenanceStartDuplicateHashDetection();
     if (!r || !r.success) {
@@ -4588,15 +4611,15 @@ function paintBrowsePhotoGridShell(result, paintOptions) {
     var scopedTotal = Number(result && result.total) || 0;
     var scopedVideoCount = Number(result && result.videoCount) || 0;
     var subCount = browseChildSummaries.length;
-    dom.statsBar.textContent = formatFolderScopedStatsBarText(
+    if (dom.statsBar) dom.statsBar.textContent = formatFolderScopedStatsBarText(
       scopedTotal,
       scopedVideoCount,
       subCount,
     );
   } else if (state.stats && Number(state.stats.totalPhotos) > 0) {
-    dom.statsBar.textContent = formatGlobalStatsBarText(state.stats);
+    if (dom.statsBar) dom.statsBar.textContent = formatGlobalStatsBarText(state.stats);
   } else {
-    dom.statsBar.textContent = '';
+    if (dom.statsBar) dom.statsBar.textContent = '';
   }
   updateBrowsePathLabel();
   previewFlow.initPreviewState({
@@ -4650,8 +4673,8 @@ async function loadPhotos() {
   }
   if (state.currentView === 'duplicates') {
     sidebarUi.ensureDuplicateSidebarVisible(dom);
-    dom.toolbar.style.display = 'none';
-    dom.pagination.style.display = 'none';
+    if (dom.toolbar) dom.toolbar.style.display = 'none';
+    if (dom.pagination) dom.pagination.style.display = 'none';
     renderDuplicatePageShell();
     renderDuplicateSidebar();
     if (state.duplicateHasScanned) {
@@ -4664,7 +4687,7 @@ async function loadPhotos() {
   }
   if (state.currentView === 'faces') {
     sidebarUi.ensureDuplicateSidebarVisible(dom);
-    dom.toolbar.style.display = 'none';
+    if (dom.toolbar) dom.toolbar.style.display = 'none';
     if (!document.getElementById('faceMainArea')) {
       renderFacePageShell();
     }
@@ -4672,8 +4695,8 @@ async function loadPhotos() {
     await refreshFaceMainContent();
     return;
   }
-  dom.toolbar.style.display = 'flex';
-  dom.emptyState.style.display = 'none';
+  if (dom.toolbar) dom.toolbar.style.display = 'flex';
+  if (dom.emptyState) dom.emptyState.style.display = 'none';
   if (dom.sortSelect) dom.sortSelect.disabled = state.currentView === 'folder_overview';
 
   if (state.currentView === 'folder_overview') {
@@ -4728,10 +4751,12 @@ async function loadPhotos() {
       }
     } catch (e) {
       Logger.error(e);
-      dom.photoGrid.innerHTML =
-        '<div class="empty-state"><div class="icon">\u26A0\uFE0F</div>' +
-        '<div class="title">目录封面加载失败</div>' +
-        '<div class="desc">请稍后重试</div></div>';
+      if (dom.photoGrid) {
+        dom.photoGrid.innerHTML =
+          '<div class="empty-state"><div class="icon">\u26A0\uFE0F</div>' +
+          '<div class="title">目录封面加载失败</div>' +
+          '<div class="desc">请稍后重试</div></div>';
+      }
       state.currentPhotos = [];
       if (dom.pagination) dom.pagination.style.display = 'none';
     }
@@ -4788,11 +4813,13 @@ async function loadPhotos() {
   } catch (e) {
     if (seq !== state.photosLoadSeq) return;
     Logger.error(e);
-    dom.photoGrid.innerHTML =
-      '<div class="empty-state"><div class="icon">\u26A0\uFE0F</div>' +
-      '<div class="title">照片加载失败</div>' +
-      '<div class="desc">请稍后重试或切换左侧视图</div></div>';
-    dom.pagination.style.display = 'none';
+    if (dom.photoGrid) {
+      dom.photoGrid.innerHTML =
+        '<div class="empty-state"><div class="icon">\u26A0\uFE0F</div>' +
+        '<div class="title">照片加载失败</div>' +
+        '<div class="desc">请稍后重试或切换左侧视图</div></div>';
+    }
+    if (dom.pagination) dom.pagination.style.display = 'none';
     state.currentPhotos = [];
   }
 }
@@ -4900,6 +4927,35 @@ function changeCardSize(direction) {
   applyCardSize();
 }
 
+var _masonryResizeObserver = null;
+
+function capMasonryColumns(host) {
+  var grid = host.querySelector('.grid--masonry');
+  if (!grid) return;
+  var cards = grid.querySelectorAll('.photo-card').length;
+  if (cards <= 0) return;
+  var basis = state.cardSize || 220;
+  var gap = 12;
+  var w = grid.clientWidth || host.clientWidth || window.innerWidth;
+  if (w <= 0) {
+    requestAnimationFrame(function () { capMasonryColumns(host); });
+    return;
+  }
+  var maxCols = Math.max(1, Math.floor((w + gap) / (basis + gap)));
+  if (cards < maxCols) {
+    grid.style.columnCount = String(cards);
+  } else {
+    grid.style.columnCount = '';
+  }
+  if (!_masonryResizeObserver) {
+    _masonryResizeObserver = new ResizeObserver(function () {
+      capMasonryColumns(dom.photoGrid);
+    });
+  }
+  _masonryResizeObserver.disconnect();
+  _masonryResizeObserver.observe(grid);
+}
+
 function applyCardSize() {
   state.cardSize = snapBrowseCardBasis(state.cardSize);
   state.cardRatio = normalizeBrowseCardRatio(state.cardRatio);
@@ -4915,9 +4971,15 @@ function applyCardSize() {
       state.cardLayoutMode === 'masonry' ? '1' : '0',
     );
   };
-  if (dom.photoGrid) gridVars(dom.photoGrid);
+  if (dom.photoGrid) {
+    gridVars(dom.photoGrid);
+    capMasonryColumns(dom.photoGrid);
+  }
   var faceAllHost = document.getElementById('faceAllPersonsGrid');
-  if (faceAllHost) gridVars(faceAllHost);
+  if (faceAllHost) {
+    gridVars(faceAllHost);
+    capMasonryColumns(faceAllHost);
+  }
   var label = CARD_SIZE_TIERS[browseCardTierIndexForBasis(state.cardSize)].label;
   var zoomLabel = document.getElementById('zoomLabel');
   if (zoomLabel) zoomLabel.textContent = label;
@@ -5026,9 +5088,6 @@ function openPreview(index) {
     onPreviewMainLinePrepare: function () {
       refreshPreviewRandomPositionNum();
     },
-    onSyncPreviewDisplayOptionsFromSettings: syncPreviewDisplayOptionsFromSettings,
-    onPreviewDisplaySliceFromSettings: previewDisplaySliceFromSettings,
-    onBuildPreviewMainLine: buildPreviewMainLine,
     onSyncRandomButton: function () {
       return previewSlideshow.syncRandomButton({
         state: state,
@@ -5086,12 +5145,18 @@ function closePreview() {
     dom: dom,
   });
   exitPreviewFullscreen();
+  if (dom.previewInfoPanel) {
+    dom.previewInfoPanel.classList.remove('open');
+    _removePreviewInfoPanelListeners();
+  }
   var overlay = dom.previewOverlay;
   overlay.classList.add('closing');
   setTimeout(function () {
     overlay.classList.remove('active', 'closing', 'minimized', 'ui-collapsed');
-    dom.previewImage.src = '';
-    dom.previewImage.classList.remove('switching');
+    if (dom.previewImage) {
+      dom.previewImage.src = '';
+      dom.previewImage.classList.remove('switching');
+    }
     if (dom.previewVideo) {
       if (window.PhotoHlsAttach) window.PhotoHlsAttach.destroy(dom.previewVideo);
       try {
@@ -5131,7 +5196,6 @@ function closePreview() {
         });
       },
     });
-    if (dom.previewInfoMain) dom.previewInfoMain.textContent = '';
   }, 280);
 }
 
@@ -5346,7 +5410,6 @@ function toggleSlideshowRandom() {
     },
     onAfterToggleRandom: function () {
       refreshPreviewRandomPositionNum();
-      applyPreviewDisplayToOpenPreview();
     },
   });
 }
@@ -5358,7 +5421,8 @@ async function syncFullscreenButton() {
     dom.previewOverlay.classList.remove('fs-ui-visible');
   }
   var inFs = !!document.fullscreenElement;
-  dom.previewFullscreenBtn.textContent = inFs ? '🡼 退出全屏' : '⛶ 全屏';
+  var fsLabel = dom.previewFullscreenBtn.querySelector('.btn-label');
+  if (fsLabel) fsLabel.textContent = inFs ? '退出全屏' : '全屏';
 }
 
 async function togglePreviewFullscreen() {

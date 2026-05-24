@@ -50,6 +50,7 @@ module.exports = [
         Response: 'readonly',
         Request: 'readonly',
         Headers: 'readonly',
+        ReadableStream: 'readonly',
         FormData: 'readonly',
         Blob: 'readonly',
         fetch: 'readonly',

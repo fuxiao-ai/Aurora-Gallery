@@ -208,7 +208,7 @@
     var ratio = ratioObj ? ratioObj.ratio : '';
     var thumbUrl = photo.has_thumbnail ? 'thumb://' + photo.id : '';
     var delay = Math.min(i * 30, 600);
-    var favChar = photo.is_favorite ? '\u2605' : '\u2606';
+    var favIcon = photo.is_favorite ? '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star-filled"/></svg>' : '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star"/></svg>';
     var cardStyle = 'animation-delay:' + delay + 'ms;';
     if (ratio && !useMediaRatio) cardStyle += 'aspect-ratio:' + ratio + ';';
     var html =
@@ -222,10 +222,10 @@
       '<button type="button" class="photo-card-fav" title="收藏（鼠标悬停卡片时显示）" aria-label="收藏" data-fav-photo-id="' +
       photo.id +
       '">' +
-      favChar +
+      favIcon +
       '</button>';
     if (isVideo) {
-      html += '<span class="media-type-badge media-type-badge-video">视频</span>';
+      html += '<span class="media-type-badge media-type-badge-video"><svg class="badge-icon" aria-hidden="true"><use href="#icon-video"/></svg></span>';
     }
     if (thumbUrl) {
       var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
@@ -269,7 +269,7 @@
     }
     placeholder.className = 'placeholder placeholder-fallback';
     placeholder.innerHTML =
-      '<div class="ext">\u26A0</div><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
+      '<svg class="placeholder-icon" aria-hidden="true"><use href="#icon-image"/></svg><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
     return placeholder;
   }
 

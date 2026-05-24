@@ -21,7 +21,6 @@ const fs = require('fs');
 const os = require('os');
 const { spawn, spawnSync } = require('child_process');
 const { Worker } = require('worker_threads');
-const { Readable } = require('stream');
 const Database = require('./database');
 const dbReadWorkerPool = require('./db-read-worker-pool');
 const { runDbReadWorkerOnly } = require('./db-read-runner');
@@ -482,8 +481,10 @@ var THEME_STYLE_PRESETS = {
   midnight_classic: { theme: 'dark', uiAccent: 'violet', uiBackground: 'default' },
   ice_deep: { theme: 'dark', uiAccent: 'cyan', uiBackground: 'amoled' },
   amber_dawn: { theme: 'dark', uiAccent: 'amber', uiBackground: 'warm' },
+  forest_shadow: { theme: 'dark', uiAccent: 'amber', uiBackground: 'cool' },
   sky_light: { theme: 'light', uiAccent: 'cyan', uiBackground: 'ink' },
   cherry_blossom: { theme: 'light', uiAccent: 'rose', uiBackground: 'warm' },
+  lavender_dusk: { theme: 'light', uiAccent: 'violet', uiBackground: 'warm' },
   arctic_mint: { theme: 'light', uiAccent: 'teal', uiBackground: 'cool' },
 };
 
@@ -664,7 +665,7 @@ function ensureSettingsShape() {
   if (settings.browseSortOrder !== 'ASC' && settings.browseSortOrder !== 'DESC')
     settings.browseSortOrder = 'DESC';
   var bps = parseInt(settings.browsePageSize, 10);
-  if ([50, 100, 200, 300, 500].indexOf(bps) < 0) settings.browsePageSize = 100;
+  if ([10, 20, 50, 80, 100, 200].indexOf(bps) < 0) settings.browsePageSize = 20;
   else settings.browsePageSize = bps;
   var bcs = parseInt(settings.browseCardSize, 10);
   if (isNaN(bcs) || bcs < 80) bcs = 180;
@@ -1888,6 +1889,19 @@ function schedulePostWindowDeferredTasks() {
       );
     }
   }, 5000);
+  setTimeout(function () {
+    try {
+      if (db && typeof db.rebuildFtsIndex === 'function') {
+        db.rebuildFtsIndex();
+        startupStageLog('post-window-deferred.fts-rebuild.done');
+      }
+    } catch (eFts) {
+      logger.error(
+        '[startup] deferred-fts-rebuild failed:',
+        eFts && eFts.message ? eFts.message : String(eFts),
+      );
+    }
+  }, 6000);
 }
 
 /** 自动扫描 / 补图 / 人脸等：等侧栏目录树首屏渲染完成后再启动，避免与目录 IPC 抢时序；12s 兜底仍可能触发 */
@@ -2589,15 +2603,20 @@ app
     });
 
     // 注册自定义协议：video://photo-id 用于预览视频（支持 Range，便于拖动进度条）
+    // 使用手动 ReadableStream + fs.read 分块读取，比 Readable.toWeb 更兼容 Chromium 媒体管线
     protocol.handle('video', async function (request) {
-      var url = new URL(request.url);
+      var reqUrl = request.url;
+      var url = new URL(reqUrl);
       var photoId = parseInt(url.hostname, 10);
+      logger.log('[video-protocol] request url=%s photoId=%d', reqUrl, photoId);
       var photo = db.getFullPhoto(photoId);
       if (!photo || !photo.file_path) {
+        logger.warn('[video-protocol] photo not found for id=%d', photoId);
         return new Response('Not Found', { status: 404 });
       }
       var fp = photo.file_path;
       if (!fp || !fs.existsSync(fp)) {
+        logger.warn('[video-protocol] file missing: %s', fp);
         return new Response('Not Found', { status: 404 });
       }
 
@@ -2636,42 +2655,100 @@ app
         range =
           request && request.headers && request.headers.get ? request.headers.get('range') : null;
       } catch (e2) {}
+      logger.log('[video-protocol] file=%s size=%d range=%s', fp, size, range || '(none)');
 
       // 解析 Range: bytes=start-end
+      var rangeStart = 0;
+      var rangeEnd = size - 1;
+      var isRangeRequest = false;
       if (range && /^bytes=\d*-\d*$/.test(range)) {
         var m = range.match(/^bytes=(\d*)-(\d*)$/);
-        var start = m && m[1] ? parseInt(m[1], 10) : 0;
-        var end = m && m[2] ? parseInt(m[2], 10) : size - 1;
-        if (isNaN(start) || start < 0) start = 0;
-        if (isNaN(end) || end < 0) end = size - 1;
-        if (start > end || start >= size) {
+        var s = m && m[1] ? parseInt(m[1], 10) : 0;
+        var e = m && m[2] ? parseInt(m[2], 10) : size - 1;
+        if (isNaN(s) || s < 0) s = 0;
+        if (isNaN(e) || e < 0) e = size - 1;
+        if (s > e || s >= size) {
+          logger.warn('[video-protocol] 416 range not satisfiable: %d-%d size=%d', s, e, size);
           return new Response(null, {
             status: 416,
-            headers: {
-              'Content-Range': 'bytes */' + size,
-            },
+            headers: { 'Content-Range': 'bytes */' + size },
           });
         }
-        if (end >= size) end = size - 1;
+        if (e >= size) e = size - 1;
+        rangeStart = s;
+        rangeEnd = e;
+        isRangeRequest = true;
+      }
 
-        var chunkSize = end - start + 1;
-        var rs = fs.createReadStream(fp, { start: start, end: end });
-        var body = Readable.toWeb(rs);
-        return new Response(body, {
+      var readStart = rangeStart;
+      var readEnd = rangeEnd;
+      var totalBytes = readEnd - readStart + 1;
+      var CHUNK_SIZE = 64 * 1024;
+
+      var streamBody = new ReadableStream({
+        type: 'bytes',
+        start: function (controller) {
+          this._fd = null;
+          this._pos = readStart;
+          this._remaining = totalBytes;
+          this._buf = Buffer.alloc(CHUNK_SIZE);
+          try {
+            this._fd = fs.openSync(fp, 'r');
+          } catch (err) {
+            controller.error(err);
+          }
+        },
+        pull: function (controller) {
+          if (this._remaining <= 0) {
+            controller.close();
+            if (this._fd != null) {
+              try { fs.closeSync(this._fd); } catch (_e) {}
+              this._fd = null;
+            }
+            return;
+          }
+          var toRead = Math.min(CHUNK_SIZE, this._remaining);
+          try {
+            var bytesRead = fs.readSync(this._fd, this._buf, 0, toRead, this._pos);
+            if (bytesRead <= 0) {
+              controller.close();
+              try { fs.closeSync(this._fd); } catch (_e2) {}
+              this._fd = null;
+              return;
+            }
+            controller.enqueue(this._buf.subarray(0, bytesRead));
+            this._pos += bytesRead;
+            this._remaining -= bytesRead;
+          } catch (err) {
+            controller.error(err);
+            if (this._fd != null) {
+              try { fs.closeSync(this._fd); } catch (_e3) {}
+              this._fd = null;
+            }
+          }
+        },
+        cancel: function () {
+          if (this._fd != null) {
+            try { fs.closeSync(this._fd); } catch (_e4) {}
+            this._fd = null;
+          }
+        },
+      });
+
+      if (isRangeRequest) {
+        return new Response(streamBody, {
           status: 206,
           headers: {
             'Content-Type': contentType,
             'Accept-Ranges': 'bytes',
-            'Content-Range': 'bytes ' + start + '-' + end + '/' + size,
-            'Content-Length': String(chunkSize),
+            'Content-Range': 'bytes ' + readStart + '-' + readEnd + '/' + size,
+            'Content-Length': String(totalBytes),
             'Cache-Control': 'public, max-age=3600',
           },
         });
       }
 
-      var rs2 = fs.createReadStream(fp);
-      var body2 = Readable.toWeb(rs2);
-      return new Response(body2, {
+      return new Response(streamBody, {
         status: 200,
         headers: {
           'Content-Type': contentType,
@@ -2865,6 +2942,11 @@ app
         throw new Error('get-stats: database path unavailable');
       }
       return await runDbReadWorkerOnly(readPath, 'getStats', {});
+    });
+
+    ipcMain.handle('get-photo-info', function (event, photoId) {
+      if (!db || !photoId) return null;
+      return db.getPhotoInfo(Number(photoId));
     });
 
     ipcMain.handle('get-scan-queue-status', function () {
@@ -3705,6 +3787,25 @@ app
 
     ipcMain.handle('get-photos', function (event, options) {
       return db.getPhotos(options);
+    });
+
+    ipcMain.handle('get-photo-dimensions', async function (event, photoId) {
+      if (!db || !photoId) return null;
+      var photo = db.getPhotoInfo(Number(photoId));
+      if (!photo || !photo.file_path) return null;
+      if (photo.width > 0 && photo.height > 0) {
+        return { width: photo.width, height: photo.height };
+      }
+      try {
+        var metadata = await require('sharp')(photo.file_path).metadata();
+        if (metadata && metadata.width > 0 && metadata.height > 0) {
+          db.updatePhotoDimensions(photoId, metadata.width, metadata.height);
+          return { width: metadata.width, height: metadata.height };
+        }
+      } catch (e) {
+        // sharp 解析失败，返回 null
+      }
+      return null;
     });
 
     ipcMain.handle('get-folder-photos', function (event, folderPath, options) {

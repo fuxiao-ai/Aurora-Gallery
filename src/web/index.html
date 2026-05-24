@@ -11,13 +11,13 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <link rel="manifest" href="/manifest.webmanifest?v=4" />
-    <link rel="shortcut icon" href="/app-icon-192.png?v=4" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/app-icon-192.png?v=4" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/app-icon-512.png?v=4" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />
+    <link rel="manifest" href="/manifest.webmanifest?v=5" />
+    <link rel="shortcut icon" href="/app-icon-192.png?v=5" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/app-icon-192.png?v=5" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/app-icon-512.png?v=5" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5" />
     <link rel="preload" href="/playback-strategy.js" as="script" />
-    <link rel="preload" href="/js/web-theme-shared.js?v=2" as="script" />
+    <link rel="preload" href="/js/web-theme-shared.js?v=3" as="script" />
     <link rel="preload" href="/js/app.js?v=2" as="script" />
     <title>拂晓图库 · Aurora Gallery</title>
     <style>
@@ -327,16 +327,22 @@
         flex-shrink: 0;
       }
       .header-stats {
+        flex: 0 1 auto;
+        min-width: 0;
         font-size: 11px;
         color: var(--text-secondary);
         white-space: nowrap;
-        max-width: min(420px, 36vw);
+        max-width: min(260px, 24vw);
         overflow: hidden;
         text-overflow: ellipsis;
         font-variant-numeric: tabular-nums;
       }
       .header-stats:not(:empty) {
-        padding: 5px 12px;
+        height: var(--browse-bar-control-h, 36px);
+        box-sizing: border-box;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
         border-radius: 999px;
         background: color-mix(in srgb, var(--accent) 10%, transparent);
         border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
@@ -398,6 +404,67 @@
       }
       .header-card-aspect-select:focus {
         border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+      }
+      .header-sort-select {
+        min-width: 120px;
+        max-width: 150px;
+        border-radius: 999px;
+        font-size: 13px;
+        padding: 8px 30px 8px 14px;
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
+        color: var(--text);
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        background:
+          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
+            no-repeat right 12px center / 12px 12px,
+          linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--bg-card) 65%, var(--glass)) 0%,
+            var(--glass) 100%
+          );
+      }
+      .header-sort-select:hover {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
+      }
+      .header-sort-select:focus {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+      }
+      .header-media-filter-select {
+        min-width: 90px;
+        max-width: 110px;
+        flex: 0 0 104px;
+        width: 104px;
+        border-radius: 999px;
+        font-size: 13px;
+        padding: 8px 30px 8px 14px;
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
+        color: var(--text);
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        background:
+          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
+            no-repeat right 12px center / 12px 12px,
+          linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--bg-card) 65%, var(--glass)) 0%,
+            var(--glass) 100%
+          );
+      }
+      .header-media-filter-select:hover {
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+      }
+      .header-media-filter-select:focus {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+      }
+      .header-theme-select option,
+      .header-card-aspect-select option,
+      .header-sort-select option,
+      .header-media-filter-select option {
+        background: #1a1a2e;
+        color: #e0e0e0;
       }
 
       /* comment cleaned */
@@ -1403,6 +1470,26 @@
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }
+      .pagination-page-size {
+        padding: 0 10px;
+        border: 1px solid color-mix(in srgb, var(--glass-border) 92%, transparent);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--bg-hover) 35%, transparent);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        min-width: 80px;
+        text-align: center;
+        margin-left: auto;
+        height: var(--browse-bar-control-h, 36px);
+        box-sizing: border-box;
+      }
+      .pagination-page-size:focus {
+        border-color: color-mix(in srgb, var(--accent) 48%, var(--glass-border));
+      }
       .pagination .page-ellipsis {
         width: var(--browse-bar-control-h, 36px);
         height: var(--browse-bar-control-h, 36px);
@@ -1414,10 +1501,18 @@
         opacity: 0.85;
       }
       .pagination button.pagination-random {
-        min-width: 48px;
-        padding: 0 10px;
-        font-size: 12px;
+        min-width: 52px;
+        padding: 0 14px;
+        font-size: 13px;
         font-weight: 600;
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, var(--accent) 10%, transparent));
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+        color: var(--accent);
+      }
+      .pagination button.pagination-random:hover {
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 36%, transparent), color-mix(in srgb, var(--accent) 18%, transparent));
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+        box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);
       }
       .page-numbers {
         display: flex;
@@ -1468,30 +1563,216 @@
           backdrop-filter: blur(0px);
         }
       }
-      .preview-close {
+      .preview-window-controls {
         position: absolute;
         top: calc(12px + env(safe-area-inset-top, 0px));
         right: 16px;
-        width: 44px;
-        height: 44px;
-        border: 1px solid color-mix(in srgb, var(--glass-border) 92%, rgba(255, 255, 255, 0.12));
-        background: color-mix(in srgb, var(--bg-card) 36%, transparent);
-        backdrop-filter: blur(18px) saturate(1.3);
-        -webkit-backdrop-filter: blur(18px) saturate(1.3);
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px;
+        border-radius: 14px;
+        border: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--accent) 8%);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 52%, var(--accent-dim)) 0%,
+          color-mix(in srgb, var(--bg-card) 32%, transparent) 100%
+        );
+        backdrop-filter: blur(20px) saturate(1.2);
+        -webkit-backdrop-filter: blur(20px) saturate(1.2);
+        box-shadow:
+          0 1px 0 color-mix(in srgb, var(--text) 10%, transparent) inset,
+          0 10px 28px color-mix(in srgb, var(--bg) 82%, #000000);
+        z-index: 12;
+      }
+      .preview-close,
+      .preview-info-toggle {
+        position: relative;
+        top: auto;
+        right: auto;
+        bottom: auto;
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
+        border: 1px solid transparent;
+        border-radius: 9px;
+        background: none;
         color: var(--text-secondary);
-        font-size: 20px;
-        border-radius: 50%;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1;
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: auto;
+        transition: all 0.2s;
+        padding: 0;
+      }
+      .preview-close:hover,
+      .preview-info-toggle:hover {
+        background: var(--bg-hover);
+        color: var(--text);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--glass-border) 78%, transparent) inset;
+      }
+      .preview-close:active,
+      .preview-info-toggle:active {
+        transform: scale(0.96);
+      }
+      .preview-window-controls .icon {
+        width: 16px;
+        height: 16px;
+        pointer-events: none;
+      }
+      .preview-info-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 360px;
+        max-width: 85vw;
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 92%, transparent) 0%,
+          color-mix(in srgb, var(--bg-primary) 85%, transparent) 100%
+        );
+        backdrop-filter: blur(36px) saturate(1.5);
+        -webkit-backdrop-filter: blur(36px) saturate(1.5);
+        border-left: 1px solid color-mix(in srgb, var(--glass-border) 70%, var(--accent) 10%);
+        box-shadow:
+          -8px 0 40px color-mix(in srgb, var(--bg-primary) 60%, transparent),
+          0 0 0 1px color-mix(in srgb, var(--glass-border) 30%, transparent) inset;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        transform: translateX(100%);
+        visibility: hidden;
+        transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+        overflow: hidden;
+      }
+      .preview-info-panel.open {
+        transform: translateX(0);
+        visibility: visible;
+      }
+      .preview-info-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 24px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+        position: sticky;
+        top: 0;
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 96%, transparent) 0%,
+          color-mix(in srgb, var(--bg-card) 82%, transparent) 100%
+        );
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        z-index: 1;
+        flex-shrink: 0;
+      }
+      .preview-info-panel-header h3 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text);
+        letter-spacing: 0.01em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .preview-info-panel-header h3::before {
+        content: '';
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+      }
+      .preview-info-panel-close {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 5px;
+        border-radius: 8px;
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 10;
-        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: all 0.2s;
       }
-      .preview-close:hover {
-        background: color-mix(in srgb, var(--bg-hover) 52%, transparent);
-        border-color: color-mix(in srgb, var(--glass-border) 80%, var(--accent) 20%);
-        transform: scale(1.1);
+      .preview-info-panel-close:hover {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        color: var(--text);
+        transform: rotate(90deg);
+      }
+      #previewInfoPanelContent {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0;
+      }
+      .preview-info-section {
+        padding: 18px 24px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 40%, transparent);
+      }
+      .preview-info-section:last-child {
+        border-bottom: none;
+      }
+      .preview-info-section-title {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .preview-info-section-title::before {
+        content: '';
+        display: inline-block;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+        flex-shrink: 0;
+      }
+      .preview-info-section-title::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--accent) 20%, transparent),
+          transparent
+        );
+      }
+      .preview-info-row {
+        display: flex;
+        gap: 8px;
+        padding: 6px 0;
+        font-size: 0.8rem;
+        line-height: 1.45;
+      }
+      .preview-info-label {
+        flex-shrink: 0;
+        width: 72px;
+        color: var(--text-muted);
+      }
+      .preview-info-value {
+        flex: 1;
+        word-break: break-all;
+        color: var(--text);
+      }
+      .preview-info-empty {
+        padding: 20px 16px;
+        color: var(--text-muted);
+        font-size: 0.83rem;
+        text-align: center;
       }
       .preview-body {
         display: flex;
@@ -1624,250 +1905,7 @@
       .preview-next {
         right: 16px;
       }
-      /* comment cleaned */
-      .preview-info-bar {
-        position: absolute;
-        bottom: 24px;
-        left: 0;
-        right: 0;
-        transform: none;
-        background: color-mix(in srgb, var(--bg-card) 56%, transparent);
-        backdrop-filter: blur(28px) saturate(1.3);
-        -webkit-backdrop-filter: blur(28px) saturate(1.3);
-        border: none;
-        border-top: 1px solid color-mix(in srgb, var(--glass-border) 60%, rgba(255, 255, 255, 0.08));
-        padding: 14px 10vw;
-        border-radius: 0;
-        font-size: 13px;
-        color: var(--text);
-        white-space: normal;
-        line-height: 1.45;
-        max-width: none;
-        overflow: hidden;
-        text-overflow: clip;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
-        text-align: center;
-        mask-image: linear-gradient(90deg, transparent 0%, black 12%, black 88%, transparent 100%);
-        -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 12%, black 88%, transparent 100%);
-        opacity: 1;
-        pointer-events: auto;
-        z-index: 10;
-        transition:
-          opacity 0.2s ease,
-          transform 0.2s ease;
-      }
-      .preview-overlay.mobile-ui-hidden .preview-info-bar {
-        opacity: 0;
-        pointer-events: none;
-      }
-      /* EXIF Info Panel — refined glassmorphism */
-      .exif-panel {
-        position: absolute;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        width: 360px;
-        max-width: 85vw;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 85%, transparent) 0%,
-          color-mix(in srgb, var(--bg-primary) 78%, transparent) 100%
-        );
-        backdrop-filter: blur(40px) saturate(1.6);
-        -webkit-backdrop-filter: blur(40px) saturate(1.6);
-        border-left: 1px solid color-mix(in srgb, var(--glass-border) 70%, var(--accent) 10%);
-        box-shadow:
-          -8px 0 40px color-mix(in srgb, var(--bg-primary) 60%, transparent),
-          0 0 0 1px color-mix(in srgb, var(--glass-border) 30%, transparent) inset;
-        z-index: 20;
-        overflow-y: auto;
-        transform: translateX(100%);
-        transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
-        padding: 0;
-      }
-      .exif-panel.open {
-        transform: translateX(0);
-      }
-      .exif-panel-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 18px 22px;
-        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
-        position: sticky;
-        top: 0;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 92%, transparent) 0%,
-          color-mix(in srgb, var(--bg-card) 80%, transparent) 100%
-        );
-        backdrop-filter: blur(24px) saturate(1.4);
-        -webkit-backdrop-filter: blur(24px) saturate(1.4);
-        z-index: 1;
-      }
-      .exif-panel-header h3 {
-        margin: 0;
-        font-size: 15px;
-        font-weight: 700;
-        color: var(--text);
-        letter-spacing: 0.01em;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .exif-panel-header h3::before {
-        content: '';
-        display: inline-block;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--accent);
-        box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
-      }
-      .exif-panel-close {
-        background: none;
-        border: none;
-        color: var(--text-muted);
-        cursor: pointer;
-        padding: 6px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s;
-      }
-      .exif-panel-close:hover {
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
-        color: var(--text);
-        transform: rotate(90deg);
-      }
-      .exif-panel-close .icon {
-        width: 20px;
-        height: 20px;
-      }
-      .exif-section {
-        padding: 16px 22px;
-        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 50%, transparent);
-      }
-      .exif-section:last-child {
-        border-bottom: none;
-      }
-      .exif-section-title {
-        font-size: 10px;
-        font-weight: 700;
-        color: var(--accent);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .exif-section-title::after {
-        content: '';
-        flex: 1;
-        height: 1px;
-        background: linear-gradient(
-          90deg,
-          color-mix(in srgb, var(--accent) 25%, transparent),
-          transparent
-        );
-      }
-      .exif-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        padding: 6px 0;
-        gap: 16px;
-        border-radius: 6px;
-        transition: background 0.15s;
-      }
-      .exif-row:hover {
-        background: color-mix(in srgb, var(--accent) 4%, transparent);
-      }
-      .exif-label {
-        font-size: 12px;
-        color: var(--text-secondary);
-        flex-shrink: 0;
-        font-weight: 500;
-      }
-      .exif-value {
-        font-size: 13px;
-        color: var(--text);
-        text-align: right;
-        word-break: break-all;
-        font-variant-numeric: tabular-nums;
-        font-weight: 500;
-        line-height: 1.4;
-      }
-      .exif-value--highlight {
-        color: var(--accent);
-        font-weight: 600;
-      }
-      .exif-panel-toggle {
-        position: absolute;
-        top: calc(12px + env(safe-area-inset-top, 0px));
-        right: 72px;
-        z-index: 12;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 44%, transparent) 0%,
-          color-mix(in srgb, var(--bg-card) 28%, transparent) 100%
-        );
-        border: 1px solid color-mix(in srgb, var(--glass-border) 80%, var(--accent) 12%);
-        border-radius: 999px;
-        padding: 7px 12px;
-        backdrop-filter: blur(20px) saturate(1.35);
-        -webkit-backdrop-filter: blur(20px) saturate(1.35);
-        color: var(--text);
-        font-size: 12px;
-        font-weight: 500;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        transition: all 0.2s;
-        box-shadow: 0 4px 16px color-mix(in srgb, var(--bg-primary) 50%, transparent);
-      }
-      .exif-panel-toggle:hover {
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--accent) 22%, transparent) 0%,
-          color-mix(in srgb, var(--accent) 12%, transparent) 100%
-        );
-        border-color: color-mix(in srgb, var(--accent) 50%, var(--glass-border));
-        box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 20%, transparent);
-        transform: translateY(-1px);
-      }
-      .exif-panel-toggle .icon {
-        width: 15px;
-        height: 15px;
-      }
-      .exif-loading {
-        padding: 48px 24px;
-        text-align: center;
-        color: var(--text-muted);
-        font-size: 13px;
-      }
-      .exif-empty {
-        padding: 48px 24px;
-        text-align: center;
-        color: var(--text-muted);
-        font-size: 13px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
-      }
-      .exif-empty::before {
-        content: '📷';
-        font-size: 32px;
-        opacity: 0.4;
-        filter: grayscale(0.6);
-      }
+
       .preview-slideshow-controls {
         position: absolute;
         top: calc(12px + env(safe-area-inset-top, 0px));
@@ -2075,12 +2113,8 @@
           font-size: 12px;
           margin: 0 4px;
         }
-        .preview-info-bar {
-          max-width: none;
-          font-size: 12px;
-          padding: 10px 8vw;
-          mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
-          -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
+        .pagination-page-size {
+          display: none;
         }
       }
       @media (max-width: 600px) {
@@ -2205,53 +2239,25 @@
           opacity: 0.95;
           pointer-events: auto;
         }
-        .preview-info-bar {
-          left: 0;
-          right: 0;
-          bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-          transform: none;
-          max-width: none;
-          border-radius: 16px 16px 0 0;
-          padding: 10px 16px;
-          font-size: 12px;
-          text-align: center;
-          line-height: 1.45;
-          mask-image: none;
-          -webkit-mask-image: none;
+        .preview-info-panel {
+          width: 280px;
+          max-width: 80vw;
         }
-        .exif-panel {
-          width: 100%;
-          max-width: 100%;
-          border-left: none;
-          border-top: 1px solid var(--glass-border);
-          top: auto;
-          bottom: 0;
-          height: 70vh;
-          transform: translateY(100%);
-          border-radius: 16px 16px 0 0;
-        }
-        .exif-panel.open {
-          transform: translateY(0);
-        }
-        .exif-panel-toggle {
-          top: auto;
-          bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-          right: 12px;
+        .preview-window-controls {
+          right: 10px;
+          top: calc(10px + env(safe-area-inset-top, 0px));
         }
         .preview-overlay.mobile-ui-hidden .preview-slideshow-controls,
-        .preview-overlay.mobile-ui-hidden .preview-close,
-        .preview-overlay.mobile-ui-hidden .preview-info-bar,
+        .preview-overlay.mobile-ui-hidden .preview-window-controls,
         .preview-overlay.mobile-ui-hidden .preview-nav,
-        .preview-overlay.mobile-ui-hidden .preview-swipe-hint,
-        .preview-overlay.mobile-ui-hidden .exif-panel-toggle {
+        .preview-overlay.mobile-ui-hidden .preview-swipe-hint {
           opacity: 0;
           pointer-events: none;
         }
         .preview-overlay.mobile-ui-hidden .preview-slideshow-controls,
-        .preview-overlay.mobile-ui-hidden .preview-close {
+        .preview-overlay.mobile-ui-hidden .preview-window-controls {
           transform: translateY(-8px);
         }
-        .preview-overlay.mobile-ui-hidden .preview-info-bar,
         .preview-overlay.mobile-ui-hidden .preview-swipe-hint {
           transform: translateY(8px);
         }
@@ -2302,7 +2308,9 @@
           display: none;
         }
         .header-theme-select,
-        .header-card-aspect-select {
+        .header-card-aspect-select,
+        .header-sort-select,
+        .header-media-filter-select {
           display: none;
         }
         .toolbar {
@@ -2758,6 +2766,43 @@
         margin-left: auto;
         align-self: center;
       }
+      .card-size-group {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 48%, transparent) 0%,
+          color-mix(in srgb, var(--glass) 88%, transparent) 100%
+        );
+        backdrop-filter: blur(16px) saturate(1.3);
+        -webkit-backdrop-filter: blur(16px) saturate(1.3);
+        border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+        border-radius: 999px;
+        padding: 3px;
+        flex-shrink: 0;
+        height: var(--browse-bar-control-h, 36px);
+        box-sizing: border-box;
+      }
+      .card-size-btn {
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .card-size-btn:hover {
+        color: var(--text);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+      }
+      .card-size-btn.active {
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+      }
       .card-aspect-control {
         position: relative;
         flex-shrink: 0;
@@ -2967,20 +3012,6 @@
         mask-repeat: no-repeat;
         box-shadow: 0 10px 24px var(--accent-dim);
       }
-      .header-title::after {
-        content: 'WEB';
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 4px 8px;
-        border-radius: 999px;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        color: color-mix(in srgb, var(--accent) 80%, white 20%);
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
-        border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--glass-border));
-      }
       .search-box {
         max-width: min(560px, 46vw);
       }
@@ -3180,10 +3211,9 @@
       .preview-overlay {
         background: color-mix(in srgb, var(--bg) 80%, rgba(0, 0, 0, 0.7));
       }
-      .preview-close,
+      .preview-window-controls,
       .preview-nav,
       .preview-slideshow-controls,
-      .preview-info-bar,
       .preview-zoom {
         box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
       }
@@ -3273,9 +3303,6 @@
         }
         .header-title {
           font-size: 16px;
-        }
-        .header-title::after {
-          display: none;
         }
         .main {
           gap: 12px;
@@ -3855,6 +3882,14 @@
           <line x1="9" y1="9" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           <line x1="15" y1="9" x2="9" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </symbol>
+        <!-- Shuffle/Random -->
+        <symbol id="icon-shuffle" viewBox="0 0 24 24">
+          <path d="M16 3h5v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 20L21 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M21 16v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M15 15l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M4 4l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </symbol>
       </defs>
     </svg>
 
@@ -3888,6 +3923,17 @@
       </div>
       <div class="header-stats" id="headerStats"></div>
       <select
+        id="headerMediaFilterSelect"
+        class="header-media-filter-select"
+        aria-label="媒体类型"
+        title="筛选：全部 / 图片 / 视频"
+        onchange="changeMediaFilter(this.value)"
+      >
+        <option value="all">全部</option>
+        <option value="image">图片</option>
+        <option value="video">视频</option>
+      </select>
+      <select
         id="headerCardAspectSelect"
         class="header-card-aspect-select"
         aria-label="卡片比例"
@@ -3904,9 +3950,25 @@
         <option value="midnight_classic">夜幕经典</option>
         <option value="ice_deep">深空冰蓝</option>
         <option value="amber_dawn">晨光琥珀</option>
+        <option value="forest_shadow">森影暮霭</option>
         <option value="sky_light">晴空浅蓝</option>
         <option value="cherry_blossom">樱雾粉昼</option>
+        <option value="lavender_dusk">暮紫微光</option>
         <option value="arctic_mint">薄荷极光</option>
+      </select>
+      <select
+        id="sortSelect"
+        class="header-sort-select"
+        aria-label="排序方式"
+        title="排序方式"
+        onchange="changeSort(this.value)"
+      >
+        <option value="date_taken|DESC">最新拍摄</option>
+        <option value="date_taken|ASC">最早拍摄</option>
+        <option value="file_name|ASC">文件名 A-Z</option>
+        <option value="file_name|DESC">文件名 Z-A</option>
+        <option value="file_size|DESC">体积从大到小</option>
+        <option value="file_size|ASC">体积从小到大</option>
       </select>
     </div>
 
@@ -3936,6 +3998,7 @@
             <button type="button" id="prevPage" onclick="prevPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-prev"/></svg></button>
             <div id="pageNumbers" class="page-numbers"></div>
             <button type="button" id="nextPage" onclick="nextPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-next"/></svg></button>
+            <span class="page-info" id="pageInfo"></span>
             <button
               type="button"
               id="randomPageBtn"
@@ -3946,7 +4009,24 @@
             >
               随机
             </button>
-            <span class="page-info" id="pageInfo"></span>
+            <select
+              id="pageSizeSelect"
+              class="pagination-page-size"
+              aria-label="每页数量"
+              title="每页数量"
+              onchange="changePageSize(this.value)"
+            >
+              <option value="50" selected>50 张/页</option>
+              <option value="80">80 张/页</option>
+              <option value="100">100 张/页</option>
+              <option value="200">200 张/页</option>
+            </select>
+            <div class="card-size-group" id="cardSizeGroup">
+              <button class="card-size-btn" onclick="changeCardSizeTo(100)" data-size="100">S</button>
+              <button class="card-size-btn" onclick="changeCardSizeTo(140)" data-size="140">M</button>
+              <button class="card-size-btn active" onclick="changeCardSizeTo(180)" data-size="180">L</button>
+              <button class="card-size-btn" onclick="changeCardSizeTo(320)" data-size="320">XL</button>
+            </div>
           </div>
         </div>
       </div>
@@ -3989,8 +4069,10 @@
           <option value="midnight_classic">夜幕经典</option>
           <option value="ice_deep">深空冰蓝</option>
           <option value="amber_dawn">晨光琥珀</option>
+          <option value="forest_shadow">森影暮霭</option>
           <option value="sky_light">晴空浅蓝</option>
           <option value="cherry_blossom">樱雾粉昼</option>
+          <option value="lavender_dusk">暮紫微光</option>
           <option value="arctic_mint">薄荷极光</option>
         </select>
       </div>
@@ -4006,6 +4088,7 @@
           <option value="uniform_1_1">1:1 固定</option>
           <option value="uniform_4_3">4:3 固定</option>
           <option value="uniform_3_4">3:4 固定</option>
+          <option value="uniform_9_16">9:16 固定</option>
           <option value="uniform_16_9">16:9 固定</option>
         </select>
       </div>
@@ -4037,6 +4120,15 @@
           <option value="file_size|ASC">体积从小到大</option>
         </select>
       </div>
+      <div class="sheet-row">
+        <label for="mobilePageSizeSelect">每页数量</label>
+        <select id="mobilePageSizeSelect" onchange="changePageSize(this.value)">
+          <option value="50" selected>50 张/页</option>
+          <option value="80">80 张/页</option>
+          <option value="100">100 张/页</option>
+          <option value="200">200 张/页</option>
+        </select>
+      </div>
       <div class="sheet-actions">
         <button type="button" onclick="closeMobileFilterSheet()">关闭</button>
       </div>
@@ -4062,7 +4154,14 @@
           <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg>
         </button>
       </div>
-      <button class="preview-close" onclick="closePreview()" aria-label="关闭预览"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button>
+      <div class="preview-window-controls">
+        <button class="preview-info-toggle" id="previewInfoToggle" onclick="togglePreviewInfoPanel()" title="照片信息" aria-label="照片信息">
+          <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+        </button>
+        <button class="preview-close" onclick="closePreview()" aria-label="关闭预览">
+          <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>
+        </button>
+      </div>
       <div class="preview-swipe-hint" id="previewSwipeHint">左右滑动切换</div>
       <div class="preview-body">
         <button
@@ -4086,6 +4185,16 @@
           style="display: none"
         ></video>
         <button
+          class="preview-video-center-play"
+          id="previewVideoCenterPlay"
+          type="button"
+          aria-label="播放视频"
+          title="播放"
+          style="display: none"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>
+        </button>
+        <button
           class="preview-nav preview-next"
           onclick="navigatePreview(1, event)"
           aria-label="下一张"
@@ -4093,21 +4202,14 @@
           <svg class="icon" aria-hidden="true"><use href="#icon-chevron-right"/></svg>
         </button>
       </div>
-      <div class="preview-info-bar" id="previewInfo"></div>
-      <button class="exif-panel-toggle" id="exifPanelToggle" onclick="toggleExifPanel()" title="照片信息">
-        <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
-        <span>信息</span>
-      </button>
-      <div class="exif-panel" id="exifPanel">
-        <div class="exif-panel-header">
+      <div class="preview-info-panel" id="previewInfoPanel">
+        <div class="preview-info-panel-header">
           <h3>照片信息</h3>
-          <button class="exif-panel-close" onclick="toggleExifPanel()" aria-label="关闭">
+          <button class="preview-info-panel-close" onclick="togglePreviewInfoPanel()" aria-label="关闭">
             <svg class="icon"><use href="#icon-close"/></svg>
           </button>
         </div>
-        <div id="exifPanelContent">
-          <div class="exif-empty">打开照片后查看信息</div>
-        </div>
+        <div id="previewInfoPanelContent"><div class="preview-info-empty">打开照片后查看信息</div></div>
       </div>
       <div class="preview-zoom-box" id="previewZoomBox">
         <div class="preview-zoom-tooltip" role="tooltip">
@@ -4178,13 +4280,13 @@
             <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>
           </button>
         </div>
-        <p class="search-overlay-hint">输入关键词后自动搜索</p>
+        <p class="search-overlay-hint">输入关键词后按回车搜索</p>
       </div>
     </div>
 
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
-    <script src="/js/web-theme-shared.js?v=2"></script>
+    <script src="/js/web-theme-shared.js?v=3"></script>
     <script src="/js/app.js?v=2"></script>
   </body>
 </html>

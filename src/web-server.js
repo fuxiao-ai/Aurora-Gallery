@@ -22,6 +22,7 @@ function loadSharp() {
 }
 var playbackStrategy = require('./playback-strategy');
 var HlsSessionManager = require('./hls-session-manager');
+var VideoProbe = require('./video-probe');
 var runDbReadWorkerOnly = require('./db-read-runner').runDbReadWorkerOnly;
 var logger = require('./main/logger');
 
@@ -172,6 +173,7 @@ function WebServer(db, port, opts) {
             opts.hlsMaxCacheEntries !== undefined ? opts.hlsMaxCacheEntries : undefined,
         })
       : null;
+  this.videoProbe = this.ffmpegPath ? new VideoProbe({ ffmpegPath: this.ffmpegPath }) : null;
   this._hlsPruneInterval = null;
 }
 
@@ -361,7 +363,8 @@ WebServer.prototype.handleRequest = function (req, res) {
     pathname === '/apple-touch-icon.png' ||
     pathname === '/app-icon-192.png' ||
     pathname === '/app-icon-512.png' ||
-    pathname === '/favicon.ico';
+    pathname === '/favicon.ico' ||
+    pathname === '/js/web-theme-shared.js';
 
   // 密码验证：检查 session cookie（本机回环访问 HLS / 播放 API 免密，供桌面端 Electron）
   if (
@@ -1181,7 +1184,22 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
   var fileType = photo.file_type
     ? String(photo.file_type).toLowerCase()
     : extDot.replace(/^\./, '');
-  var r = playbackStrategy.resolveWebVideoPlayback(fileType);
+  var probe = null;
+  if (this.videoProbe) {
+    try {
+      probe = await new Promise(
+        function (resolve) {
+          this.videoProbe.probe(photo.file_path, function (_err, info) {
+            resolve(info || null);
+          });
+        }.bind(this),
+      );
+    } catch (eProbe) {
+      probe = null;
+    }
+  }
+  var r = playbackStrategy.resolveWebVideoPlayback(fileType, probe);
+  logger.log('[video-playback] id=%d fileType=%s tier=%s probe=%j', id, fileType, r.tier, probe);
 
   if (r.tier === 'none') {
     this.jsonResponse(res, { error: 'not_video' }, 400);
@@ -1193,13 +1211,15 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
       mode: 'progressive',
       ready: true,
       url: playbackStrategy.webDirectStreamUrl(id),
+      probe: probe || undefined,
     });
     return;
   }
 
   if (!this.hlsManager || !this.ffmpegPath) {
+    logger.warn('[video-playback] HLS unavailable: hlsManager=%s ffmpegPath=%s', !!this.hlsManager, !!this.ffmpegPath);
     this.jsonResponse(res, {
-      tier: 'hls_transcode',
+      tier: r.tier === 'hls_remux' ? 'hls_remux' : 'hls_transcode',
       mode: 'hls',
       ready: false,
       error: 'hls_unavailable',
@@ -1209,10 +1229,12 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
   }
 
   var self = this;
-  this.hlsManager.ensureSession(photo, function (err, result) {
+  var hlsMode = r.tier === 'hls_remux' ? 'remux' : 'transcode';
+
+  function sendHlsResult(tier, err, result) {
     if (err) {
       self.jsonResponse(res, {
-        tier: 'hls_transcode',
+        tier: tier,
         mode: 'hls',
         ready: false,
         error: 'hls_failed',
@@ -1221,13 +1243,41 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
       return;
     }
     var pl = playbackStrategy.hlsPlaylistPath(result.sessionId);
+    logger.log('[video-playback] HLS session ready: id=%d tier=%s sessionId=%s', id, tier, result.sessionId);
     self.jsonResponse(res, {
-      tier: 'hls_transcode',
+      tier: tier,
       mode: 'hls',
       ready: true,
       playlistUrl: pl,
       sessionId: result.sessionId,
+      probe: probe || undefined,
     });
+  }
+
+  var hlsStartTime = Date.now();
+  var hlsOpts = { mode: hlsMode };
+  if (probe && probe.videoHeight) {
+    hlsOpts.videoHeight = probe.videoHeight;
+  }
+  this.hlsManager.ensureSession(photo, hlsOpts, function (err, result) {
+    var elapsed = Date.now() - hlsStartTime;
+    if (err) {
+      logger.warn('[video-playback] HLS ensureSession failed: id=%d mode=%s elapsed=%dms error=%s', id, hlsMode, elapsed, err.message);
+      if (hlsMode === 'remux') {
+        logger.log('[video-playback] Retrying with transcode mode for id=%d', id);
+        self.hlsManager.ensureSession(photo, { mode: 'transcode', videoHeight: hlsOpts.videoHeight }, function (err2, result2) {
+          var elapsed2 = Date.now() - hlsStartTime;
+          if (err2) {
+            logger.warn('[video-playback] HLS transcode also failed: id=%d elapsed=%dms error=%s', id, elapsed2, err2.message);
+          }
+          sendHlsResult('hls_transcode', err2, result2);
+        });
+        return;
+      }
+    } else {
+      logger.log('[video-playback] HLS ensureSession success: id=%d mode=%s elapsed=%dms', id, hlsMode, elapsed);
+    }
+    sendHlsResult(hlsMode === 'remux' ? 'hls_remux' : 'hls_transcode', err, result);
   });
 };
 
@@ -1943,6 +1993,7 @@ WebServer.prototype.handleHlsFile = function (req, res, pathname) {
   var rest = pathname.slice(prefix.length);
   var slash = rest.indexOf('/');
   if (slash < 0) {
+    logger.warn('[HLS] Invalid path (no slash):', pathname);
     res.writeHead(404);
     res.end('Not Found');
     return;
@@ -1950,11 +2001,13 @@ WebServer.prototype.handleHlsFile = function (req, res, pathname) {
   var sessionId = rest.slice(0, slash);
   var file = rest.slice(slash + 1);
   if (!/^[a-f0-9]{24}$/.test(sessionId) || !file || file.indexOf('..') >= 0 || /[\\/]/.test(file)) {
+    logger.warn('[HLS] Invalid path components: sessionId=%s file=%s', sessionId, file);
     res.writeHead(400);
     res.end('Bad path');
     return;
   }
   if (!this.hlsRootDir) {
+    logger.warn('[HLS] hlsRootDir not configured');
     res.writeHead(503);
     res.end('HLS unavailable');
     return;
@@ -1963,6 +2016,7 @@ WebServer.prototype.handleHlsFile = function (req, res, pathname) {
   var full = path.resolve(base, file);
   var rel = path.relative(base, full);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    logger.warn('[HLS] Path traversal attempt: sessionId=%s file=%s rel=%s', sessionId, file, rel);
     res.writeHead(400);
     res.end('Bad path');
     return;
@@ -1980,6 +2034,11 @@ WebServer.prototype.handleHlsFile = function (req, res, pathname) {
 
   fs.stat(full, function (err, st) {
     if (err || !st.isFile()) {
+      if (err) {
+        logger.warn('[HLS] File not found: sessionId=%s file=%s error=%s', sessionId, file, err.message);
+      } else {
+        logger.warn('[HLS] Not a file: sessionId=%s file=%s', sessionId, file);
+      }
       res.writeHead(404);
       res.end('Not Found');
       return;

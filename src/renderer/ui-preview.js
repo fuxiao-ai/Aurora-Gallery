@@ -361,7 +361,6 @@
     var state = options.state || {};
     if (!dom.slideshowRandomBtn) return;
     dom.slideshowRandomBtn.classList.toggle('active', !!state.slideshowRandom);
-    dom.slideshowRandomBtn.textContent = state.slideshowRandom ? '随机:开' : '随机:关';
   }
 
   function toggleSlideshowRandom(options) {
@@ -399,7 +398,8 @@
     var photo = state.previewPhotos[state.previewIndex];
     if (!photo) return;
     var on = !!photo.is_favorite;
-    dom.previewFavoriteBtn.textContent = on ? '★ 已收藏' : '☆ 收藏';
+    var favLabel = dom.previewFavoriteBtn.querySelector('.btn-label');
+    if (favLabel) favLabel.textContent = on ? '已收藏' : '收藏';
     dom.previewFavoriteBtn.classList.toggle('active', on);
   }
 

@@ -31,28 +31,51 @@
       return side.getBoundingClientRect().width;
     }
 
-    resizer.addEventListener('mousedown', function (e) {
-      if (e.button !== 0) return;
+    function onDragStart(clientX) {
       if (window.innerWidth <= 600) return;
       var side = document.getElementById('sidebar');
       if (!side || window.getComputedStyle(side).display === 'none') return;
       dragging = true;
       resizer.classList.add('is-dragging');
-      startX = e.clientX;
+      startX = clientX;
       startW = readSidebarWidth();
-      e.preventDefault();
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
+    }
+
+    function onDragMove(clientX) {
+      if (!dragging) return;
+      var dx = clientX - startX;
+      var next = Math.round(startW + dx);
+      next = Math.max(SIDEBAR_DRAG_MIN, Math.min(SIDEBAR_DRAG_MAX, next));
+      document.documentElement.style.setProperty('--sidebar-width', next + 'px');
+    }
+
+    function onDragEnd() {
+      if (!dragging) return;
+      dragging = false;
+      resizer.classList.remove('is-dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        var side = document.getElementById('sidebar');
+        if (side && window.getComputedStyle(side).display !== 'none') {
+          var w = Math.round(side.getBoundingClientRect().width);
+          w = Math.max(SIDEBAR_DRAG_MIN, Math.min(SIDEBAR_DRAG_MAX, w));
+          localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(w));
+        }
+      } catch (e2) {}
+    }
+
+    resizer.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      onDragStart(e.clientX);
     });
 
     window.addEventListener(
       'mousemove',
       function (e) {
-        if (!dragging) return;
-        var dx = e.clientX - startX;
-        var next = Math.round(startW + dx);
-        next = Math.max(SIDEBAR_DRAG_MIN, Math.min(SIDEBAR_DRAG_MAX, next));
-        document.documentElement.style.setProperty('--sidebar-width', next + 'px');
+        onDragMove(e.clientX);
       },
       true,
     );
@@ -60,19 +83,32 @@
     window.addEventListener(
       'mouseup',
       function () {
-        if (!dragging) return;
-        dragging = false;
-        resizer.classList.remove('is-dragging');
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        try {
-          var side = document.getElementById('sidebar');
-          if (side && window.getComputedStyle(side).display !== 'none') {
-            var w = Math.round(side.getBoundingClientRect().width);
-            w = Math.max(SIDEBAR_DRAG_MIN, Math.min(SIDEBAR_DRAG_MAX, w));
-            localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(w));
-          }
-        } catch (e2) {}
+        onDragEnd();
+      },
+      true,
+    );
+
+    resizer.addEventListener('mouseleave', function () {
+      onDragEnd();
+    });
+
+    // Touch support
+    resizer.addEventListener('touchstart', function (e) {
+      if (e.touches && e.touches[0]) onDragStart(e.touches[0].clientX);
+    }, { passive: false });
+
+    window.addEventListener(
+      'touchmove',
+      function (e) {
+        if (e.touches && e.touches[0]) onDragMove(e.touches[0].clientX);
+      },
+      true,
+    );
+
+    window.addEventListener(
+      'touchend',
+      function () {
+        onDragEnd();
       },
       true,
     );
@@ -600,8 +636,10 @@
     { id: 'midnight_classic', label: '夜幕经典' },
     { id: 'ice_deep', label: '深空冰蓝' },
     { id: 'amber_dawn', label: '晨光琥珀' },
+    { id: 'forest_shadow', label: '森影暮霭' },
     { id: 'sky_light', label: '晴空浅蓝' },
     { id: 'cherry_blossom', label: '樱雾粉昼' },
+    { id: 'lavender_dusk', label: '暮紫微光' },
     { id: 'arctic_mint', label: '薄荷极光' },
   ];
 

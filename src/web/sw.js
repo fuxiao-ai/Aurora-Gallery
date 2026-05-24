@@ -1,13 +1,13 @@
 /* global self, caches */
 /* Service worker for installability and faster shell load. */
-var CACHE_NAME = 'aurora-gallery-shell-v8';
+var CACHE_NAME = 'aurora-gallery-shell-v17';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
-  '/manifest.webmanifest?v=4',
-  '/apple-touch-icon.png?v=4',
-  '/app-icon-192.png?v=4',
-  '/app-icon-512.png?v=4',
+  '/manifest.webmanifest?v=5',
+  '/apple-touch-icon.png?v=5',
+  '/app-icon-192.png?v=5',
+  '/app-icon-512.png?v=5',
   '/app-icon.svg',
   '/playback-strategy.js',
   '/hls-attach.js',
