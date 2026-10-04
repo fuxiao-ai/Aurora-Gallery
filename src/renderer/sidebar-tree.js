@@ -13,6 +13,59 @@
   /** 单根「目录行」超过此值也走渐进（避免仅一个大库仍同步构建巨型 DOM） */
   var SIDEBAR_TREE_PROGRESSIVE_FLAT_ONE_MIN = 2600;
 
+  /**
+   * 深层子树懒渲染索引：rootId -> Map(规范化 fullPath -> 节点)。
+   *
+   * 背景：大库单根可达 3 万+ 目录，此前把整棵树一次性写进 innerHTML（实测 11MB / 3.6 万
+   * 个 DOM 节点），首屏与后续每次「读侧栏 HTML / 查询侧栏节点」都要付这份代价。
+   * 而视觉上只有已展开层可见（未展开层本就是 display:none），所以把「隐藏层」的 DOM
+   * 推迟到首次展开时再按需创建 —— 观感完全一致，DOM 规模降一个数量级。
+   */
+  var lazyTreeByRoot = Object.create(null);
+  /** 最近一次整树渲染的选项（懒物化子层时需要 escape/format/state） */
+  var lazyRenderOptions = null;
+
+  /** 给某根的树建索引：规范化路径 -> 节点（供懒物化时按路径取子级） */
+  function indexTree(rootId, tree) {
+    var map = new Map();
+    (function walk(nodes) {
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        map.set(normalizePath(n.fullPath), n);
+        if (n.children && n.children.length) walk(n.children);
+      }
+    })(tree || []);
+    lazyTreeByRoot[String(rootId)] = map;
+    return map;
+  }
+
+  /** 把懒容器的子层按需物化成真实 DOM（已物化则直接返回） */
+  function materializeLazyChildren(containerEl) {
+    if (!containerEl || typeof containerEl.getAttribute !== 'function') return false;
+    var lazyPath = containerEl.getAttribute('data-lazy-path');
+    if (lazyPath == null) return false;
+    if (containerEl.getAttribute('data-lazy-ready') === '1') return true;
+    var rootId = containerEl.getAttribute('data-lazy-root');
+    var map = lazyTreeByRoot[String(rootId)];
+    var node = map ? map.get(normalizePath(lazyPath)) : null;
+    var kids = (node && node.children) || [];
+    var opts = lazyRenderOptions || {};
+    containerEl.innerHTML = renderTreeNodes(
+      kids,
+      Number(containerEl.getAttribute('data-lazy-depth')) || 2,
+      {
+        state: opts.state,
+        escapeAttr: opts.escapeAttr,
+        escapeHtml: opts.escapeHtml,
+        formatNumber: opts.formatNumber,
+        rootId: rootId,
+      },
+      null,
+    );
+    containerEl.setAttribute('data-lazy-ready', '1');
+    return true;
+  }
+
   function normalizePath(p) {
     return String(p || '').replace(/\//g, '\\');
   }
@@ -147,10 +200,15 @@
           formatNumber(node.photoCount) +
           '</span>' +
           '</div>';
+        // 子层懒渲染：只留一个带路径标记的空容器，首次展开时才物化 DOM
         html +=
-          '<div class="tree-children" style="display:none;">' +
-          renderTreeNodes(node.children, depth + 1, options, budget) +
-          '</div>';
+          '<div class="tree-children" style="display:none;" data-lazy-root="' +
+          escapeAttr(options.rootId != null ? String(options.rootId) : '') +
+          '" data-lazy-path="' +
+          escapeAttr(node.fullPath) +
+          '" data-lazy-depth="' +
+          (depth + 1) +
+          '"></div>';
         html += '</div>';
       } else {
         if (budget) budget.remaining -= 1;
@@ -183,6 +241,7 @@
     var children = treeRoot.querySelector(':scope > .tree-children');
     if (!children) return;
     if (children.style.display === 'none') {
+      materializeLazyChildren(children);
       children.style.display = 'block';
       children.classList.add('expanded');
       toggleEl.textContent = '▼';
@@ -199,6 +258,7 @@
     var children = treeNode.querySelector(':scope > .tree-children');
     if (!children) return;
     if (children.style.display === 'none') {
+      materializeLazyChildren(children);
       children.style.display = 'block';
       children.classList.add('expanded');
       toggleEl.textContent = '▼';
@@ -248,34 +308,85 @@
     return null;
   }
 
-  function expandTreeToFolder(targetPath) {
-    var targetItem = findFolderSidebarItemEl(targetPath);
-    if (!targetItem) return;
-    var parent = targetItem.parentElement;
-    while (parent && parent.id !== 'sidebarContent') {
-      if (parent.classList && parent.classList.contains('tree-children')) {
-        parent.style.display = 'block';
-        parent.classList.add('expanded');
-        var prev = parent.previousElementSibling;
-        if (prev) {
-          var toggle = prev.querySelector('.tree-toggle');
-          if (toggle) toggle.textContent = '▼';
-        }
+  /** 在给定容器内按路径精确定位目录行（优先 CSS 精确匹配，避免大目录下全表扫描） */
+  function queryFolderRow(scope, pathValue, attrName) {
+    if (!scope) return null;
+    var attr = attrName || 'data-folder-path';
+    var raw = String(pathValue || '');
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      // 渲染时 escapeAttr 会把反斜杠换成正斜杠，两种写法都试一次精确匹配
+      var candidates = [raw, raw.replace(/\\/g, '/')];
+      for (var c = 0; c < candidates.length; c++) {
+        try {
+          var hit = scope.querySelector('[' + attr + '="' + CSS.escape(candidates[c]) + '"]');
+          if (hit) return hit;
+        } catch (eSel) {}
       }
-      parent = parent.parentElement;
     }
-    // 点击到的目录若带子级，展开其下一层（tree-node 内子树或 tree-root 下第一层）
-    if (targetItem.classList && targetItem.classList.contains('tree-parent')) {
-      var host = targetItem.closest('.tree-node') || targetItem.closest('.tree-root');
-      if (host) {
-        var childWrap = host.querySelector(':scope > .tree-children');
-        if (childWrap && String(childWrap.style.display || '').toLowerCase() !== 'block') {
-          childWrap.style.display = 'block';
-          childWrap.classList.add('expanded');
-          var tgl = targetItem.querySelector('.tree-toggle');
-          if (tgl && tgl.style.visibility !== 'hidden') tgl.textContent = '▼';
-        }
+    var rows = scope.querySelectorAll('[' + attr + ']');
+    for (var i = 0; i < rows.length; i++) {
+      if (normalizePath(rows[i].getAttribute(attr)) === normalizePath(raw)) return rows[i];
+    }
+    return null;
+  }
+
+  /**
+   * 展开到指定目录。深层子层是懒渲染的，DOM 里可能还不存在，
+   * 因此这里改为「按数据链逐级物化 + 展开」，而不是依赖已在 DOM 中的祖先链。
+   */
+  function expandTreeToFolder(targetPath) {
+    var target = normalizePath(targetPath);
+    if (!target) return;
+    var root = document.getElementById('sidebarContent');
+    if (!root) return;
+
+    // 1. 定位承载该路径的根目录行
+    var rootRows = root.querySelectorAll('.tree-root > .folder-item.tree-parent[data-root-path]');
+    var hostRow = null;
+    for (var i = 0; i < rootRows.length; i++) {
+      if (isFolderPathAncestor(rootRows[i].getAttribute('data-root-path'), target)) {
+        hostRow = rootRows[i];
+        break;
       }
+    }
+    if (!hostRow) return;
+    var hostRoot = hostRow.closest('.tree-root');
+    if (!hostRoot) return;
+    var container = hostRoot.querySelector(':scope > .tree-children');
+    if (!container) return;
+
+    // 2. 展开根层（目标就是根目录本身时到此为止）
+    if (String(container.style.display || '').toLowerCase() !== 'block') {
+      materializeLazyChildren(container);
+      container.style.display = 'block';
+      container.classList.add('expanded');
+      var rootToggle = hostRow.querySelector('.tree-toggle');
+      if (rootToggle && rootToggle.style.visibility !== 'hidden') rootToggle.textContent = '▼';
+    }
+    if (normalizePath(hostRow.getAttribute('data-root-path')) === target) return;
+
+    // 3. 按路径前缀逐级物化并展开，直到目标行（含目标自身的下一层，与旧行为一致）。
+    //    只用路径前缀推进，不依赖节点之间的引用关系，数据与 DOM 不同步时也不会断链。
+    var rootPath = normalizePath(hostRow.getAttribute('data-root-path')).replace(/[\\]+$/, '');
+    var rel = target.slice(rootPath.length).replace(/^[\\]+/, '');
+    if (!rel) return;
+    var parts = rel.split(/[\\]+/);
+    var acc = rootPath;
+    for (var k = 0; k < parts.length; k++) {
+      acc = acc + '\\' + parts[k];
+      materializeLazyChildren(container);
+      var row = queryFolderRow(container, acc, 'data-folder-path');
+      if (!row) return;
+      var wrap = row.closest('.tree-node');
+      if (!wrap) return; // 叶子目录：没有可展开的子层
+      var next = wrap.querySelector(':scope > .tree-children');
+      if (!next) return;
+      materializeLazyChildren(next);
+      next.style.display = 'block';
+      next.classList.add('expanded');
+      var tg = row.querySelector('.tree-toggle');
+      if (tg && tg.style.visibility !== 'hidden') tg.textContent = '▼';
+      container = next;
     }
   }
 
@@ -301,6 +412,13 @@
         return String(v || '');
       };
     if (!gate && state.currentTab !== 'folders') return;
+
+    lazyRenderOptions = {
+      state: state,
+      escapeAttr: escapeAttr,
+      escapeHtml: escapeHtml,
+      formatNumber: formatNumber,
+    };
 
     var html = '';
     if (!Array.isArray(state.rootFolders) || state.rootFolders.length === 0) {
@@ -363,6 +481,7 @@
           return normalizePath(f.folder_path) !== normRootPath;
         });
         var tree = buildTree(root.path, subFolders);
+        indexTree(root.id, tree);
         root._hasSubFolders = tree.length > 0;
         var isActive =
           state.currentView === 'folder' &&
@@ -412,6 +531,7 @@
             escapeAttr: escapeAttr,
             escapeHtml: escapeHtml,
             formatNumber: formatNumber,
+            rootId: root.id,
           });
         }
         html += '</div></div>';
@@ -447,6 +567,13 @@
         return String(v || '');
       };
     if (!gate && st.currentTab !== 'folders') return;
+
+    lazyRenderOptions = {
+      state: st,
+      escapeAttr: escapeAttr,
+      escapeHtml: escapeHtml,
+      formatNumber: formatNumber,
+    };
 
     var html = '';
     if (!Array.isArray(st.rootFolders) || st.rootFolders.length === 0) {
@@ -519,6 +646,7 @@
       } else {
         tree = buildTree(root.path, subFolders);
       }
+      indexTree(root.id, tree);
       root._hasSubFolders = tree.length > 0;
       var isActive =
         st.currentView === 'folder' && normalizePath(st.currentPath) === normalizePath(root.path);
@@ -570,6 +698,7 @@
             escapeAttr: escapeAttr,
             escapeHtml: escapeHtml,
             formatNumber: formatNumber,
+            rootId: root.id,
           },
           globalBudget,
         );
@@ -684,6 +813,9 @@
     insertTreeNode: insertTreeNode,
     sortTree: sortTree,
     renderTreeNodes: renderTreeNodes,
+    indexTree: indexTree,
+    materializeLazyChildren: materializeLazyChildren,
+    queryFolderRow: queryFolderRow,
     toggleTreeRoot: toggleTreeRoot,
     toggleTreeNode: toggleTreeNode,
     isFolderPathAncestor: isFolderPathAncestor,

@@ -1,6 +1,6 @@
 /* global self, caches */
 /* Service worker for installability and faster shell load. */
-var CACHE_NAME = 'aurora-gallery-shell-v17';
+var CACHE_NAME = 'aurora-gallery-shell-v29';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -13,6 +13,10 @@ var SHELL_ASSETS = [
   '/hls-attach.js',
   '/js/web-theme-shared.js',
   '/js/app.js',
+  '/js/photo-compare.js?v=1',
+  '/photo-compare.css?v=1',
+  '/js/ai-views.js?v=1',
+  '/ai-web-views.css?v=1',
 ];
 
 self.addEventListener('install', function (event) {

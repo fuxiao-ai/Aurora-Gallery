@@ -244,8 +244,21 @@
     var showInvalidCleanup = !!invalidCleanup.running;
     var showOpt = !!t.optimizing;
     var showDupHash = !!dupHash.running;
+    var face = t.face || {};
+    var showFace =
+      !!face.busy &&
+      ['install', 'index', 'loading', 'indexing', 'downloading', 'stopping'].includes(face.phase);
 
-    var showPanel = showScanBlock || showThumb || showInvalidCleanup || showOpt || showDupHash;
+    var semantic = t.semantic || {};
+    var showSemantic = !!semantic.busy && ['install', 'index'].includes(semantic.operation);
+    var showPanel =
+      showScanBlock ||
+      showThumb ||
+      showInvalidCleanup ||
+      showOpt ||
+      showDupHash ||
+      showFace ||
+      showSemantic;
     dom.scanProgress.style.display = showPanel ? 'block' : 'none';
 
     var scanEl = document.getElementById('taskScanSection');
@@ -260,6 +273,74 @@
     if (invalidCleanupEl) invalidCleanupEl.style.display = showInvalidCleanup ? 'block' : 'none';
     if (optEl) optEl.style.display = showOpt ? 'block' : 'none';
     if (dupHashEl) dupHashEl.style.display = showDupHash ? 'block' : 'none';
+    for (var aiTask of [
+      {
+        state: face,
+        visible: showFace,
+        section: 'taskFaceSection',
+        prefix: 'faceTask',
+        titleEn: 'Face models / indexing',
+        titleZh: '人脸模型 / 索引',
+      },
+      {
+        state: semantic,
+        visible: showSemantic,
+        section: 'taskSemanticSection',
+        prefix: 'semanticTask',
+        titleEn: 'AI models / indexing',
+        titleZh: 'AI 模型 / 索引',
+      },
+    ]) {
+      var faceEl = document.getElementById(aiTask.section);
+      if (faceEl) faceEl.style.display = aiTask.visible ? 'block' : 'none';
+      if (aiTask.visible) {
+        var en = document.documentElement.lang.startsWith('en');
+        var faceTitle = document.getElementById(aiTask.prefix + 'Title');
+        if (faceTitle)
+          faceTitle.textContent =
+            aiTask.state.phase === 'stopping'
+              ? en
+                ? 'Stopping AI task…'
+                : '正在停止 AI 任务…'
+              : en
+                ? aiTask.titleEn
+                : aiTask.titleZh;
+        var faceCount = document.getElementById(aiTask.prefix + 'Count');
+        if (faceCount)
+          faceCount.textContent =
+            (en ? 'Processed ' : '完成 ') +
+            formatNumber(aiTask.state.processed || 0) +
+            (en ? ' · Failed ' : ' · 失败 ') +
+            formatNumber(aiTask.state.failed || 0) +
+            (en ? ' · Skipped ' : ' · 跳过 ') +
+            formatNumber(aiTask.state.skipped || 0);
+        var faceProgress = document.getElementById(aiTask.prefix + 'Progress');
+        if (faceProgress) {
+          if (aiTask.state.phase === 'downloading' && aiTask.state.file)
+            faceProgress.value = aiTask.state.percent || 0;
+          else faceProgress.removeAttribute('value');
+        }
+        var faceFile = document.getElementById(aiTask.prefix + 'File');
+        if (faceFile)
+          faceFile.textContent =
+            aiTask.state.phase === 'downloading'
+              ? aiTask.state.file || ''
+              : aiTask.state.currentFile || '';
+        var faceRate = document.getElementById(aiTask.prefix + 'Rate');
+        if (faceRate)
+          faceRate.textContent =
+            aiTask.state.ratePerMinute > 0
+              ? formatNumber(aiTask.state.ratePerMinute) +
+                (en
+                  ? ' photos/min · Completed entries are retained when stopped'
+                  : ' 张/分钟 · 停止后保留已完成结果')
+              : en
+                ? 'Preparing · You can continue browsing'
+                : '准备中 · 可继续浏览照片';
+        var faceStop = document.getElementById(aiTask.prefix + 'Stop');
+        if (faceStop) faceStop.disabled = aiTask.state.phase === 'stopping';
+      }
+    }
 
     if (badge) {
       var n = queue.pendingCount || 0;

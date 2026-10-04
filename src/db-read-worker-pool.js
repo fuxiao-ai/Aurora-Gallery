@@ -1,185 +1,137 @@
-'use strict';
+﻿'use strict';
 
 const path = require('path');
 const { Worker } = require('worker_threads');
+const POOL_SIZE = 3;
+const MAX_QUEUE = 100;
+const JOB_TIMEOUT_MS = 120000;
+let workers = [];
+let dbPathCached = '';
+let nextId = 1;
+const jobQueue = [];
 
-/** 并发只读连接数（WAL 下多读者安全）。侧栏并行 getFolderTree 与 lite=no 的全量根目录统计共用单队列时会串行排队数十秒。 */
-var POOL_SIZE = 3;
-
-var workers = [];
-var dbPathCached = '';
-var pending = Object.create(null);
-var nextId = 1;
-var jobQueue = [];
-
-function rejectAllPending(reason) {
-  Object.keys(pending).forEach(function (k) {
-    try {
-      pending[k].reject(reason);
-    } catch (e) {
-      void e;
-    }
-    delete pending[k];
-  });
+function settle(job, error, result) {
+  clearTimeout(job.timer);
+  if (job.signal) job.signal.removeEventListener('abort', job.abort);
+  if (error) job.reject(error);
+  else job.resolve(result);
 }
 
-function findIdleSlot() {
-  var i;
-  for (i = 0; i < workers.length; i++) {
-    var s = workers[i];
-    if (s && s.worker && !s.busy) return s;
+function retire(slot, error) {
+  if (!slot.worker) return;
+  const worker = slot.worker;
+  slot.worker = null;
+  slot.retiring = true;
+  if (slot.job) {
+    settle(slot.job, error);
+    slot.job = null;
   }
-  return null;
-}
-
-function trySendNext() {
-  while (jobQueue.length > 0) {
-    var slot = findIdleSlot();
-    if (!slot) return;
-    var job = jobQueue.shift();
-    slot.busy = true;
-    pending[job.id] = { resolve: job.resolve, reject: job.reject, slot: slot };
-    slot.worker.postMessage({ id: job.id, op: job.op, options: job.options });
-  }
-}
-
-function attachSlotHandlers(slot) {
-  slot.worker.on('message', function (m) {
-    slot.busy = false;
-    var p = pending[m.id];
-    delete pending[m.id];
-    if (p) {
-      if (m.ok) p.resolve(m.result);
-      else p.reject(new Error(m.error || 'db-read-worker error'));
-    }
-    trySendNext();
-  });
-  slot.worker.on('error', function (err) {
-    slot.busy = false;
-    rejectAllPending(err);
-    trySendNext();
-  });
-}
-
-function rejectQueuedJobs(reason) {
-  while (jobQueue.length > 0) {
-    var j = jobQueue.shift();
-    try {
-      j.reject(reason);
-    } catch (e) {
-      void e;
-    }
-  }
-}
-
-function destroyPool() {
-  var i;
-  for (i = 0; i < workers.length; i++) {
-    var s = workers[i];
-    if (s && s.worker) {
-      try {
-        s.worker.terminate();
-      } catch (e) {
-        void e;
-      }
-    }
-  }
-  workers = [];
-}
-
-function ensureWorker(dbPath) {
-  if (!dbPath || typeof dbPath !== 'string') {
-    throw new Error('db-read-worker-pool: invalid dbPath');
-  }
-  if (workers.length === POOL_SIZE && dbPathCached === dbPath) return;
-
-  destroyPool();
-  rejectAllPending(new Error('db worker restarted'));
-  rejectQueuedJobs(new Error('db worker restarted'));
-  dbPathCached = dbPath;
-
-  var workerPath = path.join(__dirname, 'workers', 'db-read-worker.js');
-  var j;
-  for (j = 0; j < POOL_SIZE; j++) {
-    var w = new Worker(workerPath, {
-      workerData: { dbPath: dbPath },
+  // Keep the error listener installed while termination is in flight.
+  worker
+    .terminate()
+    .catch(() => {})
+    .finally(() => {
+      slot.retiring = false;
+      dispatch();
     });
-    var slot = { worker: w, busy: false };
-    attachSlotHandlers(slot);
-    workers.push(slot);
-  }
-  trySendNext();
 }
 
-/**
- * 与连接池无关的单次只读任务：池 job 失败或队列异常时再用，避免退回主进程跑大查询。
- */
-function runOneshot(dbPath, op, options) {
-  return new Promise(function (resolve, reject) {
+function createSlot(slot) {
+  const worker = new Worker(path.join(__dirname, 'workers', 'db-read-worker.js'), {
+    workerData: { dbPath: dbPathCached },
+  });
+  slot.worker = worker;
+  worker.on('message', (message) => {
+    if (slot.worker !== worker || !slot.job || message.id !== slot.job.id) return;
+    const job = slot.job;
+    slot.job = null;
+    settle(
+      job,
+      message.ok ? null : new Error(message.error || 'db-read-worker error'),
+      message.result,
+    );
+    dispatch();
+  });
+  function fail(error) {
+    if (slot.worker !== worker) return;
+    retire(slot, error);
+    // Recreate lazily for the next queued request; no idle crash/restart loop.
+    dispatch();
+  }
+  worker.on('error', fail);
+  worker.on('exit', (code) => fail(new Error('db-read-worker exited: ' + code)));
+}
+
+function dispatch() {
+  for (const slot of workers) {
+    if (!jobQueue.length) break;
+    if (slot.job || slot.retiring) continue;
+    const job = jobQueue.shift();
+    try {
+      if (!slot.worker) createSlot(slot);
+      slot.job = job;
+      slot.worker.postMessage({ id: job.id, op: job.op, options: job.options });
+    } catch (error) {
+      if (slot.job) retire(slot, error);
+      else settle(job, error);
+    }
+  }
+  // Constructor/clone errors must not strand the remaining queue.
+  if (jobQueue.length && workers.some((slot) => !slot.job && !slot.retiring))
+    setImmediate(dispatch);
+}
+
+function terminate() {
+  const old = workers;
+  workers = [];
+  dbPathCached = '';
+  const error = new Error('db worker terminated');
+  while (jobQueue.length) settle(jobQueue.shift(), error);
+  for (const slot of old) retire(slot, error);
+}
+
+function run(dbPath, op, options, control = {}) {
+  return new Promise((resolve, reject) => {
+    if (control.signal && control.signal.aborted) {
+      reject(new Error('db-read cancelled'));
+      return;
+    }
     if (!dbPath || typeof dbPath !== 'string') {
       reject(new Error('db-read-worker-pool: invalid dbPath'));
       return;
     }
-    var workerPath = path.join(__dirname, 'workers', 'db-read-worker.js');
-    var w = new Worker(workerPath, {
-      workerData: { dbPath: dbPath },
-    });
-    var settled = false;
-    function finish(err, result) {
-      if (settled) return;
-      settled = true;
-      try {
-        w.removeAllListeners('message');
-        w.removeAllListeners('error');
-        w.terminate();
-      } catch (e) {
-        void e;
+    if (dbPathCached !== dbPath) {
+      terminate();
+      dbPathCached = dbPath;
+      workers = Array.from({ length: POOL_SIZE }, () => ({ worker: null, job: null }));
+    }
+    if (jobQueue.length >= MAX_QUEUE) {
+      reject(new Error('db-read-worker queue full'));
+      return;
+    }
+    const job = { id: nextId++, op, options: options || {}, resolve, reject, timer: null };
+    function cancel(error) {
+      const index = jobQueue.indexOf(job);
+      if (index >= 0) {
+        jobQueue.splice(index, 1);
+        settle(job, error);
+      } else {
+        const slot = workers.find((item) => item.job === job);
+        if (slot) retire(slot, error);
       }
-      if (err) reject(err);
-      else resolve(result);
+      dispatch();
     }
-    w.on('message', function (m) {
-      if (m && m.ok) finish(null, m.result);
-      else finish(new Error((m && m.error) || 'db-read-worker error'));
-    });
-    w.on('error', function (err) {
-      finish(err);
-    });
-    w.postMessage({ id: 1, op: op, options: options || {} });
+    job.signal = control.signal;
+    job.abort = () => cancel(new Error('db-read cancelled'));
+    // Deadline includes queue time so every accepted request eventually settles.
+    // 带上 op 名：同时挤在队列里时，光看「timeout」分不出是哪个查询被拖死的。
+    job.timer = setTimeout(() => {
+      cancel(new Error('db-read-worker timeout: ' + job.op));
+    }, JOB_TIMEOUT_MS);
+    jobQueue.push(job);
+    if (job.signal) job.signal.addEventListener('abort', job.abort, { once: true });
+    dispatch();
   });
 }
 
-/**
- * 在独立线程执行只读重查询，主进程可继续响应窗口与 IPC。
- */
-function run(dbPath, op, options) {
-  return new Promise(function (resolve, reject) {
-    try {
-      ensureWorker(dbPath);
-      var id = nextId++;
-      jobQueue.push({
-        id: id,
-        op: op,
-        options: options || {},
-        resolve: resolve,
-        reject: reject,
-      });
-      trySendNext();
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
-function terminate() {
-  destroyPool();
-  dbPathCached = '';
-  rejectQueuedJobs(new Error('db worker terminated'));
-  rejectAllPending(new Error('db worker terminated'));
-}
-
-module.exports = {
-  run: run,
-  runOneshot: runOneshot,
-  terminate: terminate,
-};
+module.exports = { run, terminate };

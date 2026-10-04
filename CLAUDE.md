@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Aurora Gallery (拂晓图库, npm `aurora-gallery`) is a local-first Electron photo library app with a built-in web server for LAN access. It handles large libraries (tens of thousands to millions of photos, including RAW) using SQLite (`better-sqlite3`, WAL mode) with worker threads for scanning and heavy DB reads.
 
-**Version**: 1.0.3 — release version lives in `package.json`; bump before shipping and sync "About" strings.
+**Version**: 1.2.0 — release version lives in `package.json`; bump before shipping and sync "About" strings.
 
 ## Requirements
 
@@ -95,9 +95,11 @@ Fully bilingual (zh-CN / en) as of v1.0.3. Locale key is `uiLocale` (`zh-CN` or 
 
 ### Refactoring in Progress
 
-`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3800 lines) are acknowledged technical debt. `main.js` has already been modularized into `src/main/*.js` (IPC handlers, task scheduler, settings, utilities, logging). `src/renderer/modules/*.js` was removed (orphaned dead code).
+`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3800 lines) are acknowledged technical debt. Part of `main.js` has been split into `src/main/*.js`, but **check actual imports before assuming a module is connected to the runtime**. Only these are wired up: `browse-requests`, `database-maintenance`, `maintenance-guard`, `semantic-search`, `face-service`, `perceptual-hash`, `similar-detection`, `startup-metrics`, `logger`.
 
-When editing these large files, prefer small, focused changes. When adding new features, use the new modular locations.
+Everything else in that directory — `ipc-handlers.js`, `task-scheduler.js`, `thumbnail-backfill.js`, `settings.js`, `window-tray.js`, `duplicate-detection.js`, `dhash-backfill.js`, `cloudflare-tunnel.js`, `utils.js` — is an **unconnected orphan chain**: those files only require each other, never `main.js`. Their logic also exists in duplicated form inside `main.js` (e.g. `createDefaultSettings`, the thumbnail backfill loop now living in `runRowsWithThumbConcurrency`), so editing them changes nothing at runtime. The duplicates have already drifted — `src/main/settings.js` and `main.js` disagree on `autoThumbBackfillOnStartup` and `thumbBackfillConcurrency`.
+
+`src/renderer/modules/*.js` was removed (orphaned dead code). When editing the large files, prefer small, focused changes. When adding new features, use the modular locations that are actually wired up.
 
 ### IPC Boundary
 
@@ -117,12 +119,35 @@ For IPC handlers:
 
 ### Web App Structure
 
-The web app (`src/web/`) was recently refactored from inline scripts/styles into:
+The web app (`src/web/`) is served as static assets by `web-server.js`:
 
+- `src/web/index.html` — page shell with the main styles inline
 - `src/web/js/app.js` — web app logic
-- `src/web/css/style.css` — extracted styles
+- `src/web/js/ai-views.js` — 「搜图 / 人物」adapter: the file-bar tabs own the entry and results
+  are rendered into the shared `#photoGrid`, so preview / slideshow / favorite / selection are reused
+- `src/web/css/` — stylesheets (`gallery-design.css`, `photo-compare.css`, `ai-web-views.css`);
+  `semantic-search.css` / `people.css` are now loaded only by the desktop renderer, for its
+  AI settings panels (`settingsOnly` mode)
 
-The web app shares API parity with desktop (filters, preview, slideshow, mobile touch) but is served as static assets by `web-server.js`.
+The web app shares API parity with desktop (filters, preview, slideshow, mobile touch).
+
+### AI Views (搜图 / 人物)
+
+Both runtimes render these two views into the shared `#photoGrid`, so the whole browse chain
+(preview paging, slideshow, favorite, selection, card size) is reused rather than re-implemented.
+Only the entry point and the toolbar differ by runtime:
+
+- **Desktop**: the left icon rail carries 「搜图 / 人物」 next to 「重复」. Entering one swaps the
+  toolbar to the AI search box / back button / status slot (`src/renderer/ai-views.js` +
+  `ai-views.css`, wired from `app.js` via `showTabContent`).
+- **Web**: the folder-bar tabs carry them (`src/web/js/ai-views.js` + `css/ai-web-views.css`).
+
+The sidebar is deliberately **not** blanked out: the folder tree stays visible so the user can
+keep switching directories, and the person view additionally keeps its two sidebar shortcuts.
+Both adapters collapse the preview window to a single page (`previewTotalPages = 1`) so paging
+only slices the result set instead of re-querying the browse list. Leaving the view via the
+sidebar (folder / date) must go through `leaveAiViewForBrowse` (desktop) /
+`leaveWebAiViewForBrowse` (web) — those paths bypass `showTabContent` / `switchTab`.
 
 ## ESLint Configuration
 

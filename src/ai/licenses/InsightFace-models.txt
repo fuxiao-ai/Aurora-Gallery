@@ -1,0 +1,56 @@
+InsightFace 预训练模型 — 许可证与来源说明
+================================================
+
+本目录下的模型文件：
+
+  w600k_mbf.onnx
+
+来源：InsightFace 官方发布包 buffalo_sc.zip
+      https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+      项目主页 https://github.com/deepinsight/insightface
+
+------------------------------------------------
+1. 代码：MIT
+------------------------------------------------
+InsightFace 的项目代码以 MIT 许可证发布，学术与商业使用均无限制。
+
+  原文（InsightFace README, License 章节）：
+  "The code of InsightFace is released under the MIT License. There is no
+   limitation for both academic and commercial usage."
+
+------------------------------------------------
+2. 预训练模型：仅限非商业研究用途
+------------------------------------------------
+**预训练权重（含 buffalo_sc / buffalo_l 等模型包）不在 MIT 覆盖范围内**，
+只能用于非商业研究目的。
+
+  原文（InsightFace README, License 章节）：
+  "The training data containing the annotation (and the models trained with
+   these data) are available for non-commercial research purposes only."
+
+  "Both manual-downloading models from our github repo and auto-downloading
+   models with our python-library follow the above license policy (which is
+   for non-commercial research purposes only)."
+
+  即：手动下载与自动下载的模型，一律适用「仅限非商业研究用途」。
+
+------------------------------------------------
+3. 商业授权
+------------------------------------------------
+开源人脸识别模型（如 buffalo_l / buffalo_sc）若需商业使用，须另行取得授权。
+官方指定的联系方式（InsightFace README, 2025-11-24 Update）：
+
+  开源人脸识别模型（buffalo_l / buffalo_sc 等）：
+      recognition-oss-pack@insightface.ai
+
+------------------------------------------------
+4. 本应用的取舍
+------------------------------------------------
+本项目以「非商业研究用途」为前提引入该模型，用以替换原先的 OpenCV SFace
+（Apache-2.0）。若本应用要转为商业发行，**必须**先替换掉该权重或取得上述授权。
+
+作为对照，上一代识别器 OpenCV SFace 使用 Apache License 2.0，商用无障碍；
+其许可证文本见同目录 SFace-Apache-2.0.txt。
+
+安装本模型即表示接受上述条款。原文以 InsightFace 官方仓库为准：
+https://github.com/deepinsight/insightface

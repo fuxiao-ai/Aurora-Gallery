@@ -4,21 +4,21 @@
 (function (global) {
   var WEB_THEME_PRESETS = {
     midnight_classic: {
-      bg: '#0b0b1a',
-      bgSidebar: '#101026',
-      bgCard: '#171736',
-      bgHover: '#23234a',
-      bgActive: '#313164',
-      text: '#f0f1ff',
-      textSecondary: '#bcc0e6',
-      textMuted: '#7074a1',
+      bg: '#121618',
+      bgSidebar: '#181d20',
+      bgCard: '#202629',
+      bgHover: '#293135',
+      bgActive: '#323c41',
+      text: '#eef1f2',
+      textSecondary: '#bbc4c8',
+      textMuted: '#97a3aa',
       accent: '#7b8cff',
       accentHover: '#9aa8ff',
       accentDim: 'rgba(123, 140, 255, 0.12)',
       accentGlow: 'rgba(123, 140, 255, 0.42)',
-      border: '#23234a',
-      glass: 'rgba(18, 18, 44, 0.76)',
-      glassBorder: 'rgba(123, 140, 255, 0.16)',
+      border: '#30393e',
+      glass: '#181d20',
+      glassBorder: '#30393e',
     },
     ice_deep: {
       bg: '#000000',
@@ -160,6 +160,10 @@
   function applyWebThemeVariables(root, id) {
     var themeId = normalizeWebThemeStyle(id);
     var t = WEB_THEME_PRESETS[themeId];
+    root.setAttribute('data-theme', hexLuminance(t.bg) > 0.55 ? 'light' : 'dark');
+    root.style.setProperty('--bg-primary', t.bg);
+    root.style.setProperty('--bg-secondary', t.bgSidebar);
+    root.style.setProperty('--text-primary', t.text);
     root.style.setProperty('--bg', t.bg);
     root.style.setProperty('--bg-sidebar', t.bgSidebar);
     root.style.setProperty('--bg-card', t.bgCard);

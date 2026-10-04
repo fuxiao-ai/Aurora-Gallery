@@ -17,6 +17,16 @@
   }
 
   // ===== settings-flow.js =====
+  /**
+   * 每页张数档位：与底栏「每页数量」控件、主进程校验共用一份（`utils.js` 的
+   * `BROWSE_PAGE_SIZE_TIERS`）。这里保留同值字面量兜底，与 app.js 取 `CARD_SIZE_TIERS`
+   * 的写法一致——本文件可能被单独加载，不能假设 utils.js 一定先跑。
+   */
+  function browsePageSizeTiers() {
+    var list = window.RendererUtils && window.RendererUtils.BROWSE_PAGE_SIZE_TIERS;
+    return list && list.length ? list : [10, 20, 50, 80, 100, 200];
+  }
+
   function openSettingsPage(options) {
     options = options || {};
     var state = options.state || {};
@@ -29,7 +39,12 @@
         state.currentTab && state.currentTab !== 'settings'
           ? state.currentTab
           : state.prevTab || 'folders';
-      var ok = cur === 'folders' || cur === 'dates' || cur === 'duplicates';
+      var ok =
+        cur === 'folders' ||
+        cur === 'dates' ||
+        cur === 'duplicates' ||
+        cur === 'people' ||
+        cur === 'search';
       state.tabBeforeSettings = ok ? cur : 'folders';
     })();
     state.currentTab = 'settings';
@@ -39,13 +54,15 @@
 
     if (dom.contentArea) dom.contentArea.style.display = 'none';
     if (dom.settingsPage) dom.settingsPage.style.display = 'flex';
-    document.documentElement.classList.add('settings-page-open');
+    // 「settings-page-open」不在这里加：三个页面态 class（settings / search / people）
+    // 一律由 app.js 的 syncPageOpenClasses 从 state.currentTab 派生，
+    // 调用方 openSettingsPage 已经先 syncNavigationRail('settings') 对齐过一次。
 
     var sidebar = document.getElementById('sidebar');
     var sidebarResizer = document.getElementById('sidebarResizer');
-    if (sidebarUi.hideSidebar) sidebarUi.hideSidebar(sidebar);
-    else if (sidebar) sidebar.style.display = 'none';
-    if (sidebarResizer) sidebarResizer.style.display = 'none';
+    if (sidebarUi.showSidebarOnDesktop) sidebarUi.showSidebarOnDesktop(sidebar, state.isMobile);
+    else if (sidebar) sidebar.style.display = '';
+    if (sidebarResizer) sidebarResizer.style.display = state.isMobile ? 'none' : '';
     // 保留侧栏 DOM，返回相册时可软恢复，避免整树与网格重载
 
     if (typeof options.onCloseMobileSidebar === 'function') options.onCloseMobileSidebar();
@@ -57,6 +74,7 @@
     if (typeof options.onLoadSettingsUI === 'function')
       done = Promise.resolve(options.onLoadSettingsUI());
     return done.then(function () {
+      if (state.currentTab !== 'settings') return;
       if (typeof options.onStartSettingsHydrateRetryIfNeeded === 'function')
         options.onStartSettingsHydrateRetryIfNeeded();
       if (typeof options.onRestoreSettingsPageSectionScroll === 'function')
@@ -74,9 +92,16 @@
 
     if (dom.contentArea) dom.contentArea.style.display = '';
     if (dom.settingsPage) dom.settingsPage.style.display = 'none';
-    document.documentElement.classList.remove('settings-page-open');
+    // 同上：页面态 class 由 syncPageOpenClasses 派生，末尾 onShowTabContent → showTabContent
+    // → syncNavigationRail 会把它摘掉；app.js 的 closeSettingsPage 之后还会再兜一次对齐。
     var restoreTab = state.tabBeforeSettings || state.prevTab || 'folders';
-    if (restoreTab !== 'folders' && restoreTab !== 'dates' && restoreTab !== 'duplicates') {
+    if (
+      restoreTab !== 'folders' &&
+      restoreTab !== 'dates' &&
+      restoreTab !== 'duplicates' &&
+      restoreTab !== 'people' &&
+      restoreTab !== 'search'
+    ) {
       restoreTab = 'folders';
     }
     state.currentTab = restoreTab;
@@ -212,7 +237,7 @@
     if (sb && allowed.indexOf(sb) >= 0) state.sortBy = sb;
     if (so === 'ASC' || so === 'DESC') state.sortOrder = so;
     var ps = parseInt(settings.browsePageSize, 10);
-    if ([10, 20, 50, 80, 100, 200].indexOf(ps) >= 0) state.pageSize = ps;
+    if (browsePageSizeTiers().indexOf(ps) >= 0) state.pageSize = ps;
     var cs = snapBrowseCardBasis(settings.browseCardSize);
     var cr = String(settings.browseCardRatio || '').trim();
     if (cr !== '1 / 1' && cr !== '3 / 4' && cr !== '4 / 3' && cr !== '9 / 16' && cr !== '16 / 9')
@@ -224,6 +249,8 @@
     state.browseFolderIncludeSubfolders = settings.browseFolderIncludeSubfolders !== false;
     if (dom.sortSelect) dom.sortSelect.value = state.sortBy + '|' + state.sortOrder;
     onApplyCardSize();
+    // 底栏「每页数量」读数与 state.pageSize 同源，跟着这次应用一起刷新（可选回调，旧调用方不受影响）
+    if (typeof options.onApplyPageSize === 'function') options.onApplyPageSize();
     onSetBrowseAppliedSnapshotFromObject(settings);
   }
 
@@ -242,6 +269,8 @@
     if (tcEl) tcEl.value = state.thumbCrop ? '1' : '0';
     var sfEl = document.getElementById('settingBrowseFolderIncludeSubfolders');
     if (sfEl) sfEl.value = state.browseFolderIncludeSubfolders !== false ? '1' : '0';
+    var vcbEl = document.getElementById('settingVideoClickBehavior');
+    if (vcbEl) vcbEl.value = state.videoClickBehavior === 'embedded' ? 'embedded' : 'system';
   }
 
   async function persistBrowsePrefsFromForm(options) {
@@ -281,7 +310,7 @@
     if (allowed.indexOf(sb) < 0) return;
     if (so !== 'ASC' && so !== 'DESC') so = 'DESC';
     var ps = parseInt(psEl.value, 10);
-    if ([10, 20, 50, 80, 100, 200].indexOf(ps) < 0) ps = 20;
+    if (browsePageSizeTiers().indexOf(ps) < 0) ps = 20;
     var cs = snapBrowseCardBasis(csEl.value);
     var parsedGs = parseBrowseGridStyleValue(gsEl.value);
     var cl = parsedGs.layout === 'uniform' ? 'uniform' : 'masonry';
@@ -292,6 +321,8 @@
     if (BROWSE_GRID_STYLE_RATIOS.indexOf(cr) < 0) cr = '1 / 1';
     var tc = tcEl.value === '1';
     var folderInc = sfEl ? sfEl.value === '1' : state.browseFolderIncludeSubfolders !== false;
+    var vcbEl = document.getElementById('settingVideoClickBehavior');
+    var videoClickBehavior = vcbEl && vcbEl.value === 'embedded' ? 'embedded' : 'system';
     var b = state.browsePrefsApplied;
     if (
       b &&
@@ -302,7 +333,8 @@
       cr === b.cardRatio &&
       tc === !!b.thumbCrop &&
       cl === (b.cardLayoutMode || 'masonry') &&
-      folderInc === !!b.browseFolderIncludeSubfolders
+      folderInc === !!b.browseFolderIncludeSubfolders &&
+      videoClickBehavior === (b.videoClickBehavior || 'system')
     )
       return;
 
@@ -316,6 +348,7 @@
         browseThumbCrop: tc,
         browseCardLayout: cl,
         browseFolderIncludeSubfolders: folderInc,
+        videoClickBehavior: videoClickBehavior,
       });
       onApplyBrowsePreferencesFromSettings(r);
       onSyncBrowsePrefsFormFromRuntimeState();
@@ -380,6 +413,7 @@
     var subWeightEl = document.getElementById('settingSubtitleFontWeight');
     var subColorEl = document.getElementById('settingSubtitleColor');
     var concEl = document.getElementById('settingThumbBackfillConcurrency');
+    var similarThresholdEl = document.getElementById('settingSimilarThreshold');
     if (
       !auto ||
       !autoThumb ||
@@ -424,6 +458,9 @@
     }
     var thumbConc = normalizeThumbBackfillConcurrency(concEl.value);
     if (concEl.value !== String(thumbConc)) concEl.value = String(thumbConc);
+    var similarThreshold = parseInt(similarThresholdEl && similarThresholdEl.value, 10);
+    if (isNaN(similarThreshold) || similarThreshold < 0) similarThreshold = 12;
+    if (similarThreshold > 64) similarThreshold = 64;
     var ap = state.generalSettingsApplied;
     if (
       ap &&
@@ -436,7 +473,8 @@
       subSize === ap.subtitleFontSizePx &&
       subWeight === ap.subtitleFontWeight &&
       subColor === ap.subtitleColor &&
-      thumbConc === normalizeThumbBackfillConcurrency(ap.thumbBackfillConcurrency)
+      thumbConc === normalizeThumbBackfillConcurrency(ap.thumbBackfillConcurrency) &&
+      similarThreshold === Math.max(0, Math.min(64, parseInt(ap.similarThreshold, 10) || 12))
     ) {
       return;
     }
@@ -452,6 +490,7 @@
         subtitleFontWeight: subWeight,
         subtitleColor: subColor,
         thumbBackfillConcurrency: thumbConc,
+        similarThreshold: similarThreshold,
       });
       onSyncAppearanceFromSettings(r);
       onSetGeneralSettingsAppliedFromObject(r);
@@ -472,8 +511,12 @@
       onApplySubtitleStyleFromSettings(r);
       if (concEl)
         concEl.value = String(normalizeThumbBackfillConcurrency(r.thumbBackfillConcurrency));
-      onSaveLastSettingsSectionId('settingsSectionGeneral');
-      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionGeneral');
+      if (similarThresholdEl)
+        similarThresholdEl.value = String(
+          Math.max(0, Math.min(64, parseInt(r.similarThreshold, 10) || 12)),
+        );
+      onSaveLastSettingsSectionId('settingsSectionApp');
+      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionApp');
     } catch (e) {
       if (typeof appAlert === 'function')
         appAlert(
@@ -492,6 +535,10 @@
         if (launchDefaultEl) launchDefaultEl.value = ap.launchDefaultPage || 'all_photos';
         if (concEl)
           concEl.value = String(normalizeThumbBackfillConcurrency(ap.thumbBackfillConcurrency));
+        if (similarThresholdEl)
+          similarThresholdEl.value = String(
+            Math.max(0, Math.min(64, parseInt(ap.similarThreshold, 10) || 12)),
+          );
         onSyncThemeStyleControls(ap.themeStyle);
         onSyncSubtitleStyleControlsFromSettings(ap);
         onApplySubtitleStyleFromSettings(ap);
@@ -547,8 +594,7 @@
         window.I18n.setLocale(v);
       }
       setLocaleSelectValuePair(v);
-      var sid =
-        typeof getLastSectionId === 'function' ? getLastSectionId() : 'settingsSectionGeneral';
+      var sid = typeof getLastSectionId === 'function' ? getLastSectionId() : 'settingsSectionApp';
       if (typeof onRenderSettingsNav === 'function' && state.currentTab === 'settings')
         onRenderSettingsNav(sid);
       if (typeof options.onAfterLocaleChange === 'function') options.onAfterLocaleChange();
@@ -591,8 +637,8 @@
       if (['ask', 'tray', 'quit'].indexOf(wv) < 0) wv = v;
       state.windowCloseBehaviorApplied = wv;
       sel.value = wv;
-      onSaveLastSettingsSectionId('settingsSectionCloseBehavior');
-      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionCloseBehavior');
+      onSaveLastSettingsSectionId('settingsSectionApp');
+      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionApp');
     } catch (e) {
       if (typeof appAlert === 'function')
         appAlert(

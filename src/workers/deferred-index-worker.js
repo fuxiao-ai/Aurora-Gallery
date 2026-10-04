@@ -17,6 +17,7 @@ var results = {};
 // Phase 0: root_folder composite index
 try {
   db.exec('CREATE INDEX IF NOT EXISTS idx_photos_root_folder ON photos(root_id, folder_path)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_photos_folder_nocase ON photos(folder_path COLLATE NOCASE)');
   results.phase0 = 'ok';
 } catch (e) {
   results.phase0 = e && e.message ? e.message : String(e);

@@ -18,7 +18,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5" />
     <link rel="preload" href="/playback-strategy.js" as="script" />
     <link rel="preload" href="/js/web-theme-shared.js?v=3" as="script" />
-    <link rel="preload" href="/js/app.js?v=2" as="script" />
+    <link rel="preload" href="/js/app.js?v=4" as="script" />
     <title>拂晓图库 · Aurora Gallery</title>
     <style>
       * {
@@ -195,6 +195,10 @@
         }
       }
       .header-title {
+        /* 顶栏搜索框移除后，靠标题的右侧自动边距把统计与筛选选择器顶到最右。
+           放在标题而不是 .header-stats 上：后者在 max-height:700px 会被隐藏，
+           那种情况下选择器仍需贴右。 */
+        margin-right: auto;
         font-size: 15px;
         font-weight: 700;
         white-space: nowrap;
@@ -208,123 +212,6 @@
         background-clip: text;
         letter-spacing: 0.3px;
         transition: max-width 0.2s ease;
-      }
-      .search-box {
-        flex: 1;
-        max-width: 420px;
-        margin: 0 auto;
-        position: relative;
-      }
-      .search-box input {
-        width: 100%;
-        padding: 10px 16px 10px 40px;
-        border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
-        border-radius: 999px;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 55%, transparent) 0%,
-          color-mix(in srgb, var(--glass) 75%, transparent) 100%
-        );
-        color: var(--text);
-        font-size: 14px;
-        outline: none;
-        transition:
-          border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-          background 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-        backdrop-filter: blur(16px) saturate(1.35);
-        -webkit-backdrop-filter: blur(16px) saturate(1.35);
-      }
-      .search-box input::placeholder {
-        color: var(--text-muted);
-      }
-      .search-box input:focus {
-        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 70%, transparent) 0%,
-          color-mix(in srgb, var(--accent) 9%, transparent) 100%
-        );
-      }
-      .search-box .search-icon {
-        position: absolute;
-        left: 14px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
-        font-size: 14px;
-        pointer-events: none;
-        opacity: 0.92;
-      }
-
-      /* Search history dropdown */
-      .search-history {
-        position: absolute;
-        top: calc(100% + 6px);
-        left: 0;
-        right: 0;
-        background: color-mix(in srgb, var(--bg-card) 94%, transparent);
-        border: 1px solid var(--glass-border);
-        border-radius: var(--radius);
-        backdrop-filter: blur(24px) saturate(1.4);
-        -webkit-backdrop-filter: blur(24px) saturate(1.4);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-        z-index: 100;
-        overflow: hidden;
-        opacity: 0;
-        transform: translateY(-8px);
-        pointer-events: none;
-        transition: all 0.18s var(--ease-out);
-      }
-      .search-history.show {
-        opacity: 1;
-        transform: translateY(0);
-        pointer-events: auto;
-      }
-      .search-history-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 14px 6px;
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-muted);
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .search-history-clear {
-        font-size: 11px;
-        color: var(--text-muted);
-        cursor: pointer;
-        background: none;
-        border: none;
-        padding: 2px 6px;
-        border-radius: 4px;
-        transition: all 0.12s;
-        text-transform: none;
-        letter-spacing: 0;
-      }
-      .search-history-clear:hover {
-        color: var(--danger);
-        background: color-mix(in srgb, var(--danger) 10%, transparent);
-      }
-      .search-history-item {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 9px 14px;
-        font-size: 13px;
-        color: var(--text);
-        cursor: pointer;
-        transition: background 0.12s;
-      }
-      .search-history-item:hover {
-        background: color-mix(in srgb, var(--accent) 10%, transparent);
-      }
-      .search-history-item .icon {
-        width: 14px;
-        height: 14px;
-        color: var(--text-muted);
-        flex-shrink: 0;
       }
       .header-stats {
         flex: 0 1 auto;
@@ -684,9 +571,6 @@
         align-items: center;
         justify-content: center;
       }
-      .tree-toggle.expanded .tree-toggle-icon {
-        transform: rotate(90deg);
-      }
       .tree-toggle:hover {
         color: var(--text);
         background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
@@ -846,20 +730,6 @@
         backdrop-filter: blur(18px) saturate(1.25);
         -webkit-backdrop-filter: blur(18px) saturate(1.25);
       }
-      .toolbar-path {
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        padding: 6px 0 6px 14px;
-        border-left: 3px solid color-mix(in srgb, var(--accent) 72%, transparent);
-        border-radius: 2px;
-        line-height: 1.35;
-      }
       .toolbar select {
         padding: 7px 14px;
         border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
@@ -886,22 +756,6 @@
           color-mix(in srgb, var(--bg-card) 68%, transparent) 0%,
           color-mix(in srgb, var(--accent) 8%, transparent) 100%
         );
-      }
-      .toolbar-filter-btn {
-        display: none;
-        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
-        border-radius: 999px;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 55%, transparent) 0%,
-          color-mix(in srgb, var(--glass) 78%, transparent) 100%
-        );
-        color: var(--text);
-        font-size: 12px;
-        font-weight: 600;
-        min-height: 38px;
-        padding: 0 14px;
-        cursor: pointer;
       }
 
       /* comment cleaned */
@@ -1314,8 +1168,13 @@
         }
       }
       @keyframes emptyFloat {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-8px); }
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-8px);
+        }
       }
       .empty-state {
         display: flex;
@@ -1349,10 +1208,6 @@
           0 8px 32px color-mix(in srgb, var(--accent) 12%, transparent),
           inset 0 1px 0 color-mix(in srgb, var(--accent) 15%, transparent);
         animation: emptyFloat 4s ease-in-out infinite;
-      }
-      .empty-state .empty-state-icon {
-        font-size: 42px;
-        line-height: 1;
       }
       .empty-state .icon {
         margin-bottom: 16px;
@@ -1505,12 +1360,20 @@
         padding: 0 14px;
         font-size: 13px;
         font-weight: 600;
-        background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, var(--accent) 10%, transparent));
+        background: linear-gradient(
+          135deg,
+          color-mix(in srgb, var(--accent) 22%, transparent),
+          color-mix(in srgb, var(--accent) 10%, transparent)
+        );
         border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
         color: var(--accent);
       }
       .pagination button.pagination-random:hover {
-        background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 36%, transparent), color-mix(in srgb, var(--accent) 18%, transparent));
+        background: linear-gradient(
+          135deg,
+          color-mix(in srgb, var(--accent) 36%, transparent),
+          color-mix(in srgb, var(--accent) 18%, transparent)
+        );
         border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
         box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);
       }
@@ -1930,9 +1793,6 @@
         font-size: 12px;
         cursor: pointer;
       }
-      .preview-slideshow-controls .subtitle-setting {
-        max-width: 88px;
-      }
       .preview-slideshow-controls select {
         padding: 4px 10px;
         border-radius: 999px;
@@ -1958,7 +1818,9 @@
         background: transparent;
         color: rgba(255, 255, 255, 0.7);
         cursor: pointer;
-        transition: background 0.15s, color 0.15s;
+        transition:
+          background 0.15s,
+          color 0.15s;
         padding: 0;
         flex-shrink: 0;
       }
@@ -1966,8 +1828,13 @@
         background: rgba(255, 255, 255, 0.12);
         color: #fff;
       }
-      .preview-action-btn.active { color: #ff6b81; }
-      .preview-action-btn .icon { width: 18px; height: 18px; }
+      .preview-action-btn.active {
+        color: #ff6b81;
+      }
+      .preview-action-btn .icon {
+        width: 18px;
+        height: 18px;
+      }
       .preview-zoom-box {
         position: absolute;
         bottom: 24px;
@@ -2075,9 +1942,6 @@
         }
         .toolbar {
           padding: 8px 12px;
-        }
-        .toolbar-path {
-          font-size: 13px;
         }
         .toolbar select {
           font-size: 12px;
@@ -2296,14 +2160,6 @@
         .header-title {
           font-size: 14px;
         }
-        .search-box {
-          max-width: none;
-        }
-        .search-box input {
-          padding: 8px 14px 8px 36px;
-          font-size: 13px;
-          border-radius: 999px;
-        }
         .header-stats {
           display: none;
         }
@@ -2316,15 +2172,6 @@
         .toolbar {
           display: none;
         }
-        .search-box {
-          display: none;
-        }
-        .toolbar-filter-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-height: 40px;
-        }
         .photo-grid {
           padding: 8px;
         }
@@ -2333,16 +2180,6 @@
         }
         .browse-footer-actions {
           gap: 6px;
-        }
-        .card-aspect-control {
-          padding: 3px 6px 3px 8px;
-        }
-        .card-aspect-control .card-aspect-label {
-          display: none;
-        }
-        .card-aspect-control select {
-          max-width: 9em;
-          font-size: 11px;
         }
         /* comment cleaned */
         .settings-page {
@@ -2355,18 +2192,6 @@
         }
         .settings-title {
           font-size: 18px;
-        }
-        .folder-manage-item {
-          padding: 12px;
-          flex-direction: column;
-          align-items: stretch;
-          gap: 8px;
-        }
-        .folder-manage-item .fm-info {
-          margin-left: 8px;
-        }
-        .folder-manage-item .fm-actions {
-          margin-left: 8px;
         }
         .setting-item {
           flex-direction: column;
@@ -2381,9 +2206,6 @@
         .empty-state-visual {
           width: 88px;
           height: 88px;
-        }
-        .empty-state .empty-state-icon {
-          font-size: 36px;
         }
       }
 
@@ -2641,16 +2463,8 @@
         .header-title {
           font-size: 14px;
         }
-        .search-box input {
-          padding-top: 7px;
-          padding-bottom: 7px;
-          font-size: 13px;
-        }
         .toolbar {
           padding: 7px 12px;
-        }
-        .toolbar-path {
-          font-size: 13px;
         }
         .toolbar select {
           font-size: 12px;
@@ -2802,60 +2616,6 @@
       .card-size-btn.active {
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 16%, transparent);
-      }
-      .card-aspect-control {
-        position: relative;
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 48%, transparent) 0%,
-          color-mix(in srgb, var(--glass) 88%, transparent) 100%
-        );
-        backdrop-filter: blur(16px) saturate(1.3);
-        -webkit-backdrop-filter: blur(16px) saturate(1.3);
-        border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
-        border-radius: 999px;
-        padding: 4px 10px 4px 12px;
-        box-sizing: border-box;
-        min-height: var(--browse-bar-control-h, 36px);
-        z-index: 2;
-        transition: border-color 0.2s ease;
-      }
-      .card-aspect-control:hover {
-        border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
-      }
-      .card-aspect-control .card-aspect-label {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-muted);
-        white-space: nowrap;
-        user-select: none;
-      }
-      .card-aspect-control select {
-        appearance: none;
-        -webkit-appearance: none;
-        border: none;
-        background: transparent;
-        color: var(--text);
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        padding: 2px 18px 2px 0;
-        max-width: 11em;
-        line-height: 1.3;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23999' d='M3 4.5L6 8l3-3.5'/%3E%3C/svg%3E");
-        background-repeat: no-repeat;
-        background-position: right 2px center;
-      }
-      .card-aspect-control select:focus {
-        outline: none;
-      }
-      .card-aspect-control select option {
-        color: #111;
-        background: #fff;
       }
       /* comment cleaned：与桌面端一致，底栏内靠右，不占网格层 */
       .zoom-control {
@@ -3012,25 +2772,6 @@
         mask-repeat: no-repeat;
         box-shadow: 0 10px 24px var(--accent-dim);
       }
-      .search-box {
-        max-width: min(560px, 46vw);
-      }
-      .search-box input {
-        min-height: 46px;
-        padding-left: 46px;
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.05),
-          0 10px 22px rgba(0, 0, 0, 0.14);
-      }
-      .search-box input:focus {
-        box-shadow:
-          0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent),
-          0 18px 36px rgba(0, 0, 0, 0.18);
-      }
-      .search-box .search-icon {
-        left: 16px;
-        font-size: 15px;
-      }
       .header-stats:not(:empty),
       .header-theme-select {
         box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
@@ -3111,31 +2852,7 @@
         padding: 18px 20px 16px;
         gap: 12px;
       }
-      .toolbar-path {
-        display: flex;
-        align-items: center;
-        min-height: 48px;
-        padding: 10px 16px 10px 18px;
-        border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--glass-border));
-        border-left: none;
-        border-radius: 20px;
-        background: var(--surface-soft);
-        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
-      }
-      .toolbar-path::before {
-        content: '当前位置';
-        flex-shrink: 0;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        color: color-mix(in srgb, var(--accent) 64%, var(--text-muted));
-        padding-right: 12px;
-        margin-right: 12px;
-        border-right: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
-      }
-      .toolbar select,
-      .toolbar-filter-btn {
+      .toolbar select {
         min-height: 44px;
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
       }
@@ -3204,7 +2921,6 @@
         padding: 14px 18px 16px;
       }
       .pagination,
-      .card-aspect-control,
       .zoom-control {
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
       }
@@ -3345,9 +3061,6 @@
         .content {
           border-radius: 24px;
         }
-        .toolbar-path::before {
-          display: none;
-        }
         .empty-state {
           border-radius: 24px;
           padding: 36px 20px 40px;
@@ -3377,68 +3090,9 @@
         z-index: 1100;
         pointer-events: none;
       }
-      .web-toast-item {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 10px 14px 10px 16px;
-        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
-        border: 1px solid var(--glass-border);
-        border-radius: 999px;
-        color: var(--text);
-        font-size: 13px;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-        white-space: nowrap;
-        pointer-events: auto;
-        opacity: 0;
-        transform: translateY(12px) scale(0.96);
-        transition: all 0.25s var(--ease-out);
-      }
-      .web-toast-item.show {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-      }
-      .web-toast-icon {
-        width: 16px;
-        height: 16px;
-        flex-shrink: 0;
-        color: var(--accent);
-      }
-      .web-toast-text {
-        flex: 1;
-      }
-      .web-toast-close {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 20px;
-        height: 20px;
-        border: none;
-        background: none;
-        color: var(--text-muted);
-        cursor: pointer;
-        border-radius: 50%;
-        flex-shrink: 0;
-        padding: 0;
-        transition: all 0.15s;
-      }
-      .web-toast-close .icon {
-        width: 12px;
-        height: 12px;
-      }
-      .web-toast-close:hover {
-        color: var(--text);
-        background: rgba(255, 255, 255, 0.08);
-      }
       @media (max-width: 600px) {
         .web-toast {
           bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-        }
-        .web-toast-item {
-          font-size: 12px;
-          padding: 8px 10px 8px 14px;
         }
       }
 
@@ -3540,13 +3194,16 @@
         border-radius: var(--radius);
         backdrop-filter: blur(24px) saturate(1.4);
         -webkit-backdrop-filter: blur(24px) saturate(1.4);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.5),
+          0 0 0 1px rgba(255, 255, 255, 0.04);
         opacity: 0;
         transform: scale(0.92) translateY(-8px);
         transform-origin: top left;
         pointer-events: none;
-        transition: opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1),
-                    transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+        transition:
+          opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+          transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
       }
       .context-menu.show {
         opacity: 1;
@@ -3625,8 +3282,14 @@
         animation: checkPop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
       }
       @keyframes checkPop {
-        from { opacity: 0; transform: scale(0.3); }
-        to { opacity: 1; transform: scale(1); }
+        from {
+          opacity: 0;
+          transform: scale(0.3);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
       }
 
       /* Selection Toolbar */
@@ -3770,125 +3433,370 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="/gallery-design.css?v=1" />
   </head>
   <body>
     <!-- SVG Icon Sprite -->
-    <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+    <svg xmlns="http://www.w3.org/2000/svg" style="display: none">
       <defs>
         <!-- Search (magnifying glass) -->
         <symbol id="icon-search" viewBox="0 0 24 24">
-          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
-          <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+          <line
+            x1="16.5"
+            y1="16.5"
+            x2="21"
+            y2="21"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Photos (image frame) -->
         <symbol id="icon-photos" viewBox="0 0 24 24">
-          <rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
-          <circle cx="8.5" cy="8.5" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M21 15l-5-5L5 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect
+            x="3"
+            y="3"
+            width="18"
+            height="18"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <circle cx="8.5" cy="8.5" r="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <path
+            d="M21 15l-5-5L5 21"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Folder -->
         <symbol id="icon-folder" viewBox="0 0 24 24">
-          <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path
+            d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
         </symbol>
         <!-- Dates (calendar) -->
         <symbol id="icon-dates" viewBox="0 0 24 24">
-          <rect x="3" y="4" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
-          <line x1="16" y1="2" x2="16" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="8" y1="2" x2="8" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" stroke-width="2"/>
-          <rect x="7" y="14" width="3" height="3" rx="0.5" fill="currentColor"/>
+          <rect
+            x="3"
+            y="4"
+            width="18"
+            height="18"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <line
+            x1="16"
+            y1="2"
+            x2="16"
+            y2="6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line
+            x1="8"
+            y1="2"
+            x2="8"
+            y2="6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" stroke-width="2" />
+          <rect x="7" y="14" width="3" height="3" rx="0.5" fill="currentColor" />
         </symbol>
         <!-- Settings (gear) -->
         <symbol id="icon-settings" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
-          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Star (4-point) -->
         <symbol id="icon-star" viewBox="0 0 24 24">
-          <path d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4l-6.4 4.8 2.4-7.2-6-4.8h7.6z" fill="currentColor"/>
+          <path
+            d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4l-6.4 4.8 2.4-7.2-6-4.8h7.6z"
+            fill="currentColor"
+          />
         </symbol>
         <!-- Menu (hamburger) -->
         <symbol id="icon-menu" viewBox="0 0 24 24">
-          <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="3" y1="18" x2="21" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line
+            x1="3"
+            y1="6"
+            x2="21"
+            y2="6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="12"
+            x2="21"
+            y2="12"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="18"
+            x2="21"
+            y2="18"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Close (X) -->
         <symbol id="icon-close" viewBox="0 0 24 24">
-          <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line
+            x1="6"
+            y1="6"
+            x2="18"
+            y2="18"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line
+            x1="18"
+            y1="6"
+            x2="6"
+            y2="18"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Play -->
         <symbol id="icon-play" viewBox="0 0 24 24">
-          <polygon points="6,3 20,12 6,21" fill="currentColor"/>
+          <polygon points="6,3 20,12 6,21" fill="currentColor" />
         </symbol>
         <!-- Warning -->
         <symbol id="icon-warning" viewBox="0 0 24 24">
-          <path d="M12 2L1 21h22L12 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-          <line x1="12" y1="9" x2="12" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <circle cx="12" cy="18" r="1" fill="currentColor"/>
+          <path
+            d="M12 2L1 21h22L12 2z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <line
+            x1="12"
+            y1="9"
+            x2="12"
+            y2="14"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <circle cx="12" cy="18" r="1" fill="currentColor" />
         </symbol>
         <!-- Chevron Right -->
         <symbol id="icon-chevron-right" viewBox="0 0 24 24">
-          <polyline points="9,6 15,12 9,18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="9,6 15,12 9,18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Chevron Left -->
         <symbol id="icon-chevron-left" viewBox="0 0 24 24">
-          <polyline points="15,6 9,12 15,18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="15,6 9,12 15,18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Chevron Down -->
         <symbol id="icon-chevron-down" viewBox="0 0 24 24">
-          <polyline points="6,9 12,15 18,9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="6,9 12,15 18,9"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Chevron Up -->
         <symbol id="icon-chevron-up" viewBox="0 0 24 24">
-          <polyline points="6,15 12,9 18,15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="6,15 12,9 18,15"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Page Prev -->
         <symbol id="icon-page-prev" viewBox="0 0 24 24">
-          <polyline points="15,6 9,12 15,18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="15,6 9,12 15,18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Page Next -->
         <symbol id="icon-page-next" viewBox="0 0 24 24">
-          <polyline points="9,6 15,12 9,18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="9,6 15,12 9,18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Favorite (heart) -->
         <symbol id="icon-heart" viewBox="0 0 24 24">
-          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="currentColor"/>
+          <path
+            d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+            fill="currentColor"
+          />
         </symbol>
         <!-- Download -->
         <symbol id="icon-download" viewBox="0 0 24 24">
-          <path d="M12 3v12M12 15l-4-4M12 15l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path
+            d="M12 3v12M12 15l-4-4M12 15l4-4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Info (circle i) -->
         <symbol id="icon-info" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-          <line x1="12" y1="16" x2="12" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <circle cx="12" cy="8" r="1" fill="currentColor"/>
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+          <line
+            x1="12"
+            y1="16"
+            x2="12"
+            y2="12"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <circle cx="12" cy="8" r="1" fill="currentColor" />
         </symbol>
         <!-- Check -->
         <symbol id="icon-check" viewBox="0 0 24 24">
-          <polyline points="5,12 10,17 19,7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline
+            points="5,12 10,17 19,7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Success checkmark -->
         <symbol id="icon-success" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-          <polyline points="8,12 11,15 16,9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+          <polyline
+            points="8,12 11,15 16,9"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </symbol>
         <!-- Error (circle x) -->
         <symbol id="icon-error" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-          <line x1="9" y1="9" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <line x1="15" y1="9" x2="9" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+          <line
+            x1="9"
+            y1="9"
+            x2="15"
+            y2="15"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <line
+            x1="15"
+            y1="9"
+            x2="9"
+            y2="15"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
         <!-- Shuffle/Random -->
         <symbol id="icon-shuffle" viewBox="0 0 24 24">
-          <path d="M16 3h5v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M4 20L21 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M21 16v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M15 15l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M4 4l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path
+            d="M16 3h5v5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M4 20L21 3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M21 16v5h-5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M15 15l6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M4 4l5 5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
         </symbol>
       </defs>
     </svg>
@@ -3914,13 +3822,9 @@
     <!-- Header -->
     <div class="header">
       <button class="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="打开菜单">
-        <svg class="icon" aria-hidden="true"><use href="#icon-menu"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-menu" /></svg>
       </button>
       <div class="header-title" id="headerTitle">拂晓图库 · Aurora Gallery</div>
-      <div class="search-box">
-        <span class="search-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
-        <input type="text" id="searchInput" placeholder="搜索照片（回车）" aria-label="搜索照片" />
-      </div>
       <div class="header-stats" id="headerStats"></div>
       <select
         id="headerMediaFilterSelect"
@@ -3984,8 +3888,12 @@
             文件夹
           </div>
           <div class="sidebar-tab" data-tab="dates" onclick="switchTab('dates')">日期</div>
+          <div class="sidebar-tab" data-tab="ai_search" onclick="switchTab('ai_search')">搜图</div>
+          <div class="sidebar-tab" data-tab="people" onclick="switchTab('people')">人物</div>
         </div>
         <div class="sidebar-content" id="sidebarContent"></div>
+        <!-- 搜图 / 人物页签的侧栏独占内容（搜索框 + 历史 / 人物列表），由 ai-views.js 渲染 -->
+        <div class="sidebar-content" id="aiSidebar" style="display: none"></div>
       </div>
 
       <!-- Content -->
@@ -3995,9 +3903,13 @@
         </div>
         <div class="browse-footer" id="browseFooter">
           <div class="pagination" id="pagination">
-            <button type="button" id="prevPage" onclick="prevPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-prev"/></svg></button>
+            <button type="button" id="prevPage" onclick="prevPage()">
+              <svg class="icon" aria-hidden="true"><use href="#icon-page-prev" /></svg>
+            </button>
             <div id="pageNumbers" class="page-numbers"></div>
-            <button type="button" id="nextPage" onclick="nextPage()"><svg class="icon" aria-hidden="true"><use href="#icon-page-next"/></svg></button>
+            <button type="button" id="nextPage" onclick="nextPage()">
+              <svg class="icon" aria-hidden="true"><use href="#icon-page-next" /></svg>
+            </button>
             <span class="page-info" id="pageInfo"></span>
             <button
               type="button"
@@ -4022,10 +3934,18 @@
               <option value="200">200 张/页</option>
             </select>
             <div class="card-size-group" id="cardSizeGroup">
-              <button class="card-size-btn" onclick="changeCardSizeTo(100)" data-size="100">S</button>
-              <button class="card-size-btn" onclick="changeCardSizeTo(140)" data-size="140">M</button>
-              <button class="card-size-btn active" onclick="changeCardSizeTo(180)" data-size="180">L</button>
-              <button class="card-size-btn" onclick="changeCardSizeTo(320)" data-size="320">XL</button>
+              <button class="card-size-btn" onclick="changeCardSizeTo(100)" data-size="100">
+                S
+              </button>
+              <button class="card-size-btn" onclick="changeCardSizeTo(140)" data-size="140">
+                M
+              </button>
+              <button class="card-size-btn active" onclick="changeCardSizeTo(180)" data-size="180">
+                L
+              </button>
+              <button class="card-size-btn" onclick="changeCardSizeTo(320)" data-size="320">
+                XL
+              </button>
             </div>
           </div>
         </div>
@@ -4035,23 +3955,33 @@
     <!-- Mobile Bottom Nav -->
     <div class="mobile-bottom-nav" id="mobileBottomNav">
       <div class="mobile-nav-item active" data-tab="browse" onclick="mobileNavSwitch('browse')">
-        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-photos"/></svg></span>
+        <span class="nav-icon"
+          ><svg class="icon" aria-hidden="true"><use href="#icon-photos" /></svg
+        ></span>
         <span class="nav-label">浏览</span>
       </div>
       <div class="mobile-nav-item" data-tab="folders" onclick="mobileNavSwitch('folders')">
-        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg></span>
+        <span class="nav-icon"
+          ><svg class="icon" aria-hidden="true"><use href="#icon-folder" /></svg
+        ></span>
         <span class="nav-label">文件夹</span>
       </div>
       <div class="mobile-nav-item" data-tab="dates" onclick="mobileNavSwitch('dates')">
-        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-dates"/></svg></span>
+        <span class="nav-icon"
+          ><svg class="icon" aria-hidden="true"><use href="#icon-dates" /></svg
+        ></span>
         <span class="nav-label">日期</span>
       </div>
       <div class="mobile-nav-item" data-tab="search" onclick="mobileNavSwitch('search')">
-        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
+        <span class="nav-icon"
+          ><svg class="icon" aria-hidden="true"><use href="#icon-search" /></svg
+        ></span>
         <span class="nav-label">搜索</span>
       </div>
       <div class="mobile-nav-item" data-tab="settings" onclick="openMobileFilterSheet()">
-        <span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></span>
+        <span class="nav-icon"
+          ><svg class="icon" aria-hidden="true"><use href="#icon-settings" /></svg
+        ></span>
         <span class="nav-label">设置</span>
       </div>
     </div>
@@ -4137,7 +4067,9 @@
     <!-- Preview -->
     <div class="preview-overlay" id="previewOverlay">
       <div class="preview-slideshow-controls">
-        <button id="slideshowToggleBtn" onclick="toggleSlideshow()"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg> 播放</button>
+        <button id="slideshowToggleBtn" onclick="toggleSlideshow()">
+          <svg class="icon" aria-hidden="true"><use href="#icon-play" /></svg> 播放
+        </button>
         <select id="slideshowIntervalSelect">
           <option value="2">2 秒</option>
           <option value="3" selected>3 秒</option>
@@ -4149,17 +4081,32 @@
         </button>
         <button id="previewSubtitleToggleBtn" onclick="toggleSubtitleEnabled()">字幕:开</button>
         <button id="previewFullscreenBtn" onclick="togglePreviewFullscreen()">全屏</button>
-        <button id="previewFavoriteBtn" class="preview-action-btn" title="收藏"
-          onclick="(function(){var p=state.previewPhotos&&state.previewPhotos[state.previewIndex];if(p)toggleFavoriteForPhoto(p.id);})()">
-          <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg>
+        <button
+          id="previewFavoriteBtn"
+          class="preview-action-btn"
+          title="收藏"
+          onclick="
+            (function () {
+              var p = state.previewPhotos && state.previewPhotos[state.previewIndex];
+              if (p) toggleFavoriteForPhoto(p.id);
+            })()
+          "
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-heart" /></svg>
         </button>
       </div>
       <div class="preview-window-controls">
-        <button class="preview-info-toggle" id="previewInfoToggle" onclick="togglePreviewInfoPanel()" title="照片信息" aria-label="照片信息">
-          <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+        <button
+          class="preview-info-toggle"
+          id="previewInfoToggle"
+          onclick="togglePreviewInfoPanel()"
+          title="照片信息"
+          aria-label="照片信息"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-info" /></svg>
         </button>
         <button class="preview-close" onclick="closePreview()" aria-label="关闭预览">
-          <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg>
         </button>
       </div>
       <div class="preview-swipe-hint" id="previewSwipeHint">左右滑动切换</div>
@@ -4169,7 +4116,7 @@
           onclick="navigatePreview(-1, event)"
           aria-label="上一张"
         >
-          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-left"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-left" /></svg>
         </button>
         <div class="preview-loading" id="previewLoading">
           <span class="spinner" aria-hidden="true"></span>
@@ -4199,17 +4146,23 @@
           onclick="navigatePreview(1, event)"
           aria-label="下一张"
         >
-          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-right"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#icon-chevron-right" /></svg>
         </button>
       </div>
       <div class="preview-info-panel" id="previewInfoPanel">
         <div class="preview-info-panel-header">
           <h3>照片信息</h3>
-          <button class="preview-info-panel-close" onclick="togglePreviewInfoPanel()" aria-label="关闭">
-            <svg class="icon"><use href="#icon-close"/></svg>
+          <button
+            class="preview-info-panel-close"
+            onclick="togglePreviewInfoPanel()"
+            aria-label="关闭"
+          >
+            <svg class="icon"><use href="#icon-close" /></svg>
           </button>
         </div>
-        <div id="previewInfoPanelContent"><div class="preview-info-empty">打开照片后查看信息</div></div>
+        <div id="previewInfoPanelContent">
+          <div class="preview-info-empty">打开照片后查看信息</div>
+        </div>
       </div>
       <div class="preview-zoom-box" id="previewZoomBox">
         <div class="preview-zoom-tooltip" role="tooltip">
@@ -4222,24 +4175,24 @@
     <!-- Context Menu -->
     <div class="context-menu" id="contextMenu" role="menu" aria-hidden="true">
       <div class="context-menu-item" data-action="preview" role="menuitem">
-        <svg class="icon" aria-hidden="true"><use href="#icon-photos"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-photos" /></svg>
         <span>预览</span>
       </div>
       <div class="context-menu-item" data-action="favorite" role="menuitem">
-        <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-heart" /></svg>
         <span>收藏</span>
       </div>
       <div class="context-menu-item" data-action="download" role="menuitem">
-        <svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-download" /></svg>
         <span>下载</span>
       </div>
       <div class="context-menu-item" data-action="info" role="menuitem">
-        <svg class="icon" aria-hidden="true"><use href="#icon-info"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-info" /></svg>
         <span>照片信息</span>
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item" data-action="select" role="menuitem">
-        <svg class="icon" aria-hidden="true"><use href="#icon-check"/></svg>
+        <svg class="icon" aria-hidden="true"><use href="#icon-check" /></svg>
         <span>选择</span>
       </div>
     </div>
@@ -4249,23 +4202,37 @@
       <div class="selection-toolbar-inner">
         <span class="selection-count" id="selectionCount">已选 0 张</span>
         <button class="selection-btn" onclick="selectAllPhotos()" title="全选">
-          <svg class="icon" aria-hidden="true"><use href="#icon-check"/></svg> 全选
+          <svg class="icon" aria-hidden="true"><use href="#icon-check" /></svg> 全选
         </button>
         <button class="selection-btn" onclick="deselectAllPhotos()" title="取消">
-          <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg> 取消
+          <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg> 取消
         </button>
-        <button class="selection-btn selection-btn-accent" onclick="downloadSelected()" title="下载">
-          <svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg> 下载
+        <button
+          class="selection-btn selection-btn-accent"
+          onclick="downloadSelected()"
+          title="下载"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-download" /></svg> 下载
         </button>
-        <button class="selection-btn selection-btn-accent" onclick="favoriteSelected()" title="收藏">
-          <svg class="icon" aria-hidden="true"><use href="#icon-heart"/></svg> 收藏
+        <button
+          class="selection-btn selection-btn-accent"
+          onclick="favoriteSelected()"
+          title="收藏"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-heart" /></svg> 收藏
         </button>
       </div>
     </div>
 
     <!-- Back to Top -->
-    <button class="back-to-top" id="backToTop" onclick="scrollToTop()" title="回到顶部" aria-label="回到顶部">
-      <svg class="icon" aria-hidden="true"><use href="#icon-chevron-up"/></svg>
+    <button
+      class="back-to-top"
+      id="backToTop"
+      onclick="scrollToTop()"
+      title="回到顶部"
+      aria-label="回到顶部"
+    >
+      <svg class="icon" aria-hidden="true"><use href="#icon-chevron-up" /></svg>
     </button>
 
     <div class="web-toast" id="webToast"></div>
@@ -4274,10 +4241,17 @@
     <div class="search-overlay" id="searchOverlay" onclick="closeSearchOverlay()">
       <div class="search-overlay-inner" onclick="event.stopPropagation()">
         <div class="search-overlay-input-wrap">
-          <span class="search-overlay-icon"><svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg></span>
-          <input type="text" id="searchOverlayInput" placeholder="搜索照片（回车）" aria-label="搜索照片" />
+          <span class="search-overlay-icon"
+            ><svg class="icon" aria-hidden="true"><use href="#icon-search" /></svg
+          ></span>
+          <input
+            type="text"
+            id="searchOverlayInput"
+            placeholder="搜索照片（回车）"
+            aria-label="搜索照片"
+          />
           <button class="search-overlay-close" onclick="closeSearchOverlay()" aria-label="关闭">
-            <svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>
+            <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg>
           </button>
         </div>
         <p class="search-overlay-hint">输入关键词后按回车搜索</p>
@@ -4287,6 +4261,11 @@
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
     <script src="/js/web-theme-shared.js?v=3"></script>
-    <script src="/js/app.js?v=2"></script>
+    <link rel="stylesheet" href="/photo-compare.css?v=1" />
+    <script src="/js/photo-compare.js?v=1"></script>
+    <!-- 搜图 / 人物的入口在文件栏，结果落进主照片网格，不再需要独立弹窗样式 -->
+    <link rel="stylesheet" href="/ai-web-views.css?v=1" />
+    <script src="/js/ai-views.js?v=1"></script>
+    <script src="/js/app.js?v=4"></script>
   </body>
 </html>

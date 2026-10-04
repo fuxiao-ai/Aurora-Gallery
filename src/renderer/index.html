@@ -24,6 +24,16 @@
       })();
     </script>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="../web/css/gallery-design.css" />
+    <!-- 以下样式表原先挂在 </body> 之前，会导致首帧无样式闪烁（FOUC）。
+         前移到 head 保持「解析即阻塞渲染」，相对顺序与原层叠顺序完全一致。
+         注意：新增样式表请追加到此块末尾，不要放回 body。 -->
+    <link rel="stylesheet" href="../web/css/photo-compare.css" />
+    <link rel="stylesheet" href="../web/css/semantic-search.css" />
+    <link rel="stylesheet" href="../web/css/people.css" />
+    <link rel="stylesheet" href="navigation.css" />
+    <link rel="stylesheet" href="theme-polish.css" />
+    <link rel="stylesheet" href="ai-views.css" />
   </head>
   <body>
     <!-- Aurora 极光背景 -->
@@ -91,10 +101,10 @@
       <div class="titlebar-center"></div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" id="btnMinimize" data-i18n-title="titlebar.min" title="最小化">
-          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-minimize"/></svg>
+          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-minimize" /></svg>
         </button>
         <button class="titlebar-btn" id="btnMaximize" data-i18n-title="titlebar.max" title="最大化">
-          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-maximize"/></svg>
+          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-maximize" /></svg>
         </button>
         <button
           class="titlebar-btn close"
@@ -102,31 +112,214 @@
           data-i18n-title="titlebar.closeHint"
           title="关闭窗口（可在「管理设置 → 关闭按钮」中配置）"
         >
-          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-close"/></svg>
+          <svg class="titlebar-icon" aria-hidden="true"><use href="#icon-close" /></svg>
         </button>
       </div>
     </div>
 
     <!-- SVG Icon Sprite -->
-    <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
-      <symbol id="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/></symbol>
-      <symbol id="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
-      <symbol id="icon-fullscreen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
-      <symbol id="icon-rotate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></symbol>
-      <symbol id="icon-subtitle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
-      <symbol id="icon-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
-      <symbol id="icon-star-filled" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
-      <symbol id="icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
-      <symbol id="icon-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></symbol>
-      <symbol id="icon-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
-      <symbol id="icon-video" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/></symbol>
-      <symbol id="icon-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol>
-      <symbol id="icon-minimize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></symbol>
-      <symbol id="icon-maximize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></symbol>
-      <symbol id="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
-      <symbol id="icon-heart" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></symbol>
-      <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
-      <symbol id="icon-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+    <svg style="display: none" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="icon-play" viewBox="0 0 24 24" fill="currentColor">
+        <path
+          d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"
+        />
+      </symbol>
+      <symbol
+        id="icon-shuffle"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+      </symbol>
+      <symbol
+        id="icon-fullscreen"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path
+          d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"
+        />
+      </symbol>
+      <symbol
+        id="icon-rotate"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path
+          d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"
+        />
+      </symbol>
+      <symbol
+        id="icon-subtitle"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </symbol>
+      <symbol
+        id="icon-star"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polygon
+          points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+        />
+      </symbol>
+      <symbol id="icon-star-filled" viewBox="0 0 24 24" fill="currentColor">
+        <polygon
+          points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+        />
+      </symbol>
+      <symbol
+        id="icon-folder"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+      </symbol>
+      <symbol
+        id="icon-external"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" />
+      </symbol>
+      <symbol
+        id="icon-trash"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="3 6 5 6 21 6" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <line x1="10" y1="11" x2="10" y2="17" />
+        <line x1="14" y1="11" x2="14" y2="17" />
+      </symbol>
+      <symbol id="icon-video" viewBox="0 0 24 24" fill="currentColor">
+        <path
+          d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"
+        />
+      </symbol>
+      <symbol
+        id="icon-image"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <polyline points="21 15 16 10 5 21" />
+      </symbol>
+      <symbol
+        id="icon-minimize"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </symbol>
+      <symbol
+        id="icon-maximize"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      </symbol>
+      <symbol
+        id="icon-close"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </symbol>
+      <symbol id="icon-heart" viewBox="0 0 24 24" fill="currentColor">
+        <path
+          d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+        />
+      </symbol>
+      <symbol
+        id="icon-info"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </symbol>
+      <symbol
+        id="icon-search"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <circle cx="11" cy="11" r="8" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </symbol>
+      <symbol
+        id="icon-similar"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="3" y="3" width="14" height="14" rx="2" ry="2" />
+        <rect x="7" y="7" width="14" height="14" rx="2" ry="2" />
+      </symbol>
     </svg>
 
     <!-- 顶栏（与网页 header 对齐） -->
@@ -138,17 +331,6 @@
         aria-label="打开菜单"
       ></button>
       <div class="header-title" data-i18n="brand">拂晓图库</div>
-      <div class="search-box">
-        <svg class="search-icon" aria-hidden="true"><use href="#icon-search"/></svg>
-        <input
-          type="text"
-          id="searchInput"
-          data-i18n-placeholder="topbar.searchPlaceholder"
-          data-i18n-aria-label="topbar.searchAria"
-          placeholder="搜索照片（回车）"
-          aria-label="搜索照片"
-        />
-      </div>
       <div class="stats" id="statsBar"></div>
       <select
         id="topbarUiLocale"
@@ -178,14 +360,6 @@
         <option value="lavender_dusk" data-i18n="theme.lavender_dusk">暮紫微光</option>
         <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
       </select>
-      <button
-        class="topbar-settings-btn"
-        id="topbarSettingsBtn"
-        type="button"
-        data-i18n="topbar.manage"
-      >
-        管理设置
-      </button>
     </div>
 
     <!-- 统一后台任务（顶栏下全宽，浏览/管理页均可见） -->
@@ -276,6 +450,74 @@
         <div id="taskOptimizeSection" class="task-section task-optimize-row" style="display: none">
           <span id="optimizeTaskText" data-i18n="task.optimizeDb">正在优化数据库</span>
         </div>
+        <div id="taskFaceSection" class="task-section" style="display: none">
+          <div class="progress-header">
+            <span id="faceTaskTitle" data-i18n="task.faceTitle">人脸索引</span>
+            <div class="progress-actions">
+              <span id="faceTaskCount"></span>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="faceTaskSettings"
+                data-i18n="nav.settings"
+              >
+                设置
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm progress-cancel-btn"
+                id="faceTaskStop"
+                data-i18n="task.stop"
+              >
+                停止
+              </button>
+            </div>
+          </div>
+          <progress
+            id="faceTaskProgress"
+            max="100"
+            aria-label="人脸索引进度"
+            data-i18n-aria-label="task.faceTitle"
+            style="width: 100%"
+          ></progress>
+          <div class="progress-file" id="faceTaskFile"></div>
+          <div class="progress-file progress-eta" id="faceTaskRate"></div>
+          <div class="progress-file" id="faceTaskError" role="alert"></div>
+        </div>
+        <div id="taskSemanticSection" class="task-section" style="display: none">
+          <div class="progress-header">
+            <span id="semanticTaskTitle" data-i18n="task.semanticTitle">AI 搜图索引</span>
+            <div class="progress-actions">
+              <span id="semanticTaskCount"></span>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="semanticTaskSettings"
+                data-i18n="nav.settings"
+              >
+                设置
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm progress-cancel-btn"
+                id="semanticTaskStop"
+                data-i18n="task.stop"
+              >
+                停止
+              </button>
+            </div>
+          </div>
+          <progress
+            id="semanticTaskProgress"
+            max="100"
+            aria-label="AI 搜图索引进度"
+            data-i18n-aria-label="task.semanticTitle"
+            style="width: 100%"
+          ></progress>
+          <div class="progress-file" id="semanticTaskFile"></div>
+          <div class="progress-file progress-eta" id="semanticTaskRate"></div>
+          <div class="progress-file" id="semanticTaskError" role="alert"></div>
+        </div>
         <div id="taskDupHashSection" class="task-section" style="display: none">
           <div class="progress-header">
             <span id="dupHashProgressTitle" data-i18n="task.dupTitle">查找重复照片</span>
@@ -306,17 +548,277 @@
       <!-- 移动端遮罩 -->
       <div class="mobile-backdrop" id="mobileBackdrop"></div>
 
+      <nav class="app-rail nav-tabs" aria-label="主导航" data-i18n-aria-label="nav.primary">
+        <button
+          type="button"
+          class="rail-item nav-tab active"
+          data-tab="folders"
+          title="文件"
+          data-i18n-title="nav.folders"
+          aria-label="文件"
+          data-i18n-aria-label="nav.folders"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"
+            />
+          </svg>
+          <span data-i18n="nav.folders">文件</span>
+        </button>
+        <button
+          type="button"
+          class="rail-item nav-tab"
+          data-tab="dates"
+          title="日期"
+          data-i18n-title="nav.dates"
+          aria-label="日期"
+          data-i18n-aria-label="nav.dates"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="5" width="18" height="16" rx="2" />
+            <path d="M16 3v4M8 3v4M3 11h18M8 15h2M14 15h2" />
+          </svg>
+          <span data-i18n="nav.dates">日期</span>
+        </button>
+        <button
+          type="button"
+          class="rail-item nav-tab"
+          data-tab="search"
+          title="搜图"
+          data-i18n-title="nav.search"
+          aria-label="搜图"
+          data-i18n-aria-label="nav.search"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-4.35-4.35" />
+          </svg>
+          <span data-i18n="nav.search">搜图</span>
+        </button>
+        <button
+          type="button"
+          class="rail-item nav-tab"
+          data-tab="people"
+          title="人物"
+          data-i18n-title="nav.people"
+          aria-label="人物"
+          data-i18n-aria-label="nav.people"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="9" cy="8" r="3.4" />
+            <path d="M2.8 19.2a6.3 6.3 0 0 1 12.4 0" />
+            <path d="M16.2 5.1a3.4 3.4 0 0 1 0 6.7" />
+            <path d="M17.7 13.1a6.3 6.3 0 0 1 3.5 5.7" />
+          </svg>
+          <span data-i18n="nav.people">人物</span>
+        </button>
+        <!-- 分组线：上面 4 项是「换内容看的视图」，下面是「干活用的工具 / 配置」。
+             没有它，「重复」看起来就是第五个视图。 -->
+        <div class="rail-divider" aria-hidden="true"></div>
+        <button
+          type="button"
+          class="rail-item nav-tab"
+          data-tab="duplicates"
+          title="重复"
+          data-i18n-title="nav.duplicates"
+          aria-label="重复"
+          data-i18n-aria-label="nav.duplicates"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="8" y="8" width="13" height="13" rx="2" />
+            <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+          </svg>
+          <span data-i18n="nav.duplicates">重复</span>
+        </button>
+        <button
+          type="button"
+          class="rail-item rail-settings"
+          id="topbarSettingsBtn"
+          title="设置"
+          data-i18n-title="nav.settings"
+          aria-label="设置"
+          data-i18n-aria-label="nav.settings"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 1 3h4l1-3 3-1 2-3-2-2 1-3-3-2-1-3Z" />
+          </svg>
+          <span data-i18n="nav.settings">设置</span>
+        </button>
+      </nav>
+
       <!-- 侧边栏 -->
       <div class="sidebar" id="sidebar">
-        <div class="nav-tabs">
-          <div class="nav-tab active" data-tab="folders" data-i18n="nav.folders">文件</div>
-          <div class="nav-tab" data-tab="dates" data-i18n="nav.dates">日期</div>
-          <div class="nav-tab" data-tab="duplicates" data-i18n="nav.duplicates">重复</div>
+        <div class="sidebar-section-heading" id="navigationHeading" data-i18n="nav.folders">
+          文件
         </div>
-        <div class="folder-nav-bar" id="folderNavBar" style="display:none;">
+        <div id="settingsSidebar" class="sidebar-content" hidden></div>
+        <!-- 搜图页侧栏：搜索框 + 搜索历史（侧栏独占，文件夹树让位） -->
+        <div id="searchSidebar" class="sidebar-content" hidden>
+          <form class="ai-search-form ai-sidebar-search" id="aiSearchForm">
+            <span class="ai-search-field">
+              <svg
+                class="ai-search-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.9"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-4.35-4.35" />
+              </svg>
+              <input
+                type="search"
+                id="aiSearchInput"
+                maxlength="500"
+                autocomplete="off"
+                placeholder="描述你想找的画面，例如：夕阳下的海滩"
+                data-i18n-placeholder="ai.searchPlaceholder"
+                aria-label="画面描述"
+                data-i18n-aria-label="ai.searchAria"
+              />
+            </span>
+            <button
+              type="submit"
+              class="ai-search-submit"
+              id="aiSearchSubmit"
+              data-i18n="ai.search"
+            >
+              搜索
+            </button>
+          </form>
+          <div class="ai-view-status" id="aiViewStatus" hidden></div>
+          <!-- 预选词：进入搜索页时从词库随机抽几个，点一下直接搜 -->
+          <div class="ai-search-suggest" id="aiSearchSuggest"></div>
+          <div class="ai-search-history">
+            <div class="ai-search-history-head">
+              <span class="ai-search-history-title" data-i18n="ai.history">搜索历史</span>
+              <button
+                type="button"
+                class="ai-search-history-clear"
+                id="aiSearchHistoryClear"
+                data-i18n="ai.historyClear"
+                hidden
+              >
+                清除
+              </button>
+            </div>
+            <div class="ai-search-history-list" id="aiSearchHistoryList"></div>
+          </div>
+        </div>
+        <!-- 人物页侧栏：人物列表（头像 + 名字 + 张数），点谁看谁 -->
+        <div id="peopleSidebar" class="sidebar-content" hidden>
+          <button
+            type="button"
+            class="context-nav-button"
+            id="peopleNavSettings"
+            data-i18n="nav.faceIndex"
+          >
+            识别设置与索引
+          </button>
+          <div class="ai-view-status" id="aiPeopleStatus" hidden></div>
+          <!-- 索引实时读数：标题一行 + 三个数字一栏（各格由 ai-views.js 填） -->
+          <div class="ai-people-live" id="aiPeopleLive" hidden>
+            <div class="ai-people-live-head">
+              <span class="ai-people-live-dot" aria-hidden="true"></span>
+              <span class="ai-people-live-text" id="aiPeopleLiveText"></span>
+            </div>
+            <div class="ai-people-live-stats" id="aiPeopleLiveStats"></div>
+          </div>
+          <!-- 人物搜索：只筛侧栏列表，输入即过滤；未命名的人搜「未命名」也能命中 -->
+          <div class="ai-people-search" id="peopleSearchBar">
+            <span class="ai-people-search-field">
+              <svg
+                class="ai-people-search-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.9"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-4.35-4.35" />
+              </svg>
+              <input
+                type="search"
+                id="peopleSearchInput"
+                maxlength="80"
+                autocomplete="off"
+                placeholder="搜索人物名字"
+                data-i18n-placeholder="ai.peopleSearchPlaceholder"
+                aria-label="搜索人物"
+                data-i18n-aria-label="ai.peopleSearchAria"
+              />
+            </span>
+          </div>
+          <div class="ai-people-list" id="peopleList"></div>
+        </div>
+        <div class="folder-nav-bar" id="folderNavBar" style="display: none">
           <button type="button" class="folder-nav-up" id="folderNavUp" title="返回上级">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 18 9 12 15 6"/>
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="15 18 9 12 15 6" />
             </svg>
             <span id="folderNavLabel">返回上级</span>
           </button>
@@ -372,7 +874,9 @@
         <!-- 照片网格 -->
         <div class="photo-grid" id="photoGrid">
           <div class="empty-state" id="emptyState">
-            <div class="icon">📭</div>
+            <div class="welcome-mark" aria-hidden="true">
+              <svg><use href="#icon-image" /></svg>
+            </div>
             <div class="title" data-i18n="welcome.title">欢迎使用拂晓图库</div>
             <div class="desc">
               <span data-i18n="welcome.line1">暂无文件夹，请点击「管理设置」添加</span><br />
@@ -380,24 +884,41 @@
             </div>
             <div class="welcome-features">
               <div class="feature-card">
-                <div class="feature-icon">🗂</div>
+                <div class="feature-icon" aria-hidden="true">
+                  <svg><use href="#icon-folder" /></svg>
+                </div>
                 <div class="feature-title" data-i18n="welcome.f1t">文件夹浏览</div>
                 <div class="feature-desc" data-i18n="welcome.f1d">按文件夹结构浏览照片</div>
               </div>
               <div class="feature-card">
-                <div class="feature-icon">📅</div>
+                <div class="feature-icon" aria-hidden="true">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                  >
+                    <rect x="3" y="5" width="18" height="16" rx="3" />
+                    <path d="M7 3v4m10-4v4M3 11h18m-14 4h3m4 0h3" />
+                  </svg>
+                </div>
                 <div class="feature-title" data-i18n="welcome.f2t">日期排序</div>
                 <div class="feature-desc" data-i18n="welcome.f2d">按拍摄日期分组浏览</div>
               </div>
               <div class="feature-card">
-                <div class="feature-icon">🗄️</div>
+                <div class="feature-icon" aria-hidden="true">
+                  <svg><use href="#icon-similar" /></svg>
+                </div>
                 <div class="feature-title" data-i18n="welcome.f3t">百万级支持</div>
                 <div class="feature-desc" data-i18n="welcome.f3d">SQLite 数据库高效索引</div>
               </div>
               <div class="feature-card">
-                <div class="feature-icon">🔍</div>
-                <div class="feature-title" data-i18n="welcome.f4t">快速搜索</div>
-                <div class="feature-desc" data-i18n="welcome.f4d">按文件名模糊搜索</div>
+                <div class="feature-icon" aria-hidden="true">
+                  <svg><use href="#icon-search" /></svg>
+                </div>
+                <div class="feature-title" data-i18n="welcome.f4t">AI 搜图</div>
+                <div class="feature-desc" data-i18n="welcome.f4d">左栏「搜图」用中文描述画面</div>
               </div>
             </div>
           </div>
@@ -423,6 +944,36 @@
             >
               <span data-i18n="footer.random">随机</span>
             </button>
+            <!-- 每页数量：与卡片尺寸档位同一副药丸外形（.zoom-control），−/+ 逐档走 BROWSE_PAGE_SIZE_TIERS。
+                 与卡片尺寸一样只在浏览页出现，进智能视图 / 重复页时收掉。 -->
+            <div
+              class="zoom-control zoom-control--page"
+              id="pageSizeControl"
+              style="display: none"
+              role="toolbar"
+              data-i18n-title="footer.pageSizeTitle"
+              data-i18n-aria-label="footer.pageSizeAria"
+              title="每页显示张数"
+              aria-label="每页显示张数"
+            >
+              <button
+                type="button"
+                id="pageSizeDecBtn"
+                data-i18n-aria-label="footer.pageSizeDec"
+                aria-label="每页少一些"
+              >
+                −
+              </button>
+              <span class="zoom-label" id="pageSizeLabel">100</span>
+              <button
+                type="button"
+                id="pageSizeIncBtn"
+                data-i18n-aria-label="footer.pageSizeInc"
+                aria-label="每页多一些"
+              >
+                +
+              </button>
+            </div>
             <div
               class="zoom-control"
               id="zoomControl"
@@ -458,186 +1009,52 @@
         <div class="settings-back" role="button" tabindex="0" data-i18n="settings.back">
           返回相册
         </div>
-        <div class="settings-header" id="settingsSectionFolders">
-          <div>
-            <div class="settings-title" data-i18n="settings.foldersTitle">相册目录管理</div>
-            <div class="settings-desc" data-i18n-html="settings.foldersDescHtml"></div>
-          </div>
-          <div class="settings-header-actions">
-            <div class="settings-import-export-row">
-              <button
-                type="button"
-                class="btn btn-sm"
-                id="settingsExportFoldersBtn"
-                data-i18n="settings.exportJson"
-              >
-                导出目录 JSON
+
+        <!-- 1 媒体库 -->
+        <div
+          class="settings-section settings-panel is-active"
+          id="settingsSectionFolders"
+          data-settings-panel
+        >
+          <div class="settings-header">
+            <div>
+              <div class="settings-title" data-i18n="settings.foldersTitle">相册目录管理</div>
+              <div class="settings-desc" data-i18n-html="settings.foldersDescHtml"></div>
+            </div>
+            <div class="settings-header-actions">
+              <div class="settings-import-export-row">
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="settingsExportFoldersBtn"
+                  data-i18n="settings.exportJson"
+                >
+                  导出目录 JSON
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="settingsImportFoldersBtn"
+                  data-i18n="settings.importJson"
+                >
+                  导入目录 JSON
+                </button>
+              </div>
+              <button class="btn btn-primary" id="settingsAddBtn" data-i18n="settings.addRoot">
+                添加目录
               </button>
-              <button
-                type="button"
-                class="btn btn-sm"
-                id="settingsImportFoldersBtn"
-                data-i18n="settings.importJson"
-              >
-                导入目录 JSON
-              </button>
             </div>
-            <button class="btn btn-primary" id="settingsAddBtn" data-i18n="settings.addRoot">
-              添加目录
-            </button>
           </div>
-        </div>
-        <div class="folder-list" id="settingsFolderList">
-          <div class="settings-folder-placeholder" data-i18n="settings.folderPlaceholder">
-            目录列表区域（加载中...）
-          </div>
-        </div>
-
-        <!-- 标题栏关闭按钮行为（独立区块，侧栏可快速跳转） -->
-        <div class="settings-section" id="settingsSectionCloseBehavior">
-          <div class="settings-section-title" data-i18n="settings.closeSection">关闭按钮</div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
-            <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.closeLabel">
-                点击标题栏 ✕ / Alt+F4 时：
-              </div>
-              <div class="setting-desc" data-i18n="settings.closeDesc">
-                控制主窗口关闭按钮的默认动作；选「每次询问」将弹出与当前主题一致的选择对话框（仍可勾选「设为默认」写入此处选项）。修改下拉选项后立即写入配置并生效
-              </div>
-            </div>
-            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-              <select
-                id="settingWindowClose"
-                class="sort-select"
-                data-i18n-aria-label="settings.closeWindowAria"
-                aria-label="关闭主窗口时的行为"
-              >
-                <option value="ask" data-i18n="settings.close.ask">每次询问</option>
-                <option value="tray" data-i18n="settings.close.tray">直接最小化到系统托盘</option>
-                <option value="quit" data-i18n="settings.close.quit">直接退出程序</option>
-              </select>
+          <div class="folder-list" id="settingsFolderList">
+            <div class="settings-folder-placeholder" data-i18n="settings.folderPlaceholder">
+              目录列表区域（加载中...）
             </div>
           </div>
         </div>
 
-        <!-- 通用设置（变更即写入主进程） -->
-        <div class="settings-section" id="settingsSectionGeneral">
-          <div class="settings-section-title" data-i18n="settings.general">通用设置</div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
-            <div class="settings-general-row">
-              <div class="settings-general-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.uiLanguage">界面语言</div>
-                  <div class="setting-desc" data-i18n="settings.uiLanguageDesc">
-                    切换后立即生效，并写入配置文件
-                  </div>
-                </div>
-                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                  <select
-                    id="settingUiLocale"
-                    class="sort-select"
-                    data-i18n-aria-label="settings.uiLanguage"
-                    aria-label="界面语言"
-                  >
-                    <option value="zh-CN" data-i18n="settings.lang.zh">简体中文</option>
-                    <option value="en" data-i18n="settings.lang.en">English</option>
-                  </select>
-                </div>
-              </div>
-              <div class="settings-general-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.launchPage">启动默认页</div>
-                  <div class="setting-desc" data-i18n="settings.launchPageDesc">
-                    应用启动后优先进入的页面位置
-                  </div>
-                </div>
-                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                  <select
-                    id="settingLaunchDefaultPage"
-                    class="sort-select"
-                    data-i18n-aria-label="settings.launchPageAria"
-                    aria-label="启动默认页"
-                  >
-                    <option value="welcome" data-i18n="settings.launch.welcome">欢迎页</option>
-                    <option value="all_photos" data-i18n="settings.launch.allPhotos">所有照片</option>
-                    <option value="all_folders" data-i18n="settings.launch.allFolders">所有目录</option>
-                    <option value="last_position" data-i18n="settings.launch.last">上次位置</option>
-                  </select>
-                </div>
-              </div>
-              <div class="settings-general-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.themeStyle">界面风格</div>
-                  <div class="setting-desc" data-i18n="settings.themeStyleDesc">
-                    每套为整体配色（明暗、强调色与背景已搭配好）；也可在菜单「查看」中切换到下一套。变更后立即写入配置
-                  </div>
-                </div>
-                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                  <select
-                    id="settingThemeStyle"
-                    class="sort-select"
-                    data-i18n-aria-label="settings.themeStyleAria"
-                    aria-label="界面风格"
-                  >
-                    <option value="midnight_classic" data-i18n="theme.midnight_classic">
-                      夜幕经典
-                    </option>
-                    <option value="ice_deep" data-i18n="theme.ice_deep">深空冰蓝</option>
-                    <option value="amber_dawn" data-i18n="theme.amber_dawn">晨光琥珀</option>
-                    <option value="forest_shadow" data-i18n="theme.forest_shadow">森影暮霭</option>
-                    <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
-                    <option value="cherry_blossom" data-i18n="theme.cherry_blossom">樱雾粉昼</option>
-                    <option value="lavender_dusk" data-i18n="theme.lavender_dusk">暮紫微光</option>
-                    <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div class="settings-toggle-row">
-              <div class="settings-toggle-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.autoScan">启动时自动扫描</div>
-                  <div class="setting-desc" data-i18n="settings.autoScanDesc">
-                    打开应用后自动重新扫描所有已添加的目录；开关变更后立即写入配置
-                  </div>
-                </div>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="settingAutoScan" />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-              <div class="settings-toggle-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.autoThumb">启动时自动补全缩略图</div>
-                  <div class="setting-desc" data-i18n="settings.autoThumbDesc">
-                    打开应用后，在后台为尚未生成缩略图的照片补齐预览图；与扫描互斥，仅在空闲时执行；开关变更后立即写入配置
-                  </div>
-                </div>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="settingAutoThumbBackfillOnStartup" />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-              <div class="settings-toggle-col">
-                <div class="setting-info">
-                  <div class="setting-label" data-i18n="settings.autoDup">启动后自动查找重复照片</div>
-                  <div class="setting-desc" data-i18n="settings.autoDupDesc">
-                    在后台比对尚未处理过的照片，找出内容完全相同的重复项。若同时开启「启动时自动扫描」，会先扫完目录再开始比对。
-                  </div>
-                </div>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="settingAutoHashOnStartup" />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 扫描选项：已从管理界面移除 -->
-
-        <div class="settings-section" id="settingsSectionBrowse">
-          <div class="settings-section-title" data-i18n="settings.section.browse">浏览偏好</div>
+        <!-- 2 浏览与播放 -->
+        <div class="settings-section settings-panel" id="settingsSectionBrowse" data-settings-panel>
+          <div class="settings-section-title" data-i18n="settings.section.browse">浏览与播放</div>
           <div class="setting-item settings-browse-item">
             <div class="setting-info">
               <div class="setting-label" data-i18n="settings.browse.defaultMode">默认浏览方式</div>
@@ -831,13 +1248,46 @@
                   </div>
                 </div>
               </section>
+              <section
+                class="settings-browse-group"
+                aria-labelledby="settingsBrowseGroupVideoHeading"
+              >
+                <h3
+                  class="settings-browse-group-title"
+                  id="settingsBrowseGroupVideoHeading"
+                  data-i18n="settings.videoClickBehavior"
+                >
+                  点击视频
+                </h3>
+                <div class="settings-browse-group-body">
+                  <div class="settings-browse-field">
+                    <label
+                      class="setting-inline-label"
+                      for="settingVideoClickBehavior"
+                      data-i18n="settings.videoClickBehavior"
+                      >点击视频</label
+                    >
+                    <select
+                      id="settingVideoClickBehavior"
+                      class="sort-select settings-browse-select-grow"
+                      data-i18n-aria-label="settings.videoClickBehavior"
+                      aria-label="点击视频"
+                    >
+                      <option value="system" data-i18n="settings.videoClickBehavior.system">
+                        系统播放器
+                      </option>
+                      <option value="embedded" data-i18n="settings.videoClickBehavior.embedded">
+                        内嵌预览
+                      </option>
+                    </select>
+                  </div>
+                  <p
+                    class="settings-browse-hint"
+                    data-i18n-html="settings.videoClickBehaviorDesc"
+                  ></p>
+                </div>
+              </section>
             </div>
-          </div>
-        </div>
-
-        <div class="settings-section" id="settingsSectionMedia">
-          <div class="settings-section-title" data-i18n="settings.section.mediaData">
-            缩略图、预览与数据
           </div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
@@ -887,6 +1337,15 @@
               </select>
             </div>
           </div>
+        </div>
+
+        <!-- 3 媒体与存储 -->
+        <div
+          class="settings-section settings-panel"
+          id="settingsSectionStorage"
+          data-settings-panel
+        >
+          <div class="settings-section-title" data-i18n="settings.section.storage">媒体与存储</div>
           <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
             <div class="setting-info">
               <div class="setting-label" data-i18n="settings.thumbSizeQuality">
@@ -975,8 +1434,11 @@
               建议：1GB / 48 目录。保存后新会话会按新阈值清理缓存。
             </div>
           </div>
+        </div>
 
-          <!-- 后台任务与维护（操作按钮统一对齐） -->
+        <!-- 4 后台任务 -->
+        <div class="settings-section settings-panel" id="settingsSectionTasks" data-settings-panel>
+          <div class="settings-section-title" data-i18n="settings.section.tasks">后台任务</div>
           <div class="settings-task-group">
             <div
               class="setting-item settings-task-row"
@@ -1089,6 +1551,16 @@
                 >
                   停止比对
                 </button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="gotoSimilarBtn"
+                  data-i18n="settings.task.gotoSimilar"
+                  data-i18n-title="settings.task.gotoSimilarTitle"
+                  title="跳转到视觉相似模式，查看 dHash 匹配的分组"
+                >
+                  查看视觉相似
+                </button>
               </div>
             </div>
 
@@ -1151,175 +1623,417 @@
                 </button>
               </div>
             </div>
+            <div
+              class="setting-item settings-task-row settings-ai-task"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
+            >
+              <div class="setting-label" data-i18n="settings.task.aiSearch">搜图索引</div>
+              <section
+                class="settings-ai-task-body"
+                id="settingsAiSearchMount"
+                aria-label="本地 AI 与多语言搜图"
+                data-i18n-aria-label="settings.section.semanticAria"
+              ></section>
+            </div>
+            <div
+              class="setting-item settings-task-row settings-ai-task"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
+            >
+              <div class="setting-label" data-i18n="settings.task.aiPeople">人物索引</div>
+              <section
+                class="settings-ai-task-body"
+                id="settingsAiPeopleMount"
+                aria-label="人脸识别"
+                data-i18n-aria-label="settings.section.peopleAria"
+              ></section>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.autoRunSection">
+              自动执行
+            </div>
+            <p class="settings-browse-hint" data-i18n="settings.autoRunHint">
+              控制应用启动后是否自动执行上面的任务；实际执行同样受互斥规则约束，同一时间只跑一项。
+            </p>
+            <div class="settings-toggle-row">
+              <div class="settings-toggle-col">
+                <div class="setting-info">
+                  <div class="setting-label" data-i18n="settings.autoScan">启动时自动扫描</div>
+                  <div class="setting-desc" data-i18n="settings.autoScanDesc">
+                    打开应用后自动重新扫描所有已添加的目录；开关变更后立即写入配置
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingAutoScan" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-toggle-col">
+                <div class="setting-info">
+                  <div class="setting-label" data-i18n="settings.autoThumb">
+                    启动时自动补全缩略图与视觉指纹
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.autoThumbDesc">
+                    打开应用后，在后台为缺少缩略图或缺少感知哈希（dHash）的照片补齐数据；与扫描互斥，仅在空闲时执行；开关变更后立即写入配置
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingAutoThumbBackfillOnStartup" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-toggle-col">
+                <div class="setting-info">
+                  <div class="setting-label" data-i18n="settings.autoDup">
+                    启动后自动查找重复照片
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.autoDupDesc">
+                    在后台比对尚未处理过的照片，找出内容完全相同的重复项。若同时开启「启动时自动扫描」，会先扫完目录再开始比对。
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingAutoHashOnStartup" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-browse-field">
+                <label
+                  class="setting-inline-label"
+                  for="settingSimilarThreshold"
+                  data-i18n="settings.similarThreshold"
+                  >视觉相似阈值</label
+                >
+                <select
+                  id="settingSimilarThreshold"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.similarThresholdAria"
+                  aria-label="视觉相似汉明距离阈值"
+                >
+                  <option value="4">4（极严格，几乎完全相同）</option>
+                  <option value="8">8（严格）</option>
+                  <option value="12" selected>12（默认，推荐）</option>
+                  <option value="16">16（宽松）</option>
+                  <option value="20">20（较宽松）</option>
+                  <option value="24">24（非常宽松）</option>
+                </select>
+                <p class="settings-browse-hint" data-i18n="settings.similarThresholdDesc">
+                  汉明距离阈值，越小越严格。用于预览页「查找相似照片」和重复页「视觉相似」模式
+                </p>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- 5 应用 -->
+        <div class="settings-section settings-panel" id="settingsSectionApp" data-settings-panel>
+          <div class="settings-section-title" data-i18n="settings.section.app">应用</div>
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.closeSection">关闭按钮</div>
+            <div
+              class="setting-item"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
+            >
+              <div class="setting-info">
+                <div class="setting-label" data-i18n="settings.closeLabel">
+                  点击标题栏 ✕ / Alt+F4 时：
+                </div>
+                <div class="setting-desc" data-i18n="settings.closeDesc">
+                  控制主窗口关闭按钮的默认动作；选「每次询问」将弹出与当前主题一致的选择对话框（仍可勾选「设为默认」写入此处选项）。修改下拉选项后立即写入配置并生效
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+                <select
+                  id="settingWindowClose"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.closeWindowAria"
+                  aria-label="关闭主窗口时的行为"
+                >
+                  <option value="ask" data-i18n="settings.close.ask">每次询问</option>
+                  <option value="tray" data-i18n="settings.close.tray">直接最小化到系统托盘</option>
+                  <option value="quit" data-i18n="settings.close.quit">直接退出程序</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.general">通用设置</div>
+            <div
+              class="setting-item"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
+            >
+              <div class="settings-general-row">
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.uiLanguage">界面语言</div>
+                    <div class="setting-desc" data-i18n="settings.uiLanguageDesc">
+                      切换后立即生效，并写入配置文件
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+                    <select
+                      id="settingUiLocale"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.uiLanguage"
+                      aria-label="界面语言"
+                    >
+                      <option value="zh-CN" data-i18n="settings.lang.zh">简体中文</option>
+                      <option value="en" data-i18n="settings.lang.en">English</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.launchPage">启动默认页</div>
+                    <div class="setting-desc" data-i18n="settings.launchPageDesc">
+                      应用启动后优先进入的页面位置
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+                    <select
+                      id="settingLaunchDefaultPage"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.launchPageAria"
+                      aria-label="启动默认页"
+                    >
+                      <option value="welcome" data-i18n="settings.launch.welcome">欢迎页</option>
+                      <option value="all_photos" data-i18n="settings.launch.allPhotos">
+                        所有照片
+                      </option>
+                      <option value="all_folders" data-i18n="settings.launch.allFolders">
+                        所有目录
+                      </option>
+                      <option value="last_position" data-i18n="settings.launch.last">
+                        上次位置
+                      </option>
+                    </select>
+                  </div>
+                </div>
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.themeStyle">界面风格</div>
+                    <div class="setting-desc" data-i18n="settings.themeStyleDesc">
+                      每套为整体配色（明暗、强调色与背景已搭配好）；也可在菜单「查看」中切换到下一套。变更后立即写入配置
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+                    <select
+                      id="settingThemeStyle"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.themeStyleAria"
+                      aria-label="界面风格"
+                    >
+                      <option value="midnight_classic" data-i18n="theme.midnight_classic">
+                        夜幕经典
+                      </option>
+                      <option value="ice_deep" data-i18n="theme.ice_deep">深空冰蓝</option>
+                      <option value="amber_dawn" data-i18n="theme.amber_dawn">晨光琥珀</option>
+                      <option value="forest_shadow" data-i18n="theme.forest_shadow">
+                        森影暮霭
+                      </option>
+                      <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
+                      <option value="cherry_blossom" data-i18n="theme.cherry_blossom">
+                        樱雾粉昼
+                      </option>
+                      <option value="lavender_dusk" data-i18n="theme.lavender_dusk">
+                        暮紫微光
+                      </option>
+                      <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- 局域网访问设置 -->
-        <div class="settings-section" id="settingsSectionNetwork">
-          <div class="settings-section-title" data-i18n="settings.network.title">局域网访问</div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
+        <!-- 6 网络 -->
+        <div
+          class="settings-section settings-panel"
+          id="settingsSectionNetwork"
+          data-settings-panel
+        >
+          <div class="settings-section-title" data-i18n="settings.section.network">网络</div>
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.network.title">
+              局域网访问
+            </div>
             <div
-              style="
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: 12px;
-              "
+              class="setting-item"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
             >
-              <div class="setting-info" style="flex: 1; min-width: 0">
-                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-                  <div class="setting-label" data-i18n="settings.network.urlLabel">访问地址</div>
-                  <span
-                    class="setting-status online"
-                    id="webServerStatus"
-                    data-i18n="settings.network.statusOn"
-                    >运行</span
-                  >
-                </div>
-                <div class="setting-desc" data-i18n="settings.network.urlDesc">
-                  同一局域网内的设备可通过此地址访问相册
-                </div>
-              </div>
-              <label class="toggle-switch" style="flex-shrink: 0; margin-top: 2px">
-                <input type="checkbox" id="settingWebServerEnabled" checked />
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="web-url-box" id="webUrlBox" role="button" tabindex="0">
-              <span id="webUrlText" data-i18n="settings.network.starting">启动中...</span>
-              <span class="web-url-copy" id="webUrlCopy" data-i18n="settings.network.copy"
-                >点击复制</span
+              <div
+                style="
+                  display: flex;
+                  align-items: flex-start;
+                  justify-content: space-between;
+                  gap: 12px;
+                "
               >
-            </div>
-          </div>
-          <div class="setting-item setting-item-password">
-            <div class="setting-info">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-                <div class="setting-label" data-i18n="settings.network.passwordLabel">访问密码</div>
-                <span
-                  class="setting-status offline"
-                  id="webPasswordStatusBadge"
-                  data-i18n="settings.network.passwordUnsetBadge"
-                  >未设置</span
+                <div class="setting-info" style="flex: 1; min-width: 0">
+                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                    <div class="setting-label" data-i18n="settings.network.urlLabel">访问地址</div>
+                    <span
+                      class="setting-status online"
+                      id="webServerStatus"
+                      data-i18n="settings.network.statusOn"
+                      >运行</span
+                    >
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.network.urlDesc">
+                    同一局域网内的设备可通过此地址访问相册
+                  </div>
+                </div>
+                <label class="toggle-switch" style="flex-shrink: 0; margin-top: 2px">
+                  <input type="checkbox" id="settingWebServerEnabled" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="web-url-box" id="webUrlBox" role="button" tabindex="0">
+                <span id="webUrlText" data-i18n="settings.network.starting">启动中...</span>
+                <span class="web-url-copy" id="webUrlCopy" data-i18n="settings.network.copy"
+                  >点击复制</span
                 >
               </div>
-              <div class="setting-desc" data-i18n="settings.network.passwordDesc">
-                设置后浏览器访问需要输入密码（留空则无密码）；输入后请点击「确认应用」保存访问密码。
-              </div>
             </div>
-            <div class="web-password-controls" style="display: flex; gap: 8px; align-items: center">
-              <input
-                type="password"
-                id="settingWebPassword"
-                data-i18n-placeholder="settings.network.passwordPlaceholder"
-                placeholder="设置访问密码"
-                style="
-                  padding: 6px 12px;
-                  border: 1px solid var(--border);
-                  border-radius: 8px;
-                  background: var(--bg-card);
-                  color: var(--text-primary);
-                  font-size: 13px;
-                  width: 160px;
-                  outline: none;
-                  transition: border-color 0.15s;
-                  position: relative;
-                  z-index: 3;
-                  pointer-events: auto;
-                "
-              />
-              <button
-                type="button"
-                class="btn btn-sm btn-primary"
-                id="saveWebPasswordBtn"
-                data-i18n="settings.apply"
-              >
-                确认应用
-              </button>
-            </div>
-          </div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
-            <div
-              style="
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: 16px;
-                flex-wrap: wrap;
-              "
-            >
+            <div class="setting-item setting-item-password">
               <div class="setting-info">
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-                  <div class="setting-label" data-i18n="settings.network.tunnel">
-                    Cloudflare Tunnel
+                  <div class="setting-label" data-i18n="settings.network.passwordLabel">
+                    访问密码
                   </div>
                   <span
                     class="setting-status offline"
-                    id="tunnelStatusBadge"
-                    data-i18n="settings.network.tunnelOff"
-                    >未开启</span
+                    id="webPasswordStatusBadge"
+                    data-i18n="settings.network.passwordUnsetBadge"
+                    >未设置</span
                   >
                 </div>
-                <div class="setting-desc" data-i18n="settings.network.tunnelDesc">
-                  开启后生成公网地址；为安全起见，必须先设置访问密码。此开关仅控制当前会话，不会默认随应用启动自动开启。
+                <div class="setting-desc" data-i18n="settings.network.passwordDesc">
+                  设置后浏览器访问需要输入密码（留空则无密码）；输入后请点击「确认应用」保存访问密码。
                 </div>
               </div>
-              <label class="toggle-switch">
-                <input type="checkbox" id="settingTunnelEnabled" />
-                <span class="toggle-slider"></span>
-              </label>
+              <div
+                class="web-password-controls"
+                style="display: flex; gap: 8px; align-items: center"
+              >
+                <input
+                  type="password"
+                  id="settingWebPassword"
+                  data-i18n-placeholder="settings.network.passwordPlaceholder"
+                  placeholder="设置访问密码"
+                  style="
+                    padding: 6px 12px;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    background: var(--bg-card);
+                    color: var(--text-primary);
+                    font-size: 13px;
+                    width: 160px;
+                    outline: none;
+                    transition: border-color 0.15s;
+                    position: relative;
+                    z-index: 3;
+                    pointer-events: auto;
+                  "
+                />
+                <button
+                  type="button"
+                  class="btn btn-sm btn-primary"
+                  id="saveWebPasswordBtn"
+                  data-i18n="settings.apply"
+                >
+                  确认应用
+                </button>
+              </div>
             </div>
             <div
-              class="setting-desc"
-              id="tunnelBinaryPathText"
-              data-i18n="settings.network.tunnelBinaryChecking"
+              class="setting-item"
+              style="flex-direction: column; align-items: stretch; gap: 10px"
             >
-              cloudflared：检测中...
-            </div>
-            <div
-              class="setting-desc"
-              id="tunnelLogHint"
-              style="display: none"
-              data-i18n="settings.network.tunnelLogHint"
-            >
-              启动日志（仅失败时显示，可复制发给我排查）
-            </div>
-            <div
-              style="display: none; gap: 8px; align-items: center; justify-content: space-between"
-              id="tunnelLogRow"
-            >
-              <pre
-                id="tunnelLogPre"
+              <div
                 style="
-                  margin: 0;
-                  white-space: pre-wrap;
-                  word-break: break-word;
-                  max-height: 140px;
-                  overflow: auto;
-                  padding: 10px 12px;
-                  border-radius: 10px;
-                  border: 1px solid var(--border);
-                  background: var(--bg-hover);
-                  color: var(--text-secondary);
-                  font-size: 12px;
-                  line-height: 1.4;
-                  flex: 1;
+                  display: flex;
+                  align-items: flex-start;
+                  justify-content: space-between;
+                  gap: 16px;
+                  flex-wrap: wrap;
                 "
-              ></pre>
-              <button
-                type="button"
-                class="btn btn-sm"
-                id="tunnelLogCopyBtn"
-                data-i18n="settings.network.tunnelCopyLog"
               >
-                复制日志
-              </button>
-            </div>
-            <div class="web-url-box" id="tunnelUrlBox" role="button" tabindex="0">
-              <span id="tunnelUrlText" data-i18n="settings.network.tunnelUrlPending">未获取</span>
-              <span class="web-url-copy" id="tunnelUrlCopy" data-i18n="settings.network.copy"
-                >点击复制</span
+                <div class="setting-info">
+                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                    <div class="setting-label" data-i18n="settings.network.tunnel">
+                      Cloudflare Tunnel
+                    </div>
+                    <span
+                      class="setting-status offline"
+                      id="tunnelStatusBadge"
+                      data-i18n="settings.network.tunnelOff"
+                      >未开启</span
+                    >
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.network.tunnelDesc">
+                    开启后生成公网地址；为安全起见，必须先设置访问密码。此开关仅控制当前会话，不会默认随应用启动自动开启。
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingTunnelEnabled" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div
+                class="setting-desc"
+                id="tunnelBinaryPathText"
+                data-i18n="settings.network.tunnelBinaryChecking"
               >
+                cloudflared：检测中...
+              </div>
+              <div
+                class="setting-desc"
+                id="tunnelLogHint"
+                style="display: none"
+                data-i18n="settings.network.tunnelLogHint"
+              >
+                启动日志（仅失败时显示，可复制发给我排查）
+              </div>
+              <div
+                style="display: none; gap: 8px; align-items: center; justify-content: space-between"
+                id="tunnelLogRow"
+              >
+                <pre
+                  id="tunnelLogPre"
+                  style="
+                    margin: 0;
+                    white-space: pre-wrap;
+                    word-break: break-word;
+                    max-height: 140px;
+                    overflow: auto;
+                    padding: 10px 12px;
+                    border-radius: 10px;
+                    border: 1px solid var(--border);
+                    background: var(--bg-hover);
+                    color: var(--text-secondary);
+                    font-size: 12px;
+                    line-height: 1.4;
+                    flex: 1;
+                  "
+                ></pre>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="tunnelLogCopyBtn"
+                  data-i18n="settings.network.tunnelCopyLog"
+                >
+                  复制日志
+                </button>
+              </div>
+              <div class="web-url-box" id="tunnelUrlBox" role="button" tabindex="0">
+                <span id="tunnelUrlText" data-i18n="settings.network.tunnelUrlPending">未获取</span>
+                <span class="web-url-copy" id="tunnelUrlCopy" data-i18n="settings.network.copy"
+                  >点击复制</span
+                >
+              </div>
             </div>
           </div>
         </div>
@@ -1338,7 +2052,7 @@
                 id="slideshowToggleBtn"
                 data-i18n="preview.slideshow.play"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-play"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-play" /></svg>
                 <span class="btn-label">播放</span>
               </button>
               <select
@@ -1359,7 +2073,7 @@
                 data-i18n-title="preview.slideshow.randomTitle"
                 title="幻灯片随机顺序"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-shuffle"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-shuffle" /></svg>
                 <span class="btn-label" data-i18n="preview.slideshow.random">随机</span>
               </button>
             </div>
@@ -1370,7 +2084,7 @@
                 id="previewFullscreenBtn"
                 data-i18n="preview.fullscreen"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-fullscreen"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-fullscreen" /></svg>
                 <span class="btn-label">全屏</span>
               </button>
               <button
@@ -1381,7 +2095,7 @@
                 data-i18n-title="preview.rotateTitle"
                 title="顺时针旋转 90°（仅显示，不写文件）快捷键 R"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-rotate"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-rotate" /></svg>
                 <span class="btn-label">旋转</span>
               </button>
               <select
@@ -1405,7 +2119,7 @@
                 title="字幕样式"
                 style="display: none"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-subtitle"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-subtitle" /></svg>
                 <span class="btn-label">字幕样式</span>
               </button>
               <button
@@ -1416,8 +2130,19 @@
                 data-i18n-title="preview.favoriteTitle"
                 title="收藏 (F)"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-star"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-star" /></svg>
                 <span class="btn-label">收藏</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewFindSimilarBtn"
+                data-i18n="preview.findSimilar"
+                data-i18n-title="preview.findSimilarTitle"
+                title="查找相似照片"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-similar" /></svg>
+                <span class="btn-label">相似</span>
               </button>
               <button
                 type="button"
@@ -1427,7 +2152,7 @@
                 data-i18n-title="preview.showInFolderTitle"
                 title="在资源管理器中显示"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-folder"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
                 <span class="btn-label">位置</span>
               </button>
               <button
@@ -1438,7 +2163,7 @@
                 data-i18n-title="preview.openExternalTitle"
                 title="用系统默认程序打开当前图 (O)"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-external"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-external" /></svg>
                 <span class="btn-label">打开</span>
               </button>
               <button
@@ -1449,7 +2174,7 @@
                 data-i18n-title="preview.trashTitle"
                 title="移到回收站"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-trash"/></svg>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-trash" /></svg>
                 <span class="btn-label">删除</span>
               </button>
             </div>
@@ -1463,7 +2188,7 @@
               title="照片信息"
               aria-label="照片信息"
             >
-              <svg class="btn-icon" aria-hidden="true"><use href="#icon-info"/></svg>
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-info" /></svg>
             </button>
             <button
               class="preview-minimize"
@@ -1582,11 +2307,18 @@
         <div class="preview-info-panel" id="previewInfoPanel">
           <div class="preview-info-panel-header">
             <h3>照片信息</h3>
-            <button class="preview-info-panel-close" id="previewInfoPanelClose" type="button" aria-label="关闭">
-              <svg class="btn-icon" aria-hidden="true"><use href="#icon-close"/></svg>
+            <button
+              class="preview-info-panel-close"
+              id="previewInfoPanelClose"
+              type="button"
+              aria-label="关闭"
+            >
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-close" /></svg>
             </button>
           </div>
-          <div id="previewInfoPanelContent"><div class="preview-info-empty">打开照片后查看信息</div></div>
+          <div id="previewInfoPanelContent">
+            <div class="preview-info-empty">打开照片后查看信息</div>
+          </div>
         </div>
         <div
           class="preview-subtitle-settings-panel"
@@ -1758,8 +2490,12 @@
     <script src="preview-flow.js"></script>
     <script src="ui-preview.js"></script>
     <script src="ui-grid.js"></script>
+    <script src="ai-views.js"></script>
     <script src="ui-duplicates.js"></script>
     <script src="ui-events.js"></script>
+    <script src="../web/js/photo-compare.js"></script>
+    <script src="../web/js/semantic-search.js"></script>
+    <script src="../web/js/people.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

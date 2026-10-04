@@ -11,7 +11,7 @@
 | **npm 包名**             | `aurora-gallery`                                                |
 | **Bundle ID**（`appId`） | `com.foredawn.aurora-gallery`                                   |
 
-**当前发布版本**：`1.0.2`（与根目录 [`package.json`](package.json) 的 `version` 字段一致；发版前请 bump 版本并同步「关于」等文案。）
+**当前发布版本**：`1.2.0`（与根目录 [`package.json`](package.json) 的 `version` 字段一致；发版前请 bump 版本并同步「关于」等文案。）
 
 **版本说明**：详见 [`CHANGELOG.md`](CHANGELOG.md)（中英对照的发行条目以英文 changelog 为准；中文版 README 在此做摘要指引）。
 
@@ -66,7 +66,7 @@
 
 ## 版本说明（摘要）
 
-各版本的详细变更请阅读 **[`CHANGELOG.md`](CHANGELOG.md)**。当前线：**1.0.2**（在 1.0.1 的网页预览、字幕、筛选与管理页等能力之上，补充**中英文界面适配**：侧栏、统计条、管理设置动态文案等；更早版本条目以 changelog 为准）。
+各版本的详细变更请阅读 **[`CHANGELOG.md`](CHANGELOG.md)**。当前线：**1.2.0**（收尾与对齐、零新功能：把 2026-09 落地的本地 AI 搜图、人脸识别与人物分组、照片对比三项记入正式版本，并对齐版本号与文档；其余版本条目以 changelog 为准）。
 
 ## 环境要求
 
@@ -113,7 +113,7 @@ npm install
 npm run dist:win
 ```
 
-常见输出（文件名中的版本号与 `package.json` 的 `version` 一致，例如当前为 `1.0.2`）：
+常见输出（文件名中的版本号与 `package.json` 的 `version` 一致，例如当前为 `1.2.0`）：
 
 - 安装包：`release/AuroraGallery-Setup-<version>.exe`
 - 解包目录：`release/win-unpacked/`

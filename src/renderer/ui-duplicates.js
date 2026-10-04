@@ -24,19 +24,28 @@
 
     var scanned = !!state.duplicateHasScanned;
     var mode = state.duplicateDetectionMode || 'hash';
+    var isSimilar = mode === 'similar';
     var defaultBody =
       '<div class="dup-empty">' +
-      (scanned ? '请在左侧选一个分组查看。' : '还没有数据。点击下方开始查找内容相同的照片。') +
+      (scanned
+        ? '请在左侧选一个分组查看。'
+        : isSimilar
+          ? '还没有数据。点击下方开始查找视觉相似的照片。'
+          : '还没有数据。点击下方开始查找内容相同的照片。') +
       '<div style="margin-top:10px;">' +
-      '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">查找重复照片</button>' +
+      '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">' +
+      (isSimilar ? '查找视觉相似照片' : '查找重复照片') +
+      '</button>' +
       '</div>' +
       '</div>';
     var html =
       '<div class="dup-page-head">' +
       '<div>' +
-      '<div class="dup-page-title">重复照片</div>' +
+      '<div class="dup-page-title">' +
+      (isSimilar ? '视觉相似照片' : '重复照片') +
+      '</div>' +
       '<div class="dup-page-desc">' +
-      (mode === 'similar'
+      (isSimilar
         ? '感知哈希相似的照片会归为一组（视觉相似，内容可能不同）'
         : '内容相同的照片会归为一组，界面会随主题自动切换') +
       '</div>' +
@@ -51,7 +60,7 @@
       '" data-dup-action="switch-mode" data-mode="similar">视觉相似</button>' +
       '</div>' +
       '<button type="button" class="btn btn-sm" data-dup-action="start-hash">' +
-      (scanned ? '重新查找' : '查找重复照片') +
+      (scanned ? '重新查找' : isSimilar ? '查找视觉相似照片' : '查找重复照片') +
       '</button>' +
       '<button type="button" class="btn btn-sm" data-dup-action="load-groups" data-page="1" ' +
       (scanned ? '' : 'disabled') +
@@ -82,10 +91,14 @@
       return;
     onEnsureDuplicateSidebarVisible();
     var groups = normalizeDuplicateGroups(state.duplicateGroups);
+    var mode = state.duplicateDetectionMode || 'hash';
+    var isSimilar = mode === 'similar';
     var rootItemHtml =
       '<div class="folder-item active" data-sidebar-duplicates="1">' +
       '<span class="icon">\u{1F9E9}</span>' +
-      '<span class="name">重复照片</span>' +
+      '<span class="name">' +
+      (isSimilar ? '视觉相似照片' : '重复照片') +
+      '</span>' +
       '<span class="count">' +
       formatNumber(groups.length) +
       '</span>' +
@@ -130,11 +143,15 @@
     var target = onGetSidebarRenderTarget();
     if (!target) return;
     var scanned = !!state.duplicateHasScanned;
+    var mode = state.duplicateDetectionMode || 'hash';
+    var isSimilar = mode === 'similar';
     var groups = normalizeDuplicateGroups(state.duplicateGroups);
     var rootItemHtml =
       '<div class="folder-item active" data-sidebar-duplicates="1">' +
       '<span class="icon">\u{1F9E9}</span>' +
-      '<span class="name">重复照片</span>' +
+      '<span class="name">' +
+      (isSimilar ? '视觉相似照片' : '重复照片') +
+      '</span>' +
       '<span class="count">' +
       formatNumber(groups.length) +
       '</span>' +
@@ -143,8 +160,12 @@
       var html0 =
         rootItemHtml +
         '<div class="sidebar-list-loading">' +
-        '<div>还没有重复分组</div>' +
-        '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">查找重复照片</button>' +
+        '<div>' +
+        (isSimilar ? '还没有视觉相似分组' : '还没有重复分组') +
+        '</div>' +
+        '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">' +
+        (isSimilar ? '查找视觉相似照片' : '查找重复照片') +
+        '</button>' +
         '</div>';
       if (gate) {
         if (gate.isAlive()) target.innerHTML = html0;
@@ -152,7 +173,11 @@
       return;
     }
     if (!groups.length) {
-      var html1 = rootItemHtml + '<div class="sidebar-list-loading">未检测到重复组</div>';
+      var html1 =
+        rootItemHtml +
+        '<div class="sidebar-list-loading">' +
+        (isSimilar ? '未检测到视觉相似组' : '未检测到重复组') +
+        '</div>';
       if (gate) {
         if (gate.isAlive()) target.innerHTML = html1;
       } else target.innerHTML = html1;
@@ -266,11 +291,19 @@
     return html;
   }
 
-  function renderDuplicateNoGroupContent() {
+  function renderDuplicateNoGroupContent(options) {
+    options = options || {};
+    var state = options.state || {};
+    var mode = state.duplicateDetectionMode || 'hash';
+    var isSimilar = mode === 'similar';
     var wrap = document.getElementById('dupListWrap');
     if (!wrap) return;
     wrap.innerHTML =
-      '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
+      '<div class="dup-empty">' +
+      (isSimilar
+        ? '目前没有视觉相似分组。可到设置里重新比对，或稍后再试。'
+        : '目前没有重复分组。可到设置里重新比对，或稍后再试。') +
+      '</div>';
   }
 
   global.RendererDuplicatesUI = Object.assign({}, global.RendererDuplicatesUI || {}, {
@@ -338,7 +371,10 @@
     var gate = onCreateSidebarRequestGate('duplicates', 'loadDuplicateGroups');
     state.duplicateGroupsLoading = true;
     state.duplicateGroupsPage = reqPage;
-    onRenderDuplicateSidebarLoading('正在加载重复组...', gate);
+    onRenderDuplicateSidebarLoading(
+      useSimilar ? '正在加载视觉相似组...' : '正在加载重复组...',
+      gate,
+    );
     try {
       if (typeof console !== 'undefined' && console && typeof console.log === 'function') {
         Logger.log(
@@ -405,7 +441,10 @@
           }
         }
         if (shouldRetry) {
-          onRenderDuplicateSidebarLoading('正在汇总重复组，请稍候…', gate);
+          onRenderDuplicateSidebarLoading(
+            useSimilar ? '正在汇总视觉相似组，请稍候…' : '正在汇总重复组，请稍候…',
+            gate,
+          );
           setTimeout(function () {
             if (state.currentTab !== 'duplicates' && state.currentView !== 'duplicates') return;
             if (state.duplicateGroupsLoading) return;
@@ -419,7 +458,7 @@
         } else {
           state.currentDuplicateHash = '';
           onRenderDuplicateSidebar(gate);
-          onRenderDuplicateNoGroupContent();
+          onRenderDuplicateNoGroupContent({ state: state });
         }
       } else {
         if (
@@ -511,8 +550,13 @@
         onRenderDuplicateSidebar(gate);
         var wrapEmpty = document.getElementById('dupListWrap');
         if (wrapEmpty) {
+          var isSimilar2 = (state.duplicateDetectionMode || 'hash') === 'similar';
           wrapEmpty.innerHTML =
-            '<div class="dup-empty">目前没有重复分组。可到设置里重新比对，或稍后再试。</div>';
+            '<div class="dup-empty">' +
+            (isSimilar2
+              ? '目前没有视觉相似分组。可到设置里重新比对，或稍后再试。'
+              : '目前没有重复分组。可到设置里重新比对，或稍后再试。') +
+            '</div>';
         }
         return;
       }
@@ -529,9 +573,11 @@
     var group = (state.duplicateGroups || []).find(function (g) {
       return String(g.file_hash || '') === hash;
     });
+    var isSimilar3 = (state.duplicateDetectionMode || 'hash') === 'similar';
     var header =
       '<div class="dup-group-card"><div class="dup-group-top"><div class="dup-group-meta">' +
-      '<span class="dup-pill">重复 ' +
+      '<span class="dup-pill">' +
+      (isSimilar3 ? '视觉相似 ' : '重复 ') +
       onFormatNumber((group && group.duplicate_count) || 0) +
       ' 张</span>' +
       '<span class="dup-pill">总大小 ' +
@@ -611,7 +657,7 @@
         var groups = Array.isArray(state.duplicateGroups) ? state.duplicateGroups : [];
         if (!groups.length) {
           state.currentDuplicateHash = '';
-          onRenderDuplicateNoGroupContent();
+          onRenderDuplicateNoGroupContent({ state: state });
           return;
         }
         var keep = groups.some(function (g) {

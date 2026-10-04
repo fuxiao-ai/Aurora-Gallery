@@ -45,6 +45,21 @@
   });
 
   // ===== ui-tabs.js =====
+  /**
+   * 底栏右侧那两个档位控件（卡片尺寸 `#zoomControl` / 每页数量 `#pageSizeControl`）
+   * 同生同死：浏览页显示，集合页（重复 / 智能视图）收起。
+   *
+   * 收进一个函数是因为它们此前靠四五个地方各自 `getElementById(...).style.display`
+   * 维持可见性；新加一个控件时只要漏掉其中一处，就会出现「进了智能视图还留着半截底栏控件」。
+   */
+  function setBrowseGridControlsVisible(visible) {
+    var ids = ['zoomControl', 'pageSizeControl'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) el.style.display = visible ? '' : 'none';
+    }
+  }
+
   function prepareBrowsingShell(options) {
     options = options || {};
     var dom = options.dom || {};
@@ -59,14 +74,15 @@
     if (dom.toolbar) dom.toolbar.style.display = browsingChrome ? 'flex' : 'none';
     if (dom.pagination) dom.pagination.style.display = 'none';
 
-    var zoomCtrl = document.getElementById('zoomControl');
-    if (zoomCtrl) zoomCtrl.style.display = '';
+    setBrowseGridControlsVisible(true);
 
     var settingsBtn = document.getElementById('topbarSettingsBtn');
     if (settingsBtn) settingsBtn.classList.remove('active');
   }
 
-  function applyDuplicatesView(options) {
+  // 集合页外壳收敛：关掉移动端侧栏、刷新路径标签、隐藏网格工具栏与缩放控件，
+  // 只保留页内容本身。
+  function applyCollectionView(options) {
     options = options || {};
     var dom = options.dom || {};
     if (typeof options.onCloseMobileSidebar === 'function') options.onCloseMobileSidebar();
@@ -76,13 +92,18 @@
 
     if (dom.toolbar) dom.toolbar.style.display = 'none';
     if (dom.pagination) dom.pagination.style.display = 'none';
-    var zoomCtrl = document.getElementById('zoomControl');
-    if (zoomCtrl) zoomCtrl.style.display = 'none';
+    setBrowseGridControlsVisible(false);
+  }
+
+  function applyDuplicatesView(options) {
+    applyCollectionView(options);
   }
 
   global.RendererTabsUI = Object.assign({}, global.RendererTabsUI || {}, {
     prepareBrowsingShell: prepareBrowsingShell,
+    applyCollectionView: applyCollectionView,
     applyDuplicatesView: applyDuplicatesView,
+    setBrowseGridControlsVisible: setBrowseGridControlsVisible,
   });
 
   // ===== ui-tabs-flow.js =====

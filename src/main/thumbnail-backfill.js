@@ -55,6 +55,7 @@ async function runRowsWithThumbConcurrency(
     thumbnailBackfill.currentFile = row.file_path || '';
     var topts = getThumbOptions(settings);
     var result = null;
+    var skipThumbnail = row.has_thumbnail === 1;
 
     // 跳过已删除的照片（避免删除后仍处理导致失败）
     if (!db.photoExists(row.id)) {
@@ -63,41 +64,47 @@ async function runRowsWithThumbConcurrency(
       return null;
     }
 
-    try {
-      var thumb;
-      if (isVideoPathFunc(row.file_path)) {
-        thumb = await extractVideoThumbnailWithFfmpegFunc(row.file_path, topts);
-        if (!thumb) {
-          thumb = await buildVideoPlaceholderThumbnailFunc(topts);
-        }
-      } else {
-        // 对损坏的 JPEG 尝试宽松解码，即使有警告也尽力输出缩略图
-        thumb = await loadSharp()(row.file_path, { failOnError: false })
-          .rotate()
-          .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: topts.quality })
-          .toBuffer();
-      }
+    if (skipThumbnail) {
+      // 已有缩略图：跳过缩略图生成，只计算 dHash
       thumbnailBackfill.success++;
-      result = { id: row.id, thumbnail: thumb };
-    } catch (e) {
-      // 任何错误都尝试生成占位图，尽可能减少缺失
-      logger.error('Thumbnail generation failed for:', row.file_path, e.message);
+      result = { id: row.id, skipThumbnail: true };
+    } else {
       try {
-        var placeholder = await buildVideoPlaceholderThumbnailFunc(topts);
+        var thumb;
+        if (isVideoPathFunc(row.file_path)) {
+          thumb = await extractVideoThumbnailWithFfmpegFunc(row.file_path, topts);
+          if (!thumb) {
+            thumb = await buildVideoPlaceholderThumbnailFunc(topts);
+          }
+        } else {
+          // 对损坏的 JPEG 尝试宽松解码，即使有警告也尽力输出缩略图
+          thumb = await loadSharp()(row.file_path, { failOnError: false })
+            .rotate()
+            .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: topts.quality })
+            .toBuffer();
+        }
         thumbnailBackfill.success++;
-        result = { id: row.id, thumbnail: placeholder };
-      } catch (fallbackErr) {
-        thumbnailBackfill.failed++;
-        if (thumbnailBackfill.failedPaths.length < THUMB_BACKFILL_FAILED_PATHS_MAX) {
-          var fpe = row.file_path || '';
-          if (fpe) thumbnailBackfill.failedPaths.push(fpe);
+        result = { id: row.id, thumbnail: thumb };
+      } catch (e) {
+        // 任何错误都尝试生成占位图，尽可能减少缺失
+        logger.error('Thumbnail generation failed for:', row.file_path, e.message);
+        try {
+          var placeholder = await buildVideoPlaceholderThumbnailFunc(topts);
+          thumbnailBackfill.success++;
+          result = { id: row.id, thumbnail: placeholder };
+        } catch (fallbackErr) {
+          thumbnailBackfill.failed++;
+          if (thumbnailBackfill.failedPaths.length < THUMB_BACKFILL_FAILED_PATHS_MAX) {
+            var fpe = row.file_path || '';
+            if (fpe) thumbnailBackfill.failedPaths.push(fpe);
+          }
         }
       }
     }
 
-    // 【新增】同步计算 dHash（仅图片，文件系统缓存大概率还热着）
-    if (result && result.thumbnail && !isVideoPathFunc(row.file_path)) {
+    // 同步计算 dHash（仅图片，文件系统缓存大概率还热着）
+    if (result && !isVideoPathFunc(row.file_path)) {
       try {
         var dhash = await computeDhash(row.file_path);
         if (dhash) {
@@ -122,11 +129,13 @@ async function runRowsWithThumbConcurrency(
   async function commitMiniBatch() {
     if (results.length === 0) return;
     // 小批次事务提交，平衡锁竞争和内存
-    // 【新增】同时写入 thumbnail 和 dhash
+    // 同时写入 thumbnail 和 dhash（已有缩略图则只写入 dhash）
     db.beginTransaction();
     try {
       for (var r of results) {
-        db.updatePhotoThumbnail(r.id, r.thumbnail);
+        if (!r.skipThumbnail) {
+          db.updatePhotoThumbnail(r.id, r.thumbnail);
+        }
         if (r.dhash) {
           db.updatePhotoDhash(r.id, r.dhash, getDhashBuckets(r.dhash), r.mtime, r.size);
         }
@@ -138,7 +147,9 @@ async function runRowsWithThumbConcurrency(
       // 单条重试，减少失败
       for (var r2 of results) {
         try {
-          db.updatePhotoThumbnail(r2.id, r2.thumbnail);
+          if (!r2.skipThumbnail) {
+            db.updatePhotoThumbnail(r2.id, r2.thumbnail);
+          }
           if (r2.dhash) {
             db.updatePhotoDhash(r2.id, r2.dhash, getDhashBuckets(r2.dhash), r2.mtime, r2.size);
           }
@@ -213,6 +224,9 @@ async function runThumbnailBackfill(
   logger.task('thumb-backfill', 'start', '', { startedAt: thumbnailBackfill.startedAt, limit: limit || 'all' });
 
   try {
+    // 先确保 dhash 列和 LSH 表已创建（必须在事务外执行 ALTER TABLE）
+    if (typeof db.ensureDhashSchema === 'function') db.ensureDhashSchema();
+
     // 让出多次事件循环，让 UI 先更新状态再开始查询，避免启动就卡死
     await yieldForPreviewPlaybackMs(10);
     await yieldForPreviewPlaybackMs(10);

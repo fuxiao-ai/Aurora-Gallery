@@ -27,8 +27,10 @@ var settingsUi = window.RendererSettingsUI || {};
 var thumbSettingsUi = window.RendererThumbSettingsUI || {};
 var maintenanceUi = window.RendererMaintenanceUI || {};
 var duplicatesFlow = window.RendererDuplicatesFlow || {};
-var facesUi = window.RendererFacesUI || {};
 var uiEvents = window.RendererUIEvents || {};
+// 搜图 / 人物视图到主照片网格的适配层，挂载点在文件末尾（init 前保持 null，
+// 早期调用 showTabContent('folders') 时不会碰到它）。
+var aiViews = null;
 var CARD_SIZE_TIERS = RendererUtils.CARD_SIZE_TIERS || [
   { label: 'S', basis: 100 },
   { label: 'M', basis: 140 },
@@ -60,6 +62,33 @@ var browseCardTierIndexForBasis =
       if (CARD_SIZE_TIERS[j].basis === b) return j;
     }
     return 2;
+  };
+/** 每页张数档位与收档：底栏「每页数量」控件按它逐档走，与主进程校验同一套值 */
+var BROWSE_PAGE_SIZE_TIERS = RendererUtils.BROWSE_PAGE_SIZE_TIERS || [10, 20, 50, 80, 100, 200];
+var snapBrowsePageSize =
+  RendererUtils.snapBrowsePageSize ||
+  function (n) {
+    var x = parseInt(n, 10);
+    if (!isFinite(x)) return 100;
+    var best = BROWSE_PAGE_SIZE_TIERS[0];
+    var bestD = Infinity;
+    for (var i = 0; i < BROWSE_PAGE_SIZE_TIERS.length; i++) {
+      var d = Math.abs(x - BROWSE_PAGE_SIZE_TIERS[i]);
+      if (d < bestD) {
+        bestD = d;
+        best = BROWSE_PAGE_SIZE_TIERS[i];
+      }
+    }
+    return best;
+  };
+var browsePageSizeTierIndex =
+  RendererUtils.browsePageSizeTierIndex ||
+  function (size) {
+    var b = snapBrowsePageSize(size);
+    for (var j = 0; j < BROWSE_PAGE_SIZE_TIERS.length; j++) {
+      if (BROWSE_PAGE_SIZE_TIERS[j] === b) return j;
+    }
+    return BROWSE_PAGE_SIZE_TIERS.indexOf(100);
   };
 function normalizeBrowseCardRatio(v) {
   var s = String(v || '').trim();
@@ -100,17 +129,25 @@ var state = {
   currentPath: '',
   currentDate: '',
   searchQuery: '',
+  /** 搜图视图当前查询词（与文件名检索的 searchQuery 分开，两者是不同视图） */
+  aiSearchQuery: '',
+  /** 人物视图工具栏面包屑：详情态是「姓名 #id」，分组态是「全部人物」 */
+  aiPeopleLabel: '',
   sortBy: 'date_taken',
   sortOrder: 'DESC',
   mediaFilter: 'all', // all | image | video
   page: 1,
-  pageSize: 20,
+  pageSize: 100, // 仅取 BROWSE_PAGE_SIZE_TIERS 中的值，与设置 browsePageSize 同步
   cardSize: 180, // 网格卡片基准（仅取 CARD_SIZE_TIERS 中的值，与 S/M/L/XL 对应）
   cardRatio: '1 / 1',
   thumbCrop: false,
   cardLayoutMode: 'masonry', // uniform | masonry
   /** 与设置 browseFolderIncludeSubfolders 同步：目录视图是否包含子文件夹中的媒体 */
   browseFolderIncludeSubfolders: true,
+  /** 与设置 videoClickBehavior 同步：system 系统播放器 | embedded 内嵌预览 */
+  videoClickBehavior: 'system',
+  /** 与设置 similarThreshold 同步：视觉相似汉明距离阈值（0-64，默认 12） */
+  similarThreshold: 12,
   /** loadRootFolders 预取的各 root 下 folder_path 列表（用于主区展示直接子目录） */
   _folderTreeByRootId: null,
   currentPhotos: [],
@@ -203,12 +240,6 @@ var state = {
   sidebarRequestSeq: 0,
   sidebarLatestRequests: {},
   sidebarLockedMode: '',
-  faceClusters: [],
-  faceSelectedClusterId: null,
-  faceScanPollTimer: null,
-  /** all = 所有人脸网格；person = 选中人物后看文件夹或目录文件 */
-  faceUiMode: 'all',
-  faceSelectedFolderPath: null,
   /**
    * 「文件(目录)」与「日期」浏览缓存分栏存储，失效时可只清一侧。
    * folders.tabMemory：目录 Tab 的路径/分页/排序/滚动等
@@ -224,13 +255,8 @@ var state = {
       dateGroupsCacheFavAt: null,
     },
   },
-  /** 离开人脸 Tab 时保存，返回时恢复 */
-  faceTabMemory: null,
-  /** 人脸人物列表是否可用内存快照跳过重复 IPC（识别/合并后应强制刷新） */
-  faceClustersFetchWarm: false,
   _pendingBrowseScrollTop: null,
-  _pendingFaceScrollTop: null,
-  /** 与 _photoBrowseCacheResult 对应的列表查询指纹（目录/日期/从重复项或人脸返回时优先秒开网格） */
+  /** 与 _photoBrowseCacheResult 对应的列表查询指纹（目录/日期返回时优先秒开网格） */
   _photoBrowseCacheFp: null,
   _photoBrowseCacheResult: null,
   /** 重复项列表缓存世代：invalidate 时 +1，与 _dupListLoadedGen 一致时才允许 warm 路径 */
@@ -257,7 +283,6 @@ var dom = {
   sidebarContentDuplicate: $('#sidebarContentDuplicate'),
   folderNavBar: $('#folderNavBar'),
   folderNavUp: $('#folderNavUp'),
-  searchInput: $('#searchInput'),
   statsBar: $('#statsBar'),
   scanProgress: $('#taskPanel'),
   progressText: $('#progressText'),
@@ -275,6 +300,10 @@ var dom = {
   prevPage: $('#prevPage'),
   nextPage: $('#nextPage'),
   randomPageBtn: $('#randomPageBtn'),
+  pageSizeControl: $('#pageSizeControl'),
+  pageSizeLabel: $('#pageSizeLabel'),
+  pageSizeDecBtn: $('#pageSizeDecBtn'),
+  pageSizeIncBtn: $('#pageSizeIncBtn'),
   previewOverlay: $('#previewOverlay'),
   previewBody: $('#previewBody'),
   previewImage: $('#previewImage'),
@@ -305,17 +334,33 @@ var dom = {
   thumbBackfillExportFailedBtn: $('#thumbBackfillExportFailedBtn'),
   duplicateHashStartBtn: $('#duplicateHashStartBtn'),
   duplicateHashCancelBtn: $('#duplicateHashCancelBtn'),
+  gotoSimilarBtn: $('#gotoSimilarBtn'),
   maintenanceStatus: $('#maintenanceStatus'),
   duplicateHashStatus: $('#duplicateHashStatus'),
   maintenanceCleanupBtn: $('#maintenanceCleanupBtn'),
   maintenanceRebuildThumbFlagsBtn: $('#maintenanceRebuildThumbFlagsBtn'),
   maintenanceOptimizeBtn: $('#maintenanceOptimizeBtn'),
   previewFavoriteBtn: $('#previewFavoriteBtn'),
+  previewFindSimilarBtn: $('#previewFindSimilarBtn'),
   previewShowInFolderBtn: $('#previewShowInFolderBtn'),
   previewInfoToggle: $('#previewInfoToggle'),
   previewInfoPanel: $('#previewInfoPanel'),
   previewInfoPanelClose: $('#previewInfoPanelClose'),
   previewInfoPanelContent: $('#previewInfoPanelContent'),
+  // 智能视图（搜图 / 人物）：控件与状态都在左侧栏，结果落进 #photoGrid
+  aiSearchForm: $('#aiSearchForm'),
+  aiSearchInput: $('#aiSearchInput'),
+  aiSearchSubmit: $('#aiSearchSubmit'),
+  aiViewStatus: $('#aiViewStatus'),
+  aiPeopleStatus: $('#aiPeopleStatus'),
+  aiSearchHistoryList: $('#aiSearchHistoryList'),
+  aiSearchHistoryClear: $('#aiSearchHistoryClear'),
+  aiSearchSuggest: $('#aiSearchSuggest'),
+  peopleList: $('#peopleList'),
+  peopleSearchInput: $('#peopleSearchInput'),
+  aiPeopleLive: $('#aiPeopleLive'),
+  aiPeopleLiveText: $('#aiPeopleLiveText'),
+  aiPeopleLiveStats: $('#aiPeopleLiveStats'),
 };
 
 /** 主浏览区（#photoGrid）滚到顶部，分页/下一页后立即对齐网格起点 */
@@ -540,31 +585,55 @@ async function tickBackgroundTasksOnce() {
     },
     onRefreshThumbnailBackfillStatus: refreshThumbnailBackfillStatus,
     onRefreshDuplicateHashStatus: refreshDuplicateHashStatus,
-    onAfterBackgroundTasksPoll: maybeRefreshFaceListsDuringScan,
   });
 }
 
-/** 管理页上次滚动定位的区块 id（如 settingsSectionMedia） */
+/** 管理页上次定位的面板 id（如 settingsSectionStorage） */
 var SETTINGS_LAST_SECTION_LS_KEY = 'photoManager.settingsLastSection.v1';
+/** 两栏化后的 6 个面板 id，顺序须与 index.html 的 [data-settings-panel] 一致 */
 var VALID_SETTINGS_SECTION_IDS = {
   settingsSectionFolders: 1,
-  settingsSectionCloseBehavior: 1,
-  settingsSectionGeneral: 1,
   settingsSectionBrowse: 1,
-  settingsSectionFace: 1,
-  settingsSectionMedia: 1,
+  settingsSectionStorage: 1,
+  settingsSectionTasks: 1,
+  settingsSectionApp: 1,
   settingsSectionNetwork: 1,
 };
+/**
+ * 历史 id → 当前面板 id。
+ * 设置页经历过两次改版（单页 8 区块 → 两栏 6 面板 → 两栏 7 面板），localStorage 里
+ * 可能还存着任一代的旧值，直接把老用户丢回默认位置体验很差；这里做一次映射，
+ * 写回时也统一存新 id。
+ * 注意 `settingsSectionPeople` 在两代里同名，normalize 后仍指向自己，无需别名。
+ */
+var SETTINGS_SECTION_ID_ALIAS = {
+  // 搜图 / 人物这三个名字换过好几代：8 区块时代的「语义 / 人脸」、6 面板时代的
+  // 「智能索引」、7~8 面板时代的「搜图 / 人物」两个独立类目。它们现在都并进了
+  // 「后台任务」（索引本来就是一类长跑任务），老用户的 localStorage 一律归一到这里。
+  settingsSectionSearch: 'settingsSectionTasks',
+  settingsSectionPeople: 'settingsSectionTasks',
+  settingsSectionSemantic: 'settingsSectionTasks',
+  settingsSectionAi: 'settingsSectionTasks',
+  settingsSectionCloseBehavior: 'settingsSectionApp',
+  settingsSectionGeneral: 'settingsSectionApp',
+  settingsSectionMedia: 'settingsSectionStorage',
+};
+
+function normalizeSettingsSectionId(sectionId) {
+  if (!sectionId) return sectionId;
+  return SETTINGS_SECTION_ID_ALIAS[sectionId] || sectionId;
+}
 
 function getLastSettingsSectionId() {
   try {
-    var id = localStorage.getItem(SETTINGS_LAST_SECTION_LS_KEY);
+    var id = normalizeSettingsSectionId(localStorage.getItem(SETTINGS_LAST_SECTION_LS_KEY));
     if (id && VALID_SETTINGS_SECTION_IDS[id] && document.getElementById(id)) return id;
   } catch (e) {}
   return 'settingsSectionFolders';
 }
 
 function saveLastSettingsSectionId(sectionId) {
+  sectionId = normalizeSettingsSectionId(sectionId);
   if (!sectionId || !VALID_SETTINGS_SECTION_IDS[sectionId]) return;
   try {
     localStorage.setItem(SETTINGS_LAST_SECTION_LS_KEY, sectionId);
@@ -579,7 +648,7 @@ function restoreSettingsPageSectionScroll() {
   if (!el) return;
   renderSettingsNav(id);
   requestAnimationFrame(function () {
-    el.scrollIntoView({ behavior: 'auto', block: 'start' });
+    settingsUi.showSettingsPanel(id);
   });
 }
 
@@ -635,16 +704,20 @@ async function applyInitialSettingsSnapshot() {
     snapBrowseCardBasis: snapBrowseCardBasis,
     onApplyCardSize: applyCardSize,
     onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+    onApplyPageSize: syncPageSizeControl,
   });
   if (window.I18n && typeof window.I18n.initFromSettings === 'function') {
     window.I18n.initFromSettings(s0);
   }
   if (api && typeof api.getAppVersion === 'function') {
-    api.getAppVersion().then(function (v) {
-      if (window.I18n && typeof window.I18n.setVersion === 'function') {
-        window.I18n.setVersion(v);
-      }
-    }).catch(function () {});
+    api
+      .getAppVersion()
+      .then(function (v) {
+        if (window.I18n && typeof window.I18n.setVersion === 'function') {
+          window.I18n.setVersion(v);
+        }
+      })
+      .catch(function () {});
   }
   syncTaskPanelCollapsedUI();
 }
@@ -717,8 +790,6 @@ function registerRuntimeApiListeners() {
       if (state.duplicateHasScanned) {
         await loadDuplicateGroups(state.duplicateGroupsPage || 1, { forceReload: true });
       }
-    } else if (state.currentTab === 'faces' || state.currentView === 'faces') {
-      await loadFaceClusters({ forceRefresh: true });
     } else {
       loadPhotos();
     }
@@ -800,6 +871,21 @@ function restoreStartupPositionSnapshot() {
 }
 
 function applyStartupLandingPage() {
+  // ⚠️ 只在用户还没动过界面时才落地。这个函数是启动流程的最后一步，排在
+  // `await loadRootFolders(true, true)` 之后（这台 122 万照片 / 3.1 万目录的库上要十几秒），
+  // 而 `bindEvents()` 已经先跑过、点击都绑好了——用户在等待期间点进设置 / 搜图 / 人物 /
+  // 重复是完全正常的操作。落地若无条件 showTabContent('folders')，就会把用户当场踢回
+  // 浏览态；更早的版本还会因此留下 settings-page-open 孤儿 class，表现为
+  // 「点搜图，残留设置分栏导航」（见 syncPageOpenClasses 的注释）。
+  // 判据 = 当前仍在初始落点（文件 / 全部、无目录、无日期、无检索词）。
+  if (
+    state.currentTab !== 'folders' ||
+    state.currentView !== 'all' ||
+    state.currentPath ||
+    state.currentDate ||
+    state.searchQuery
+  )
+    return;
   var launchDefaultPage = normalizeLaunchDefaultPage(
     state.generalSettingsApplied && state.generalSettingsApplied.launchDefaultPage,
   );
@@ -876,6 +962,39 @@ function bumpSidebarViewToken() {
   state.sidebarViewToken = (state.sidebarViewToken || 0) + 1;
 }
 
+/**
+ * 只有「文件」页用文件夹树侧栏；「日期 / 重复 / 设置」各有自己的侧栏形态，
+ * 而「搜图 / 人物」在本次改造后是侧栏独占（搜图页侧栏 = 搜索框 + 历史，
+ * 人物页侧栏 = 人物列表），因此这三者都不应被放宽到文件夹树侧栏。
+ */
+function isFolderSidebarTab(tab) {
+  return tab === 'folders';
+}
+
+/**
+ * 把当前 tab 映射到 <html> 上的三个 page-open 类（侧栏让位全走 CSS）。
+ *
+ * 三者互斥、且只由 tab 决定 —— 这里是全工程唯一的写者，由 syncNavigationRail 调用，
+ * 而 syncNavigationRail 又是所有切页路径的必经点（showTabContent / openSettingsPage /
+ * leaveAiViewForBrowse）。
+ *
+ * 为什么必须是「派生」而不是各自 add/remove：settings-page-open 原先只在
+ * openSettingsPage 里 add、closeSettingsPage 里 remove，只要有一条路径改了
+ * state.currentTab 而没走 closeSettingsPage（后台任务回调、启动落地、AI 视图退出），
+ * 这个类就会变成孤儿。而 navigation.css 里
+ * `html.settings-page-open #sidebar > #settingsSidebar { display: block !important }`
+ * 的优先级高于 `#settingsSidebar[hidden] { display: none !important }`
+ * （两条都是 !important，比特异性），于是设置导航会永久盖在搜图 / 人物侧栏上、
+ * 且再也摘不掉 —— 用户看到的就是「点搜图，残留设置分栏导航」。
+ */
+function syncPageOpenClasses(tab) {
+  var root = document.documentElement;
+  if (!root || !root.classList) return;
+  root.classList.toggle('settings-page-open', tab === 'settings');
+  root.classList.toggle('search-page-open', tab === 'search');
+  root.classList.toggle('people-page-open', tab === 'people');
+}
+
 function createSidebarRequestGate(view, key) {
   var token = state.sidebarViewToken || 0;
   state.sidebarRequestSeq = (state.sidebarRequestSeq || 0) + 1;
@@ -888,8 +1007,10 @@ function createSidebarRequestGate(view, key) {
   return {
     isAlive: function () {
       if (state.sidebarLockedMode && state.sidebarLockedMode !== view) return false;
+      // gate 的 view 语义保持窄：folders 只在「文件」页存活（搜图 / 人物已改为侧栏独占）。
+      var tabMatches = state.currentTab === view;
       return (
-        state.currentTab === view &&
+        tabMatches &&
         state.sidebarViewToken === token &&
         state.sidebarLatestRequests &&
         state.sidebarLatestRequests[reqKey] === reqId
@@ -966,7 +1087,6 @@ function bindEvents() {
     onToggleWebServerEnabled: toggleWebServerEnabled,
     onToggleTunnelEnabled: toggleTunnelEnabled,
     onPersistBrowsePrefs: persistBrowsePrefsFromForm,
-    onPersistFacePrefs: persistFacePrefsFromForm,
   });
 
   uiEvents.bindMiscControls({
@@ -1002,10 +1122,17 @@ function bindEvents() {
     onCardSizeInc: function () {
       changeCardSize(1);
     },
+    onPageSizeDec: function () {
+      void changeBrowsePageSize(-1);
+    },
+    onPageSizeInc: function () {
+      void changeBrowsePageSize(1);
+    },
     onCloseSettingsPage: closeSettingsPage,
     onApplyThumbSettings: applyThumbSettings,
     onStartThumbnailBackfill: startThumbnailBackfill,
     onStartDuplicateHashDetection: startDuplicateHashDetection,
+    onGotoSimilar: gotoSimilarMode,
     onRunMaintenanceCleanup: runMaintenanceCleanup,
     onRunMaintenanceRebuildThumbFlags: runMaintenanceRebuildThumbFlags,
     onRunMaintenanceOptimize: runMaintenanceOptimize,
@@ -1026,6 +1153,7 @@ function bindEvents() {
     onPreviewWindowMaximize: togglePreviewWindowMaximize,
     onCyclePreviewRotate: cyclePreviewRotateAction,
     onPreviewToggleFavorite: previewToggleFavorite,
+    onPreviewFindSimilar: previewFindSimilar,
     onPreviewShowInFolder: previewShowInFolder,
     onPreviewOpenExternal: previewOpenExternal,
     onPreviewMoveToTrash: previewMoveToTrash,
@@ -1049,7 +1177,7 @@ function bindEvents() {
       return state;
     },
     onViewDuplicates: viewDuplicates,
-    onViewFaces: viewFaces,
+    onCloseSettingsPage: closeSettingsPage,
     onShowTabContent: showTabContent,
     onForceSwitchToDuplicates: forceSwitchToDuplicates,
     onEnsureDuplicateSidebarVisible: function () {
@@ -1057,130 +1185,8 @@ function bindEvents() {
     },
     onRenderDuplicateSidebar: renderDuplicateSidebar,
     onSaveBrowseTabMemory: saveBrowseTabMemory,
-    onSaveFaceTabMemory: saveFaceTabMemory,
   });
 
-  function handleFaceMainNavFromElement(t) {
-    if (!t || !t.closest) return false;
-    if (t.closest('.face-person-name-input')) return false;
-
-    var allEl = t.closest('[data-face-sidebar="all"]');
-    if (allEl) {
-      state.faceUiMode = 'all';
-      state.faceSelectedClusterId = null;
-      state.faceSelectedFolderPath = null;
-      renderFaceSidebar();
-      void refreshFaceMainContent();
-      return true;
-    }
-
-    var card = t.closest('.face-all-card');
-    if (card) {
-      var cid = parseInt(card.getAttribute('data-face-cluster-id') || '', 10);
-      if (!cid) return true;
-      state.faceUiMode = 'person';
-      state.faceSelectedClusterId = cid;
-      state.faceSelectedFolderPath = null;
-      renderFaceSidebar();
-      void loadFacePersonFoldersView(cid);
-      return true;
-    }
-
-    var row = t.closest('.face-person-row');
-    if (row) {
-      var pid = parseInt(row.getAttribute('data-face-cluster-id') || '', 10);
-      if (!pid) return true;
-      state.faceUiMode = 'person';
-      state.faceSelectedClusterId = pid;
-      state.faceSelectedFolderPath = null;
-      renderFaceSidebar();
-      void loadFacePersonFoldersView(pid);
-      return true;
-    }
-
-    var fdir = t.closest('[data-face-folder-path]');
-    if (fdir) {
-      var fp = fdir.getAttribute('data-face-folder-path') || '';
-      if (!fp) return true;
-      state.faceSelectedFolderPath = fp;
-      void loadFaceFolderFilesView(fp);
-      return true;
-    }
-
-    return false;
-  }
-
-  document.addEventListener(
-    'click',
-    function (e) {
-      if (state.currentTab !== 'faces') return;
-      var t = e.target;
-      if (!handleFaceMainNavFromElement(t)) return;
-      e.preventDefault();
-    },
-    true,
-  );
-
-  document.addEventListener(
-    'keydown',
-    function (e) {
-      if (state.currentTab !== 'faces') return;
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (!handleFaceMainNavFromElement(t)) return;
-      e.preventDefault();
-    },
-    true,
-  );
-
-  document.addEventListener(
-    'focusout',
-    function (e) {
-      var inp = e.target;
-      if (!inp || !inp.classList || !inp.classList.contains('face-person-name-input')) return;
-      if (state.currentTab !== 'faces') return;
-      if (!(api && api.has && api.has('faceUpdateClusterLabel'))) return;
-      var cid = parseInt(inp.getAttribute('data-face-rename-id') || '', 10);
-      if (!cid) return;
-      var val = String(inp.value || '').trim();
-      void api.faceUpdateClusterLabel(cid, val).then(function (r) {
-        if (r && r.success) {
-          var i;
-          for (i = 0; i < state.faceClusters.length; i++) {
-            if (state.faceClusters[i].id === cid) {
-              state.faceClusters[i].label = val || null;
-              break;
-            }
-          }
-          renderFaceSidebar();
-          void refreshFaceMainContent();
-        }
-      });
-    },
-    true,
-  );
-
-  document.addEventListener(
-    'click',
-    function (e) {
-      var btn = e.target && e.target.closest ? e.target.closest('[data-face-action]') : null;
-      if (!btn || state.currentTab !== 'faces') return;
-      var act = btn.getAttribute('data-face-action');
-      if (!act) return;
-      e.preventDefault();
-      if (act === 'scan') void startFaceScan();
-      else if (act === 'cluster') void runFaceCluster();
-      else if (act === 'search-image') void faceSearchByImage();
-      else if (act === 'refresh') void loadFaceClusters({ forceRefresh: true });
-      else if (act === 'back-folders') {
-        state.faceSelectedFolderPath = null;
-        if (state.faceSelectedClusterId)
-          void loadFacePersonFoldersView(state.faceSelectedClusterId);
-      }
-    },
-    true,
-  );
   uiEvents.bindSearchSortFilters({
     dom: dom,
     getState: function () {
@@ -1188,6 +1194,7 @@ function bindEvents() {
     },
     onLoadPhotos: loadPhotos,
     onLoadRootFolders: loadRootFolders,
+    isFolderSidebarTab: isFolderSidebarTab,
     normalizePositiveIntFilter: normalizePositiveIntFilter,
     normalizePositiveFloatFilter: normalizePositiveFloatFilter,
   });
@@ -1291,6 +1298,7 @@ function bindEvents() {
     onPreviewMoveToTrash: previewMoveToTrash,
     onTogglePreviewInfoPanel: togglePreviewInfoPanel,
     onPreviewToggleFavorite: previewToggleFavorite,
+    onPreviewFindSimilar: previewFindSimilar,
     onToggleSlideshow: toggleSlideshow,
     onResetZoom: function () {
       return previewInteraction.resetZoom({
@@ -1421,7 +1429,7 @@ function bindEvents() {
       updateThumbPendingHint();
     } catch (eThumb) {}
     try {
-      if (state.currentTab === 'folders') {
+      if (isFolderSidebarTab(state.currentTab)) {
         state.browseCaches.folders.sidebarSnapshot = null;
         void loadRootFolders(true, false);
       } else if (state.currentTab === 'dates') {
@@ -1640,55 +1648,23 @@ function applyBrowseTabMemory(tabKey) {
   state.searchQuery = m.searchQuery != null ? String(m.searchQuery) : '';
   state.mediaFilter = m.mediaFilter || state.mediaFilter;
   if (dom.sortSelect) dom.sortSelect.value = state.sortBy + '|' + state.sortOrder;
-  if (dom.searchInput) dom.searchInput.value = state.searchQuery;
   if (dom.mediaFilterSelect) dom.mediaFilterSelect.value = state.mediaFilter;
   state._pendingBrowseScrollTop = typeof m.scrollTop === 'number' ? m.scrollTop : null;
 }
 
-function saveFaceTabMemory() {
-  state.faceTabMemory = {
-    faceUiMode: state.faceUiMode,
-    faceSelectedClusterId: state.faceSelectedClusterId,
-    faceSelectedFolderPath: state.faceSelectedFolderPath,
-    page: state.page,
-    scrollTop: dom.photoGrid ? dom.photoGrid.scrollTop : 0,
-  };
-}
-
-function applyFaceTabMemory() {
-  var fm = state.faceTabMemory;
-  if (!fm) return false;
-  state.faceUiMode = fm.faceUiMode || 'all';
-  state.faceSelectedClusterId = fm.faceSelectedClusterId != null ? fm.faceSelectedClusterId : null;
-  state.faceSelectedFolderPath = fm.faceSelectedFolderPath || null;
-  state.page = fm.page > 0 ? fm.page : 1;
-  state._pendingFaceScrollTop = typeof fm.scrollTop === 'number' ? fm.scrollTop : null;
-  return true;
-}
-
-function applyPendingFaceScroll() {
-  var y = state._pendingFaceScrollTop;
-  if (y == null) return;
-  state._pendingFaceScrollTop = null;
-  var inner = document.getElementById('faceMainInner');
-  if (inner) inner.scrollTop = y;
-}
-
 /**
- * 按范围失效会话缓存。不传 partial 时清空目录+日期+人脸+重复项（全量）。
- * @param {{ folders?: boolean, dates?: boolean, face?: boolean, duplicates?: boolean }} [partial]
+ * 按范围失效会话缓存。不传 partial 时清空目录+日期+重复项（全量）。
+ * @param {{ folders?: boolean, dates?: boolean, duplicates?: boolean }} [partial]
  */
 function invalidateTabSessionCaches(partial) {
   var f;
   var d;
-  var face;
   var dup;
   if (!partial) {
-    f = d = face = dup = true;
+    f = d = dup = true;
   } else {
     f = !!partial.folders;
     d = !!partial.dates;
-    face = !!partial.face;
     dup = !!partial.duplicates;
   }
 
@@ -1710,11 +1686,6 @@ function invalidateTabSessionCaches(partial) {
   if (!partial || f) {
     state._pendingBrowseScrollTop = null;
     state._folderTreeByRootId = null;
-  }
-  if (face) {
-    state.faceTabMemory = null;
-    state.faceClustersFetchWarm = false;
-    state._pendingFaceScrollTop = null;
   }
   if (dup) {
     state._dupListGen = (state._dupListGen || 0) + 1;
@@ -1756,13 +1727,47 @@ function syncBrowseChromeAfterSoftSettingsReturn() {
       formatNumber: formatNumber,
     });
   }
-  var zc = document.getElementById('zoomControl');
-  if (zc && state.currentTab === 'folders') zc.style.display = '';
+  if (state.currentTab === 'folders') tabsUi.setBrowseGridControlsVisible(true);
 }
 
 // === Tab switching ===
 function showTabContent(tab, opts) {
   opts = opts || {};
+  // syncNavigationRail 内含页面态 class 的派生（settings / search / people-page-open），
+  // 别在这里再单独同步一次：三个类必须只由一个地方写。
+  syncNavigationRail(tab);
+  if (aiViews) aiViews.leave();
+  // 搜图 / 人物是侧栏独占视图（与「重复」同构）：文件夹树让位给各自的侧栏，
+  // 主区工具栏整体收起，结果落进 #photoGrid。侧栏内容由 aiViews 渲染。
+  if ((tab === 'search' || tab === 'people') && aiViews) {
+    bumpSidebarViewToken();
+    state.prevTab = tab;
+    state.currentTab = tab;
+    state.currentView = tab === 'search' ? 'ai_search' : 'people';
+    state.sidebarLockedMode = '';
+    sidebarUi.closeMobileSidebar();
+    tabsUi.prepareBrowsingShell({
+      dom: dom,
+      currentView: state.currentView,
+      isWelcomeHomeVisible: isWelcomeHomeVisible(),
+    });
+    // 主区工具栏 / 分页 / 缩放控件在这两页整体让位（搜索框与人物列表都搬到了侧栏）。
+    tabsUi.applyCollectionView({
+      dom: dom,
+      onCloseMobileSidebar: sidebarUi.closeMobileSidebar,
+      onUpdateBrowsePathLabel: updateBrowsePathLabel,
+    });
+    aiViews.enter(state.currentView);
+    aiViews.startPolling();
+    void loadPhotos();
+    return;
+  }
+  // 离开智能视图：把视图态收回到浏览态，后面的分支（含 softFromSettings 软返回）才不会
+  // 拿着 ai_search / people 去按浏览逻辑算路径标签。
+  if (state.currentView === 'ai_search' || state.currentView === 'people') {
+    state.currentView = 'all';
+    state.currentPhotos = [];
+  }
   var fromTab = opts.fromTab;
   if (opts.softFromSettings === true) {
     if (tab === 'folders' || tab === 'dates') {
@@ -1805,35 +1810,6 @@ function showTabContent(tab, opts) {
       }
       return;
     }
-    if (tab === 'faces') {
-      state.prevTab = tab;
-      state.sidebarLockedMode = 'faces';
-      state.currentView = 'faces';
-      sidebarUi.ensureNormalSidebarVisible(dom);
-      var sidebarSoftFace = document.getElementById('sidebar');
-      if (sidebarUi.showSidebarOnDesktop)
-        sidebarUi.showSidebarOnDesktop(sidebarSoftFace, state.isMobile);
-      else if (!state.isMobile && sidebarSoftFace) sidebarSoftFace.style.display = '';
-      tabsUi.prepareBrowsingShell({
-        dom: dom,
-        currentView: state.currentView,
-        isWelcomeHomeVisible: isWelcomeHomeVisible(),
-      });
-      tabsUi.applyFacesView({
-        dom: dom,
-        onCloseMobileSidebar: sidebarUi.closeMobileSidebar,
-        onUpdateBrowsePathLabel: updateBrowsePathLabel,
-        onEnsureDuplicateSidebarVisible: function () {
-          return sidebarUi.ensureDuplicateSidebarVisible(dom);
-        },
-      });
-      var navFace = $$('.nav-tab');
-      var nf;
-      for (nf = 0; nf < navFace.length; nf++) {
-        navFace[nf].classList.toggle('active', navFace[nf].dataset.tab === 'faces');
-      }
-      return;
-    }
   }
   bumpSidebarViewToken();
   tabsUi.prepareBrowsingShell({
@@ -1846,12 +1822,6 @@ function showTabContent(tab, opts) {
   if (tab !== 'duplicates' && state.sidebarLockedMode === 'duplicates') {
     state.sidebarLockedMode = '';
     if (state.currentView === 'duplicates') state.currentView = 'all';
-  }
-
-  if (tab !== 'faces' && state.sidebarLockedMode === 'faces') {
-    state.sidebarLockedMode = '';
-    if (state.currentView === 'faces') state.currentView = 'all';
-    stopFaceScanPolling();
   }
 
   if (fromTab && (tab === 'folders' || tab === 'dates')) {
@@ -1922,6 +1892,8 @@ function showTabContent(tab, opts) {
 
 // 打开管理页面（从 topbar 按钮触发）
 async function openSettingsPage() {
+  if (state.currentTab === 'settings') return;
+  syncNavigationRail('settings');
   await settingsFlow.openSettingsPage({
     state: state,
     dom: dom,
@@ -1933,11 +1905,51 @@ async function openSettingsPage() {
     onStartSettingsHydrateRetryIfNeeded: startSettingsHydrateRetryIfNeeded,
     onRestoreSettingsPageSectionScroll: restoreSettingsPageSectionScroll,
   });
+  // 上面这个 await 期间可能有后台回调把页面切走（扫描完成、启动落地、AI 视图退出）：
+  // 页面态 class 是派生的，回到这里按 state.currentTab 再对齐一次，
+  // 否则设置导航会以「孤儿 class」的形式永久盖在搜图 / 人物侧栏上。
+  syncPageOpenClasses(state.currentTab);
+  if (state.currentTab !== 'settings') {
+    // 被切走了就把设置页也收干净：只摘 class 不收起面板，会留下
+    // 「右栏还是设置页、左栏已经是别的侧栏」的半截界面。
+    if (dom.settingsPage) dom.settingsPage.style.display = 'none';
+    if (dom.contentArea) dom.contentArea.style.display = '';
+    return;
+  }
+  if (window.peopleSettings) window.peopleSettings.show();
+  if (window.semanticSettings) window.semanticSettings.show();
+  renderSettingsNav(getLastSettingsSectionId());
   startSettingsFolderListPolling();
+}
+
+function syncNavigationRail(tab) {
+  document.querySelectorAll('.app-rail button').forEach(function (item) {
+    var active = (item.dataset.tab || 'settings') === tab;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
+  var heading = document.getElementById('navigationHeading');
+  if (heading) {
+    var key = 'nav.' + tab;
+    heading.setAttribute('data-i18n', key);
+    heading.textContent = tUi(key, tab);
+  }
+  var people = document.getElementById('peopleSidebar');
+  var search = document.getElementById('searchSidebar');
+  var settings = document.getElementById('settingsSidebar');
+  if (people) people.hidden = tab !== 'people';
+  if (search) search.hidden = tab !== 'search';
+  if (settings) settings.hidden = tab !== 'settings';
+  // 页面态 class 与上面三个 hidden 标志同源：都只由「当前 tab」决定。
+  // 放在这里而不是各调用点，是为了让任何切页路径都自动对齐（见 syncPageOpenClasses 注释）。
+  syncPageOpenClasses(tab);
 }
 
 // 从管理页面返回照片浏览
 function closeSettingsPage() {
+  if (window.peopleSettings) window.peopleSettings.hide();
+  if (window.semanticSettings) window.semanticSettings.hide();
   stopSettingsFolderListPolling();
   settingsFlow.closeSettingsPage({
     state: state,
@@ -1949,6 +1961,9 @@ function closeSettingsPage() {
       showTabContent(t, o);
     },
   });
+  // 派生对齐：正常路径上 onShowTabContent → showTabContent → syncNavigationRail 已经
+  // 把页面态类对齐了；这里兜一次「调用方没给 onShowTabContent」的情况，避免留下孤儿 class。
+  syncPageOpenClasses(state.currentTab);
 }
 
 function startSettingsHydrateRetryIfNeeded() {
@@ -2109,7 +2124,7 @@ async function loadStats() {
   var stats = await api.getStats();
   state.stats = stats || {};
   if (stats.totalPhotos > 0) {
-    if (dom.statsBar) dom.statsBar.textContent = formatGlobalStatsBarText(stats);
+    if (dom.statsBar) dom.statsBar.textContent = formatGlobalStatsBarText(stats, state.mediaFilter);
   } else {
     if (dom.statsBar) dom.statsBar.textContent = '';
   }
@@ -2127,7 +2142,7 @@ function updateFavoriteCountInSidebar() {
  * 在已跳过 renderFolderTree 时，仅同步侧栏「所有照片 / 所有目录 / 各根目录」上的数量文案，避免扫描中整树重绘。
  */
 function patchSidebarFolderTreeCountsFromState() {
-  if (state.currentTab !== 'folders') return;
+  if (!isFolderSidebarTab(state.currentTab)) return;
   if (state.rootFoldersStatsPending) return;
   if (!dom.sidebarContent) return;
   var roots = Array.isArray(state.rootFolders) ? state.rootFolders : [];
@@ -2174,12 +2189,12 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
     snap.html &&
     snap.fp === folderSidebarSnapshotFingerprint() &&
     gate.isAlive() &&
-    state.currentTab === 'folders';
+    isFolderSidebarTab(state.currentTab);
   if (snapReady) {
     gate.render(snap.html);
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
-        if (state.currentTab === 'folders') {
+        if (isFolderSidebarTab(state.currentTab)) {
           syncFolderSidebarHighlight();
           sidebarTree.scheduleExpandActiveFolder({
             state: state,
@@ -2226,7 +2241,7 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
           fetchRootFoldersSafe({ force: true })
             .then(function () {
               scheduleBrowseReload(function () {
-                if (state.currentTab === 'folders') {
+                if (isFolderSidebarTab(state.currentTab)) {
                   patchSidebarFolderTreeCountsFromState();
                 }
               });
@@ -2287,7 +2302,7 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
     });
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
-        if (state.currentTab === 'folders') syncFolderSidebarHighlight();
+        if (isFolderSidebarTab(state.currentTab)) syncFolderSidebarHighlight();
       });
     });
   } catch (e) {
@@ -2450,7 +2465,20 @@ async function loadDateGroups() {
 }
 
 // === Views ===
+/**
+ * 从搜图 / 人物退回普通浏览：点侧栏的文件夹 / 日期 / 全部照片时走的是各自入口，
+ * 不经过 showTabContent，所以在这里把标签与导轨收回浏览项，并让适配层摘掉 AI 工具栏。
+ */
+function leaveAiViewForBrowse(tab) {
+  if (!aiViews || !aiViews.isShowing()) return;
+  state.currentTab = tab;
+  // syncNavigationRail 顺带把三个 page-open 类对齐到 tab（含 settings-page-open 的摘除）
+  syncNavigationRail(tab);
+  aiViews.leave();
+}
+
 function viewAllPhotos() {
+  leaveAiViewForBrowse('folders');
   state.currentView = 'all';
   state.page = 1;
   updateSidebarActive();
@@ -2458,6 +2486,7 @@ function viewAllPhotos() {
 }
 
 function viewFavorites() {
+  leaveAiViewForBrowse('folders');
   state.currentView = 'favorites';
   state.page = 1;
   updateSidebarActive();
@@ -2470,9 +2499,11 @@ function viewFavorites() {
 }
 
 function viewDuplicates() {
+  if (state.currentTab === 'settings') closeSettingsPage();
+  // 这里是「离开前保存哪个页签的浏览记忆」的判定，不是文件夹树侧栏渲染判定：
+  // 搜图 / 人物有各自的视图态，若把它们存进 folders 记忆，回到相册页会拿到 ai_search 视图。
   if (state.currentTab === 'folders') saveBrowseTabMemory('folders');
   else if (state.currentTab === 'dates') saveBrowseTabMemory('dates');
-  else if (state.currentTab === 'faces') saveFaceTabMemory();
 
   state.sidebarLockedMode = 'duplicates';
   state.currentTab = 'duplicates';
@@ -2502,390 +2533,12 @@ function viewDuplicates() {
   renderDuplicatePageShell();
   if (dom.toolbar) dom.toolbar.style.display = 'none';
   if (dom.pagination) dom.pagination.style.display = 'none';
-  var zc = document.getElementById('zoomControl');
-  if (zc) zc.style.display = 'none';
+  tabsUi.setBrowseGridControlsVisible(false);
   showTabContent('duplicates');
   renderDuplicateSidebar();
   if (state.duplicateHasScanned) {
     loadDuplicateGroups(state.duplicateGroupsPage || 1);
   }
-}
-
-function stopFaceScanPolling() {
-  if (state.faceScanPollTimer) {
-    clearInterval(state.faceScanPollTimer);
-    state.faceScanPollTimer = null;
-  }
-}
-
-function startFaceScanPolling() {
-  stopFaceScanPolling();
-  if (!(api && api.has && api.has('faceGetStatus'))) return;
-  state.faceScanPollTimer = setInterval(function () {
-    if (state.currentTab !== 'faces') return;
-    api.faceGetStatus().then(function (st) {
-      var sc = (st && st.scan) || {};
-      if (sc.status === 'running') {
-        facesUi.setFaceStatusLine(
-          '已处理 ' +
-            (sc.current || 0) +
-            '/' +
-            (sc.total || 0) +
-            ' ' +
-            String(sc.currentFile || '').slice(-48),
-        );
-      } else if (sc.status === 'done' || sc.status === 'cancelled' || sc.status === 'idle') {
-        stopFaceScanPolling();
-        facesUi.setFaceStatusLine(
-          sc.status === 'done' ? '识别完成。' : sc.status === 'cancelled' ? '已停止。' : '',
-        );
-        loadFaceClusters({ forceRefresh: true });
-      }
-    });
-  }, 650);
-}
-
-function getFacePersonTitle(clusterId) {
-  var cid = parseInt(clusterId, 10);
-  if (!isFinite(cid) || cid <= 0) return '人物';
-  var i;
-  for (i = 0; i < state.faceClusters.length; i++) {
-    if (state.faceClusters[i].id === cid) {
-      var idx = i + 1;
-      var c = state.faceClusters[i];
-      if (c.label && String(c.label).trim()) return String(c.label).trim();
-      return '人物 ' + idx;
-    }
-  }
-  return '人物 #' + cid;
-}
-
-async function maybeRefreshFaceListsDuringScan(tasks) {
-  if (!tasks || !tasks.faceScan || !tasks.faceScan.running) return;
-  if (state.currentTab !== 'faces') return;
-  var now = Date.now();
-  if (now - (state._faceScanSidebarRefreshAt || 0) < 2800) return;
-  state._faceScanSidebarRefreshAt = now;
-  await loadFaceClusters({ sidebarOnly: true, forceRefresh: true });
-}
-
-async function loadFaceClusters(options) {
-  options = options || {};
-  if (!(api && api.has && api.has('faceGetClusters'))) return;
-  if (options.forceRefresh) {
-    state.faceClustersFetchWarm = false;
-  }
-  if (!options.forceRefresh && state.faceClustersFetchWarm && Array.isArray(state.faceClusters)) {
-    renderFaceSidebar();
-    if (options.sidebarOnly) {
-      if (state.faceUiMode === 'all' || !state.faceSelectedClusterId) {
-        await refreshFaceMainContent();
-      }
-      return;
-    }
-    await refreshFaceMainContent();
-    return;
-  }
-  try {
-    var rows = await api.faceGetClusters();
-    state.faceClusters = rows || [];
-    state.faceClustersFetchWarm = true;
-    renderFaceSidebar();
-    if (options.sidebarOnly) {
-      if (state.faceUiMode === 'all' || !state.faceSelectedClusterId) {
-        await refreshFaceMainContent();
-      }
-      return;
-    }
-    await refreshFaceMainContent();
-  } catch (e) {
-    var msg = e && e.message ? e.message : String(e);
-    facesUi.setFaceStatusLine('人物列表加载失败：' + msg);
-  }
-}
-
-async function refreshFaceMainContent() {
-  if (state.faceUiMode === 'all' || !state.faceSelectedClusterId) {
-    facesUi.setFaceBreadcrumb([], escapeHtml);
-    await loadFaceAllPersonsView();
-    applyPendingFaceScroll();
-    return;
-  }
-  if (state.faceSelectedFolderPath) {
-    await loadFaceFolderFilesView(state.faceSelectedFolderPath);
-    applyPendingFaceScroll();
-    return;
-  }
-  await loadFacePersonFoldersView(state.faceSelectedClusterId);
-  applyPendingFaceScroll();
-}
-
-async function loadFaceAllPersonsView() {
-  await yieldToPaint();
-  var clusters = Array.isArray(state.faceClusters) ? state.faceClusters : [];
-  var total = clusters.length;
-  var ps = state.pageSize > 0 ? state.pageSize : 20;
-  var totalPages = total > 0 ? Math.max(1, Math.ceil(total / ps)) : 1;
-  if (state.page > totalPages) state.page = totalPages;
-  if (state.page < 1) state.page = 1;
-  var start = (state.page - 1) * ps;
-  var pageClusters = clusters.slice(start, start + ps);
-
-  previewFlow.initPreviewState({
-    state: state,
-    result: { total: total, totalPages: totalPages },
-  });
-  state.currentPhotos = [];
-
-  var zc = document.getElementById('zoomControl');
-  if (total > 0) {
-    facesUi.renderFaceAllPersonsGrid({
-      clusters: pageClusters,
-      indexOffset: start,
-      escapeHtml: escapeHtml,
-      escapeAttr: escapeAttr,
-      formatNumber: formatNumber,
-    });
-    photoGridUi.renderPagination({
-      dom: dom,
-      result: {
-        page: state.page,
-        totalPages: totalPages,
-        total: total,
-      },
-      formatNumber: formatNumber,
-    });
-    if (dom.pageInfo) dom.pageInfo.textContent = formatNumber(total) + ' 人';
-    if (zc) zc.style.display = '';
-    applyCardSize();
-  } else {
-    facesUi.renderFaceAllPersonsGrid({
-      clusters: [],
-      indexOffset: 0,
-      escapeHtml: escapeHtml,
-      escapeAttr: escapeAttr,
-      formatNumber: formatNumber,
-    });
-    if (dom.pagination) dom.pagination.style.display = 'none';
-    if (zc) zc.style.display = 'none';
-  }
-}
-
-async function loadFacePersonFoldersView(clusterId) {
-  if (!(api && api.has && api.has('faceGetClusterFolders'))) return;
-  if (dom.pagination) dom.pagination.style.display = 'none';
-  var zc0 = document.getElementById('zoomControl');
-  if (zc0) zc0.style.display = 'none';
-  try {
-    var folders = await api.faceGetClusterFolders(clusterId);
-    var title = getFacePersonTitle(clusterId);
-    facesUi.setFaceBreadcrumb([title], escapeHtml);
-    facesUi.renderFaceFolderList({
-      folders: folders || [],
-      personTitle: title,
-      escapeHtml: escapeHtml,
-      escapeAttr: escapeAttr,
-    });
-  } catch (e) {
-    var msg = e && e.message ? e.message : String(e);
-    facesUi.setFaceStatusLine('文件夹列表打不开：' + msg);
-    var inner = document.getElementById('faceMainInner');
-    if (inner) {
-      inner.innerHTML = '<div class="dup-empty">文件夹列表打不开，请稍后再试。</div>';
-    }
-  }
-}
-
-async function loadFaceFolderFilesView(folderPath) {
-  if (!(api && api.has && api.has('getFolderPhotos'))) return;
-  if (dom.pagination) dom.pagination.style.display = 'none';
-  var zc1 = document.getElementById('zoomControl');
-  if (zc1) zc1.style.display = 'none';
-  var cid = state.faceSelectedClusterId;
-  var title = cid ? getFacePersonTitle(cid) : '';
-  facesUi.setFaceBreadcrumb([title, folderPath], escapeHtml);
-  try {
-    var fPs = state.pageSize > 0 ? state.pageSize : 20;
-    var result = await api.getFolderPhotos(folderPath, {
-      page: 1,
-      pageSize: fPs,
-      sortBy: 'date_taken',
-      sortOrder: 'DESC',
-      mediaType: 'all',
-      includeSubfolders: state.browseFolderIncludeSubfolders !== false,
-    });
-    state.currentPhotos = result.photos || [];
-    previewFlow.initPreviewState({
-      state: state,
-      result: result,
-    });
-    var hostId = 'facePhotoGridHost';
-    var inner = document.getElementById('faceMainInner');
-    if (!inner) return;
-    inner.innerHTML =
-      '<div class="face-folder-toolbar">' +
-      '<button type="button" class="btn btn-sm" data-face-action="back-folders">\u2190 返回文件夹列表</button>' +
-      '</div>' +
-      '<div id="' +
-      hostId +
-      '" class="photo-grid face-photo-grid-host"></div>';
-    var host = document.getElementById(hostId);
-    if (!host || !photoGridUi.renderPhotoGrid) return;
-    photoGridUi.renderPhotoGrid({
-      dom: Object.assign({}, dom, { photoGrid: host }),
-      photos: state.currentPhotos,
-      useMediaRatio: state.cardLayoutMode === 'masonry',
-      mediaFilter: normalizeMediaFilter(state.mediaFilter),
-      escapeHtml: escapeHtml,
-      truncate: truncate,
-      formatDateTime: formatDateTime,
-      onApplyCardSize: applyCardSize,
-    });
-  } catch (e) {
-    var msg = e && e.message ? e.message : String(e);
-    facesUi.setFaceStatusLine('照片列表打不开：' + msg);
-    var mainInnerErr = document.getElementById('faceMainInner');
-    if (mainInnerErr) {
-      mainInnerErr.innerHTML =
-        '<div class="dup-empty">这个文件夹里的照片读不出来。</div>' +
-        '<div class="face-folder-toolbar" style="margin-top:8px;">' +
-        '<button type="button" class="btn btn-sm" data-face-action="back-folders">\u2190 返回文件夹列表</button>' +
-        '</div>';
-    }
-  }
-}
-
-function renderFacePageShell() {
-  facesUi.renderFacePageShell({ state: state, dom: dom });
-}
-
-function renderFaceSidebar() {
-  facesUi.renderFaceSidebar({
-    state: state,
-    formatNumber: formatNumber,
-    escapeHtml: escapeHtml,
-    escapeAttr: escapeAttr,
-    onEnsureDuplicateSidebarVisible: function () {
-      sidebarUi.ensureDuplicateSidebarVisible(dom);
-    },
-    onGetSidebarRenderTarget: function () {
-      return sidebarUi.getSidebarRenderTarget(dom) || dom.sidebarContent;
-    },
-  });
-}
-
-async function startFaceScan() {
-  if (!(api && api.has && api.has('faceStartScan'))) return;
-  facesUi.setFaceStatusLine('正在启动…');
-  try {
-    var r = await api.faceStartScan();
-    if (!r || !r.success) {
-      facesUi.setFaceStatusLine('启动失败：' + ((r && r.error) || ''));
-      return;
-    }
-    invalidateTabSessionCaches({ face: true });
-    facesUi.setFaceStatusLine('已在后台识别人脸…');
-    tickBackgroundTasksOnce();
-    startFaceScanPolling();
-  } catch (e) {
-    facesUi.setFaceStatusLine('启动失败：' + (e && e.message ? e.message : String(e)));
-  }
-}
-
-async function runFaceCluster() {
-  if (!(api && api.has && api.has('faceRunCluster'))) return;
-  facesUi.setFaceStatusLine('正在合并人物…');
-  tickBackgroundTasksOnce();
-  try {
-    var fTh = 0.35;
-    var fGp = state.generalSettingsApplied;
-    if (fGp && typeof fGp.faceClusterThreshold === 'number') fTh = fGp.faceClusterThreshold;
-    var r = await api.faceRunCluster({ threshold: fTh });
-    if (r && r.success) {
-      facesUi.setFaceStatusLine('合并完成，共 ' + (r.clusters || 0) + ' 个人物');
-      invalidateTabSessionCaches({ face: true });
-      await loadFaceClusters({ forceRefresh: true });
-    } else {
-      facesUi.setFaceStatusLine('合并失败：' + ((r && r.error) || ''));
-    }
-  } catch (e) {
-    facesUi.setFaceStatusLine('合并失败：' + (e && e.message ? e.message : String(e)));
-  } finally {
-    tickBackgroundTasksOnce();
-  }
-}
-
-async function faceSearchByImage() {
-  if (!(api && api.has && api.has('faceSelectQueryImage')) || !api.has('faceSearchByImage')) return;
-  try {
-    var p = await api.faceSelectQueryImage();
-    if (!p) return;
-    facesUi.setFaceStatusLine('正在找人…');
-    tickBackgroundTasksOnce();
-    var r = await api.faceSearchByImage(p);
-    if (!r || !r.success) {
-      facesUi.setFaceStatusLine((r && r.error) || '没找到');
-      return;
-    }
-    var results = r.results || [];
-    state.currentPhotos = results;
-    previewFlow.initPreviewState({
-      state: state,
-      result: { total: results.length, totalPages: 1 },
-    });
-    if (dom.pagination) dom.pagination.style.display = 'none';
-    var zcSearch = document.getElementById('zoomControl');
-    if (zcSearch) zcSearch.style.display = 'none';
-    facesUi.renderFaceSearchResults({
-      photos: results,
-      escapeHtml: escapeHtml,
-      escapeAttr: escapeAttr,
-      truncate: truncate,
-      formatDateTime: formatDateTime,
-    });
-    facesUi.setFaceStatusLine('找到 ' + results.length + ' 张相似照片');
-  } catch (e) {
-    facesUi.setFaceStatusLine('查找失败：' + (e && e.message ? e.message : String(e)));
-  } finally {
-    tickBackgroundTasksOnce();
-  }
-}
-
-function viewFaces() {
-  if (state.currentTab === 'folders') saveBrowseTabMemory('folders');
-  else if (state.currentTab === 'dates') saveBrowseTabMemory('dates');
-
-  state.sidebarLockedMode = 'faces';
-  state.currentTab = 'faces';
-  state.currentView = 'faces';
-  if (!applyFaceTabMemory()) {
-    state.faceUiMode = 'all';
-    state.faceSelectedClusterId = null;
-    state.faceSelectedFolderPath = null;
-    state.page = 1;
-    state._pendingFaceScrollTop = null;
-  }
-  updateBrowsePathLabel();
-  sidebarUi.ensureDuplicateSidebarVisible(dom);
-  var tabs = $$('.nav-tab');
-  for (var i = 0; i < tabs.length; i++) {
-    tabs[i].classList.toggle('active', tabs[i].dataset.tab === 'faces');
-  }
-  tabsUi.applyFacesView({
-    dom: dom,
-    onCloseMobileSidebar: sidebarUi.closeMobileSidebar,
-    onUpdateBrowsePathLabel: updateBrowsePathLabel,
-    onEnsureDuplicateSidebarVisible: function () {
-      return sidebarUi.ensureDuplicateSidebarVisible(dom);
-    },
-  });
-  if (dom.toolbar) dom.toolbar.style.display = 'none';
-  if (dom.pagination) dom.pagination.style.display = 'none';
-  var zc = document.getElementById('zoomControl');
-  if (zc) zc.style.display = 'none';
-  showTabContent('faces');
-  renderFacePageShell();
-  loadFaceClusters();
 }
 
 function forceSwitchToDuplicates(e) {
@@ -2901,6 +2554,7 @@ function forceSwitchToDuplicates(e) {
 }
 
 function viewAllFolderCovers() {
+  leaveAiViewForBrowse('folders');
   state.currentView = 'folder_overview';
   state.page = 1;
   updateSidebarActive();
@@ -2912,6 +2566,7 @@ function viewFolder(folderPath) {
   if (state.currentView === 'folder' && state.currentPath === normalized) {
     return;
   }
+  leaveAiViewForBrowse('folders');
   state.currentView = 'folder';
   state.currentPath = normalized;
   state.page = 1;
@@ -2932,6 +2587,7 @@ function viewFolder(folderPath) {
 }
 
 function viewDate(dateStr) {
+  leaveAiViewForBrowse('dates');
   state.currentView = 'date';
   state.currentDate = dateStr;
   state.page = 1;
@@ -2955,9 +2611,30 @@ function tUiFmt(key, map, zhFallback) {
   return s;
 }
 
-function formatGlobalStatsBarText(stats) {
+function formatGlobalStatsBarText(stats, mediaFilter) {
   stats = stats || {};
   if (!stats.totalPhotos || stats.totalPhotos <= 0) return '';
+  var mf = mediaFilter === 'image' || mediaFilter === 'video' ? mediaFilter : 'all';
+  if (mf === 'image') {
+    return tUiFmt(
+      'stats.barImageFmt',
+      {
+        photos: formatNumber(stats.totalPhotos),
+        totalSize: formatSize(stats.totalSize),
+      },
+      formatNumber(stats.totalPhotos) + ' 张图片 | ' + formatSize(stats.totalSize),
+    );
+  }
+  if (mf === 'video') {
+    return tUiFmt(
+      'stats.barVideoFmt',
+      {
+        videos: formatNumber(stats.videoPhotos || 0),
+        videoSize: formatSize(stats.videoSize || 0),
+      },
+      formatNumber(stats.videoPhotos || 0) + ' 条视频 | ' + formatSize(stats.videoSize || 0),
+    );
+  }
   return tUiFmt(
     'stats.barFullFmt',
     {
@@ -2976,11 +2653,26 @@ function formatGlobalStatsBarText(stats) {
   );
 }
 
-function formatFolderScopedStatsBarText(scopedTotal, scopedVideoCount, subCount) {
+function formatFolderScopedStatsBarText(scopedTotal, scopedVideoCount, subCount, mediaFilter) {
   var st = Number(scopedTotal) || 0;
   var vc = Number(scopedVideoCount) || 0;
   var sub = Number(subCount) || 0;
+  var mf = mediaFilter === 'image' || mediaFilter === 'video' ? mediaFilter : 'all';
   if (st > 0) {
+    if (mf === 'image') {
+      return tUiFmt(
+        'stats.barFolderImageFmt',
+        { photos: formatNumber(st) },
+        formatNumber(st) + ' 张图片',
+      );
+    }
+    if (mf === 'video') {
+      return tUiFmt(
+        'stats.barFolderVideoFmt',
+        { videos: formatNumber(vc) },
+        formatNumber(vc) + ' 条视频',
+      );
+    }
     return tUiFmt(
       'stats.barFolderFmt',
       { photos: formatNumber(st), videos: formatNumber(vc) },
@@ -3008,9 +2700,6 @@ function updateBrowsePathLabel() {
     case 'duplicates':
       dom.currentPath.textContent = tUi('path.duplicates', '重复照片（哈希）');
       break;
-    case 'faces':
-      dom.currentPath.textContent = tUi('path.faces', '人脸 · 按人物浏览');
-      break;
     case 'favorites':
       dom.currentPath.textContent = state.searchQuery
         ? '\u2B50 收藏 · \u{1F50D} ' + state.searchQuery
@@ -3030,6 +2719,14 @@ function updateBrowsePathLabel() {
     case 'date':
       dom.currentPath.textContent = '\u{1F4C5} ' + formatDateLabel(state.currentDate);
       break;
+    case 'ai_search':
+      dom.currentPath.textContent =
+        '\u{1F50D} ' + (state.aiSearchQuery || tUi('nav.search', '搜图'));
+      break;
+    case 'people':
+      dom.currentPath.textContent =
+        '\u{1F465} ' + (state.aiPeopleLabel || tUi('nav.allPeople', '全部人物'));
+      break;
     default:
       dom.currentPath.textContent = tUi('path.allPhotos', '所有照片');
   }
@@ -3038,8 +2735,7 @@ function updateBrowsePathLabel() {
 function updateSidebarActive() {
   if (state.currentTab === 'settings') renderSettingsNav(getLastSettingsSectionId());
   else if (state.currentTab === 'duplicates') renderDuplicateSidebar();
-  else if (state.currentTab === 'faces') renderFaceSidebar();
-  else if (state.currentTab === 'folders') syncFolderSidebarHighlight();
+  else if (isFolderSidebarTab(state.currentTab)) syncFolderSidebarHighlight();
   else syncDateSidebarHighlight();
 }
 
@@ -3142,7 +2838,7 @@ function syncDateSidebarHighlight() {
 function renderSettingsNav(activeId) {
   if (state.currentTab !== 'settings') return;
   if (!dom.settingsPage || dom.settingsPage.style.display === 'none') return;
-  return settingsUi.renderSettingsNav(activeId, { dom: dom });
+  return settingsUi.renderSettingsNav(normalizeSettingsSectionId(activeId), { dom: dom });
 }
 
 function scrollToSettingsSection(sectionId) {
@@ -3339,8 +3035,8 @@ async function applyHlsCacheSettings() {
       hintEl.textContent =
         '已保存：' + gbEl.value + 'GB / ' + enEl.value + ' 目录（新会话按新阈值生效）';
     }
-    saveLastSettingsSectionId('settingsSectionMedia');
-    if (state.currentTab === 'settings') renderSettingsNav('settingsSectionMedia');
+    saveLastSettingsSectionId('settingsSectionStorage');
+    if (state.currentTab === 'settings') renderSettingsNav('settingsSectionStorage');
   } catch (e) {
     appAlert('保存 HLS 缓存设置失败：' + (e && e.message ? e.message : String(e)));
   } finally {
@@ -3361,8 +3057,8 @@ async function applyThumbSettings() {
     var r = await api.updateSettings({ thumbSize: n.size, thumbQuality: n.quality });
     applyThumbAppliedStateFromSettings(r);
     updateThumbPendingHint();
-    saveLastSettingsSectionId('settingsSectionMedia');
-    if (state.currentTab === 'settings') renderSettingsNav('settingsSectionMedia');
+    saveLastSettingsSectionId('settingsSectionStorage');
+    if (state.currentTab === 'settings') renderSettingsNav('settingsSectionStorage');
   } catch (e) {
     appAlert('应用缩略图设置失败：' + (e && e.message ? e.message : String(e)));
     if (state.thumbAppliedSize != null && state.thumbAppliedQuality != null) {
@@ -3378,14 +3074,17 @@ async function applyThumbSettings() {
 // === 浏览偏好（排序 / 每页 / 卡片宽度）===
 function setBrowseAppliedSnapshotFromObject(s) {
   if (!s) return;
-  var ps = parseInt(s.browsePageSize, 10);
-  if ([10, 20, 50, 100, 200, 300, 500].indexOf(ps) < 0) ps = 100;
+  // 此前这里是另一套字面量（含 300 / 500，主进程根本不产这两个值），与设置页下拉、
+  // 底栏控件各自维护一份；现在统一收到 BROWSE_PAGE_SIZE_TIERS 上。
+  var ps = snapBrowsePageSize(s.browsePageSize);
   var cs = snapBrowseCardBasis(s.browseCardSize);
   var cr = normalizeBrowseCardRatio(s.browseCardRatio);
   var tc = normalizeBrowseThumbCrop(s.browseThumbCrop);
   var cl = normalizeBrowseCardLayout(s.browseCardLayout);
   var sb = s.browseSortBy || 'date_taken';
   var so = s.browseSortOrder === 'ASC' || s.browseSortOrder === 'DESC' ? s.browseSortOrder : 'DESC';
+  state.videoClickBehavior = s.videoClickBehavior === 'embedded' ? 'embedded' : 'system';
+  state.similarThreshold = Math.max(0, Math.min(64, parseInt(s.similarThreshold, 10) || 12));
   state.browsePrefsApplied = {
     sortBy: sb,
     sortOrder: so,
@@ -3395,6 +3094,7 @@ function setBrowseAppliedSnapshotFromObject(s) {
     thumbCrop: tc,
     cardLayoutMode: cl,
     browseFolderIncludeSubfolders: s.browseFolderIncludeSubfolders !== false,
+    videoClickBehavior: state.videoClickBehavior,
   };
 }
 
@@ -3403,23 +3103,6 @@ function normalizeThumbBackfillConcurrency(v) {
   if (isNaN(c) || c < 1) c = 3;
   if (c > 8) c = 8;
   return c;
-}
-
-function normalizeFaceClusterThreshold(v) {
-  var n = parseFloat(v);
-  if (!isFinite(n)) return 0.35;
-  var allowed = [0.25, 0.3, 0.35, 0.4, 0.45];
-  var best = 0.35;
-  var bd = Infinity;
-  var i;
-  for (i = 0; i < allowed.length; i++) {
-    var d = Math.abs(n - allowed[i]);
-    if (d < bd) {
-      bd = d;
-      best = allowed[i];
-    }
-  }
-  return best;
 }
 
 function normalizeUiLocale(s) {
@@ -3441,9 +3124,8 @@ function setGeneralSettingsAppliedFromObject(s) {
     subtitleFontSizePx: normalizeSubtitleFontSizePx(s.subtitleFontSizePx, s.subtitleFontSize),
     subtitleFontWeight: normalizeSubtitleFontWeight(s.subtitleFontWeight),
     subtitleColor: normalizeSubtitleColor(s.subtitleColor),
-    faceClusterThreshold: normalizeFaceClusterThreshold(s.faceClusterThreshold),
-    faceAutoScanOnStartup: !!s.faceAutoScanOnStartup,
     thumbBackfillConcurrency: normalizeThumbBackfillConcurrency(s.thumbBackfillConcurrency),
+    similarThreshold: Math.max(0, Math.min(64, parseInt(s.similarThreshold, 10) || 12)),
     uiLocale: normalizeUiLocale(s.uiLocale),
   };
 }
@@ -3501,26 +3183,6 @@ async function persistUiLocaleFromControl(source) {
   });
 }
 
-async function persistFacePrefsFromForm() {
-  return settingsSync.persistFacePrefsFromForm({
-    state: state,
-    api: api,
-    appAlert: appAlert,
-    onNormalizeFaceClusterThreshold: normalizeFaceClusterThreshold,
-    onSetGeneralSettingsAppliedFromObject: setGeneralSettingsAppliedFromObject,
-    onSyncFacePrefsFormFromRuntimeState: function () {
-      var ap = state.generalSettingsApplied;
-      if (!ap) return;
-      settingsSync.syncFacePrefsFormFromRuntimeState({
-        applied: ap,
-        onNormalizeFaceClusterThreshold: normalizeFaceClusterThreshold,
-      });
-    },
-    onSaveLastSettingsSectionId: saveLastSettingsSectionId,
-    onRenderSettingsNav: renderSettingsNav,
-  });
-}
-
 async function persistBrowsePrefsFromForm() {
   return settingsSync.persistBrowsePrefsFromForm({
     state: state,
@@ -3535,6 +3197,7 @@ async function persistBrowsePrefsFromForm() {
         snapBrowseCardBasis: snapBrowseCardBasis,
         onApplyCardSize: applyCardSize,
         onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+        onApplyPageSize: syncPageSizeControl,
       });
     },
     onSyncBrowsePrefsFormFromRuntimeState: function () {
@@ -3549,8 +3212,6 @@ async function persistBrowsePrefsFromForm() {
 }
 
 // === 扫描选项（已下线） ===
-
-
 
 /** 在全库/当前视图总数中的 1-based 序号（与分页一致，非仅当前缓冲区内下标） */
 function previewGlobalPositionOne(index) {
@@ -3651,30 +3312,52 @@ function loadPreviewInfoPanel(photo) {
   function renderSections(info) {
     var sections = [];
     function startSection(title) {
-      sections.push('<div class="preview-info-section"><div class="preview-info-section-title">' + escapeHtmlRenderer(title) + '</div>');
+      sections.push(
+        '<div class="preview-info-section"><div class="preview-info-section-title">' +
+          escapeHtmlRenderer(title) +
+          '</div>',
+      );
     }
     function endSection() {
       sections.push('</div>');
     }
     function addToSection(label, value) {
       if (value == null || value === '' || value === 0) return;
-      sections.push('<div class="preview-info-row"><span class="preview-info-label">' + escapeHtmlRenderer(label) + '</span><span class="preview-info-value">' + escapeHtmlRenderer(String(value)) + '</span></div>');
+      sections.push(
+        '<div class="preview-info-row"><span class="preview-info-label">' +
+          escapeHtmlRenderer(label) +
+          '</span><span class="preview-info-value">' +
+          escapeHtmlRenderer(String(value)) +
+          '</span></div>',
+      );
     }
-    var hasBasic = info.file_name || info.file_path || info.file_type || (info.width && info.height) || info.file_size;
+    var hasBasic =
+      info.file_name ||
+      info.file_path ||
+      info.file_type ||
+      (info.width && info.height) ||
+      info.file_size;
     if (hasBasic) {
       startSection('基本信息');
       addToSection('文件名', info.file_name);
       addToSection('路径', info.file_path);
       addToSection('类型', info.file_type);
-      if (info.width != null && info.height != null && info.width > 0 && info.height > 0) addToSection('尺寸', info.width + ' × ' + info.height + ' px');
+      if (info.width != null && info.height != null && info.width > 0 && info.height > 0)
+        addToSection('尺寸', info.width + ' × ' + info.height + ' px');
       if (info.file_size) addToSection('大小', formatSizeRenderer(info.file_size));
       endSection();
     }
     var hasTime = info.date_taken || info.date_modified;
     if (hasTime) {
       startSection('时间');
-      addToSection('拍摄时间', info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '');
-      addToSection('修改时间', info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '');
+      addToSection(
+        '拍摄时间',
+        info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '',
+      );
+      addToSection(
+        '修改时间',
+        info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '',
+      );
       endSection();
     }
     var hasParam = info.focal_length || info.aperture || info.iso_speed || info.shutter_speed;
@@ -3696,7 +3379,10 @@ function loadPreviewInfoPanel(photo) {
     }
     if (info.gps_latitude != null && info.gps_longitude != null) {
       startSection('位置');
-      addToSection('GPS', Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6));
+      addToSection(
+        'GPS',
+        Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6),
+      );
       endSection();
     }
     if (state.previewTotalPhotos > 0) {
@@ -3709,7 +3395,9 @@ function loadPreviewInfoPanel(photo) {
       addToSection('位置', posNum + ' / ' + state.previewTotalPhotos);
       endSection();
     }
-    contentEl.innerHTML = sections.length ? sections.join('') : '<div class="preview-info-empty">无可用信息</div>';
+    contentEl.innerHTML = sections.length
+      ? sections.join('')
+      : '<div class="preview-info-empty">无可用信息</div>';
   }
   function pickPhotoDim(obj, keys) {
     for (var i = 0; i < keys.length; i++) {
@@ -3726,31 +3414,41 @@ function loadPreviewInfoPanel(photo) {
     height: pickPhotoDim(photo, ['height', 'pixel_height', 'file_height', 'media_height']),
     file_size: photo.file_size || 0,
     date_taken: photo.date_taken || '',
-    date_modified: photo.date_modified || ''
+    date_modified: photo.date_modified || '',
   };
   renderSections(baseInfo);
   if (window.photoAPI && window.photoAPI.getPhotoInfo) {
-    window.photoAPI.getPhotoInfo(photo.id).then(function (apiInfo) {
-      if (apiInfo) {
-        var merged = {};
-        for (var k in baseInfo) merged[k] = baseInfo[k];
-        for (var k2 in apiInfo) merged[k2] = apiInfo[k2];
-        renderSections(merged);
-      }
-    }).catch(function () {});
+    window.photoAPI
+      .getPhotoInfo(photo.id)
+      .then(function (apiInfo) {
+        if (apiInfo) {
+          var merged = {};
+          for (var k in baseInfo) merged[k] = baseInfo[k];
+          for (var k2 in apiInfo) merged[k2] = apiInfo[k2];
+          renderSections(merged);
+        }
+      })
+      .catch(function () {});
   }
   // 数据库无尺寸时，用 sharp 实时读取并回补
-  if (window.photoAPI && window.photoAPI.getPhotoDimensions && (baseInfo.width == null || baseInfo.height == null)) {
-    window.photoAPI.getPhotoDimensions(photo.id).then(function (dims) {
-      if (dims && dims.width > 0 && dims.height > 0) {
-        baseInfo.width = dims.width;
-        baseInfo.height = dims.height;
-        // 同步更新内存中的 photo 对象，避免重复读取
-        photo.width = dims.width;
-        photo.height = dims.height;
-        renderSections(baseInfo);
-      }
-    }).catch(function () {});
+  if (
+    window.photoAPI &&
+    window.photoAPI.getPhotoDimensions &&
+    (baseInfo.width == null || baseInfo.height == null)
+  ) {
+    window.photoAPI
+      .getPhotoDimensions(photo.id)
+      .then(function (dims) {
+        if (dims && dims.width > 0 && dims.height > 0) {
+          baseInfo.width = dims.width;
+          baseInfo.height = dims.height;
+          // 同步更新内存中的 photo 对象，避免重复读取
+          photo.width = dims.width;
+          photo.height = dims.height;
+          renderSections(baseInfo);
+        }
+      })
+      .catch(function () {});
   }
 }
 
@@ -3764,6 +3462,8 @@ function syncLiveSettingsWidgetsFromObject(s) {
   if (autoThumbEl) autoThumbEl.checked = !!s.autoThumbBackfillOnStartup;
   var autoHashEl = document.getElementById('settingAutoHashOnStartup');
   if (autoHashEl) autoHashEl.checked = !!s.autoHashOnStartup;
+  var stEl = document.getElementById('settingSimilarThreshold');
+  if (stEl) stEl.value = String(Math.max(0, Math.min(64, parseInt(s.similarThreshold, 10) || 12)));
   var launchDefaultEl = document.getElementById('settingLaunchDefaultPage');
   if (launchDefaultEl) launchDefaultEl.value = normalizeLaunchDefaultPage(s.launchDefaultPage);
   settingsSync.syncThemeStyleControls({
@@ -3783,10 +3483,6 @@ function syncLiveSettingsWidgetsFromObject(s) {
     swc.value = wv;
     state.windowCloseBehaviorApplied = wv;
   }
-  var fctEl = document.getElementById('settingFaceClusterThreshold');
-  if (fctEl) fctEl.value = String(normalizeFaceClusterThreshold(s.faceClusterThreshold));
-  var fasEl = document.getElementById('settingFaceAutoScanOnStartup');
-  if (fasEl) fasEl.checked = !!s.faceAutoScanOnStartup;
   var tbcEl = document.getElementById('settingThumbBackfillConcurrency');
   if (tbcEl) tbcEl.value = String(normalizeThumbBackfillConcurrency(s.thumbBackfillConcurrency));
   if (settingsSync && typeof settingsSync.setLocaleSelectValuePair === 'function') {
@@ -3846,6 +3542,7 @@ async function loadSettingsUI() {
     snapBrowseCardBasis: snapBrowseCardBasis,
     onApplyCardSize: applyCardSize,
     onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+    onApplyPageSize: syncPageSizeControl,
   });
   settingsSync.syncBrowsePrefsFormFromRuntimeState({
     state: state,
@@ -3880,28 +3577,29 @@ async function refreshThumbnailBackfillStatus() {
         var line = scanFlow.formatEtaLine(es);
         if (line) eta = tUi('settings.task.thumbEtaPrefix', '，') + line;
       }
-      if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUiFmt(
-        'settings.task.thumbProgressRunning',
-        {
-          done: p.done,
-          total: p.total,
-          pct: pct,
-          success: p.success,
-          failed: p.failed,
-          eta: eta,
-        },
-        '补全中 ' +
-          p.done +
-          '/' +
-          p.total +
-          '（' +
-          pct +
-          '%），成功 ' +
-          p.success +
-          '，失败 ' +
-          p.failed +
-          eta,
-      );
+      if (dom.thumbBackfillStatus)
+        dom.thumbBackfillStatus.textContent = tUiFmt(
+          'settings.task.thumbProgressRunning',
+          {
+            done: p.done,
+            total: p.total,
+            pct: pct,
+            success: p.success,
+            failed: p.failed,
+            eta: eta,
+          },
+          '补全中 ' +
+            p.done +
+            '/' +
+            p.total +
+            '（' +
+            pct +
+            '%），成功 ' +
+            p.success +
+            '，失败 ' +
+            p.failed +
+            eta,
+        );
       if (dom.thumbBackfillStartBtn) dom.thumbBackfillStartBtn.disabled = true;
       if (dom.thumbBackfillCancelBtn) dom.thumbBackfillCancelBtn.style.display = '';
       if (!state.thumbBackfillPolling) {
@@ -3912,28 +3610,31 @@ async function refreshThumbnailBackfillStatus() {
         var doneText = p.cancelled
           ? tUi('settings.task.thumbStopped', '已停止')
           : tUi('settings.task.thumbCompleted', '已完成');
-        if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUiFmt(
-          'settings.task.thumbProgressDone',
-          {
-            doneLabel: doneText,
-            total: p.total,
-            success: p.success,
-            failed: p.failed,
-          },
-          doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed,
-        );
+        if (dom.thumbBackfillStatus)
+          dom.thumbBackfillStatus.textContent = tUiFmt(
+            'settings.task.thumbProgressDone',
+            {
+              doneLabel: doneText,
+              total: p.total,
+              success: p.success,
+              failed: p.failed,
+            },
+            doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed,
+          );
       } else {
-        if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUi(
-          'settings.task.thumbBackfillDesc',
-          '为尚无缩略图的照片后台补齐预览图',
-        );
+        if (dom.thumbBackfillStatus)
+          dom.thumbBackfillStatus.textContent = tUi(
+            'settings.task.thumbBackfillDesc',
+            '为尚无缩略图的照片后台补齐预览图',
+          );
       }
       if (dom.thumbBackfillStartBtn) dom.thumbBackfillStartBtn.disabled = false;
       if (dom.thumbBackfillCancelBtn) dom.thumbBackfillCancelBtn.style.display = 'none';
       stopThumbnailBackfillPolling();
     }
   } catch (e) {
-    if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = tUi('settings.task.thumbReadError', '补全状态读取失败');
+    if (dom.thumbBackfillStatus)
+      dom.thumbBackfillStatus.textContent = tUi('settings.task.thumbReadError', '补全状态读取失败');
     if (dom.thumbBackfillExportFailedBtn) dom.thumbBackfillExportFailedBtn.disabled = true;
     stopThumbnailBackfillPolling();
   }
@@ -4163,29 +3864,30 @@ async function refreshDuplicateHashStatus() {
     state._dupHashProgressRunning = running;
     if (p.running) {
       var pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-      if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUiFmt(
-        'settings.task.dupProgressRunning',
-        {
-          done: p.done,
-          total: p.total,
-          pct: pct,
-          hashed: p.hashed,
-          reused: p.reused,
-          failed: p.failed,
-        },
-        '检测中 ' +
-          p.done +
-          '/' +
-          p.total +
-          '（' +
-          pct +
-          '%），新算哈希 ' +
-          p.hashed +
-          '，复用缓存 ' +
-          p.reused +
-          '，失败 ' +
-          p.failed,
-      );
+      if (dom.duplicateHashStatus)
+        dom.duplicateHashStatus.textContent = tUiFmt(
+          'settings.task.dupProgressRunning',
+          {
+            done: p.done,
+            total: p.total,
+            pct: pct,
+            hashed: p.hashed,
+            reused: p.reused,
+            failed: p.failed,
+          },
+          '检测中 ' +
+            p.done +
+            '/' +
+            p.total +
+            '（' +
+            pct +
+            '%），新算哈希 ' +
+            p.hashed +
+            '，复用缓存 ' +
+            p.reused +
+            '，失败 ' +
+            p.failed,
+        );
       if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = true;
       if (dom.duplicateHashCancelBtn) dom.duplicateHashCancelBtn.style.display = '';
       if (!state.duplicateHashPolling) {
@@ -4196,43 +3898,49 @@ async function refreshDuplicateHashStatus() {
         var dupDoneLabel = p.cancelled
           ? tUi('settings.task.thumbStopped', '已停止')
           : tUi('settings.task.thumbCompleted', '已完成');
-        if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUiFmt(
-          'settings.task.dupProgressDone',
-          {
-            doneLabel: dupDoneLabel,
-            total: p.total,
-            hashed: p.hashed,
-            reused: p.reused,
-            failed: p.failed,
-            groups: p.duplicateGroups || 0,
-            photos: p.duplicatePhotos || 0,
-          },
-          dupDoneLabel +
-            '：全量 ' +
-            p.total +
-            '，新算哈希 ' +
-            p.hashed +
-            '，复用缓存 ' +
-            p.reused +
-            '，失败 ' +
-            p.failed +
-            '；重复组 ' +
-            (p.duplicateGroups || 0) +
-            '，重复照片 ' +
-            (p.duplicatePhotos || 0),
-        );
+        if (dom.duplicateHashStatus)
+          dom.duplicateHashStatus.textContent = tUiFmt(
+            'settings.task.dupProgressDone',
+            {
+              doneLabel: dupDoneLabel,
+              total: p.total,
+              hashed: p.hashed,
+              reused: p.reused,
+              failed: p.failed,
+              groups: p.duplicateGroups || 0,
+              photos: p.duplicatePhotos || 0,
+            },
+            dupDoneLabel +
+              '：全量 ' +
+              p.total +
+              '，新算哈希 ' +
+              p.hashed +
+              '，复用缓存 ' +
+              p.reused +
+              '，失败 ' +
+              p.failed +
+              '；重复组 ' +
+              (p.duplicateGroups || 0) +
+              '，重复照片 ' +
+              (p.duplicatePhotos || 0),
+          );
       } else {
-        if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUi(
-          'settings.task.dupIdle',
-          '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
-        );
+        if (dom.duplicateHashStatus)
+          dom.duplicateHashStatus.textContent = tUi(
+            'settings.task.dupIdle',
+            '将按入库顺序对全部图片计算 SHA-256（未变化文件会复用已有指纹）',
+          );
       }
       if (dom.duplicateHashStartBtn) dom.duplicateHashStartBtn.disabled = false;
       if (dom.duplicateHashCancelBtn) dom.duplicateHashCancelBtn.style.display = 'none';
       stopDuplicateHashPolling();
     }
   } catch (e) {
-    if (dom.duplicateHashStatus) dom.duplicateHashStatus.textContent = tUi('settings.task.dupReadError', '重复检测状态读取失败');
+    if (dom.duplicateHashStatus)
+      dom.duplicateHashStatus.textContent = tUi(
+        'settings.task.dupReadError',
+        '重复检测状态读取失败',
+      );
     stopDuplicateHashPolling();
   }
 }
@@ -4403,12 +4111,13 @@ function normalizeFolderCoversResult(raw) {
   };
 }
 
-async function fetchPhotosPage(pageNum) {
+async function fetchPhotosPage(pageNum, requestSequence) {
   var options = {
     sortBy: state.sortBy,
     sortOrder: state.sortOrder,
     page: pageNum != null ? pageNum : state.page,
     pageSize: state.pageSize,
+    browseRequestId: requestSequence,
   };
   // 已移除：最小宽/高/MB 筛选
   if (state.mediaFilter && state.mediaFilter !== 'all') {
@@ -4611,13 +4320,16 @@ function paintBrowsePhotoGridShell(result, paintOptions) {
     var scopedTotal = Number(result && result.total) || 0;
     var scopedVideoCount = Number(result && result.videoCount) || 0;
     var subCount = browseChildSummaries.length;
-    if (dom.statsBar) dom.statsBar.textContent = formatFolderScopedStatsBarText(
-      scopedTotal,
-      scopedVideoCount,
-      subCount,
-    );
+    if (dom.statsBar)
+      dom.statsBar.textContent = formatFolderScopedStatsBarText(
+        scopedTotal,
+        scopedVideoCount,
+        subCount,
+        state.mediaFilter,
+      );
   } else if (state.stats && Number(state.stats.totalPhotos) > 0) {
-    if (dom.statsBar) dom.statsBar.textContent = formatGlobalStatsBarText(state.stats);
+    if (dom.statsBar)
+      dom.statsBar.textContent = formatGlobalStatsBarText(state.stats, state.mediaFilter);
   } else {
     if (dom.statsBar) dom.statsBar.textContent = '';
   }
@@ -4663,8 +4375,31 @@ var normalizePositiveFloatFilter =
     return Math.round(n * 10) / 10;
   };
 
+var firstBrowsePaintReported = false;
+function reportFirstBrowsePaint() {
+  if (firstBrowsePaintReported) return;
+  firstBrowsePaintReported = true;
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      api.invoke('notifyBrowsePhotosReady');
+    });
+  });
+}
+
 async function loadPhotos() {
   var seq = ++state.photosLoadSeq;
+  api.invoke('beginBrowseRequest', seq);
+  // 不在智能视图、却还挂着 AI 工具栏时兜底摘掉（点侧栏文件夹会直接走到这里），
+  // 否则搜索框会留在浏览工具栏上、状态轮询也停不下来。
+  if (
+    aiViews &&
+    typeof aiViews.isShowing === 'function' &&
+    aiViews.isShowing() &&
+    state.currentView !== 'ai_search' &&
+    state.currentView !== 'people'
+  ) {
+    aiViews.leave();
+  }
   persistStartupPositionSnapshot();
   if (state._pendingBrowseScrollTop == null) scrollBrowseGridToTop();
   // 重复项模式硬锁：防止旧的普通列表请求把右侧内容顶回“全部图片”
@@ -4682,17 +4417,12 @@ async function loadPhotos() {
     }
     return;
   }
-  if (state.sidebarLockedMode === 'faces' && state.currentView !== 'faces') {
-    state.currentView = 'faces';
-  }
-  if (state.currentView === 'faces') {
-    sidebarUi.ensureDuplicateSidebarVisible(dom);
+  // 搜图 / 人物：同样的 #photoGrid，换一套数据源；工具栏整体让位（控件都在侧栏）。
+  if (state.currentView === 'ai_search' || state.currentView === 'people') {
     if (dom.toolbar) dom.toolbar.style.display = 'none';
-    if (!document.getElementById('faceMainArea')) {
-      renderFacePageShell();
-    }
-    renderFaceSidebar();
-    await refreshFaceMainContent();
+    if (dom.emptyState) dom.emptyState.style.display = 'none';
+    if (dom.pagination) dom.pagination.style.display = 'none';
+    if (aiViews) await aiViews.load();
     return;
   }
   if (dom.toolbar) dom.toolbar.style.display = 'flex';
@@ -4713,12 +4443,13 @@ async function loadPhotos() {
         throw new Error('getFolderCovers unavailable');
       }
       var mediaFilter = normalizeMediaFilter(state.mediaFilter);
-      var fcOpts = { page: state.page, pageSize: state.pageSize };
+      var fcOpts = { page: state.page, pageSize: state.pageSize, browseRequestId: seq };
       if (mediaFilter !== 'all') fcOpts.mediaType = mediaFilter;
       var fcResult = normalizeFolderCoversResult(await api.getFolderCovers(fcOpts));
       if (seq !== state.photosLoadSeq) return;
       await yieldToPaint();
       var covers = fcResult.covers;
+      if (seq !== state.photosLoadSeq) return;
       state.currentPhotos = [];
       updateBrowsePathLabel();
       previewFlow.initPreviewState({
@@ -4744,12 +4475,14 @@ async function loadPhotos() {
         formatNumber: formatNumber,
       });
       if (dom.pageInfo) dom.pageInfo.textContent = formatFolderCountLabel(fcResult.total);
+      reportFirstBrowsePaint();
       if (dom.statsBar) dom.statsBar.textContent = formatFolderCountLabel(fcResult.total);
       if (state._pendingBrowseScrollTop != null && dom.photoGrid) {
         dom.photoGrid.scrollTop = state._pendingBrowseScrollTop;
         state._pendingBrowseScrollTop = null;
       }
     } catch (e) {
+      if (seq !== state.photosLoadSeq) return;
       Logger.error(e);
       if (dom.photoGrid) {
         dom.photoGrid.innerHTML =
@@ -4783,6 +4516,7 @@ async function loadPhotos() {
     var warmSubfolders = enrichSubfolderPromise ? await enrichSubfolderPromise : null;
     if (seq !== state.photosLoadSeq) return;
     paintBrowsePhotoGridShell(cr, { subfolderSummaries: warmSubfolders });
+    reportFirstBrowsePaint();
     if (state._pendingBrowseScrollTop != null && dom.photoGrid) {
       dom.photoGrid.scrollTop = state._pendingBrowseScrollTop;
       state._pendingBrowseScrollTop = null;
@@ -4797,13 +4531,16 @@ async function loadPhotos() {
   }
 
   try {
-    var result = await fetchPhotosPage(state.page);
+    if (seq !== state.photosLoadSeq) return;
+    var result = await fetchPhotosPage(state.page, seq);
     if (seq !== state.photosLoadSeq) return;
     await yieldToPaint();
+    if (seq !== state.photosLoadSeq) return;
     state.currentPhotos = result.photos || [];
     var fetchedSubfolders = enrichSubfolderPromise ? await enrichSubfolderPromise : null;
     if (seq !== state.photosLoadSeq) return;
     paintBrowsePhotoGridShell(result, { subfolderSummaries: fetchedSubfolders });
+    reportFirstBrowsePaint();
     state._photoBrowseCacheFp = photoBrowseCacheFingerprint();
     state._photoBrowseCacheResult = result;
     if (state._pendingBrowseScrollTop != null && dom.photoGrid) {
@@ -4904,8 +4641,8 @@ function renderDuplicateGroupPhotosHtml(hash) {
   });
 }
 
-function renderDuplicateNoGroupContent() {
-  return duplicatesUi.renderDuplicateNoGroupContent();
+function renderDuplicateNoGroupContent(options) {
+  return duplicatesUi.renderDuplicateNoGroupContent(options);
 }
 
 function openDuplicatePreview(hash, index) {
@@ -4938,7 +4675,9 @@ function capMasonryColumns(host) {
   var gap = 12;
   var w = grid.clientWidth || host.clientWidth || window.innerWidth;
   if (w <= 0) {
-    requestAnimationFrame(function () { capMasonryColumns(host); });
+    requestAnimationFrame(function () {
+      capMasonryColumns(host);
+    });
     return;
   }
   var maxCols = Math.max(1, Math.floor((w + gap) / (basis + gap)));
@@ -4975,14 +4714,59 @@ function applyCardSize() {
     gridVars(dom.photoGrid);
     capMasonryColumns(dom.photoGrid);
   }
-  var faceAllHost = document.getElementById('faceAllPersonsGrid');
-  if (faceAllHost) {
-    gridVars(faceAllHost);
-    capMasonryColumns(faceAllHost);
-  }
   var label = CARD_SIZE_TIERS[browseCardTierIndexForBasis(state.cardSize)].label;
   var zoomLabel = document.getElementById('zoomLabel');
   if (zoomLabel) zoomLabel.textContent = label;
+}
+
+/** 底栏「每页数量」读数：始终显示**当前生效**的档位值，而不是用户刚点的那一下。 */
+function syncPageSizeControl() {
+  state.pageSize = snapBrowsePageSize(state.pageSize);
+  if (dom.pageSizeLabel) dom.pageSizeLabel.textContent = String(state.pageSize);
+  var idx = browsePageSizeTierIndex(state.pageSize);
+  if (dom.pageSizeDecBtn) dom.pageSizeDecBtn.disabled = idx <= 0;
+  if (dom.pageSizeIncBtn) dom.pageSizeIncBtn.disabled = idx >= BROWSE_PAGE_SIZE_TIERS.length - 1;
+}
+
+/**
+ * 底栏「每页数量」± 一档。
+ *
+ * 与卡片尺寸**不同**：卡片尺寸只改 CSS 变量、当场重排；每页张数要重新查库，
+ * 所以这里走设置持久化那条路（`updateSettings` → 用返回的设置整体重放一遍），
+ * 保证底栏、设置页下拉、`state.browsePrefsApplied` 三处不会各说各话。
+ * 写库失败则退回原档位——否则界面会显示一个并没生效的张数。
+ */
+async function changeBrowsePageSize(direction) {
+  var idx = browsePageSizeTierIndex(state.pageSize);
+  var next = direction < 0 ? idx - 1 : idx + 1;
+  if (next < 0 || next >= BROWSE_PAGE_SIZE_TIERS.length) return;
+  var size = BROWSE_PAGE_SIZE_TIERS[next];
+  var previous = snapBrowsePageSize(state.pageSize);
+  if (size === previous) return;
+  state.pageSize = size;
+  syncPageSizeControl();
+  try {
+    var applied = await api.updateSettings({ browsePageSize: size });
+    if (applied) {
+      settingsSync.applyBrowsePreferencesFromSettings({
+        state: state,
+        dom: dom,
+        settings: applied,
+        snapBrowseCardBasis: snapBrowseCardBasis,
+        onApplyCardSize: applyCardSize,
+        onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+        onApplyPageSize: syncPageSizeControl,
+      });
+    }
+    syncPageSizeControl();
+    // 换了每页张数，原来的页码已经没有意义（第 7 页在新档位下可能根本不存在）。
+    state.page = 1;
+    void loadPhotos();
+  } catch (e) {
+    state.pageSize = previous;
+    syncPageSizeControl();
+    appAlert('切换每页显示张数失败：' + (e && e.message ? e.message : String(e)));
+  }
 }
 
 // === Pagination (smart page numbers, aligned with web) ===
@@ -5050,8 +4834,47 @@ function openPreviewByPhotoRecord(photo) {
   openPreview(idx);
 }
 
+function isVideoFile(photo) {
+  if (!photo) return false;
+  var mt = String(photo.media_type || photo.mediaType || '').toLowerCase();
+  if (mt === 'video') return true;
+  var ft = String(photo.file_type || '')
+    .toLowerCase()
+    .replace(/^\./, '');
+  return (
+    [
+      'mp4',
+      'mov',
+      'm4v',
+      'mkv',
+      'avi',
+      'wmv',
+      'flv',
+      'webm',
+      'mpg',
+      'mpeg',
+      'm2ts',
+      'ts',
+      '3gp',
+      '3g2',
+    ].indexOf(ft) >= 0
+  );
+}
+
 // 从网格点击进入预览，初始化照片列表
 function startPreview(index) {
+  var photo = state.currentPhotos[index];
+  if (
+    photo &&
+    isVideoFile(photo) &&
+    state.videoClickBehavior !== 'embedded' &&
+    api &&
+    api.has &&
+    api.has('openPhotoExternal')
+  ) {
+    api.openPhotoExternal(photo.id).catch(function () {});
+    return;
+  }
   state.previewPhotos = state.currentPhotos.slice();
   // previewPageStart 追踪 previewPhotos 中第一张对应的页码
   state.previewPageStart = state.page;
@@ -5295,6 +5118,84 @@ async function previewToggleFavorite() {
       });
     },
   });
+}
+
+async function previewFindSimilar() {
+  var photo = state.previewPhotos[state.previewIndex];
+  if (!photo || !photo.id) {
+    appAlert('无法获取当前照片信息');
+    return;
+  }
+  if (!(api && api.has && api.has('maintenanceFindSimilarPhotos'))) {
+    appAlert('查找相似照片功能暂不可用');
+    return;
+  }
+  if (dom.previewFindSimilarBtn) dom.previewFindSimilarBtn.disabled = true;
+  try {
+    var photoId = Number(photo.id);
+    var threshold = state.similarThreshold || 12;
+    var similarIds = await api.maintenanceFindSimilarPhotos({
+      photoId: photoId,
+      threshold: threshold,
+    });
+    if (!Array.isArray(similarIds) || similarIds.length === 0) {
+      appAlert('未找到与此照片视觉相似的图片');
+      return;
+    }
+    var rows = [];
+    if (api && api.has && api.has('maintenanceGetPhotosByIds')) {
+      rows = await api.maintenanceGetPhotosByIds(similarIds);
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+      appAlert('未找到相似照片的详细信息');
+      return;
+    }
+    closePreview();
+    state.currentView = 'all';
+    state.currentPhotos = rows;
+    state.previewTotalPhotos = rows.length;
+    state.previewTotalPages = 1;
+    state.page = 1;
+    state.previewPageStart = 1;
+    state.previewLoadingPage = 0;
+    if (dom.toolbar) dom.toolbar.style.display = 'flex';
+    if (dom.pagination) dom.pagination.style.display = 'none';
+    if (dom.photoGrid) dom.photoGrid.scrollTop = 0;
+    updateBrowsePathLabel();
+    photoGridUi.renderPhotoGrid({
+      dom: dom,
+      photos: state.currentPhotos,
+      useMediaRatio: state.cardLayoutMode === 'masonry',
+      mediaFilter: normalizeMediaFilter(state.mediaFilter),
+      escapeHtml: escapeHtml,
+      escapeAttr: escapeAttr,
+      truncate: truncate,
+      formatDateTime: formatDateTime,
+      formatNumber: formatNumber,
+      normalizePath: sidebarTree.normalizePath,
+      subfolderSummaries: [],
+      onApplyCardSize: applyCardSize,
+    });
+    var msg =
+      '⭐ 查找相似照片 · 找到 ' +
+      rows.length +
+      ' 张与「' +
+      (photo.file_name || '') +
+      '」相似的照片';
+    if (dom.currentPath) dom.currentPath.textContent = msg;
+  } catch (e) {
+    Logger.error('[previewFindSimilar]', e);
+    appAlert('查找相似照片失败：' + (e && e.message ? e.message : '未知错误'));
+  } finally {
+    if (dom.previewFindSimilarBtn) dom.previewFindSimilarBtn.disabled = false;
+  }
+}
+
+function gotoSimilarMode() {
+  closeSettingsPage();
+  switchDuplicateMode('similar');
+  var dupTab = document.querySelector('.nav-tab[data-tab="duplicates"]');
+  if (dupTab) dupTab.click();
 }
 
 async function previewShowInFolder() {
@@ -5556,4 +5457,154 @@ window.__applyWebPasswordI18n = function () {
   });
 };
 
+window.PhotoCompare.mount({
+  currentPhoto: function () {
+    return state.previewPhotos[state.previewIndex];
+  },
+  imageUrl: function (photo) {
+    return 'photo://' + photo.id;
+  },
+  beforeOpen: closePreview,
+});
+// 搜图 / 人物：结果落进主照片网格，卡片、预览翻页、幻灯片、收藏、卡片尺寸全部复用浏览链路。
+aiViews = window.RendererAiViews.init({
+  dom: dom,
+  state: state,
+  api: api,
+  ui: {
+    renderPhotoGrid: photoGridUi.renderPhotoGrid,
+    showSkeleton: photoGridUi.showSkeleton,
+    applyCardSize: applyCardSize,
+    escapeHtml: escapeHtml,
+    escapeAttr: escapeAttr,
+    truncate: truncate,
+    formatDateTime: formatDateTime,
+    formatNumber: formatNumber,
+    normalizePath: sidebarTree.normalizePath,
+  },
+  onRerenderChrome: updateBrowsePathLabel,
+});
+aiViews.bind();
+window.semanticSettings = window.SemanticSearchUI.mount({
+  manage: true,
+  settingsOnly: true,
+  container: document.getElementById('settingsAiSearchMount'),
+  isActive: function () {
+    return state.currentTab === 'settings';
+  },
+  call: function (operation) {
+    var methods = {
+      status: 'aiSearchStatus',
+      install: 'aiSearchInstall',
+      index: 'aiSearchIndex',
+      cancel: 'aiSearchCancel',
+    };
+    return api.call(methods[operation]);
+  },
+  /**
+   * 匹配阈值的读写。设置项由主进程持有（settings.json），所以走既有的 getSettings /
+   * updateSettings；网页端没有设置入口，不传这两个钩子，面板会提示「在桌面端调整」。
+   */
+  matchThreshold: {
+    read: function () {
+      return api.call('getSettings').then(function (all) {
+        return all && all.aiSearchMatchThreshold;
+      });
+    },
+    write: function (value) {
+      return api.call('updateSettings', { aiSearchMatchThreshold: value });
+    },
+  },
+});
+/**
+ * 打开设置页并定位到「搜图索引」那一行。
+ * 搜图 / 人物各有自己的调用点（左栏视图的设置入口、主界面任务面板的「设置」按钮），
+ * 但两者的面板已并进「后台任务」，所以这里只切到该面板、再把目标行滚进视野——
+ * 保留「把用户带到目标」的语义，而不是简单粗暴地停在面板顶部。
+ */
+async function openSemanticSettings() {
+  await openSettingsPage();
+  if (state.currentTab !== 'settings') return;
+  window.semanticSettings.show();
+  scrollToSettingsSection('settingsSectionTasks');
+  var mount = document.getElementById('settingsAiSearchMount');
+  if (mount) mount.scrollIntoView({ block: 'nearest' });
+}
+window.peopleSettings = window.PeopleUI.mount({
+  manage: true,
+  settingsOnly: true,
+  container: document.getElementById('settingsAiPeopleMount'),
+  isActive: function () {
+    return state.currentTab === 'settings';
+  },
+  navigate: goToPeoplePage,
+  call: function (operation, args) {
+    return api.call('faceAction', operation, args);
+  },
+});
+async function openPeopleSettings() {
+  await openSettingsPage();
+  if (state.currentTab !== 'settings') return;
+  window.peopleSettings.show();
+  scrollToSettingsSection('settingsSectionTasks');
+  var mount = document.getElementById('settingsAiPeopleMount');
+  if (mount) mount.scrollIntoView({ block: 'nearest' });
+}
+/**
+ * 「设置 → 人物」面板里的「前往人物页」入口。
+ * 命名人物发生在「人物」视图，而设置面板只有模型 / 索引类操作；早先靠一句
+ * 「第 3 步：查看并命名人物」引导，用户在本页找不到任何命名入口。
+ * 这里先把返回目标改成 people，再交给 closeSettingsPage 统一复原外壳——
+ * 这样「设置返回」的落点与跳转目标一致，也避免自己拼一遍侧栏 / 布尔的复原逻辑。
+ */
+function goToPeoplePage() {
+  if (state.currentTab === 'settings') {
+    state.tabBeforeSettings = 'people';
+    closeSettingsPage();
+    return;
+  }
+  showTabContent('people');
+}
+document.getElementById('peopleNavSettings').addEventListener('click', function () {
+  void openPeopleSettings();
+  sidebarUi.closeMobileSidebar();
+});
+document.getElementById('settingsSidebar').addEventListener('click', function (event) {
+  var item = event.target.closest('[data-settings-section-id]');
+  if (!item) return;
+  scrollToSettingsSection(item.getAttribute('data-settings-section-id'));
+  sidebarUi.closeMobileSidebar();
+});
+document.getElementById('faceTaskSettings').addEventListener('click', function () {
+  void openPeopleSettings();
+});
+document.getElementById('semanticTaskSettings').addEventListener('click', function () {
+  void openSemanticSettings();
+});
+document.getElementById('semanticTaskStop').addEventListener('click', async function () {
+  var button = document.getElementById('semanticTaskStop');
+  var errorLine = document.getElementById('semanticTaskError');
+  button.disabled = true;
+  errorLine.textContent = '';
+  try {
+    await api.call('aiSearchCancel');
+  } catch (error) {
+    errorLine.textContent = String(error.message || error);
+    button.disabled = false;
+  }
+  void tickBackgroundTasksOnce();
+});
+document.getElementById('faceTaskStop').addEventListener('click', async function () {
+  var button = document.getElementById('faceTaskStop');
+  var errorLine = document.getElementById('faceTaskError');
+  button.disabled = true;
+  errorLine.textContent = '';
+  try {
+    await api.call('faceAction', 'cancel');
+  } catch (error) {
+    errorLine.textContent = String(error.message || error);
+    button.disabled = false;
+  }
+  void tickBackgroundTasksOnce();
+});
 init();

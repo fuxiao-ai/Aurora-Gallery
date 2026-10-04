@@ -22,11 +22,16 @@ function shouldOutput(level) {
 
 function log(level, ...args) {
   if (!shouldOutput(level)) return;
-  var fn = console[level];
-  if (typeof fn === 'function') {
-    fn(...args);
-  } else {
-    console.log(...args);
+  try {
+    var fn = console[level];
+    if (typeof fn === 'function') {
+      fn(...args);
+    } else {
+      console.log(...args);
+    }
+  } catch (e) {
+    if (e && e.code === 'EPIPE') return;
+    throw e;
   }
 }
 

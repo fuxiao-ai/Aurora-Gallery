@@ -1,12 +1,13 @@
 {
   "name": "aurora-gallery",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Aurora Gallery（拂晓图库）— 支持百万张照片的本地相册",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
     "lint": "eslint .",
+    "test": "node scripts/run-regressions.js",
     "smoke:db": "electron scripts/db-smoke.js",
     "version-check": "node scripts/version-check.js",
     "download-face-models": "node scripts/download-face-models.js",
@@ -30,6 +31,7 @@
     "node": ">=22.0.0 <23.0.0"
   },
   "dependencies": {
+    "@huggingface/transformers": "3.8.1",
     "better-sqlite3": "^12.9.0",
     "exif-reader": "^2.0.3",
     "ffmpeg-static": "^5.3.0",
@@ -40,6 +42,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@eslint/js": "^10.0.1",
+    "acorn": "^8.16.0",
     "electron": "^41.5.0",
     "electron-builder": "^24.13.3",
     "eslint": "^10.1.0",
@@ -60,9 +63,8 @@
     },
     "afterPack": "./scripts/after-pack.js",
     "asar": true,
-    "icon": "src/web/app-icon-512.png",
+    "icon": "build/icon.ico",
     "win": {
-      "signAndEditExecutable": false,
       "artifactName": "AuroraGallery-Setup-${version}.${ext}",
       "target": [
         {

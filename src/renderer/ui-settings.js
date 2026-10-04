@@ -16,48 +16,68 @@
     var dom = options.dom || {};
     if (!dom.sidebarContent) return;
     var sidebar = document.getElementById('sidebar');
-    if (sidebar && sidebar.style && sidebar.style.display === 'none') return;
+    if (
+      !document.getElementById('settingsSidebar') &&
+      sidebar &&
+      sidebar.style &&
+      sidebar.style.display === 'none'
+    )
+      return;
 
     function navLabel(key, zh) {
       if (window.I18n && typeof window.I18n.t === 'function') return window.I18n.t(key);
       return zh;
     }
+    // 顺序必须与 index.html 里 [data-settings-panel] 的 DOM 顺序逐位一致。
+    // 设置页自 2026-09-28 起是「一次只显示一个面板」，导航项按下即切换面板，
+    // 不再靠 scrollIntoView 做长滚动定位；顺序错位只会让高亮与显示内容对不上。
+    // navigation-regression 会解析两边做逐位比对，改这里必须同步改 HTML 顺序。
+    //
+    // 2026-09-28 第二轮：搜图 / 人物这两个类目并入「后台任务」（索引本来就是一类长跑
+    // 任务，与补缩略图 / 查重同一张清单）；它们的模型与识别参数随挂载点一起搬过去，
+    // 面板数由 8 减到 6。老用户 localStorage 里的旧 id 由 app.js 的别名表归一。
+    //
+    // 图标一律用**彩色 emoji**（\u{1Fxxx}，必要时补 VS16），不要用 ✦ ☺ ⟳ 这类文本符号：
+    // 它们在 Windows 上走 Segoe UI Symbol，会被渲染成单色灰字，一排里混进去就是断层
+    // （后台任务曾用 ⟳ 被渲染成空心圆，已换成 🛠️；搜图 / 人物那两项当时用的 ✦ / ☺
+    // 也是同理，后来随面板一起并走了）。
+    // 改图标只影响观感，不参与回归断言；但换回文本符号请先看一眼 Windows 下的实际渲染。
     var navItems = [
       {
         id: 'settingsSectionFolders',
         icon: '\u{1F4C1}',
         key: 'settings.nav.folders',
-        zh: '相册目录',
-      },
-      {
-        id: 'settingsSectionCloseBehavior',
-        icon: '\u2716',
-        key: 'settings.nav.close',
-        zh: '关闭按钮',
-      },
-      {
-        id: 'settingsSectionGeneral',
-        icon: '\u2699\uFE0F',
-        key: 'settings.nav.general',
-        zh: '通用设置',
+        zh: '媒体库',
       },
       {
         id: 'settingsSectionBrowse',
-        icon: '\u{1F5BC}\uFE0F',
+        icon: '\u{1F39E}\uFE0F',
         key: 'settings.nav.browse',
-        zh: '浏览偏好',
+        zh: '浏览与播放',
       },
       {
-        id: 'settingsSectionMedia',
+        id: 'settingsSectionStorage',
         icon: '\u{1F5C4}\uFE0F',
-        key: 'settings.nav.media',
-        zh: '后台任务与维护',
+        key: 'settings.nav.storage',
+        zh: '媒体与存储',
+      },
+      {
+        id: 'settingsSectionTasks',
+        icon: '\u{1F6E0}\uFE0F',
+        key: 'settings.nav.tasks',
+        zh: '后台任务',
+      },
+      {
+        id: 'settingsSectionApp',
+        icon: '\u2699\uFE0F',
+        key: 'settings.nav.app',
+        zh: '应用',
       },
       {
         id: 'settingsSectionNetwork',
         icon: '\u{1F310}',
         key: 'settings.nav.network',
-        zh: '局域网访问',
+        zh: '网络',
       },
     ];
     var html = '';
@@ -65,7 +85,7 @@
       var item = navItems[i];
       var isActive = item.id === activeId;
       html +=
-        '<div class="folder-item' +
+        '<button type="button" class="folder-item context-nav-button' +
         (isActive ? ' active' : '') +
         '" data-settings-section-id="' +
         item.id +
@@ -76,19 +96,41 @@
         '<span class="name">' +
         navLabel(item.key, item.zh) +
         '</span>' +
-        '</div>';
+        '</button>';
     }
-    dom.sidebarContent.innerHTML = html;
+    var settingsNav = document.getElementById('settingsSidebar') || dom.sidebarContent;
+    settingsNav.innerHTML = html;
   }
 
+  /**
+   * 切换当前显示的设置面板：一次只留一个 [data-settings-panel] 为 is-active。
+   * 两栏化的核心 —— 只渲染一类设置，长滚动随之消失。
+   */
+  function showSettingsPanel(sectionId) {
+    var panels = document.querySelectorAll('[data-settings-panel]');
+    var found = false;
+    for (var i = 0; i < panels.length; i++) {
+      var on = panels[i].id === sectionId;
+      if (on) found = true;
+      panels[i].classList[on ? 'add' : 'remove']('is-active');
+    }
+    if (!found) return false;
+    var page = document.getElementById('settingsPage');
+    if (page) page.scrollTop = 0;
+    return true;
+  }
+
+  /**
+   * 定位到某个设置面板。历史上这里做的是 scrollIntoView 长滚动定位，
+   * 语义不变（把用户带到目标区块），实现改为切换面板显隐 + 回到该面板顶部。
+   */
   function scrollToSettingsSection(sectionId, options) {
     options = options || {};
-    var el = document.getElementById(sectionId);
-    if (!el) return;
+    if (!document.getElementById(sectionId)) return;
     if (typeof options.onSaveLastSettingsSectionId === 'function') {
       options.onSaveLastSettingsSectionId(sectionId);
     }
-    el.scrollIntoView({ behavior: 'auto', block: 'start' });
+    showSettingsPanel(sectionId);
     if (typeof options.onRenderSettingsNav === 'function') {
       options.onRenderSettingsNav(sectionId);
     }
@@ -224,6 +266,7 @@
 
   global.RendererSettingsUI = {
     renderSettingsNav: renderSettingsNav,
+    showSettingsPanel: showSettingsPanel,
     scrollToSettingsSection: scrollToSettingsSection,
     renderSettingsFolderListFromRows: renderSettingsFolderListFromRows,
   };

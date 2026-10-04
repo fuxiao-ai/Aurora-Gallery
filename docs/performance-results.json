@@ -1,0 +1,92 @@
+{
+  "generatedAt": "2026-09-13T04:40:39.594Z",
+  "electron": "41.5.0",
+  "node": "24.15.0",
+  "platform": "win32",
+  "description": "Synthetic metadata only; excludes images, network, UI rendering and scanning. RSS includes workers.",
+  "results": [
+    {
+      "rows": 100000,
+      "name": "date",
+      "elapsedMs": 77,
+      "maxEventLoopDelayMs": 12,
+      "peakProcessRssMb": 79
+    },
+    {
+      "rows": 100000,
+      "name": "firstPage",
+      "elapsedMs": 33,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 84
+    },
+    {
+      "rows": 100000,
+      "name": "deepPage",
+      "elapsedMs": 6,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 84
+    },
+    {
+      "rows": 100000,
+      "name": "childCovers",
+      "elapsedMs": 17,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 85
+    },
+    {
+      "rows": 100000,
+      "name": "vacuum",
+      "elapsedMs": 280,
+      "maxEventLoopDelayMs": 12,
+      "peakProcessRssMb": 126
+    },
+    {
+      "rows": 1000000,
+      "name": "date",
+      "elapsedMs": 159,
+      "maxEventLoopDelayMs": 8,
+      "peakProcessRssMb": 92
+    },
+    {
+      "rows": 1000000,
+      "name": "firstPage",
+      "elapsedMs": 59,
+      "maxEventLoopDelayMs": 9,
+      "peakProcessRssMb": 92
+    },
+    {
+      "rows": 1000000,
+      "name": "deepPage",
+      "elapsedMs": 114,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 92
+    },
+    {
+      "rows": 1000000,
+      "name": "childCovers",
+      "elapsedMs": 326,
+      "maxEventLoopDelayMs": 11,
+      "peakProcessRssMb": 94
+    },
+    {
+      "rows": 1000000,
+      "name": "vacuum",
+      "elapsedMs": 2840,
+      "maxEventLoopDelayMs": 12,
+      "peakProcessRssMb": 129
+    },
+    {
+      "rows": 1000000,
+      "name": "childCoversWithPrefixIndex",
+      "beforePlan": [
+        "SCAN photos USING COVERING INDEX idx_photos_folder"
+      ],
+      "afterPlan": [
+        "SEARCH photos USING COVERING INDEX idx_photos_folder_nocase (folder_path>? AND folder_path<?)"
+      ],
+      "elapsedMs": 110,
+      "maxEventLoopDelayMs": 10,
+      "peakProcessRssMb": 95
+    }
+  ]
+}

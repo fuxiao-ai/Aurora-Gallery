@@ -1,0 +1,632 @@
+/**
+ * 智能视图（搜图 / 人物）的专属样式。
+ *
+ * 侧栏独占：搜图页侧栏 = 搜索框 + 预选词 + 搜索历史，人物页侧栏 = 人物列表；
+ * 结果照片复用 .photo-card（由 ui-grid.js 生成），这里只补侧栏控件与
+ * 主区空态 / 首屏引导（示例词）。
+ */
+
+/* ---------- 侧栏：搜图（搜索框 + 预选词 + 历史） ---------- */
+
+#searchSidebar {
+  gap: 12px;
+  padding: 12px;
+}
+#searchSidebar .ai-sidebar-search {
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+#searchSidebar .ai-sidebar-search .ai-search-submit {
+  width: 100%;
+  padding: 8px 12px;
+}
+/* 预选词：搜索框下方的一组随机词，点一下直接搜 */
+.ai-search-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+/* 这个库里挑不出任何「点下去有图」的词时整块收起来。**必须显式写** ——
+   上面的 `display: flex` 会压过 UA 的 `[hidden] { display: none }`，只设 hidden 属性是没用的。 */
+.ai-search-suggest[hidden] {
+  display: none;
+}
+.ai-search-suggest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+.ai-search-suggest-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.ai-search-suggest-refresh {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ai-search-suggest-refresh:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.ai-search-suggest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+/* 侧栏窄：预选词用比主区更小的尺寸，长词一律省略而不是把侧栏撑破 */
+.ai-search-suggest-chips .ai-search-chip {
+  max-width: 100%;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 加载态：词池还没取回来时占位（`refreshSuggestions` 要起 worker 载模型 ~2.1s +
+   打开索引 ~0.7s + 打分 ~1s，冷启还要现算词表向量 ~15s）。占着标题那一行的右侧，
+   替掉平时的「换一批」——此时没有词可换。 */
+.ai-search-suggest-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+/* 骨架 pill。刻意**不复用 .ai-search-chip**：那是可点按钮，带 hover 位移与边框变色，
+   这里是非交互占位（`<span>`）。宽度按 nth-child 错开，免得看起来像一排等长色块。
+
+   底色用 `--bg-hover` 而不是 `--bg-card` 或 `--text-muted` 混色：它在**每一套主题**
+   （浅色 / 深色 / 各种配色）里都有定义，且相对本层底色总是「同向偏一档」——`--bg-card`
+   在浅色下是纯白（贴浅色玻璃侧栏就看不见了），`--text-muted` 混 16% 在深色下几乎与背景同色。
+   实测这两档都不行，`--bg-hover` 两套主题都清楚。 */
+.ai-search-suggest-chips .ai-suggest-skeleton {
+  display: block;
+  width: 58px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  position: relative;
+  overflow: hidden;
+  animation: suggestSkeletonPulse 1.6s ease-in-out infinite alternate;
+}
+.ai-search-suggest-chips .ai-suggest-skeleton:nth-child(2n) {
+  width: 76px;
+}
+.ai-search-suggest-chips .ai-suggest-skeleton:nth-child(3n) {
+  width: 48px;
+}
+.ai-search-suggest-chips .ai-suggest-skeleton:nth-child(4n) {
+  width: 88px;
+}
+.ai-search-suggest-chips .ai-suggest-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    color-mix(in srgb, var(--text-primary) 9%, transparent) 50%,
+    transparent 70%
+  );
+  animation: suggestSkeletonShimmer 1.6s infinite;
+}
+@keyframes suggestSkeletonPulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes suggestSkeletonShimmer {
+  0% {
+    transform: translateX(-150%);
+  }
+  100% {
+    transform: translateX(150%);
+  }
+}
+/* 系统开了「减少动态效果」就别闪了，静态灰块也能表达「在加载」。 */
+@media (prefers-reduced-motion: reduce) {
+  .ai-search-suggest-chips .ai-suggest-skeleton,
+  .ai-search-suggest-chips .ai-suggest-skeleton::after {
+    animation: none;
+  }
+}
+
+.ai-search-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ai-search-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+.ai-search-history-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.ai-search-history-clear {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ai-search-history-clear:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.ai-search-history-clear[hidden] {
+  display: none !important;
+}
+.ai-search-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ai-search-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-search-history-item:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.ai-search-history-icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.ai-search-history-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ai-search-history-empty {
+  padding: 10px 6px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* ---------- 侧栏：人物列表 ---------- */
+
+#peopleSidebar {
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+/* 人物搜索：只筛下面这个列表，不碰主区照片 */
+.ai-people-search {
+  flex: 0 0 auto;
+}
+.ai-people-search-field {
+  position: relative;
+  display: block;
+}
+.ai-people-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin-top: -7.5px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.ai-people-search-field input[type='search'] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 6px 12px 6px 34px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+.ai-people-search-field input[type='search']:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ai-people-search-field input[type='search']::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.ai-people-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ai-people-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-people-item:hover {
+  background: var(--accent-dim);
+}
+.ai-people-item.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.ai-people-item:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+/* 行内改名：名字位置换成输入框，列表不重建、头像不闪 */
+.ai-people-item.is-renaming .ai-people-name {
+  overflow: visible;
+}
+.ai-people-rename-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+.ai-people-rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ai-people-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-card));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.ai-people-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ai-people-avatar-fallback {
+  font-size: 18px;
+  opacity: 0.7;
+}
+.ai-people-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ai-people-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: inherit;
+}
+.ai-people-count {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ai-people-item.active .ai-people-count {
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
+}
+.ai-people-empty {
+  padding: 12px 8px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+/* 索引实时读数：标题一行（脉动点 + 状态）+ 三个数字一栏。
+   原来是「● + 一整句」的胶囊（border-radius: 999px）：侧栏一窄句子就折行，
+   胶囊变成两头极圆的两行块，折行处还会把「检出」拆成「检 / 出」两半
+   （overflow-wrap: anywhere），第二行行首再挂一个孤零零的「·」。
+   现在句子只留状态、数字各自成格，靠布局而不是「 · 」分隔，两种坏形态都不会再出现。 */
+.ai-people-live {
+  align-self: stretch;
+  min-width: 0;
+  padding: 9px 11px 10px;
+  border-radius: 12px;
+  background: var(--accent-dim);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.ai-people-live-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.ai-people-live-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.ai-people-live[hidden] {
+  display: none !important;
+}
+.ai-people-live-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: aiLivePulse 1.5s ease-in-out infinite;
+}
+/* 三格等宽：用 grid-auto-flow 而不是固定 3 列，指标缺一格时剩下两格自动摊平，
+   不会在右边空出一块。侧栏最窄 200px（侧栏可拖），此时每格约 48px，「检出人脸」仍放得下；
+   真要再窄也是省略号收尾，不会被折行挤成两行。 */
+.ai-people-live-stats {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ai-people-live-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ai-people-live-stat[hidden] {
+  display: none !important;
+}
+.ai-people-live-value {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.ai-people-live-label {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--accent) 58%, var(--text-muted));
+}
+
+/* ---------- 侧栏：状态文字 ---------- */
+
+#searchSidebar .ai-view-status,
+#peopleSidebar .ai-view-status {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+#searchSidebar .ai-view-status[hidden],
+#peopleSidebar .ai-view-status[hidden] {
+  display: none !important;
+}
+
+/* ---------- 搜索框（侧栏版沿用原控件外观） ---------- */
+
+.ai-search-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ai-search-form[hidden] {
+  display: none !important;
+}
+.ai-search-field {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ai-search-field .ai-search-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.ai-search-field input[type='search'] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 8px 14px 8px 38px;
+  border: 1px solid var(--glass-border);
+  border-radius: 11px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+.ai-search-field input[type='search']:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ai-search-field input[type='search']::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.ai-search-submit {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 20px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+  transition:
+    filter 160ms ease,
+    opacity 160ms ease;
+}
+.ai-search-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.ai-search-submit:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---------- 空态与首屏引导 ---------- */
+
+.ai-empty .desc {
+  text-align: center;
+}
+.ai-search-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(620px, 94%);
+  margin-top: 18px;
+}
+.ai-search-chip {
+  padding: 7px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-card) 62%, transparent);
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+.ai-search-chip:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--bg-card);
+  transform: translateY(-1px);
+}
+
+/* ---------- 索引进行中的脉冲点 ---------- */
+
+@keyframes aiLivePulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* ---------- 游标分页 ---------- */
+
+.ai-more-row {
+  display: flex;
+  justify-content: center;
+  grid-column: 1 / -1;
+  padding: 18px 0 6px;
+}
+.ai-more-button {
+  min-width: 132px;
+  padding: 9px 22px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease;
+}
+.ai-more-button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+.ai-more-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 600px) {
+  #searchSidebar,
+  #peopleSidebar {
+    padding: 10px;
+  }
+}

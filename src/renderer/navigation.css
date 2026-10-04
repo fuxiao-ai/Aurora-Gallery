@@ -1,0 +1,189 @@
+/* Desktop shell: primary navigation / context sidebar / content. */
+#peopleSettingsPanel {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+  background: transparent;
+}
+.main-layout > .app-rail {
+  width: 76px;
+  flex: 0 0 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 8px 12px;
+  box-sizing: border-box;
+  border: 0;
+  border-right: 1px solid var(--glass-border);
+  background: var(--bg-secondary);
+  overflow-y: auto;
+  z-index: 7;
+}
+.app-rail .rail-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 58px;
+  min-height: 58px;
+  padding: 9px 4px;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  cursor: pointer;
+  box-shadow: none;
+}
+.app-rail .rail-item svg {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.app-rail .rail-item:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.app-rail .rail-item.active {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.app-rail .rail-item.active::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 18px;
+  bottom: 18px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+.app-rail .rail-settings {
+  margin-top: auto;
+}
+/* 图标栏分组线：上面 4 项（文件 / 日期 / 搜图 / 人物）是「换内容看的视图」，
+   下面 2 项（重复 / 设置）是「干活用的工具与配置」。纯装饰，不进无障碍树。 */
+.app-rail .rail-divider {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 1px;
+  margin: 2px 0;
+  border-radius: 1px;
+  background: var(--glass-border);
+}
+.app-rail .rail-item:focus-visible,
+.context-nav-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* 图标导航栏按钮的聚焦环内缩。原规则是共享样式表 people.css 里的
+   `.nav-tabs button.nav-tab:focus-visible { outline-offset: -2px }`，
+   而 .nav-tabs / .nav-tab 只存在于渲染端，故迁回渲染端样式表。
+   原规则特异性 (0,3,1) 高于上面这条 (0,3,0)，本规则同特异性且位置更靠后，胜出结果一致。 */
+.app-rail .rail-item:focus-visible {
+  outline-offset: -2px;
+}
+.sidebar-section-heading {
+  padding: 22px 20px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.context-nav-button {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 6px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.context-nav-button:hover,
+.context-nav-button.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+#peopleSidebar[hidden],
+#searchSidebar[hidden],
+#settingsSidebar[hidden] {
+  display: none !important;
+}
+/* 「搜图 / 人物」与「重复」同构：侧栏独占、文件夹树让位。
+   搜图页侧栏 = 搜索框 + 搜索历史，人物页侧栏 = 人物列表；两者都做成
+   固定头 + 可滚动列表的纵向布局。「重复」页由 JS 把重复列表复用进
+   #sidebarContent 承载，因此同样看不到文件夹树。 */
+#searchSidebar,
+#peopleSidebar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+html.search-page-open:not(.settings-page-open) #sidebar > *,
+html.people-page-open:not(.settings-page-open) #sidebar > * {
+  display: none !important;
+}
+html.search-page-open:not(.settings-page-open) #sidebar > #searchSidebar,
+html.people-page-open:not(.settings-page-open) #sidebar > #peopleSidebar {
+  display: flex !important;
+}
+/* 设置页接管侧栏。三个 page-open 类互斥（唯一写者 syncPageOpenClasses 按当前 tab
+   派生），所以「排除搜图 / 人物页」这两个 :not 在正常态恒为真——它只作兜底：
+   万一设置页的 class 又变成孤儿（历史上正是它导致「点搜图却残留设置分栏导航」），
+   这里保证搜图 / 人物的侧栏仍然赢，而不是被设置导航以 !important 永久压住。 */
+html.settings-page-open:not(.search-page-open):not(.people-page-open)
+  #sidebar
+  > :not(#settingsSidebar):not(#navigationHeading) {
+  display: none !important;
+}
+html.settings-page-open:not(.search-page-open):not(.people-page-open)
+  #sidebar
+  > #settingsSidebar,
+html.settings-page-open:not(.search-page-open):not(.people-page-open)
+  #sidebar
+  > #navigationHeading {
+  display: block !important;
+}
+html.settings-page-open #settingsPage {
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .main-layout > .app-rail {
+    width: 60px;
+    flex-basis: 60px;
+    padding: 10px 4px;
+    z-index: 201;
+  }
+  .app-rail .rail-item {
+    width: 50px;
+    min-height: 54px;
+    font-size: 10px;
+  }
+  .app-rail .rail-item.active::before {
+    left: -5px;
+  }
+  .sidebar.mobile-show {
+    left: 60px;
+    width: min(280px, calc(100vw - 60px));
+  }
+  .main-layout > .content-area,
+  .main-layout > .settings-page {
+    min-width: 0;
+  }
+}
+body.chrome-collapsed .app-rail {
+  display: none;
+}

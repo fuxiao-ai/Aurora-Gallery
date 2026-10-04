@@ -1,0 +1,534 @@
+/**
+ * 网页端「搜图 / 人物」视图：入口在侧栏页签，侧栏独占（搜索框 + 历史 / 人物列表），
+ * 结果落进主照片网格。这里只补两块样式——侧栏控件（#aiSidebar 内）与网格里的
+ * 空态 / 示例词 /「更多」按钮。卡片本身仍由 renderPhotoGrid 的通用样式负责。
+ */
+
+/* ---------- 侧栏：4 个页签挤在 260px 里 ---------- */
+.sidebar-tabs {
+  gap: 3px;
+}
+.sidebar-tab {
+  padding: 9px 4px;
+  font-size: 12.5px;
+}
+
+/* ---------- 侧栏：智能视图独占内容（搜索框 + 历史 / 人物列表） ---------- */
+#aiSidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 12px 14px;
+  overflow: hidden;
+}
+
+.ai-web-sidebar-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.ai-web-sidebar-search input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-card) 58%, transparent);
+  color: var(--text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+.ai-web-sidebar-search input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+}
+.ai-web-sidebar-search input::placeholder {
+  color: var(--text-muted);
+}
+.ai-web-sidebar-submit {
+  min-height: 38px;
+  border: none;
+  border-radius: 11px;
+  padding: 8px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), #9b7aff);
+  transition: filter 0.2s ease;
+}
+.ai-web-sidebar-submit:hover {
+  filter: brightness(1.08);
+}
+
+.ai-web-sidebar-status {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.ai-web-sidebar-status[hidden] {
+  display: none !important;
+}
+
+/* 预选词：搜索框下方的一组随机词，点一下直接搜 */
+.ai-web-sidebar-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+/* 这个图库里挑不出任何「点下去有图」的词时整块收起来。**必须显式写** ——
+   上面的 `display: flex` 会压过 UA 的 `[hidden] { display: none }`。 */
+.ai-web-sidebar-suggest[hidden] {
+  display: none;
+}
+.ai-web-suggest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+/* 侧栏窄：预选词用比主区更小的尺寸，长词一律省略而不是把侧栏撑破 */
+.ai-web-sidebar-suggest .ai-web-chip {
+  max-width: 100%;
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 加载态：词池还没取回来时占位（`refreshSuggestions` 要起 worker 载模型 ~2.1s +
+   打开索引 ~0.7s + 打分 ~1s，冷启还要现算词表向量 ~15s）。占着标题那一行的右侧，
+   替掉平时的「换一批」——此时没有词可换。 */
+.ai-web-suggest-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+/* 骨架 pill。刻意**不复用 .ai-web-chip**：那是可点按钮，带 hover 边框变色，
+   这里是非交互占位（`<span>`）。宽度按 nth-child 错开，免得看起来像一排等长色块。
+
+   底色用 `--bg-hover` 而不是 `--bg-card` 或 `--text-muted` 混色：它在**每一套主题**
+   （浅色 / 深色 / 各种配色）里都有定义，且相对本层底色总是「同向偏一档」——`--bg-card`
+   在浅色下是纯白（贴浅色玻璃侧栏就看不见了），`--text-muted` 混 16% 在深色下几乎与背景同色。
+   实测这两档都不行，`--bg-hover` 两套主题都清楚。（与桌面端同一取舍。） */
+.ai-web-suggest-chips .ai-web-suggest-skeleton {
+  display: block;
+  width: 58px;
+  height: 25px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  position: relative;
+  overflow: hidden;
+  animation: aiWebSuggestPulse 1.6s ease-in-out infinite alternate;
+}
+.ai-web-suggest-chips .ai-web-suggest-skeleton:nth-child(2n) {
+  width: 76px;
+}
+.ai-web-suggest-chips .ai-web-suggest-skeleton:nth-child(3n) {
+  width: 48px;
+}
+.ai-web-suggest-chips .ai-web-suggest-skeleton:nth-child(4n) {
+  width: 88px;
+}
+.ai-web-suggest-chips .ai-web-suggest-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    color-mix(in srgb, var(--text-primary, #fff) 9%, transparent) 50%,
+    transparent 70%
+  );
+  animation: aiWebSuggestShimmer 1.6s infinite;
+}
+@keyframes aiWebSuggestPulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes aiWebSuggestShimmer {
+  0% {
+    transform: translateX(-150%);
+  }
+  100% {
+    transform: translateX(150%);
+  }
+}
+/* 系统开了「减少动态效果」就别闪了，静态灰块也能表达「在加载」。 */
+@media (prefers-reduced-motion: reduce) {
+  .ai-web-suggest-chips .ai-web-suggest-skeleton,
+  .ai-web-suggest-chips .ai-web-suggest-skeleton::after {
+    animation: none;
+  }
+}
+
+.ai-web-sidebar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 0 4px;
+}
+.ai-web-sidebar-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+.ai-web-sidebar-clear {
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease;
+}
+.ai-web-sidebar-clear:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.ai-web-sidebar-clear[hidden] {
+  display: none !important;
+}
+
+.ai-web-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ai-web-sidebar-empty {
+  padding: 12px 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.ai-web-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.ai-web-history-item:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ai-web-history-icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.ai-web-history-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ai-web-people-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.ai-web-people-search-field {
+  position: relative;
+  display: block;
+}
+.ai-web-people-search-field input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-card) 58%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+.ai-web-people-search-field input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+}
+.ai-web-people-search-field input::placeholder {
+  color: var(--text-muted);
+}
+
+.ai-web-people-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+.ai-web-people-item:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.ai-web-people-item.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+}
+.ai-web-people-item:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* 行内改名：名字位置换成输入框，列表不重建、头像不闪 */
+.ai-web-people-item.is-renaming .ai-web-people-name {
+  overflow: visible;
+}
+.ai-web-people-rename {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, transparent);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+.ai-web-people-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-hover) 56%, var(--bg-card));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.ai-web-people-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ai-web-people-avatar-fallback {
+  font-size: 18px;
+  opacity: 0.7;
+}
+.ai-web-people-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ai-web-people-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: inherit;
+}
+.ai-web-people-count {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ai-web-people-item.active .ai-web-people-count {
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
+}
+
+/* ---------- 侧栏：索引进行中的实时条 ---------- */
+/* 索引实时读数：标题一行（脉动点 + 状态）+ 三个数字一栏。
+   原来是「● + 一整句」的胶囊（border-radius: 999px）：侧栏一窄句子就折行，
+   胶囊变成两头极圆的两行块，折行处还会把「检出」拆成「检 / 出」两半
+   （overflow-wrap: anywhere），第二行行首再挂一个孤零零的「·」。
+   现在句子只留状态、数字各自成格，靠布局而不是「 · 」分隔，两种坏形态都不会再出现。 */
+.ai-web-live-bar {
+  align-self: stretch;
+  min-width: 0;
+  padding: 9px 12px 10px;
+  border-radius: 12px;
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--glass-border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.ai-web-live-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.ai-web-live-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.ai-web-live-bar[hidden] {
+  display: none !important;
+}
+.ai-web-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: aiWebLivePulse 1.5s ease-in-out infinite;
+}
+/* 三格等宽：用 grid-auto-flow 而不是固定 3 列，指标缺一格时剩下两格自动摊平，
+   不会在右边空出一块。窄屏下「检出人脸」也放得下；真要再窄是省略号收尾，不会被折行挤成两行。 */
+.ai-web-live-stats {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 16%, var(--glass-border));
+}
+.ai-web-live-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ai-web-live-stat[hidden] {
+  display: none !important;
+}
+.ai-web-live-value {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.ai-web-live-label {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--accent) 58%, var(--text-muted));
+}
+@keyframes aiWebLivePulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+/* ---------- 网格：空态 / 示例词 ---------- */
+.ai-web-empty .empty-state-visual {
+  color: color-mix(in srgb, var(--accent) 62%, var(--text-muted));
+}
+.ai-web-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 20px;
+}
+.ai-web-chip {
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--glass-border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease,
+    background 0.2s ease;
+}
+.ai-web-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---------- 网格：「更多」 ---------- */
+.ai-web-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 22px 0 6px;
+}
+.ai-web-more-button {
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--glass-border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 26px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+.ai-web-more-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.ai-web-more-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (max-width: 600px) {
+  #aiSidebar {
+    padding: 10px;
+  }
+  .ai-web-chip {
+    font-size: 12px;
+    padding: 6px 11px;
+  }
+  .ai-web-more-row {
+    padding: 16px 0 4px;
+  }
+}

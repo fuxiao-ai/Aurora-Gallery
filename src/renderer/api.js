@@ -213,6 +213,9 @@
     maintenanceFindSimilarPhotos: function (payload) {
       return call('maintenanceFindSimilarPhotos', payload);
     },
+    maintenanceGetPhotosByIds: function (ids) {
+      return call('maintenanceGetPhotosByIds', ids);
+    },
     photoMoveToTrash: function (photoId) {
       return call('photoMoveToTrash', photoId);
     },

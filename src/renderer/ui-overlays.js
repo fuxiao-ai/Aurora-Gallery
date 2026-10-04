@@ -174,9 +174,9 @@
         if (typeof onSyncLiveSettingsWidgetsFromObject === 'function')
           onSyncLiveSettingsWidgetsFromObject(sMem);
         if (typeof onSaveLastSettingsSectionId === 'function')
-          onSaveLastSettingsSectionId('settingsSectionCloseBehavior');
+          onSaveLastSettingsSectionId('settingsSectionApp');
         if (state.currentTab === 'settings' && typeof onRenderSettingsNav === 'function')
-          onRenderSettingsNav('settingsSectionCloseBehavior');
+          onRenderSettingsNav('settingsSectionApp');
       } catch (e2) {}
     }
   }

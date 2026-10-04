@@ -19,10 +19,12 @@ class PhotoDatabase {
     this._duplicateHashSchemaDone = false;
     /** 根目录聚合计数缓存表（root_folder_stats_cache） */
     this._rootStatsCacheSchemaDone = false;
-    /** 聚合/重复比对辅助索引：首屏后再建，避免大库启动阶段长时间阻塞主线程 */
-    this._deferredPhotoIndexesApplied = false;
-    /** 缩略图缺失索引 + 数据修复：首窗后再建，避免大库启动阶段长时间阻塞主线程 */
-    this._deferredThumbnailFixApplied = false;
+    /** 聚合/重复比对辅助索引：由 `src/workers/deferred-index-worker.js` 在首窗后建，主进程不碰（见该文件头注释） */
+    /**
+     * 缩略图缺失索引 + 数据修复：首窗后再建，避免大库启动阶段长时间阻塞主线程。
+     * 存 Promise 而不是布尔：调用方靠它在 worker 退出后把「谁在写库」注册进串行闸门。
+     */
+    this._deferredThumbnailFixPromise = null;
     /** Intl.Collator 首次排序再创建 */
     this.fileNameNaturalCollator = null;
     this.init();
@@ -54,51 +56,50 @@ class PhotoDatabase {
     this.applyDeferredMmapPragma();
   }
 
-  /**
-   * 侧栏目录树首屏就绪（notify-browse-ui-ready）后由 main 调度；12s 兜底仍可能触发。
-   * 部分索引与大表扫描式 CREATE INDEX 迁出 init，减轻启动卡顿。幂等；索引未就绪前查询仍正确，仅可能略慢。
-   */
-  applyDeferredPhotoIndexes() {
-    if (this._deferredPhotoIndexesApplied) return;
-    this._deferredPhotoIndexesApplied = true;
-    try {
-      this.ensurePhotosRootFolderCompositeIndex();
-      this.ensurePhotosAggPartialIndexes();
-      this.ensurePhotosDupHashPendingIndex();
-    } catch (e) {
-      this._deferredPhotoIndexesApplied = false;
-      throw e;
-    }
-  }
+  // ⚠️ 这里曾经有一组「延迟索引」的主线程同步版本：`applyDeferredPhotoIndexes()` 以及它调用的
+  // `ensurePhotosRootFolderCompositeIndex()` / `ensurePhotosAggPartialIndexes()` /
+  // `ensurePhotosDupHashPendingIndex()`。它们**一个调用点都没有**，SQL 却和真正在跑的
+  // `src/workers/deferred-index-worker.js` 逐字重复 —— 同一批索引两个真相源，改一处必漏另一处。
+  // 已于 2026-09-29 删除。启动期这 7 个 `CREATE INDEX` + 13 次 `ALTER TABLE` 的**唯一定义处**
+  // 就是那个 worker（由 `main.js` 经 `db-write-queue` 以 `deferred-index` 名义入队）。
+  // 要加索引 / 加列，改 worker；不要再在主线程加一份同步版本 —— 那等于在启动路径上拿主进程
+  // 跑几次大表 CREATE INDEX 并长时间独占写锁（`maintenance-regression` 的静态契约会拦住它）。
 
-  /** 缩略图补全加速索引 + has_thumbnail 数据修复；在 Worker 线程中执行，避免阻塞主线程。幂等。 */
+  /**
+   * 缩略图补全加速索引 + has_thumbnail 数据修复；在 Worker 线程中执行，避免阻塞主线程。
+   *
+   * 返回的 Promise 在 **worker 退出之后**才 resolve（不是消息到达时）——连接还开着就等于
+   * 还占着库，调用方要拿它把这段时间登记进 `db-write-queue`，否则维护 worker 会在它跑到
+   * 一半时点火，等满 `busy_timeout = 8000` 撞 `database is locked`（线上就这么出的）。
+   * 重复调用返回同一个 Promise，不会起第二个 worker。
+   */
   applyDeferredThumbnailFix() {
-    if (this._deferredThumbnailFixApplied) return;
-    this._deferredThumbnailFixApplied = true;
+    if (this._deferredThumbnailFixPromise) return this._deferredThumbnailFixPromise;
     var dbPath = this._dbFilePath;
     var path = require('path');
     var Worker = require('worker_threads').Worker;
-    var worker = new Worker(path.join(__dirname, 'workers', 'thumbnail-fix-worker.js'), {
-      workerData: { dbPath: dbPath },
+    var self = this;
+    this._deferredThumbnailFixPromise = new Promise(function (resolve) {
+      var worker = new Worker(path.join(__dirname, 'workers', 'thumbnail-fix-worker.js'), {
+        workerData: { dbPath: dbPath },
+      });
+      var report = null;
+      worker.on('message', function (msg) {
+        report = msg;
+      });
+      worker.on('error', function (e) {
+        report = { failed: true, error: e && e.message ? e.message : String(e) };
+      });
+      worker.on('exit', function (code) {
+        // No report at all = the worker died before it could say anything (e.g. OOM).
+        self._deferredThumbnailFixReport = report || {
+          failed: true,
+          error: 'thumbnail-fix worker exited: ' + code,
+        };
+        resolve(self._deferredThumbnailFixReport);
+      });
     });
-    worker.on('message', function (msg) {
-      logger.log('[db migration] created thumbnail missing indexes');
-      var changes = msg && msg.changes;
-      if (changes > 0) {
-        logger.log(
-          '[db migration] fixed',
-          changes,
-          'rows with has_thumbnail=1 but thumbnail IS NULL',
-        );
-      }
-    });
-    worker.on('error', function (e) {
-      logger.error(
-        '[db migration] thumbnail-fix worker error:',
-        e && e.message ? e.message : e,
-      );
-    });
-    return Promise.resolve();
+    return this._deferredThumbnailFixPromise;
   }
 
   getNaturalCollator() {
@@ -247,64 +248,6 @@ class PhotoDatabase {
   }
 
   /**
-   * 旧库可能缺 idx_photos_root_folder；根目录聚合 DISTINCT(folder_path) 依赖 (root_id, folder_path) 复合索引。
-   */
-  ensurePhotosRootFolderCompositeIndex() {
-    if (!this.hasTable('photos')) return;
-    try {
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_root_folder ON photos(root_id, folder_path);',
-      );
-    } catch (e) {
-      void e;
-    }
-  }
-
-  /**
-   * 与 db-heavy-read.runGetRootFoldersAgg 中 file_type 判定一致的部分索引：
-   * 「仅图片 / 仅视频」下的 get-root-folders 可走更小 B-Tree，常比全表聚合快一个数量级。
-   * （mediaType=all 仍须覆盖整表，索引无法消除 O(N)）
-   */
-  ensurePhotosAggPartialIndexes() {
-    if (!this.hasTable('photos')) return;
-    try {
-      var imgPred = this._sqlFileTypeIsImageExpr();
-      var vidPred = this._sqlFileTypeIsVideoExpr();
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_agg_root_folder_image ON photos(root_id, folder_path) WHERE ' +
-          imgPred +
-          ';\n' +
-          'CREATE INDEX IF NOT EXISTS idx_photos_agg_root_folder_video ON photos(root_id, folder_path) WHERE ' +
-          vidPred +
-          ';',
-      );
-    } catch (e) {
-      void e;
-    }
-  }
-
-  /**
-   * 重复比对「待处理张数」COUNT 与分批 getHashAllPhotosAfter：缩小扫描范围。
-   */
-  ensurePhotosDupHashPendingIndex() {
-    if (!this.hasTable('photos')) return;
-    this.ensureDuplicateHashSchema();
-    try {
-      var pending = '(' + this._sqlNeedsFileHashExpr() + ')';
-      var img = '(' + this._sqlFileTypeIsImageExpr() + ')';
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_dup_hash_pending ON photos(id) WHERE ' +
-          pending +
-          ' AND ' +
-          img +
-          ';',
-      );
-    } catch (e) {
-      void e;
-    }
-  }
-
-  /**
    * 确保 photos 表有 is_favorite 列（收藏功能）。
    * 旧版本数据库创建时没有这个列，需要 ALTER TABLE 添加。
    */
@@ -344,46 +287,13 @@ class PhotoDatabase {
   }
 
   /**
-   * 缩略图补全查询加速：
-   * 1. 部分索引 `idx_photos_missing_thumb ON photos(id) WHERE has_thumbnail = 0` 让查询直接
-   *    在极小索引上按 id 顺序扫描，无需回表，解决大库 BLOB 表全表扫描卡死问题。
-   * 2. 同时修复旧数据：has_thumbnail=1 但 thumbnail IS NULL 的行设为 has_thumbnail=0，
-   *    保证 `has_thumbnail = 0` 语义与 "缺失缩略图" 完全一致。
+   * 缩略图补全的两个加速索引 + `has_thumbnail` 标记修复**只在 worker 里做**，见
+   * `src/workers/thumbnail-fix-worker.js`（由 applyDeferredThumbnailFix 调度）。
+   *
+   * 这里刻意不再保留**主线程的同步版本**：它曾经存在过（同名 ensurePhotosThumbnailMissingIndex），
+   * 无人调用却带着一模一样的全表 UPDATE，谁哪天顺手接上就是一次几十秒的主进程写锁占用。
+   * 需要手动重算标记请用维护里的 `rebuildThumbnailFlags`，那条路走独立的维护 worker。
    */
-  ensurePhotosThumbnailMissingIndex() {
-    if (!this.hasTable('photos')) return;
-    try {
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_id_hasThumb ON photos(id, has_thumbnail);',
-      );
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_photos_missing_thumb ON photos(id) WHERE has_thumbnail = 0;',
-      );
-      logger.log('[db migration] created thumbnail missing indexes');
-    } catch (e) {
-      logger.error(
-        '[db migration] create thumbnail missing index failed:',
-        e && e.message ? e.message : e,
-      );
-      void e;
-    }
-    try {
-      var r = this.db
-        .prepare(
-          'UPDATE photos SET has_thumbnail = 0 WHERE has_thumbnail = 1 AND thumbnail IS NULL',
-        )
-        .run();
-      if (r.changes > 0) {
-        logger.log(
-          '[db migration] fixed',
-          r.changes,
-          'rows with has_thumbnail=1 but thumbnail IS NULL',
-        );
-      }
-    } catch (eFix) {
-      void eFix;
-    }
-  }
 
   /** 根目录全量统计缓存：避免每次启动对百万级 photos 全表 GROUP BY（冷启动首次仍须计算并回填） */
   ensureRootFolderStatsCacheSchema() {
@@ -416,6 +326,7 @@ class PhotoDatabase {
     if (this._ftsSchemaDone) return;
     if (!this.hasTable('photos')) return;
     try {
+      const isNewIndex = !this.hasTable('photos_fts');
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
           file_name,
@@ -446,6 +357,9 @@ class PhotoDatabase {
         END;
       `);
       this._ftsAvailable = true;
+      if (isNewIndex && this.hasTable('aurora_maintenance_state')) {
+        this.db.prepare("DELETE FROM aurora_maintenance_state WHERE name = 'fts-v1'").run();
+      }
       this._ftsSchemaDone = true;
       logger.log('[db] FTS5 schema ready');
     } catch (e) {
@@ -455,7 +369,41 @@ class PhotoDatabase {
     }
   }
 
-  /** 首次升级后重建 FTS 索引；幂等，重复调用无副作用。 */
+  /** Called in the maintenance Worker; the transaction makes the completion marker crash-safe. */
+  ensureFtsIndex() {
+    this.db.exec(
+      'CREATE TABLE IF NOT EXISTS aurora_maintenance_state (name TEXT PRIMARY KEY, completed_at TEXT NOT NULL)',
+    );
+    return this.db
+      .transaction(() => {
+        if (this.db.prepare("SELECT 1 FROM aurora_maintenance_state WHERE name = 'fts-v1'").get()) {
+          return { skipped: true };
+        }
+        if (
+          !this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE name = 'photos_fts' AND type = 'table'")
+            .get()
+        ) {
+          return { skipped: true, reason: 'fts_unavailable' };
+        }
+        this.db.exec("INSERT INTO photos_fts(photos_fts) VALUES('rebuild')");
+        this.db
+          .prepare("INSERT INTO aurora_maintenance_state VALUES ('fts-v1', ?)")
+          .run(new Date().toISOString());
+        return { rebuilt: true };
+      })
+      .immediate();
+  }
+
+  isFtsIndexReady() {
+    return (
+      this._ftsAvailable &&
+      this.hasTable('aurora_maintenance_state') &&
+      !!this.db.prepare("SELECT 1 FROM aurora_maintenance_state WHERE name = 'fts-v1'").get()
+    );
+  }
+
+  /** Explicit forced rebuild; startup uses ensureFtsIndex in a Worker instead. */
   rebuildFtsIndex() {
     if (!this._ftsAvailable) return;
     try {
@@ -572,7 +520,6 @@ class PhotoDatabase {
   /** 为重复项 SHA-256 扩展 photos 列（幂等） */
   ensureDuplicateHashSchema() {
     if (this._duplicateHashSchemaDone) return;
-    this._duplicateHashSchemaDone = true;
     try {
       this.db.exec('ALTER TABLE photos ADD COLUMN file_hash TEXT');
     } catch (e) {}
@@ -585,12 +532,12 @@ class PhotoDatabase {
     try {
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_photos_file_hash ON photos(file_hash)');
     } catch (e) {}
+    this._duplicateHashSchemaDone = true;
   }
 
   /** 为感知哈希 dHash 扩展 photos 列与 LSH 辅助表（幂等） */
   ensureDhashSchema() {
     if (this._dhashSchemaDone) return;
-    this._dhashSchemaDone = true;
     // photos 表新增列
     try {
       this.db.exec('ALTER TABLE photos ADD COLUMN dhash TEXT');
@@ -631,6 +578,7 @@ class PhotoDatabase {
     try {
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_lsh_lookup ON photo_dhash_lsh(band, bucket)');
     } catch (e) {}
+    this._dhashSchemaDone = true;
   }
 
   /**
@@ -1067,8 +1015,9 @@ class PhotoDatabase {
         var normalizedPath = folderPath.replace(/\//g, '\\');
         var incSubPrev = options.includeSubfolders !== false;
         if (incSubPrev) {
-          where.push('(folder_path = ? OR folder_path LIKE ?)');
-          params.push(normalizedPath, normalizedPath + '\\%');
+          // GLOB 是大小写敏感的，可以走 idx_photos_folder 索引
+          where.push('(folder_path = ? OR folder_path GLOB ?)');
+          params.push(normalizedPath, normalizedPath + '\\*');
         } else {
           where.push('folder_path = ?');
           params.push(normalizedPath);
@@ -1077,13 +1026,14 @@ class PhotoDatabase {
     } else if (view === 'date') {
       var d = options.date ? String(options.date) : '';
       if (d) {
-        where.push('date(date_taken) = ?');
-        params.push(d);
+        // 范围查询替代 date(date_taken) = ?，让索引生效
+        where.push('date_taken >= ? AND date_taken < ?');
+        params.push(d, require('./db-heavy-read').nextCalendarDate(d));
       }
     } else if (view === 'search') {
       var q = options.q ? String(options.q) : '';
       if (q) {
-        if (this._ftsAvailable) {
+        if (this.isFtsIndexReady()) {
           var ftsQ = this._buildFtsQuery(q);
           if (ftsQ) {
             where.push('photos.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)');
@@ -1118,6 +1068,23 @@ class PhotoDatabase {
   /**
    * 随机幻灯批次：在预览作用域内一次取最多 limit 张（默认 100），供前端打乱后顺序播放。
    * 使用 ORDER BY RANDOM() 仅每批一次，而非每张换片一次。
+   *
+   * ⚠️ 这条语句必须写成**两段式**（先在子查询里随机取 id，再按 id 回表），不能写成一趟
+   * `SELECT <12 列> FROM photos WHERE ... ORDER BY RANDOM() LIMIT n`。原因在真库上量得很清楚：
+   * `photos` 的 `thumbnail` BLOB 内联在行中间（见 createCoreSchema），4 KB 以上的缩略图走溢出页，
+   * 整表扫描要把十几 GB 读一遍；而 `ORDER BY RANDOM()` 又强制把**所有**行先物化进临时 B 树。
+   * 实测 122 万行 / 12.97 GB 的库（`ORDER BY RANDOM() LIMIT 100`）：
+   *
+   * | 写法 | 全部 | 仅图片 | 排除 80 个 id |
+   * | --- | ---: | ---: | ---: |
+   * | 一趟式 | 3742 ms | 629 ms | 3807 ms |
+   * | 两段式 | 100 ms | 166 ms | 254 ms |
+   *
+   * 计划也印证了：一趟式是 `SCAN photos + USE TEMP B-TREE FOR ORDER BY`，两段式的内层
+   * `SELECT id FROM photos` 能吃到只含 id 的覆盖索引（`idx_photos_root` / `idx_photos_folder` /
+   * 部分索引），排序只在小索引上做，外层再走主键回表——只碰命中那 n 行。
+   * **随机性是同一份**：内层仍是均匀无放回的 `ORDER BY RANDOM() LIMIT n`，集合语义与原来逐位相同
+   * （调用方本来就只关心集合，取回后自己洗牌，见 web 端 `shuffleWebSlideshowBatch`）。
    */
   getRandomPreviewPhotoBatch(options = {}) {
     var limit = parseInt(options.limit, 10);
@@ -1156,7 +1123,13 @@ class PhotoDatabase {
     var n = Math.min(limit, total);
     var cols =
       'id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite';
-    var sql = 'SELECT ' + cols + ' FROM photos ' + cond + ' ORDER BY RANDOM() LIMIT ?';
+    // 两段式：内层只排 id（走覆盖索引，不读胖行），外层按主键取列表列。见方法注释里的实测表。
+    var sql =
+      'SELECT ' +
+      cols +
+      ' FROM photos WHERE id IN (SELECT id FROM photos ' +
+      cond +
+      ' ORDER BY RANDOM() LIMIT ?)';
     var qall = qp.slice();
     qall.push(n);
     return this.db.prepare(sql).all(...qall) || [];
@@ -1299,13 +1272,15 @@ class PhotoDatabase {
     // 标准化路径：统一使用反斜杠（Windows）
     const normalizedPath = folderPath.replace(/\//g, '\\');
     const incDesc = includeSubfolders !== false;
-    const pathBindArgs = incDesc ? [normalizedPath, normalizedPath + '\\%'] : [normalizedPath];
+    // GLOB 是大小写敏感的，可以走 idx_photos_folder 索引
+    // LIKE 默认大小写不敏感（ASCII），与 BINARY 索引不匹配会导致全表扫描
+    const pathBindArgs = incDesc ? [normalizedPath, normalizedPath + '\\*'] : [normalizedPath];
 
     const mediaConds = [];
     this._pushMediaTypeCondition(mediaConds, mediaType);
     const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
 
-    const baseWhereSql = incDesc ? '(folder_path = ? OR folder_path LIKE ?)' : 'folder_path = ?';
+    const baseWhereSql = incDesc ? '(folder_path = ? OR folder_path GLOB ?)' : 'folder_path = ?';
     const whereSql = favoritesOnly
       ? `${baseWhereSql} AND is_favorite = 1${mediaSql}`
       : `${baseWhereSql}${mediaSql}`;
@@ -1381,52 +1356,13 @@ class PhotoDatabase {
   }
 
   getDatePhotos(dateStr, options = {}) {
-    const {
-      sortBy = 'file_name',
-      sortOrder = 'ASC',
-      page = 1,
-      pageSize = 100,
-      favoritesOnly,
-      mediaType,
-      lite = false,
-    } = options;
-    const offset = (page - 1) * pageSize;
-    const dir = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-    const mediaConds = [];
-    this._pushMediaTypeCondition(mediaConds, mediaType);
-    const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
-
-    const whereSql = favoritesOnly
-      ? 'date(date_taken) = ? AND is_favorite = 1' + mediaSql
-      : 'date(date_taken) = ?' + mediaSql;
-    const total = this.db
-      .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
-      .get(dateStr);
-    const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
-    const photos = this.db
-      .prepare(
-        `
-      SELECT ${photoCols}
-       FROM photos WHERE ${whereSql}
-       ORDER BY ${sortBy} ${dir}
-       LIMIT ? OFFSET ?
-    `,
-      )
-      .all(dateStr, pageSize, offset);
-    this.applyNaturalNameTieSort(photos, sortBy, dir);
-
-    return {
-      photos,
-      total: total.count,
-      page,
-      pageSize,
-      totalPages: Math.ceil(total.count / pageSize),
-    };
+    const result = require('./db-heavy-read').runGetDatePhotos(this.db, dateStr, options);
+    this.applyNaturalNameTieSort(
+      result.photos,
+      options.sortBy || 'file_name',
+      options.sortOrder || 'ASC',
+    );
+    return result;
   }
 
   getThumbnail(photoId) {
@@ -1443,29 +1379,33 @@ class PhotoDatabase {
   }
 
   getMissingThumbnailCount() {
-    var row = this.db.prepare('SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0').get();
+    var row = this.db
+      .prepare(
+        "SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = ''",
+      )
+      .get();
     return row ? row.count : 0;
   }
 
   getPhotosMissingThumbnails(limit = 20000) {
     return this.db
       .prepare(
-        `SELECT id, file_path
+        `SELECT id, file_path, has_thumbnail
        FROM photos
-       WHERE has_thumbnail = 0 OR thumbnail IS NULL
+       WHERE has_thumbnail = 0 OR thumbnail IS NULL OR dhash IS NULL OR TRIM(dhash) = ''
        ORDER BY id ASC
        LIMIT ?`,
       )
       .all(limit);
   }
 
-  /** 仅取 id > afterId 的缺失缩略图，避免同一轮补全对失败记录死循环重试 */
+  /** 仅取 id > afterId 的缺失缩略图或缺失 dHash，避免同一轮补全对失败记录死循环重试 */
   getPhotosMissingThumbnailsAfter(afterId, limit) {
     return this.db
       .prepare(
-        `SELECT id, file_path, file_size, date_modified
+        `SELECT id, file_path, file_size, date_modified, has_thumbnail
        FROM photos
-       WHERE id > ? AND has_thumbnail = 0
+       WHERE id > ? AND (has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = '')
        ORDER BY id ASC
        LIMIT ?`,
       )
@@ -1898,7 +1838,7 @@ class PhotoDatabase {
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
 
     // FTS5 primary path
-    if (this._ftsAvailable) {
+    if (this.isFtsIndexReady()) {
       const ftsQuery = this._buildFtsQuery(query);
       if (!ftsQuery) {
         return { photos: [], total: 0, page, pageSize, totalPages: 0 };

@@ -504,9 +504,9 @@
       }
       pwdInput.value = '';
       delete pwdInput.dataset.pwdTouched;
-      saveLastSettingsSectionId('settingsSectionNetwork');
+      saveLastSettingsSectionId('settingsSectionApp');
       if (typeof getCurrentTab === 'function' ? getCurrentTab() === 'settings' : false)
-        onRenderSettingsNav('settingsSectionNetwork');
+        onRenderSettingsNav('settingsSectionApp');
       appAlert(
         newPwd
           ? tNet('settings.network.passwordSaved', '访问密码已设置')

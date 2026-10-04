@@ -34,7 +34,7 @@ module.exports = async function afterPack(context) {
       console.log('[afterPack] bundled face models from project models/ ->', modelsDest);
     } else {
       console.log(
-        '[afterPack] project models/ missing, skip face ONNX (run: node scripts/download-face-models.js)',
+        '[afterPack] optional project models/ missing; current face models are managed in the application settings',
       );
     }
   } catch (e) {

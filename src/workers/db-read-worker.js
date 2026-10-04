@@ -3,6 +3,7 @@
 const { parentPort, workerData } = require('worker_threads');
 const Database = require('better-sqlite3');
 const heavy = require('../db-heavy-read');
+const PhotoDatabase = require('../database');
 
 var db = null;
 
@@ -22,7 +23,27 @@ parentPort.on('message', function (msg) {
   try {
     var database = openDb();
     var result;
-    if (msg.op === 'getRootFolders') {
+    if (
+      ['getPhotos', 'getFolderPhotos', 'searchPhotos', 'getRandomPreviewPhotoBatch'].includes(msg.op)
+    ) {
+      // Reuse the shared query implementation without constructor migrations or writes.
+      const reader = Object.create(PhotoDatabase.prototype);
+      reader.db = database;
+      reader.fileNameNaturalCollator = null;
+      reader._ftsAvailable = !!database
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'photos_fts'")
+        .get();
+      const options = Object.assign({}, msg.options || {});
+      options.page = Math.max(1, parseInt(options.page, 10) || 1);
+      options.pageSize = Math.max(1, Math.min(500, parseInt(options.pageSize, 10) || 100));
+      if (options.sortOrder !== undefined) options.sortOrder = String(options.sortOrder);
+      if (msg.op === 'getFolderPhotos')
+        result = reader.getFolderPhotos(options.folderPath, options);
+      else if (msg.op === 'searchPhotos') result = reader.searchPhotos(options.query, options);
+      else if (msg.op === 'getRandomPreviewPhotoBatch')
+        result = reader.getRandomPreviewPhotoBatch(options);
+      else result = reader.getPhotos(options);
+    } else if (msg.op === 'getRootFolders') {
       var rfOpts = msg.options || {};
       result =
         rfOpts.lite === true

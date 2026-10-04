@@ -114,9 +114,6 @@
     var onToggleTunnelEnabled = options.onToggleTunnelEnabled;
     var onToggleWebServerEnabled = options.onToggleWebServerEnabled;
     var onPersistBrowsePrefs = options.onPersistBrowsePrefs;
-    var onPersistFacePrefs = options.onPersistFacePrefs;
-    var onFaceResetScanStatus = options.onFaceResetScanStatus;
-    var appAlert = options.appAlert;
 
     var settingsPage = document.getElementById('settingsPage');
     if (!settingsPage) return;
@@ -135,9 +132,6 @@
         if (hasBinding && typeof onPersistPreviewDisplay === 'function') {
           void onPersistPreviewDisplay();
         }
-        if (sid === 'settingFaceAutoScanOnStartup' && typeof onPersistFacePrefs === 'function') {
-          void onPersistFacePrefs();
-        }
       }
       if (sid === 'settingWindowClose' && typeof onPersistWindowClose === 'function') {
         void onPersistWindowClose();
@@ -149,6 +143,7 @@
         (sid === 'settingAutoScan' ||
           sid === 'settingAutoThumbBackfillOnStartup' ||
           sid === 'settingAutoHashOnStartup' ||
+          sid === 'settingSimilarThreshold' ||
           sid === 'settingLaunchDefaultPage' ||
           sid === 'settingThemeStyle' ||
           sid === 'settingSubtitleFontFamily' ||
@@ -174,62 +169,13 @@
           sid === 'settingBrowseCardSize' ||
           sid === 'settingBrowseGridStyle' ||
           sid === 'settingBrowseThumbCrop' ||
-          sid === 'settingBrowseFolderIncludeSubfolders') &&
+          sid === 'settingBrowseFolderIncludeSubfolders' ||
+          sid === 'settingVideoClickBehavior') &&
         typeof onPersistBrowsePrefs === 'function'
       ) {
         void onPersistBrowsePrefs();
       }
-      if (sid === 'settingFaceClusterThreshold' && typeof onPersistFacePrefs === 'function') {
-        void onPersistFacePrefs();
-      }
     });
-
-    // 绑定重置人脸扫描状态按钮
-    var resetBtn = document.getElementById('btnResetFaceScanStatus');
-    if (resetBtn && typeof onFaceResetScanStatus === 'function') {
-      resetBtn.addEventListener('click', function (e) {
-        e.preventDefault();
-        if (
-          !confirm(
-            '确定要重置所有人脸扫描状态吗？\n\n这会让所有图片重新进行人脸识别，但是会保留已经合并好的人物分组。',
-          )
-        ) {
-          return;
-        }
-        onFaceResetScanStatus()
-          .then(function (result) {
-            if (result && result.success) {
-              if (typeof appAlert === 'function') {
-                appAlert(
-                  '已重置 ' +
-                    (result.resetCount || 0) +
-                    ' 张图片的扫描状态。现在可以重新开始人脸识别。',
-                );
-              }
-              // 更新人脸界面统计数字
-              setTimeout(function () {
-                if (
-                  typeof RendererFacesUI !== 'undefined' &&
-                  typeof RendererFacesUI.updateFaceStats === 'function' &&
-                  typeof api !== 'undefined' &&
-                  typeof formatNumber === 'function'
-                ) {
-                  RendererFacesUI.updateFaceStats(api, formatNumber);
-                }
-              }, 100);
-            } else {
-              if (typeof appAlert === 'function') {
-                appAlert('重置失败');
-              }
-            }
-          })
-          .catch(function (err) {
-            if (typeof appAlert === 'function') {
-              appAlert('重置失败：' + (err && err.message ? err.message : String(err)));
-            }
-          });
-      });
-    }
 
     // input 事件留空会触发 no-unused-vars；如后续需要可在此补充处理逻辑
   }
@@ -265,12 +211,15 @@
     bindClick('taskCancelDupHashBtn', options.onCancelDuplicateHashDetection);
     bindClick('cardSizeDecBtn', options.onCardSizeDec);
     bindClick('cardSizeIncBtn', options.onCardSizeInc);
+    bindClick('pageSizeDecBtn', options.onPageSizeDec);
+    bindClick('pageSizeIncBtn', options.onPageSizeInc);
     bindClick('thumbSettingsApplyBtn', options.onApplyThumbSettings);
     bindClick('thumbBackfillStartBtn', options.onStartThumbnailBackfill);
     bindClick('thumbBackfillCancelBtn', options.onCancelThumbnailBackfill);
     bindClick('thumbBackfillExportFailedBtn', options.onExportThumbnailBackfillFailedPaths);
     bindClick('duplicateHashStartBtn', options.onStartDuplicateHashDetection);
     bindClick('duplicateHashCancelBtn', options.onCancelDuplicateHashDetection);
+    bindClick('gotoSimilarBtn', options.onGotoSimilar);
     bindClick('maintenanceCleanupBtn', options.onRunMaintenanceCleanup);
     bindClick('maintenanceRebuildThumbFlagsBtn', options.onRunMaintenanceRebuildThumbFlags);
     bindClick('maintenanceOptimizeBtn', options.onRunMaintenanceOptimize);
@@ -284,6 +233,7 @@
     bindClick('previewMaximizeBtn', options.onPreviewWindowMaximize);
     bindClick('previewRotateBtn', options.onCyclePreviewRotate);
     bindClick('previewFavoriteBtn', options.onPreviewToggleFavorite);
+    bindClick('previewFindSimilarBtn', options.onPreviewFindSimilar);
     bindClick('previewShowInFolderBtn', options.onPreviewShowInFolder);
     bindClick('previewOpenExternalBtn', options.onPreviewOpenExternal);
     bindClick('previewMoveToTrashBtn', options.onPreviewMoveToTrash);
@@ -460,19 +410,19 @@
     options = options || {};
     var getState = options.getState;
     var onViewDuplicates = options.onViewDuplicates;
-    var onViewFaces = options.onViewFaces;
     var onShowTabContent = options.onShowTabContent;
     var onForceSwitchToDuplicates = options.onForceSwitchToDuplicates;
     var onEnsureDuplicateSidebarVisible = options.onEnsureDuplicateSidebarVisible;
     var onRenderDuplicateSidebar = options.onRenderDuplicateSidebar;
-    var onRenderFaceSidebar = options.onRenderFaceSidebar;
     var onSaveBrowseTabMemory = options.onSaveBrowseTabMemory;
-    var onSaveFaceTabMemory = options.onSaveFaceTabMemory;
 
     document.querySelectorAll('.nav-tab').forEach(function (tab) {
       tab.addEventListener('click', function () {
         var state = typeof getState === 'function' ? getState() : null;
         if (!state) return;
+        if (state.currentTab === 'settings' && typeof options.onCloseSettingsPage === 'function') {
+          options.onCloseSettingsPage();
+        }
         var nextTab = tab.dataset.tab;
         if (nextTab === 'duplicates') {
           if (typeof onViewDuplicates === 'function') onViewDuplicates();
@@ -486,23 +436,9 @@
           return;
         }
 
-        if (nextTab === 'faces') {
-          if (typeof onViewFaces === 'function') onViewFaces();
-          requestAnimationFrame(function () {
-            var s2 = typeof getState === 'function' ? getState() : null;
-            if (!s2 || s2.currentTab !== 'faces') return;
-            if (typeof onEnsureDuplicateSidebarVisible === 'function')
-              onEnsureDuplicateSidebarVisible();
-            if (typeof onRenderFaceSidebar === 'function') onRenderFaceSidebar();
-          });
-          return;
-        }
-
         var prevTab = state.currentTab;
         if (prevTab === 'folders' || prevTab === 'dates') {
           if (typeof onSaveBrowseTabMemory === 'function') onSaveBrowseTabMemory(prevTab);
-        } else if (prevTab === 'faces') {
-          if (typeof onSaveFaceTabMemory === 'function') onSaveFaceTabMemory();
         }
 
         state.currentTab = nextTab;
@@ -530,25 +466,8 @@
     var getState = options.getState;
     var onLoadPhotos = options.onLoadPhotos;
     var onLoadRootFolders = options.onLoadRootFolders;
-
-    if (dom.searchInput) {
-      dom.searchInput.addEventListener('keydown', function (e) {
-        if (e.key !== 'Enter') return;
-        var state = typeof getState === 'function' ? getState() : null;
-        if (!state) return;
-        if (state.currentTab === 'duplicates') return;
-        state.searchQuery = dom.searchInput.value.trim();
-        if (state.currentView === 'favorites') {
-          state.page = 1;
-          if (typeof onLoadPhotos === 'function') onLoadPhotos();
-          return;
-        }
-        if (state.searchQuery) state.currentView = 'search';
-        else if (state.currentView !== 'folder_overview') state.currentView = 'all';
-        state.page = 1;
-        if (typeof onLoadPhotos === 'function') onLoadPhotos();
-      });
-    }
+    // 文件夹树侧栏由「文件 / 搜图 / 人物」共用：筛媒体类型后目录要跟着重建。
+    var isFolderSidebarTab = options.isFolderSidebarTab;
 
     if (dom.sortSelect) {
       dom.sortSelect.addEventListener('change', function () {
@@ -568,7 +487,11 @@
         if (!state) return;
         state.mediaFilter = String(dom.mediaFilterSelect.value || 'all');
         state.page = 1;
-        if (state.currentTab === 'folders' && typeof onLoadRootFolders === 'function') {
+        var onFolderTab =
+          typeof isFolderSidebarTab === 'function'
+            ? isFolderSidebarTab(state.currentTab)
+            : state.currentTab === 'folders';
+        if (onFolderTab && typeof onLoadRootFolders === 'function') {
           void onLoadRootFolders(true);
         }
         if (typeof onLoadPhotos === 'function') onLoadPhotos();
@@ -952,6 +875,7 @@
     var onOpenPreview = options.onOpenPreview;
     var onCyclePreviewRotate = options.onCyclePreviewRotate;
     var onPreviewOpenExternal = options.onPreviewOpenExternal;
+    var onPreviewFindSimilar = options.onPreviewFindSimilar;
     var onToggleChromeCollapsed = options.onToggleChromeCollapsed;
 
     document.addEventListener('keydown', function (e) {
@@ -975,6 +899,16 @@
         ) {
           e.preventDefault();
           onPreviewToggleFavorite();
+        }
+        if (
+          (e.key === 's' || e.key === 'S') &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey &&
+          typeof onPreviewFindSimilar === 'function'
+        ) {
+          e.preventDefault();
+          onPreviewFindSimilar();
         }
         if (e.key === ' ' && typeof onToggleSlideshow === 'function') {
           e.preventDefault();

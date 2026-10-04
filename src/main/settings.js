@@ -1,3 +1,17 @@
+/**
+ * ⚠️ 未接入运行时（orphan chain）——改这里不会影响运行结果。
+ *
+ * 本文件所在的模块链（settings / ipc-handlers / task-scheduler / thumbnail-backfill /
+ * window-tray / duplicate-detection / dhash-backfill / cloudflare-tunnel / utils）只被彼此
+ * require，`src/main.js` 从未接入它们；同样的逻辑在 `src/main.js` 里另有一份，**那份才生效**
+ * （例如 createDefaultSettings、runRowsWithThumbConcurrency 里的补图 + dHash 循环）。
+ *
+ * 默认值以 `src/main.js` 为准。两份已经漂移：
+ *   autoThumbBackfillOnStartup  此处 true  / main.js false
+ *   thumbBackfillConcurrency    此处 1     / main.js 3
+ *
+ * 详见 AGENTS.md 的「Refactoring in Progress」。
+ */
 const logger = require('./logger');
 const fs = require('fs');
 
@@ -57,11 +71,13 @@ function reconcileThemeStyleSettings(settings) {
 function createDefaultSettings() {
   return {
     autoScanOnStartup: false,
-    /** 启动后空闲时自动补全缺失缩略图（与扫描队列互斥） */
-    autoThumbBackfillOnStartup: false,
+    /** 启动后空闲时自动补全缺失缩略图与 dHash（与扫描队列互斥） */
+    autoThumbBackfillOnStartup: true,
     /** 缩略图补全同时处理张数（1–8），过大易占内存并加重磁盘随机读 */
     thumbBackfillConcurrency: 1,
     autoHashOnStartup: false,
+    /** 视觉相似检测的汉明距离阈值（0-64，默认 12，越小越严格） */
+    similarThreshold: 12,
     /** 默认关闭局域网访问；本机 127.0.0.1 预览/HLS 仍可在内嵌服务启动后使用 */
     webLanEnabled: false,
     cloudflareTunnelAutoStart: false,
@@ -114,6 +130,8 @@ function createDefaultSettings() {
     hlsMaxCacheEntries: 48,
     /** 界面语言：zh-CN | en */
     uiLocale: 'zh-CN',
+    /** 桌面端点击视频的默认行为：system 系统播放器 | embedded 内嵌预览 */
+    videoClickBehavior: 'system',
   };
 }
 
@@ -126,9 +144,15 @@ function ensureSettingsShape(settings) {
   else settings.thumbQuality = Math.max(50, Math.min(95, q));
   var wcb = settings.windowCloseBehavior;
   if (['ask', 'tray', 'quit'].indexOf(wcb) < 0) settings.windowCloseBehavior = 'ask';
+  var vcb = settings.videoClickBehavior;
+  if (['system', 'embedded'].indexOf(vcb) < 0) settings.videoClickBehavior = 'system';
   settings.autoScanOnStartup = !!settings.autoScanOnStartup;
   settings.autoThumbBackfillOnStartup = !!settings.autoThumbBackfillOnStartup;
   settings.autoHashOnStartup = !!settings.autoHashOnStartup;
+  var st = parseInt(settings.similarThreshold, 10);
+  if (isNaN(st) || st < 0) st = 12;
+  if (st > 64) st = 64;
+  settings.similarThreshold = st;
   settings.webLanEnabled = settings.webLanEnabled === true;
   settings.cloudflareTunnelAutoStart = !!settings.cloudflareTunnelAutoStart;
   settings.startOnBoot = !!settings.startOnBoot;

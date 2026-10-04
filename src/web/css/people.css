@@ -1,0 +1,434 @@
+/* 人物页样式：桌面端「人物」整页 + 网页端人物弹窗共用。
+   本文件在 renderer/theme-polish.css 之前加载，凡是被主题层覆盖的属性
+   一律用「.people-dialog .xxx」这类更高特异性的选择器压回来。 */
+
+html {
+  --glyph-user: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='4'/%3E%3Cpath d='M4.5 20a7.5 7.5 0 0 1 15 0'/%3E%3C/svg%3E");
+}
+
+/* ---------- 人物 / 照片网格 ---------- */
+.people-dialog .people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  align-items: start;
+  gap: 16px;
+  margin: 4px 0 20px;
+}
+.people-dialog .people-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px 12px 14px;
+  border: 1px solid var(--design-line, var(--border, #45505d));
+  border-radius: 14px;
+  background: var(--bg-card, var(--bg-secondary, #222936));
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    transform 170ms ease,
+    border-color 170ms ease,
+    box-shadow 170ms ease;
+}
+.people-dialog .people-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--accent, #8abcf5) 55%, var(--design-line, #45505d));
+  box-shadow: 0 10px 24px #00000026;
+}
+.people-dialog .people-card:focus-visible {
+  outline: 2px solid var(--accent, #8abcf5);
+  outline-offset: 2px;
+}
+.people-dialog .people-avatar {
+  display: block;
+  flex: 0 0 auto;
+  width: 84px;
+  height: 84px;
+  overflow: hidden;
+  border: 2px solid color-mix(in srgb, var(--accent, #8abcf5) 38%, transparent);
+  border-radius: 50%;
+  background: var(--bg-hover, #293135);
+  transition: border-color 170ms ease;
+}
+.people-dialog .people-card:hover .people-avatar {
+  border-color: color-mix(in srgb, var(--accent, #8abcf5) 72%, transparent);
+}
+.people-dialog .people-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: none;
+  object-fit: cover;
+}
+.people-dialog .people-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.people-dialog .people-meta {
+  display: block;
+  color: var(--text-muted, #97a3aa);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 某个人的照片 */
+.people-dialog .people-photo-grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.people-dialog .people-card.people-photo {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+}
+.people-dialog .people-card.people-photo:hover {
+  transform: translateY(-2px);
+}
+.people-dialog .people-photo-view {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: zoom-in;
+}
+.people-dialog .people-photo-view img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  object-fit: cover;
+  transition: transform 280ms ease;
+}
+.people-dialog .people-photo:hover .people-photo-view img {
+  transform: scale(1.04);
+}
+.people-dialog .people-photo-name {
+  display: block;
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--text-muted, #97a3aa);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 索引进行中的实时提示 ---------- */
+.people-dialog .people-grid > .people-live {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 4px;
+  color: var(--text-secondary, #bbc4c8);
+  font-size: 12px;
+}
+.people-dialog .people-grid > .people-live::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #8abcf5);
+  animation: people-pulse 1.1s ease-in-out infinite;
+}
+@keyframes people-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* ---------- 详情头部：返回 + 名称 + 管理工具 ---------- */
+.people-dialog .people-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--design-line, var(--border, #45505d));
+}
+.people-dialog .people-controls:empty {
+  display: none;
+}
+.people-dialog .people-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.people-dialog .people-detail-count {
+  color: var(--text-muted, #97a3aa);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.people-dialog .people-back::before {
+  content: '←';
+  margin-right: 6px;
+  font-size: 13px;
+  line-height: 1;
+}
+.people-dialog .people-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.people-dialog .people-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.people-dialog .people-tool-row[hidden] {
+  display: none;
+}
+.people-dialog .people-tool-row input {
+  flex: 1;
+  max-width: 220px;
+}
+.people-dialog .people-tool {
+  min-height: 32px;
+  padding: 5px 11px;
+}
+/* 照片卡上的「纠正」不占布局：平时隐形，悬停照片时浮在右上角，展开后保持可见。 */
+.people-dialog .people-card.people-photo {
+  position: relative;
+}
+.people-dialog .people-photo .people-tool.people-photo-fix {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  margin: 0;
+  padding: 3px 10px;
+  border-color: transparent;
+  border-radius: 999px;
+  background: #000000a8;
+  color: #fff;
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 150ms ease,
+    background-color 150ms ease;
+}
+.people-dialog .people-photo:hover .people-photo-fix,
+.people-dialog .people-photo:focus-within .people-photo-fix,
+.people-dialog .people-photo .people-photo-fix[aria-expanded='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.people-dialog .people-photo .people-photo-fix:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #8abcf5) 82%, #000);
+  color: #fff;
+}
+.people-dialog .people-photo .people-tool-row {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px 10px 8px;
+  margin: 0;
+}
+.people-dialog .people-photo .people-tool-row input {
+  max-width: none;
+}
+/* 窄卡片里数字输入的上下箭头会挤掉正文，编号也不需要微调。 */
+.people-dialog input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.people-dialog input[type='number']::-webkit-outer-spin-button,
+.people-dialog input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---------- 分页 ---------- */
+.people-dialog .people-nav {
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--design-line, var(--border, #45505d));
+}
+.people-dialog .people-nav:empty {
+  display: none;
+}
+
+/* ---------- 空态 ---------- */
+.people-message {
+  margin: 0 0 20px;
+  line-height: 1.6;
+}
+.people-dialog .people-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 56px 20px;
+  color: var(--text-secondary, #bbc4c8);
+  text-align: center;
+}
+.people-dialog .people-empty-icon {
+  width: 46px;
+  height: 46px;
+  background: var(--text-muted, #97a3aa);
+  opacity: 0.55;
+  -webkit-mask: var(--glyph-user) center / contain no-repeat;
+  mask: var(--glyph-user) center / contain no-repeat;
+}
+.people-dialog .people-empty-title {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* ---------- 设置面板（左栏「设置 → 人脸识别」） ---------- */
+.people-guide {
+  padding: 11px 14px;
+  border-left: 3px solid var(--accent, #8abcf5);
+  border-radius: 0 10px 10px 0;
+  background: var(--bg-secondary, #222936);
+  font-size: 12.5px;
+}
+/* 「索引跑完但零人物」时引导为空（见 people.js 的 guide.hidden）。这条带 padding 与
+   背景色的说明条一旦留空，就会在「后台任务」清单里显示成一条没有文字的空色条。 */
+.people-guide[hidden] {
+  display: none;
+}
+.people-dialog progress {
+  width: 100%;
+  margin-top: 12px;
+}
+.people-settings {
+  margin: 16px 0;
+}
+.people-settings summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+.people-settings fieldset {
+  border: 0;
+  padding: 8px 0;
+  min-width: 0;
+}
+.people-settings label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+/* 分组阈值输入框，取代原来的「标准 / 严格」下拉，位置形态一致，宽度收窄
+   （只填 0.15–0.90 这种三位小数，跟着 label 的 flex gap 排在文案后面）。
+   「归组方式」下拉与「文件夹层级」输入框共用同一套尺寸，三种控件排在一起才不会参差。 */
+.people-settings input[type='number'],
+.people-settings select {
+  width: 96px;
+  padding: 8px;
+  background: var(--bg-card, var(--bg-secondary, #222936));
+  color: inherit;
+  border: 1px solid var(--design-line, var(--border, #45505d));
+  border-radius: 9px;
+}
+/* 归组方式切换时隐藏不适用的那一项。必须显式写死：`.people-settings label` 是
+   display:flex，特异性（0,1,1）压过 UA 给 [hidden] 的 display:none，光靠 hidden
+   属性藏不住。 */
+.people-settings [hidden] {
+  display: none;
+}
+.people-settings-entry {
+  margin: 20px 0;
+}
+.people-dialog input {
+  min-width: 0;
+  max-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--design-line, var(--border, #45505d));
+  border-radius: 9px;
+  background: var(--bg-card, var(--bg-secondary, #222936));
+  color: inherit;
+}
+.people-dialog input:focus-visible {
+  outline: 2px solid var(--accent, #8abcf5);
+}
+
+/* ---------- 整页模式（桌面端左栏「人物」） ---------- */
+/* 弹窗形态（无 container）按内容自适应高度，整页模式再撑满容器。 */
+.ai-dialog.people-dialog {
+  height: auto;
+  min-height: 300px;
+  max-height: min(820px, calc(100dvh - 32px));
+}
+.ai-dialog.people-page {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 26px clamp(18px, 3vw, 40px) 40px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg, var(--bg-primary));
+}
+/* 主题层有 .people-page > p 的正文色规则，错误行要保持危险色。 */
+.ai-dialog.people-page > p.ai-error {
+  color: var(--danger, #e88383);
+}
+.ai-dialog.people-page[hidden] {
+  display: none !important;
+}
+.ai-dialog.people-page .ai-header h2.people-title {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+/* 人物视图同样复用主照片网格（#photoGrid），不再独占 #contentArea；
+   侧栏让位规则见 src/renderer/navigation.css。 */
+
+#peopleButton,
+#semanticSearchButton {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .ai-dialog.people-page {
+    padding: 14px;
+  }
+  .people-dialog .people-grid {
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 10px;
+  }
+  .people-dialog .people-avatar {
+    width: 68px;
+    height: 68px;
+  }
+  .people-dialog .people-photo-grid {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  }
+}

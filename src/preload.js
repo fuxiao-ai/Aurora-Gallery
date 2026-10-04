@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('photoAPI', {
+  beginBrowseRequest: function (sequence) {
+    ipcRenderer.send('begin-browse-request', sequence);
+  },
+  notifyBrowsePhotosReady: function () {
+    ipcRenderer.send('notify-browse-photos-ready');
+  },
   selectFolder: function () {
     return ipcRenderer.invoke('select-folder');
   },
@@ -72,6 +78,9 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   maintenanceFindSimilarPhotos: function (options) {
     return ipcRenderer.invoke('maintenance-find-similar-photos', options);
+  },
+  maintenanceGetPhotosByIds: function (ids) {
+    return ipcRenderer.invoke('maintenance-get-photos-by-ids', ids);
   },
   openDatabaseFolder: function () {
     return ipcRenderer.invoke('open-database-folder');
@@ -148,6 +157,29 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   searchPhotos: function (query, options) {
     return ipcRenderer.invoke('search-photos', query, options);
+  },
+  aiSearchStatus: function () {
+    return ipcRenderer.invoke('ai-search-status');
+  },
+  aiSearchInstall: function () {
+    return ipcRenderer.invoke('ai-search-install');
+  },
+  aiSearchIndex: function () {
+    return ipcRenderer.invoke('ai-search-index');
+  },
+  aiSearchCancel: function () {
+    return ipcRenderer.invoke('ai-search-cancel');
+  },
+  aiSearchQuery: function (query) {
+    return ipcRenderer.invoke('ai-search-query', query);
+  },
+  // 预选词：传 `{ lang, limit }` 让主进程从服务端词表里按真实命中数挑；
+  // 传数组（老形状）则只给那几个词打分。
+  aiSearchSuggest: function (request) {
+    return ipcRenderer.invoke('ai-search-suggest', request);
+  },
+  faceAction: function (operation, args) {
+    return ipcRenderer.invoke('face-action', operation, args);
   },
   removeFolder: function (rootPath) {
     return ipcRenderer.invoke('remove-folder', rootPath);

@@ -1,0 +1,370 @@
+/* Theme-derived surfaces keep every existing accent and background preset usable. */
+html {
+  --border-color: var(--design-line);
+  --surface-raised: color-mix(in srgb, var(--bg-card) 96%, var(--accent));
+  --surface-soft: color-mix(in srgb, var(--bg-secondary) 97%, var(--accent));
+  --surface-line: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  --control-hover: color-mix(in srgb, var(--accent) 9%, var(--bg-card));
+}
+.main-layout > .app-rail {
+  margin: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary));
+  border-right-color: var(--surface-line);
+  padding-top: 20px;
+  gap: 10px;
+}
+.app-rail .rail-item {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+.app-rail .rail-item.active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg-secondary));
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.app-rail .rail-item.active svg {
+  color: var(--accent);
+}
+.app-rail .rail-settings {
+  margin-top: auto;
+}
+html .sidebar {
+  background: var(--surface-soft);
+}
+.sidebar-section-heading {
+  padding: 24px 20px 18px;
+  letter-spacing: 0.035em;
+}
+.sidebar-content {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.context-nav-button {
+  line-height: 1.6;
+}
+.context-nav-button .icon {
+  flex-shrink: 0;
+}
+.context-nav-button .name {
+  white-space: normal;
+}
+.topbar {
+  gap: 12px;
+}
+.topbar .header-title {
+  letter-spacing: 0.015em;
+}
+.topbar select {
+  max-width: 160px;
+}
+.toolbar {
+  padding-block: 12px;
+}
+.photo-card {
+  border-radius: 12px;
+}
+.photo-card .photo-info {
+  padding: 10px 12px;
+}
+.photo-card:focus-within {
+  border-color: var(--accent);
+}
+
+/* Settings are grouped by section, with quieter individual rows. */
+html .settings-page {
+  padding: 24px clamp(18px, 3vw, 44px) 44px;
+  gap: 4px;
+}
+.settings-page .settings-back {
+  align-self: flex-start;
+  box-shadow: none;
+  background: var(--bg-card);
+}
+.settings-page .settings-section {
+  padding: 22px;
+  border: 1px solid var(--surface-line);
+  border-radius: 16px;
+  background: var(--surface-raised);
+  margin-top: 18px;
+  scroll-margin-top: 24px;
+}
+.settings-page .settings-section-title,
+.settings-page .ai-header h2 {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+.settings-page .settings-section-title {
+  padding: 0 0 14px;
+  margin-bottom: 12px;
+}
+.settings-page .settings-section-title::before {
+  display: none;
+}
+html .settings-page .setting-item {
+  background: transparent;
+  padding: 14px 12px;
+  border-color: var(--surface-line);
+  border-radius: 10px;
+  gap: 16px;
+  box-shadow: none;
+  transform: none;
+}
+html .settings-page .setting-item:hover {
+  background: var(--control-hover);
+  box-shadow: none;
+  transform: none;
+}
+.settings-page .setting-item .setting-desc {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  margin-top: 5px;
+}
+/* 这两个 AI 面板现在只作为「后台任务」清单里的一行出现（搜图索引 / 人物索引），
+   段落因此按同一张清单里的 .setting-desc 取值（12px / 1.65 / 5px），
+   而不是早先独立面板时的正文规格——否则一行说明 13px、隔壁行 12px，同一屏里两套字阶。 */
+.settings-page :is(.ai-settings-panel, #peopleSettingsPanel) > p {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+.settings-page .ai-header {
+  margin-bottom: 12px;
+}
+.settings-page .ai-controls {
+  margin: 16px 0;
+  gap: 10px;
+}
+.settings-page .people-settings {
+  border-top: 1px solid var(--surface-line);
+  padding-top: 12px;
+}
+.settings-page .people-settings summary {
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-page .people-settings fieldset > p {
+  color: var(--text-secondary);
+  line-height: 1.7;
+  font-size: 12px;
+  margin: 12px 0;
+}
+.settings-page .people-settings label {
+  font-size: 13px;
+}
+.settings-page input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+/* Shared AI controls use the same palette as the native settings controls. */
+.ai-button {
+  min-height: 36px;
+  padding: 8px 13px;
+  border-radius: 9px;
+  border-color: var(--surface-line);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
+}
+.ai-button:hover:not(:disabled) {
+  background: var(--control-hover);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--surface-line));
+}
+.ai-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.ai-dialog {
+  border-radius: 18px;
+  border-color: var(--surface-line);
+  background: var(--bg-primary);
+  box-shadow: 0 24px 80px #0005;
+}
+.ai-dialog::backdrop {
+  background: #080d1680;
+}
+.ai-dialog.people-page {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* `select` 必须与 `input` 列在一起：people.css 里 `.people-settings select` 与这条
+   特异性打平（都是 0,1,1），靠本文件后加载取胜。漏掉 select 的话「归组方式」下拉
+   会退回 people.css 的 --bg-card 底色，与旁边的阈值输入框不是一套配色。 */
+.ai-query input,
+.ai-query select,
+.people-dialog input:not([type='checkbox']),
+.people-dialog select {
+  font: inherit;
+  font-size: 13px;
+  min-height: 36px;
+  border-radius: 9px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--surface-line);
+}
+.ai-error {
+  color: var(--danger);
+}
+.people-page .ai-header h2 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.people-page > p {
+  color: var(--text-secondary);
+  line-height: 1.7;
+  font-size: 13px;
+}
+.people-guide {
+  border-radius: 0 10px 10px 0;
+  background: var(--surface-soft);
+}
+.people-grid {
+  gap: 18px;
+}
+.people-card {
+  background: var(--surface-raised);
+  border-color: var(--surface-line);
+  border-radius: 14px;
+  padding: 18px 14px;
+}
+.people-card img {
+  border: 3px solid var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--surface-line);
+}
+.people-card strong {
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+.people-card > span {
+  text-align: center;
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+/* Compact global task surface; progress keeps a readable accent in light and dark themes. */
+html .task-panel-global {
+  background: var(--surface-soft);
+  border: 0;
+  border-bottom: 1px solid var(--surface-line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 12px 22px;
+}
+.task-panel .task-panel-title {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+.task-panel .task-section {
+  padding: 12px 0 4px;
+}
+.task-panel .task-section + .task-section {
+  border-top-color: var(--surface-line);
+}
+.task-panel .progress-header {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.task-panel .progress-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-panel .progress-file {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.task-panel .progress-actions > span {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.task-panel .progress-bar {
+  height: 5px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+}
+.task-panel .progress-fill {
+  background: var(--accent);
+  box-shadow: none;
+}
+.task-panel progress,
+.people-dialog progress {
+  accent-color: var(--accent);
+  height: 6px;
+  margin: 10px 0;
+  border-radius: 8px;
+}
+.task-panel progress::-webkit-progress-bar,
+.people-dialog progress::-webkit-progress-bar {
+  background: var(--bg-primary);
+  border-radius: 8px;
+}
+.task-panel progress::-webkit-progress-value,
+.people-dialog progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 8px;
+}
+.task-panel progress:not([value]),
+.people-dialog progress:not([value]) {
+  appearance: auto;
+}
+@media (max-width: 900px) {
+  html .settings-page {
+    padding: 18px;
+  }
+  .settings-page .settings-section {
+    padding: 16px;
+  }
+  .topbar {
+    gap: 8px;
+  }
+}
+@media (max-width: 600px) {
+  .main-layout > .app-rail {
+    padding-top: 12px;
+    gap: 6px;
+  }
+  html .settings-page {
+    padding: 12px;
+  }
+  .settings-page .settings-section {
+    padding: 14px;
+    border-radius: 12px;
+  }
+  html .settings-page .setting-item {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 8px;
+  }
+  .settings-page .setting-info {
+    min-width: 100%;
+  }
+  html .task-panel-global {
+    padding: 10px 14px;
+  }
+  .people-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-rail .rail-item,
+  .ai-button,
+  .photo-card,
+  .setting-item {
+    transition: none;
+  }
+}

@@ -74,7 +74,7 @@ function run() {
 
     console.log('[db-smoke] PASS');
     console.log(
-      `[db-smoke] sizes all=${all.length} root1=${byRoot1.length} image=${onlyImage.length} video=${onlyVideo.length}`,
+      `[db-smoke] sizes all=${all.covers.length} root1=${byRoot1.covers.length} image=${onlyImage.covers.length} video=${onlyVideo.covers.length}`,
     );
   } finally {
     if (db) {

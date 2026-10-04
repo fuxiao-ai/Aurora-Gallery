@@ -11,7 +11,7 @@
 | **npm package**         | `aurora-gallery`                                                            |
 | **Bundle ID** (`appId`) | `com.foredawn.aurora-gallery`                                               |
 
-**Current release:** `1.0.3` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
+**Current release:** `1.2.0` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
 
 **Release notes:** see [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -188,8 +188,8 @@ Typical outputs:
 Push a tag matching `v*` to trigger the GitHub Actions workflow (`.github/workflows/release.yml`). It builds **Windows** (`windows-latest`) and **macOS** (`macos-latest`) in parallel and uploads artifacts to a GitHub Release.
 
 ```bash
-git tag v1.0.3
-git push origin v1.0.3
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 The workflow automatically downloads the correct `cloudflared` binary per platform, rebuilds native modules, runs `electron-builder`, and publishes the installers to the release page.
@@ -230,8 +230,12 @@ src/
     ui-duplicates.js
     scan-flow.js
   web/
-    index.html            # Web app shell
-    css/style.css         # Extracted web styles
+    index.html            # Web app shell (main styles inline)
+    css/                  # Stylesheets shared with the desktop renderer
+      gallery-design.css
+      people.css
+      photo-compare.css
+      semantic-search.css
     js/app.js             # Web app logic
     login.html
     vendor/hls.min.js

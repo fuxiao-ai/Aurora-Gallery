@@ -245,8 +245,6 @@ function applyHistoryStateToView(hs) {
     state.mediaFilter = normalizeMediaFilter(payload.mediaFilter || state.mediaFilter || 'all');
     var ps = parseInt(payload.pageSize, 10);
     if ([50, 80, 100, 200].indexOf(ps) >= 0) state.pageSize = ps;
-    var searchInput = $('#searchInput');
-    if (searchInput) searchInput.value = state.searchQuery;
     var sortSel = $('#sortSelect');
     if (sortSel) sortSel.value = state.sortBy + '|' + state.sortOrder;
     var mobileSortSel = $('#mobileSortSelect');
@@ -261,16 +259,17 @@ function applyHistoryStateToView(hs) {
     if (state.currentView === 'folder_overview') {
       if (headerTitle) headerTitle.textContent = defaultTitle;
       updateSidebarActive();
-      if (state.currentTab === 'folders') loadRootFolders();
+      if (isFolderSidebarTab(state.currentTab)) loadRootFolders();
       loadFolderCovers();
     } else if (state.currentView === 'folder') {
       var name = state.currentPath ? state.currentPath.split(/[\\/]/).pop() : '';
       if (headerTitle) headerTitle.textContent = '\u6587\u4EF6\u5939: ' + (name || '\u76EE\u5F55');
       updateSidebarActive();
-      if (state.currentTab === 'folders') loadRootFolders();
+      if (isFolderSidebarTab(state.currentTab)) loadRootFolders();
       loadPhotos();
     } else if (state.currentView === 'date') {
-      if (headerTitle) headerTitle.textContent = '\u65E5\u671F: ' + formatDateLabel(state.currentDate || '');
+      if (headerTitle)
+        headerTitle.textContent = '\u65E5\u671F: ' + formatDateLabel(state.currentDate || '');
       updateSidebarActive();
       if (state.currentTab === 'dates') loadDateGroups();
       loadPhotos();
@@ -282,14 +281,18 @@ function applyHistoryStateToView(hs) {
           break;
         }
       }
-      if (headerTitle) headerTitle.textContent = '\u6839\u76EE\u5F55: ' + (rootName || '\u6839\u76EE\u5F55');
+      if (headerTitle)
+        headerTitle.textContent = '\u6839\u76EE\u5F55: ' + (rootName || '\u6839\u76EE\u5F55');
       updateSidebarActive();
-      if (state.currentTab === 'folders') loadRootFolders();
+      if (isFolderSidebarTab(state.currentTab)) loadRootFolders();
       loadPhotos();
     } else if (state.currentView === 'search' && state.searchQuery) {
       if (headerTitle) headerTitle.textContent = '\u641C\u7D22: ' + state.searchQuery;
       updateSidebarActive();
       loadPhotos();
+    } else if (state.currentView === 'ai_search' || state.currentView === 'people') {
+      // 历史记录里也能出现智能视图（例如从结果页开预览时压下的那条），整段交给适配层重建。
+      enterWebAiView(state.currentView);
     } else {
       state.currentView = 'all';
       state._rootId = undefined;
@@ -355,10 +358,6 @@ function getMediaAspectRatioDims(photo) {
 function syncSubtitleSettingsUi() {
   var btn = $('#previewSubtitleToggleBtn');
   if (btn) btn.textContent = state.subtitleEnabled ? '\u5B57\u5E55:\u5F00' : '\u5B57\u5E55:\u5173';
-  var sizeSel = $('#previewSubtitleSizeSelect');
-  if (sizeSel) sizeSel.value = state.subtitleSize;
-  var posSel = $('#previewSubtitlePosSelect');
-  if (posSel) posSel.value = state.subtitlePosition;
 }
 
 function setSubtitleToggleVisible(visible) {
@@ -643,8 +642,20 @@ function loadWebVideoForPreview(photo, video, index, requestSeq, pauseAfterSwitc
 }
 
 // === API ===
-function apiGet(url) {
-  return fetch(url, { credentials: 'same-origin' }).then(function (r) {
+var activePhotoRequest = null;
+function beginPhotoRequest() {
+  if (activePhotoRequest) activePhotoRequest.controller.abort();
+  var controller = new AbortController();
+  activePhotoRequest = {
+    controller: controller,
+    signal: controller.signal,
+    seq: ++state.photosRequestSeq,
+  };
+  return activePhotoRequest;
+}
+
+function apiGet(url, signal) {
+  return fetch(url, { credentials: 'same-origin', signal: signal }).then(function (r) {
     if (r.status === 401) {
       // Redirect to login when auth expires.
       try {
@@ -691,8 +702,6 @@ async function init() {
     var savedPageSize = parseInt(localStorage.getItem('webPageSize'), 10);
     if ([50, 80, 100, 200].indexOf(savedPageSize) >= 0) state.pageSize = savedPageSize;
   } catch (ePs) {}
-  var searchInput = $('#searchInput');
-  if (searchInput) searchInput.value = '';
   window.PhotoHlsConfig = {
     onSessionEnd: function (sessionId) {
       fetch('/api/hls-stop?sessionId=' + encodeURIComponent(sessionId), {
@@ -924,18 +933,6 @@ function bindEvents() {
       { passive: true },
     );
   }
-  var searchInputEl = $('#searchInput');
-  if (searchInputEl) {
-    searchInputEl.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        state.searchQuery = searchInputEl.value.trim();
-      state.currentView = state.searchQuery ? 'search' : 'all';
-      state.page = 1;
-      loadPhotos();
-      pushViewHistoryState();
-      }
-    });
-  }
   var searchOverlayInput = $('#searchOverlayInput');
   if (searchOverlayInput) {
     searchOverlayInput.addEventListener('keydown', function (e) {
@@ -994,44 +991,44 @@ function bindEvents() {
     img.addEventListener('mousedown', function (e) {
       if (e.button !== 0) return;
       state.isDragging = true;
-    state.hasDragged = false;
-    state.dragStartX = e.clientX;
-    state.dragStartY = e.clientY;
-    state.dragStartPanX = state.panX;
-    state.dragStartPanY = state.panY;
-    img.classList.add('dragging');
-    e.preventDefault();
-  });
+      state.hasDragged = false;
+      state.dragStartX = e.clientX;
+      state.dragStartY = e.clientY;
+      state.dragStartPanX = state.panX;
+      state.dragStartPanY = state.panY;
+      img.classList.add('dragging');
+      e.preventDefault();
+    });
 
-  // comment cleaned
-  img.addEventListener(
-    'touchstart',
-    function (e) {
-      if (e.touches.length === 1) {
-        var t = e.touches[0];
-        state.isDragging = true;
-        state.hasDragged = false;
-        state.isSwiping = false;
-        state.swipeDirection = null;
-        state.dragStartX = t.clientX;
-        state.dragStartY = t.clientY;
-        state.touchStartX = t.clientX;
-        state.touchStartY = t.clientY;
-        state.touchStartTime = Date.now();
-        state.dragStartPanX = state.panX;
-        state.dragStartPanY = state.panY;
-      } else if (e.touches.length === 2) {
-        // comment cleaned
-        state.isDragging = false;
-        state.hasDragged = false;
-        var dx = e.touches[0].clientX - e.touches[1].clientX;
-        var dy = e.touches[0].clientY - e.touches[1].clientY;
-        state.touchStartDist = Math.sqrt(dx * dx + dy * dy);
-        state.touchStartZoom = state.zoom;
-      }
-    },
-    { passive: true },
-  );
+    // comment cleaned
+    img.addEventListener(
+      'touchstart',
+      function (e) {
+        if (e.touches.length === 1) {
+          var t = e.touches[0];
+          state.isDragging = true;
+          state.hasDragged = false;
+          state.isSwiping = false;
+          state.swipeDirection = null;
+          state.dragStartX = t.clientX;
+          state.dragStartY = t.clientY;
+          state.touchStartX = t.clientX;
+          state.touchStartY = t.clientY;
+          state.touchStartTime = Date.now();
+          state.dragStartPanX = state.panX;
+          state.dragStartPanY = state.panY;
+        } else if (e.touches.length === 2) {
+          // comment cleaned
+          state.isDragging = false;
+          state.hasDragged = false;
+          var dx = e.touches[0].clientX - e.touches[1].clientX;
+          var dy = e.touches[0].clientY - e.touches[1].clientY;
+          state.touchStartDist = Math.sqrt(dx * dx + dy * dy);
+          state.touchStartZoom = state.zoom;
+        }
+      },
+      { passive: true },
+    );
   }
 
   document.addEventListener('mousemove', function (e) {
@@ -1128,14 +1125,14 @@ function bindEvents() {
       'wheel',
       function (e) {
         if (!previewOverlayEl.classList.contains('active')) return;
-      e.preventDefault();
-      if (e.ctrlKey || e.metaKey) {
-        var delta = e.deltaY > 0 ? -0.15 : 0.15;
-        applyZoom(delta);
-      } else {
-        if (e.deltaY > 20) navigatePreview(1);
-        else if (e.deltaY < -20) navigatePreview(-1);
-      }
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) {
+          var delta = e.deltaY > 0 ? -0.15 : 0.15;
+          applyZoom(delta);
+        } else {
+          if (e.deltaY > 20) navigatePreview(1);
+          else if (e.deltaY < -20) navigatePreview(-1);
+        }
       },
       { passive: false },
     );
@@ -1240,44 +1237,44 @@ function bindEvents() {
       function (e) {
         if (!state.isMobile) return;
         if (!previewOverlayEl.classList.contains('active')) return;
-      if (!e.touches || e.touches.length !== 1) return;
-      var target = e.target;
-      if (
-        target.closest('.preview-slideshow-controls') ||
-        target.closest('.preview-close') ||
-        target.closest('.preview-info-panel') ||
-        target.closest('.preview-info-toggle')
-      ) {
-        state.previewOverlaySwiping = false;
-        return;
-      }
-      // 允许在图片区域滑动切换，只在缩放时禁止
-      state.previewOverlaySwiping = true;
-      state.previewOverlaySwipeStartX = e.touches[0].clientX;
-      state.previewOverlaySwipeStartY = e.touches[0].clientY;
-    },
+        if (!e.touches || e.touches.length !== 1) return;
+        var target = e.target;
+        if (
+          target.closest('.preview-slideshow-controls') ||
+          target.closest('.preview-close') ||
+          target.closest('.preview-info-panel') ||
+          target.closest('.preview-info-toggle')
+        ) {
+          state.previewOverlaySwiping = false;
+          return;
+        }
+        // 允许在图片区域滑动切换，只在缩放时禁止
+        state.previewOverlaySwiping = true;
+        state.previewOverlaySwipeStartX = e.touches[0].clientX;
+        state.previewOverlaySwipeStartY = e.touches[0].clientY;
+      },
       { passive: true },
     );
     previewOverlayEl.addEventListener(
       'touchend',
       function (e) {
-      if (!state.previewOverlaySwiping) return;
-      state.previewOverlaySwiping = false;
-      if (!e.changedTouches || e.changedTouches.length === 0) return;
-      // 图片放大后，用户可能是在拖动看细节，不触发切换
-      if (state.zoom > 1.05) return;
-      var dx = e.changedTouches[0].clientX - state.previewOverlaySwipeStartX;
-      var dy = e.changedTouches[0].clientY - state.previewOverlaySwipeStartY;
-      var absDx = Math.abs(dx);
-      var absDy = Math.abs(dy);
-      // 降低阈值，放宽判断，让滑动更灵敏
-      // 30px 即可触发，允许稍微偏垂直一点的滑动
-      if (absDx >= 30 && absDx > absDy * 0.8) {
-        navigatePreview(dx < 0 ? 1 : -1);
-      }
-    },
-    { passive: true },
-  );
+        if (!state.previewOverlaySwiping) return;
+        state.previewOverlaySwiping = false;
+        if (!e.changedTouches || e.changedTouches.length === 0) return;
+        // 图片放大后，用户可能是在拖动看细节，不触发切换
+        if (state.zoom > 1.05) return;
+        var dx = e.changedTouches[0].clientX - state.previewOverlaySwipeStartX;
+        var dy = e.changedTouches[0].clientY - state.previewOverlaySwipeStartY;
+        var absDx = Math.abs(dx);
+        var absDy = Math.abs(dy);
+        // 降低阈值，放宽判断，让滑动更灵敏
+        // 30px 即可触发，允许稍微偏垂直一点的滑动
+        if (absDx >= 30 && absDx > absDy * 0.8) {
+          navigatePreview(dx < 0 ? 1 : -1);
+        }
+      },
+      { passive: true },
+    );
   }
 
   document.addEventListener('keydown', function (e) {
@@ -1320,65 +1317,65 @@ function bindEvents() {
   var sidebarContentEl = $('#sidebarContent');
   if (sidebarContentEl) {
     sidebarContentEl.addEventListener('click', function (e) {
-    var actionEl = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
-    if (actionEl) {
-      var action = actionEl.getAttribute('data-action');
-      if (action === 'view-all') {
-        viewAllPhotos();
-        return;
+      var actionEl = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+      if (actionEl) {
+        var action = actionEl.getAttribute('data-action');
+        if (action === 'view-all') {
+          viewAllPhotos();
+          return;
+        }
+        if (action === 'view-folder-overview') {
+          viewFolderOverview();
+          return;
+        }
+        if (action === 'view-root') {
+          var rootId = parseInt(actionEl.getAttribute('data-root-id'), 10);
+          if (!isNaN(rootId)) viewRootFolder(rootId);
+          return;
+        }
+        if (action === 'toggle-root') {
+          var rootId2 = parseInt(actionEl.getAttribute('data-root-id'), 10);
+          if (!isNaN(rootId2)) toggleTreeRoot(actionEl, e, rootId2);
+          return;
+        }
+        if (action === 'toggle-node') {
+          toggleTreeNode(actionEl, e);
+          return;
+        }
+        if (action === 'date-sort') {
+          var dso = actionEl.getAttribute('data-date-sort') || 'desc';
+          if (dso !== 'asc' && dso !== 'desc') dso = 'desc';
+          if (state.dateGroupsSortOrder === dso) return;
+          state.dateGroupsSortOrder = dso;
+          try {
+            localStorage.setItem('dateGroupsSortOrder', dso);
+          } catch (eDs) {}
+          if (state.currentTab === 'dates') loadDateGroups();
+          return;
+        }
       }
-      if (action === 'view-folder-overview') {
-        viewFolderOverview();
-        return;
+      var item = e.target.closest('.folder-item[data-folder-path]');
+      if (item) {
+        viewFolder(item.getAttribute('data-folder-path'));
+        // comment cleaned
+        if (state.isMobile) {
+          setTimeout(function () {
+            var sidebarEl = $('#sidebar');
+            var backdropEl = $('#mobileBackdrop');
+            if (sidebarEl) sidebarEl.classList.remove('mobile-show');
+            if (backdropEl) backdropEl.classList.remove('show');
+            document.querySelectorAll('.mobile-nav-item').forEach(function (navItem) {
+              navItem.classList.toggle('active', navItem.dataset.tab === 'browse');
+            });
+            state.mobileNavTab = 'browse';
+          }, 100);
+        }
       }
-      if (action === 'view-root') {
-        var rootId = parseInt(actionEl.getAttribute('data-root-id'), 10);
-        if (!isNaN(rootId)) viewRootFolder(rootId);
-        return;
+      var dateItem = e.target.closest('.date-group[data-date]');
+      if (dateItem) {
+        var dateStr = dateItem.getAttribute('data-date');
+        if (dateStr) viewDate(dateStr);
       }
-      if (action === 'toggle-root') {
-        var rootId2 = parseInt(actionEl.getAttribute('data-root-id'), 10);
-        if (!isNaN(rootId2)) toggleTreeRoot(actionEl, e, rootId2);
-        return;
-      }
-      if (action === 'toggle-node') {
-        toggleTreeNode(actionEl, e);
-        return;
-      }
-      if (action === 'date-sort') {
-        var dso = actionEl.getAttribute('data-date-sort') || 'desc';
-        if (dso !== 'asc' && dso !== 'desc') dso = 'desc';
-        if (state.dateGroupsSortOrder === dso) return;
-        state.dateGroupsSortOrder = dso;
-        try {
-          localStorage.setItem('dateGroupsSortOrder', dso);
-        } catch (eDs) {}
-        if (state.currentTab === 'dates') loadDateGroups();
-        return;
-      }
-    }
-    var item = e.target.closest('.folder-item[data-folder-path]');
-    if (item) {
-      viewFolder(item.getAttribute('data-folder-path'));
-      // comment cleaned
-      if (state.isMobile) {
-        setTimeout(function () {
-          var sidebarEl = $('#sidebar');
-          var backdropEl = $('#mobileBackdrop');
-          if (sidebarEl) sidebarEl.classList.remove('mobile-show');
-          if (backdropEl) backdropEl.classList.remove('show');
-          document.querySelectorAll('.mobile-nav-item').forEach(function (navItem) {
-            navItem.classList.toggle('active', navItem.dataset.tab === 'browse');
-          });
-          state.mobileNavTab = 'browse';
-        }, 100);
-      }
-    }
-    var dateItem = e.target.closest('.date-group[data-date]');
-    if (dateItem) {
-      var dateStr = dateItem.getAttribute('data-date');
-      if (dateStr) viewDate(dateStr);
-    }
     });
   }
 
@@ -1496,23 +1493,27 @@ function mobileNavSwitch(tab) {
     viewAllPhotos();
   } else if (tab === 'folders') {
     // comment cleaned
+    var wasAiFolders = exitWebAiViewChrome();
     state.currentTab = 'folders';
     document.querySelectorAll('.sidebar-tab').forEach(function (t) {
       t.classList.remove('active');
     });
     var folderTab = document.querySelector('.sidebar-tab[data-tab="folders"]');
     if (folderTab) folderTab.classList.add('active');
+    if (wasAiFolders) loadPhotos();
     loadRootFolders();
     sb.classList.add('mobile-show');
     bd.classList.add('show');
   } else if (tab === 'dates') {
     // comment cleaned
+    var wasAiDates = exitWebAiViewChrome();
     state.currentTab = 'dates';
     document.querySelectorAll('.sidebar-tab').forEach(function (t) {
       t.classList.remove('active');
     });
     var dateTab = document.querySelector('.sidebar-tab[data-tab="dates"]');
     if (dateTab) dateTab.classList.add('active');
+    if (wasAiDates) loadPhotos();
     loadDateGroups();
     sb.classList.add('mobile-show');
     bd.classList.add('show');
@@ -1528,7 +1529,9 @@ function openSearchOverlay() {
   var input = $('#searchOverlayInput');
   if (input) {
     input.value = state.searchQuery || '';
-    setTimeout(function () { input.focus(); }, 50);
+    setTimeout(function () {
+      input.focus();
+    }, 50);
   }
   // 激活底部导航搜索图标
   document.querySelectorAll('.mobile-nav-item').forEach(function (item) {
@@ -1666,9 +1669,106 @@ async function loadStats() {
 }
 
 // === Tab switching ===
+/**
+ * 智能视图（搜图 / 人物）适配层实例，在文件末尾装配。
+ * 侧栏负责入口，结果直接灌进 #photoGrid，因此预览翻页/幻灯片/收藏/选择全部复用浏览链路。
+ */
+var webAiViews = null;
+
+function isWebAiView() {
+  return state.currentView === 'ai_search' || state.currentView === 'people';
+}
+
+/**
+ * 只有「文件夹」页用文件夹树侧栏；「日期」有自己的侧栏形态，而「搜图 / 人物」
+ * 改造后是侧栏独占（侧栏放搜索框 + 历史 / 人物列表），都不应放宽到文件夹树侧栏。
+ */
+function isFolderSidebarTab(tab) {
+  return tab === 'folders';
+}
+
+/** 侧栏两态：文件夹 / 日期列表（#sidebarContent）与智能视图独占内容（#aiSidebar）。 */
+function showBrowseSidebar() {
+  setDisplay('#sidebarContent', '');
+  setDisplay('#aiSidebar', 'none');
+}
+function showAiSidebar() {
+  setDisplay('#sidebarContent', 'none');
+  setDisplay('#aiSidebar', '');
+}
+
+/** 进入搜图 / 人物：同步侧栏页签与视图态，再交给适配层渲染。 */
+function enterWebAiView(view) {
+  state.currentTab = view;
+  state.currentView = view;
+  state.currentPath = '';
+  state.currentDate = '';
+  state.searchQuery = '';
+  state.page = 1;
+  setMobileHeaderCollapsed(false);
+  document.querySelectorAll('.sidebar-tab').forEach(function (t) {
+    t.classList.remove('active');
+  });
+  var tabEl = document.querySelector('.sidebar-tab[data-tab="' + view + '"]');
+  if (tabEl) tabEl.classList.add('active');
+  document
+    .querySelectorAll('#sidebarContent .folder-item.active, #sidebarContent .date-group.active')
+    .forEach(function (el) {
+      el.classList.remove('active');
+    });
+  // 侧栏独占：隐藏文件夹 / 日期列表，把侧栏让给搜索框 + 历史 / 人物列表。
+  showAiSidebar();
+  if (webAiViews) webAiViews.enter(view);
+  void loadPhotos();
+}
+
+/**
+ * 离开智能视图时收掉 AI 工具栏并回到浏览态。
+ * 返回 true 表示确实处于智能视图，调用方可据此补一次浏览列表加载。
+ */
+function exitWebAiViewChrome() {
+  if (!webAiViews || !webAiViews.isShowing()) return false;
+  webAiViews.leave();
+  state.currentView = 'all';
+  state.currentPhotos = [];
+  showBrowseSidebar();
+  var ht = $('#headerTitle');
+  if (ht) ht.textContent = '\u62C2\u6653\u56FE\u5E93 \u00B7 Aurora Gallery';
+  return true;
+}
+
+/**
+ * 从搜图 / 人物退回浏览：点侧栏的文件夹 / 日期 / 全部照片时走各自入口、不经 switchTab，
+ * 这里一并把侧栏页签的高亮收回，免得内容已经换了、页签还停在「搜图」。
+ */
+function leaveWebAiViewForBrowse(tab) {
+  if (!exitWebAiViewChrome()) return;
+  state.currentTab = tab;
+  document.querySelectorAll('.sidebar-tab').forEach(function (t) {
+    t.classList.toggle('active', (t.dataset.tab || '') === tab);
+  });
+}
+
 function switchTab(tab) {
+  if (tab === 'ai_search' || tab === 'people') {
+    enterWebAiView(tab);
+    // 手机上侧栏是抽屉：选完即收起，把结果网格让出来。
+    if (window.innerWidth <= 600) {
+      var sbAi = $('#sidebar');
+      var bdAi = $('#mobileBackdrop');
+      if (sbAi) sbAi.classList.remove('mobile-show');
+      if (bdAi) bdAi.classList.remove('show');
+      document.querySelectorAll('.mobile-nav-item').forEach(function (item) {
+        item.classList.toggle('active', item.dataset.tab === 'browse');
+      });
+      state.mobileNavTab = 'browse';
+    }
+    return;
+  }
+  var wasAi = exitWebAiViewChrome();
   state.currentTab = tab;
   setMobileHeaderCollapsed(false);
+  showBrowseSidebar();
   document.querySelectorAll('.sidebar-tab').forEach(function (t) {
     t.classList.remove('active');
   });
@@ -1677,6 +1777,8 @@ function switchTab(tab) {
 
   if (tab === 'folders') loadRootFolders();
   else loadDateGroups();
+
+  if (wasAi) loadPhotos();
 
   // comment cleaned
   if (window.innerWidth <= 600) {
@@ -1821,10 +1923,14 @@ function scheduleWebRootFoldersStatsHydrate(gen) {
   }
 }
 
-async function loadRootFolders() {
+async function loadRootFolders(silentRefresh) {
   webRootFoldersHydrateGen++;
   var myGen = webRootFoldersHydrateGen;
-  showSidebarLoadingPlaceholder('\u6B63\u5728\u52A0\u8F7D\u76EE\u5F55\u2026');
+  // 与桌面端对齐：已有目录树时走静默路径，避免切视图的重复调用闪「正在加载目录…」。
+  var sc0 = $('#sidebarContent');
+  var hasTree = !!(sc0 && sc0.querySelector('.folder-item, .tree-root, [data-action="view-all"]'));
+  var silent = !!silentRefresh && hasTree;
+  if (!silent) showSidebarLoadingPlaceholder('\u6B63\u5728\u52A0\u8F7D\u76EE\u5F55\u2026');
   try {
     var url = '/api/root-folders?lite=1';
     if (state.mediaFilter && state.mediaFilter !== 'all') {
@@ -2115,6 +2221,7 @@ async function loadDateGroups() {
 
 // === Views ===
 function viewAllPhotos() {
+  leaveWebAiViewForBrowse('folders');
   state.currentView = 'all';
   state._rootId = undefined;
   state.currentPath = '';
@@ -2129,6 +2236,7 @@ function viewAllPhotos() {
 }
 
 function viewFolderOverview() {
+  leaveWebAiViewForBrowse('folders');
   state.currentView = 'folder_overview';
   state._rootId = undefined;
   state.currentPath = '';
@@ -2143,6 +2251,7 @@ function viewFolderOverview() {
 }
 
 function viewFolder(folderPath) {
+  leaveWebAiViewForBrowse('folders');
   state.currentView = 'folder';
   state.currentPath = folderPath;
   state.page = 1;
@@ -2163,6 +2272,7 @@ function viewFolder(folderPath) {
 }
 
 function viewDate(dateStr) {
+  leaveWebAiViewForBrowse('dates');
   state.currentView = 'date';
   state.currentDate = dateStr;
   state.page = 1;
@@ -2217,7 +2327,7 @@ function changeMediaFilter(val) {
     btn.classList.toggle('active', btn.dataset.filter === state.mediaFilter);
   });
   state.page = 1;
-  if (state.currentTab === 'folders') {
+  if (isFolderSidebarTab(state.currentTab)) {
     loadRootFolders();
   }
   loadPhotos();
@@ -2248,7 +2358,9 @@ function capMasonryColumns(host) {
   var gap = 12;
   var w = grid.clientWidth || host.clientWidth || window.innerWidth;
   if (w <= 0) {
-    requestAnimationFrame(function () { capMasonryColumns(host); });
+    requestAnimationFrame(function () {
+      capMasonryColumns(host);
+    });
     return;
   }
   var maxCols = Math.max(1, Math.floor((w + gap) / (basis + gap)));
@@ -2279,14 +2391,16 @@ function applyCardSize() {
     zl.textContent = CARD_SIZE_TIERS[browseCardTierIndexForBasis(state.cardSize)].label;
   }
   // 同步卡片大小按钮状态
-  document.querySelectorAll('#cardSizeButtons button, #cardSizeGroup button').forEach(function (btn) {
-    btn.classList.toggle('active', parseInt(btn.dataset.size, 10) === state.cardSize);
-  });
+  document
+    .querySelectorAll('#cardSizeButtons button, #cardSizeGroup button')
+    .forEach(function (btn) {
+      btn.classList.toggle('active', parseInt(btn.dataset.size, 10) === state.cardSize);
+    });
 }
 
 function updateSidebarActive() {
   // Only update active classes, no full re-render needed to avoid flicker
-  if (state.currentTab !== 'folders') {
+  if (!isFolderSidebarTab(state.currentTab)) {
     if (state.currentTab === 'dates') loadDateGroups();
     return;
   }
@@ -2378,7 +2492,8 @@ function bindGridImageProgress(root) {
   }
 }
 
-async function loadFolderCovers() {
+async function loadFolderCovers(request) {
+  request = request || beginPhotoRequest();
   showSkeleton('folders');
   try {
     var url =
@@ -2389,7 +2504,8 @@ async function loadFolderCovers() {
     if (state.mediaFilter && state.mediaFilter !== 'all') {
       url += '&mediaType=' + encodeURIComponent(state.mediaFilter);
     }
-    var raw = await apiGet(url);
+    var raw = await apiGet(url, request.signal);
+    if (request.signal.aborted || request.seq !== state.photosRequestSeq) return;
     var covers;
     var total;
     var totalPages;
@@ -2422,6 +2538,7 @@ async function loadFolderCovers() {
       isFolderOverview: true,
     });
   } catch (e) {
+    if (request.signal.aborted || request.seq !== state.photosRequestSeq) return;
     var photoGrid3 = $('#photoGrid');
     if (photoGrid3) {
       photoGrid3.innerHTML =
@@ -2489,7 +2606,22 @@ function renderFolderCoverGrid(covers) {
 
 // === Load photos ===
 async function loadPhotos(extraParams) {
-  var requestSeq = ++state.photosRequestSeq;
+  // 智能视图（搜图 / 人物）的结果由适配层直接灌进 #photoGrid，不走分页与筛选链路，
+  // 所以要在骨架屏之前分流，否则首屏引导会被刷成「正在加载图片」。
+  if (isWebAiView()) {
+    beginPhotoRequest();
+    setDisplay('#pagination', 'none');
+    setDisplay('#browseFooter', 'none');
+    if (webAiViews) await webAiViews.load();
+    return;
+  }
+  // 从智能视图回到浏览视图：收掉 AI 工具栏（搜索框 / 返回键）并恢复筛选与排序。
+  if (webAiViews && webAiViews.isShowing()) webAiViews.leave();
+  var request = beginPhotoRequest();
+  var requestSeq = request.seq;
+  function requestGet(url) {
+    return apiGet(url, request.signal);
+  }
   showSkeleton();
   try {
     var result;
@@ -2508,7 +2640,7 @@ async function loadPhotos(extraParams) {
 
     switch (state.currentView) {
       case 'search':
-        result = await apiGet(
+        result = await requestGet(
           '/api/search?q=' + encodeURIComponent(state.searchQuery) + baseParams,
         );
         if (requestSeq !== state.photosRequestSeq) return;
@@ -2517,52 +2649,55 @@ async function loadPhotos(extraParams) {
         break;
       case 'folder_overview':
         if (requestSeq !== state.photosRequestSeq) return;
-        await loadFolderCovers();
+        await loadFolderCovers(request);
         if (requestSeq !== state.photosRequestSeq) return;
         return;
       case 'folder':
-        result = await apiGet(
+        result = await requestGet(
           '/api/folder-photos?path=' + encodeURIComponent(state.currentPath) + baseParams,
         );
         if (requestSeq !== state.photosRequestSeq) return;
         // Load immediate subfolder covers
         state.currentSubfolderCovers = [];
         try {
-          var subfolderResp = await apiGet(
+          var subfolderResp = await requestGet(
             '/api/immediate-subfolder-covers?parentPath=' +
               encodeURIComponent(state.currentPath) +
               (state.mediaFilter && state.mediaFilter !== 'all'
                 ? '&mediaType=' + encodeURIComponent(state.mediaFilter)
                 : ''),
           );
+          if (request.signal.aborted || requestSeq !== state.photosRequestSeq) return;
           state.currentSubfolderCovers = Array.isArray(subfolderResp)
             ? subfolderResp
             : subfolderResp.covers || [];
         } catch (e) {
+          if (request.signal.aborted || requestSeq !== state.photosRequestSeq) return;
           console.warn('Failed to load subfolder covers:', e);
           state.currentSubfolderCovers = [];
         }
         break;
       case 'date':
-        result = await apiGet(
+        result = await requestGet(
           '/api/date-photos?date=' + encodeURIComponent(state.currentDate) + baseParams,
         );
         if (requestSeq !== state.photosRequestSeq) return;
         state.currentSubfolderCovers = [];
         break;
       case 'root':
-        result = await apiGet('/api/photos?' + baseParams + '&rootId=' + state._rootId);
+        result = await requestGet('/api/photos?' + baseParams + '&rootId=' + state._rootId);
         if (requestSeq !== state.photosRequestSeq) return;
         state.currentSubfolderCovers = [];
         break;
       default:
         var url = '/api/photos?' + baseParams;
         if (extraParams) url += '&' + extraParams;
-        result = await apiGet(url);
+        result = await requestGet(url);
         if (requestSeq !== state.photosRequestSeq) return;
         state.currentSubfolderCovers = [];
     }
 
+    if (request.signal.aborted || requestSeq !== state.photosRequestSeq) return;
     state.currentPhotos = result.photos || [];
     state.previewTotalPhotos = result.total || 0;
     state.previewTotalPages = result.totalPages || 1;
@@ -2607,24 +2742,32 @@ function renderPhotoGrid(photos) {
 
   if (!hasSubfolders && !hasPhotos) {
     var emptyTitle = '\u6CA1\u6709\u627E\u5230\u7167\u7247';
-    var emptyHint = '\u8BD5\u8BD5\u8C03\u6574\u4E0A\u65B9\u7B5B\u9009\u6216\u6392\u5E8F\u6761\u4EF6\u3002';
+    var emptyHint =
+      '\u8BD5\u8BD5\u8C03\u6574\u4E0A\u65B9\u7B5B\u9009\u6216\u6392\u5E8F\u6761\u4EF6\u3002';
     if (state.mediaFilter === 'video') {
       emptyTitle = '\u6682\u65E0\u89C6\u9891';
-      emptyHint = '\u8FD9\u4E2A\u76EE\u5F55\u6682\u65F6\u6CA1\u6709\u89C6\u9891\u6587\u4EF6\uFF0C\u53BB\u5176\u4ED6\u76EE\u5F55\u770B\u770B\u5427\u3002';
+      emptyHint =
+        '\u8FD9\u4E2A\u76EE\u5F55\u6682\u65F6\u6CA1\u6709\u89C6\u9891\u6587\u4EF6\uFF0C\u53BB\u5176\u4ED6\u76EE\u5F55\u770B\u770B\u5427\u3002';
     } else if (state.mediaFilter === 'image') {
       emptyTitle = '\u6682\u65E0\u56FE\u7247';
-      emptyHint = '\u8FD9\u4E2A\u76EE\u5F55\u6682\u65F6\u6CA1\u6709\u56FE\u7247\u6587\u4EF6\uFF0C\u53BB\u5176\u4ED6\u76EE\u5F55\u770B\u770B\u5427\u3002';
+      emptyHint =
+        '\u8FD9\u4E2A\u76EE\u5F55\u6682\u65F6\u6CA1\u6709\u56FE\u7247\u6587\u4EF6\uFF0C\u53BB\u5176\u4ED6\u76EE\u5F55\u770B\u770B\u5427\u3002';
     }
-    var emptySvg = '<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 64 64\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\' style=\'width:52px;height:52px;opacity:0.55\'><rect x=\'8\' y=\'12\' width=\'48\' height=\'40\' rx=\'8\'/><path d=\'M8 44l12-12 8 8 16-16 12 12\'/><circle cx=\'46\' cy=\'24\' r=\'4\'/></svg>';
+    var emptySvg =
+      "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' style='width:52px;height:52px;opacity:0.55'><rect x='8' y='12' width='48' height='40' rx='8'/><path d='M8 44l12-12 8 8 16-16 12 12'/><circle cx='46' cy='24' r='4'/></svg>";
     var photoGrid5 = $('#photoGrid');
     if (photoGrid5) {
       photoGrid5.innerHTML =
         '<div class="empty-state">' +
-        '<div class="empty-state-visual" aria-hidden="true">' + emptySvg + '</div>' +
+        '<div class="empty-state-visual" aria-hidden="true">' +
+        emptySvg +
+        '</div>' +
         '<div class="title">' +
         emptyTitle +
         '</div>' +
-        '<p class="empty-state-hint">' + emptyHint + '</p>' +
+        '<p class="empty-state-hint">' +
+        emptyHint +
+        '</p>' +
         '</div>';
       return;
     }
@@ -2654,7 +2797,9 @@ function renderPhotoGrid(photos) {
         '<div class="photo-card folder-card" data-folder-path="' + escapeAttr(folderPath) + '">';
       if (subThumbUrl) {
         html +=
-          '<div class="thumb-blur-placeholder" aria-hidden="true" style="background-image:url(' + escapeAttr(subThumbUrl) + ');background-size:cover;background-position:center;"></div>' +
+          '<div class="thumb-blur-placeholder" aria-hidden="true" style="background-image:url(' +
+          escapeAttr(subThumbUrl) +
+          ');background-size:cover;background-position:center;"></div>' +
           '<img src="' +
           subThumbUrl +
           '" alt="' +
@@ -2690,7 +2835,9 @@ function renderPhotoGrid(photos) {
     {
       var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
       html +=
-        '<div class="thumb-blur-placeholder" aria-hidden="true" style="background-image:url(/thumb/' + photo.id + ');background-size:cover;background-position:center;"></div>' +
+        '<div class="thumb-blur-placeholder" aria-hidden="true" style="background-image:url(/thumb/' +
+        photo.id +
+        ');background-size:cover;background-position:center;"></div>' +
         '<div class="thumb-vignette" aria-hidden="true"></div>' +
         '<img src="/thumb/' +
         photo.id +
@@ -2726,7 +2873,9 @@ function showSkeleton(gridHint) {
     '<span class="grid-loading-spinner"></span>' +
     '<span class="grid-loading-spinner-inner"></span>' +
     '</div>' +
-    '<div class="grid-loading-text">' + hint + '</div>' +
+    '<div class="grid-loading-text">' +
+    hint +
+    '</div>' +
     '</div>';
   var gridEl2 = $('#photoGrid');
   if (gridEl2) gridEl2.innerHTML = html;
@@ -3778,18 +3927,33 @@ async function loadPreviewInfoPanel(photo) {
   function renderInfo(info) {
     var sections = [];
     function startSection(title) {
-      sections.push('<div class="preview-info-section"><div class="preview-info-section-title">' + escapeHtml(title) + '</div><div class="preview-info-section-body">');
+      sections.push(
+        '<div class="preview-info-section"><div class="preview-info-section-title">' +
+          escapeHtml(title) +
+          '</div><div class="preview-info-section-body">',
+      );
     }
     function endSection() {
       sections.push('</div></div>');
     }
     function addToSection(label, value) {
       if (value == null || value === '' || value === 0) return;
-      sections.push('<div class="preview-info-row"><span class="preview-info-label">' + escapeHtml(label) + '</span><span class="preview-info-value">' + escapeHtml(String(value)) + '</span></div>');
+      sections.push(
+        '<div class="preview-info-row"><span class="preview-info-label">' +
+          escapeHtml(label) +
+          '</span><span class="preview-info-value">' +
+          escapeHtml(String(value)) +
+          '</span></div>',
+      );
     }
 
     // 基本信息
-    var hasBasic = info.file_name || info.file_path || info.file_type || (info.width && info.height) || info.file_size;
+    var hasBasic =
+      info.file_name ||
+      info.file_path ||
+      info.file_type ||
+      (info.width && info.height) ||
+      info.file_size;
     if (hasBasic) {
       startSection('基本信息');
       addToSection('文件名', info.file_name);
@@ -3804,8 +3968,14 @@ async function loadPreviewInfoPanel(photo) {
     var hasTime = info.date_taken || info.date_modified;
     if (hasTime) {
       startSection('时间');
-      addToSection('拍摄时间', info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '');
-      addToSection('修改时间', info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '');
+      addToSection(
+        '拍摄时间',
+        info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '',
+      );
+      addToSection(
+        '修改时间',
+        info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '',
+      );
       endSection();
     }
 
@@ -3833,11 +4003,16 @@ async function loadPreviewInfoPanel(photo) {
     // 位置
     if (info.gps_latitude != null && info.gps_longitude != null) {
       startSection('位置');
-      addToSection('GPS', Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6));
+      addToSection(
+        'GPS',
+        Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6),
+      );
       endSection();
     }
 
-    contentEl.innerHTML = sections.length ? sections.join('') : '<div class="preview-info-empty">无可用信息</div>';
+    contentEl.innerHTML = sections.length
+      ? sections.join('')
+      : '<div class="preview-info-empty">无可用信息</div>';
   }
 
   // 先用 photo 对象中已有的基础信息立即渲染，避免空白
@@ -3849,7 +4024,7 @@ async function loadPreviewInfoPanel(photo) {
     height: photo.height || photo.pixel_height || photo.file_height || 0,
     file_size: photo.file_size || 0,
     date_taken: photo.date_taken || '',
-    date_modified: photo.date_modified || ''
+    date_modified: photo.date_modified || '',
   };
   renderInfo(baseInfo);
 
@@ -3875,7 +4050,9 @@ async function toggleFavoriteForPhoto(photoId) {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({ id: photoId }),
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      return r.json();
+    });
     if (result && result.error) throw new Error(result.error);
     var isFav = !!(result && result.is_favorite);
     // 更新 state 里的照片
@@ -3914,7 +4091,9 @@ function downloadPhoto(photoId) {
   a.download = '';
   document.body.appendChild(a);
   a.click();
-  setTimeout(function () { document.body.removeChild(a); }, 100);
+  setTimeout(function () {
+    document.body.removeChild(a);
+  }, 100);
 }
 
 // === 多选功能 ===
@@ -3924,16 +4103,24 @@ function enterSelectionMode() {
   _selectionSet = {};
   updateSelectionToolbar();
   var toolbar = $('#selectionToolbar');
-  if (toolbar) { toolbar.classList.add('show'); toolbar.setAttribute('aria-hidden', 'false'); }
+  if (toolbar) {
+    toolbar.classList.add('show');
+    toolbar.setAttribute('aria-hidden', 'false');
+  }
   var grid = $('#photoGrid');
   if (grid) grid.classList.add('in-selection');
 }
 
 function exitSelectionMode() {
   _selectionSet = {};
-  document.querySelectorAll('.photo-card.selected').forEach(function (c) { c.classList.remove('selected'); });
+  document.querySelectorAll('.photo-card.selected').forEach(function (c) {
+    c.classList.remove('selected');
+  });
   var toolbar = $('#selectionToolbar');
-  if (toolbar) { toolbar.classList.remove('show'); toolbar.setAttribute('aria-hidden', 'true'); }
+  if (toolbar) {
+    toolbar.classList.remove('show');
+    toolbar.setAttribute('aria-hidden', 'true');
+  }
   var grid = $('#photoGrid');
   if (grid) grid.classList.remove('in-selection');
 }
@@ -3961,8 +4148,12 @@ function updateSelectionToolbar() {
 function selectAllPhotos() {
   _selectionSet = {};
   var photos = state.currentPhotos || [];
-  for (var i = 0; i < photos.length; i++) { _selectionSet[photos[i].id] = photos[i]; }
-  document.querySelectorAll('#photoGrid .photo-card').forEach(function (c) { c.classList.add('selected'); });
+  for (var i = 0; i < photos.length; i++) {
+    _selectionSet[photos[i].id] = photos[i];
+  }
+  document.querySelectorAll('#photoGrid .photo-card').forEach(function (c) {
+    c.classList.add('selected');
+  });
   updateSelectionToolbar();
 }
 
@@ -3972,16 +4163,24 @@ function deselectAllPhotos() {
 
 function downloadSelected() {
   var ids = Object.keys(_selectionSet);
-  if (!ids.length) { showWebToast('请先选择照片'); return; }
+  if (!ids.length) {
+    showWebToast('请先选择照片');
+    return;
+  }
   ids.forEach(function (id, i) {
-    setTimeout(function () { downloadPhoto(id); }, i * 300);
+    setTimeout(function () {
+      downloadPhoto(id);
+    }, i * 300);
   });
   showWebToast('开始下载 ' + ids.length + ' 张照片');
 }
 
 async function favoriteSelected() {
   var ids = Object.keys(_selectionSet);
-  if (!ids.length) { showWebToast('请先选择照片'); return; }
+  if (!ids.length) {
+    showWebToast('请先选择照片');
+    return;
+  }
   var ok = 0;
   for (var i = 0; i < ids.length; i++) {
     try {
@@ -4008,8 +4207,10 @@ function showContextMenu(e, photoIndex) {
   if (!menu) return;
   menu.classList.add('show');
   menu.setAttribute('aria-hidden', 'false');
-  var x = e.clientX, y = e.clientY;
-  var mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 180;
+  var x = e.clientX,
+    y = e.clientY;
+  var mw = menu.offsetWidth || 160,
+    mh = menu.offsetHeight || 180;
   if (x + mw > window.innerWidth) x = window.innerWidth - mw - 8;
   if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
   menu.style.left = x + 'px';
@@ -4018,7 +4219,10 @@ function showContextMenu(e, photoIndex) {
 
 function hideContextMenu() {
   var menu = $('#contextMenu');
-  if (menu) { menu.classList.remove('show'); menu.setAttribute('aria-hidden', 'true'); }
+  if (menu) {
+    menu.classList.remove('show');
+    menu.setAttribute('aria-hidden', 'true');
+  }
   _contextMenuPhotoIndex = -1;
 }
 
@@ -4178,4 +4382,65 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(function () {});
   });
 }
+window.PhotoCompare.mount({
+  currentPhoto: function () {
+    return state.previewPhotos[state.previewIndex];
+  },
+  imageUrl: function (photo) {
+    return '/preview-image/' + photo.id;
+  },
+  beforeOpen: closePreview,
+});
+// 网页端「搜图 / 人物」：入口在文件栏（侧栏页签），结果落进主照片网格，
+// 因此卡片渲染、点击进预览、上一张/下一张、幻灯片、收藏与选择全部复用浏览链路。
+var webAiGet = function (url) {
+  return fetch(url, { credentials: 'same-origin' }).then(function (response) {
+    if (response.status === 401) {
+      // 与 apiGet 一致：登录过期直接回登录页，而不是把 401 当成「模型未就绪」。
+      try {
+        window.location.href = '/login';
+      } catch (e) {}
+      throw new Error('需要登录');
+    }
+    return response.json().then(function (result) {
+      if (!response.ok) throw new Error((result && result.error) || 'AI_UNAVAILABLE');
+      return result;
+    });
+  });
+};
+var webAiPost = function (url, payload) {
+  return fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  }).then(function (response) {
+    if (response.status === 401) {
+      try {
+        window.location.href = '/login';
+      } catch (e) {}
+      throw new Error('需要登录');
+    }
+    return response.json().then(function (result) {
+      if (!response.ok) throw new Error((result && result.error) || 'FACE_NAME_INVALID');
+      return result;
+    });
+  });
+};
+webAiViews = window.WebAiViews.init({
+  state: state,
+  dom: {
+    photoGrid: $('#photoGrid'),
+    headerTitle: $('#headerTitle'),
+    sidebar: $('#aiSidebar'),
+  },
+  get: webAiGet,
+  post: webAiPost,
+  renderPhotoGrid: renderPhotoGrid,
+  applyCardSize: applyCardSize,
+  escapeHtml: escapeHtml,
+  setText: setText,
+  setDisplay: setDisplay,
+});
+webAiViews.bind();
 init();

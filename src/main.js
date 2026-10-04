@@ -1,3 +1,5 @@
+const startupMetrics = require('./main/startup-metrics').createStartupMetrics();
+startupMetrics.mark('main.enter');
 const {
   app,
   BrowserWindow,
@@ -23,10 +25,33 @@ const { spawn, spawnSync } = require('child_process');
 const { Worker } = require('worker_threads');
 const Database = require('./database');
 const dbReadWorkerPool = require('./db-read-worker-pool');
+const { runDatabaseMaintenance } = require('./main/database-maintenance');
+const maintenanceGuard = require('./main/maintenance-guard');
+const { createDbWriteQueue } = require('./main/db-write-queue');
+/**
+ * 启动期写库任务串行闸门。缩略图标记修复 / 延迟索引 / FTS 维护各起一个 worker，
+ * 过去各自 setTimeout 点火、互相不认识，后到的那个等满 busy_timeout=8000 就撞
+ * `database is locked`。这里排成一队，并把队列状态并进 maintenanceBusy()，
+ * 让界面触发的维护也知道该等、并报出在等谁。
+ */
+const dbWriteQueue = createDbWriteQueue({
+  onStart: function (name) {
+    startupStageLog('db-write.start', 'task=' + name);
+  },
+  onSettle: function (name, error) {
+    startupStageLog('db-write.done', 'task=' + name + (error ? ' error=' + error.message : ''));
+  },
+});
+const { Readable } = require('stream');
 const { runDbReadWorkerOnly } = require('./db-read-runner');
+const browseRequests = require('./main/browse-requests');
 const { CatalogCacheDb, normalizeMediaKey } = require('./catalog-cache-db');
 const logger = require('./main/logger');
 const similarDetection = require('./main/similar-detection');
+const { idListPredicate, toIdListJson } = require('./main/sql-id-list');
+const { computeDhash, getDhashBuckets } = require('./main/perceptual-hash');
+/** 搜图匹配阈值的范围与默认值：唯一定义处（src/ai/index-store.js），设置默认值从它取。 */
+const { MATCH_THRESHOLD_RANGE } = require('./ai/index-store');
 
 /** 懒加载：避免冷启动即解析 ffmpeg-static 路径（磁盘/解压成本） */
 var cachedFfmpegStaticPath;
@@ -229,7 +254,123 @@ var autoBackfillScheduled = false;
 var autoDuplicateHashScheduled = false;
 var autoDuplicateHashRetryTimer = null;
 var sqliteDbPath = '';
+var semanticSearch = null;
+var faceService = null;
 var optimizeTaskRunning = false;
+var maintenanceResult = null;
+function maintenanceBusy() {
+  return (
+    optimizeTaskRunning ||
+    // 两套 AI 索引在跑时它们一直持有 photos.db 连接并反复写批次事务，此时做维护必然撞锁。
+    aiIndexTaskBusy() ||
+    // 启动期三个一次性写库任务（缩略图标记修复 / 延迟索引 / FTS 维护）各持一把写锁，
+    // 队列里还有人没跑完就等于「库正被写」，同样不许插队。
+    dbWriteQueue.isBusy() ||
+    isScanQueueProcessing ||
+    scanQueue.length > 0 ||
+    isFolderScanRunning() ||
+    thumbnailBackfill.running ||
+    duplicateHashTask.running ||
+    invalidCleanupTask.running ||
+    startupInvalidCleanupTask.running
+  );
+}
+/** 当前挡着库的是谁：给界面一句能行动的话，而不是笼统的「后台任务进行中」。 */
+function dbWriteBusyLabel() {
+  var name = dbWriteQueue.busyName();
+  if (!name) return '';
+  if (name === 'thumbnail-fix') return '数据库迁移（缩略图标记）';
+  if (name === 'deferred-index') return '数据库索引补齐';
+  if (name === 'fts-index') return '文件名索引重建';
+  if (name === 'invalid-cleanup') return '清理失效文件记录';
+  return name;
+}
+/** 维护被挡时的文案：能让用户知道在等谁、等的是什么，比笼统的 busy 有用得多。 */
+function maintenanceBusyMessage() {
+  var label = dbWriteBusyLabel();
+  if (label) return '启动期数据库任务进行中（' + label + '），请等它跑完再试';
+  return '后台任务进行中，请稍后再试';
+}
+function aiIndexTaskBusy() {
+  return maintenanceGuard.aiIndexBusy([semanticSearch, faceService], function (error) {
+    logger.warn('[maintenance] AI status probe failed:', error && error.message);
+  });
+}
+/** VACUUM 的空间开销与收益；取不到返回 null（表示不拦、也不显示数字）。 */
+function vacuumSpaceEstimate() {
+  try {
+    const stats = {
+      pageSize: db.db.pragma('page_size', { simple: true }),
+      pageCount: db.db.pragma('page_count', { simple: true }),
+      freePages: db.db.pragma('freelist_count', { simple: true }),
+      fileSize: fs.statSync(sqliteDbPath).size,
+    };
+    return {
+      need: maintenanceGuard.vacuumWorkspaceBytes(stats),
+      reclaimable: maintenanceGuard.vacuumReclaimableBytes(stats),
+      fileSize: stats.fileSize,
+    };
+  } catch (error) {
+    logger.warn('[maintenance] vacuum space estimate failed:', error && error.message);
+    return null;
+  }
+}
+/** VACUUM 的临时库可能落地的两处位置，各自可用空间（-1 表示未知）。 */
+function vacuumSpacePlaces() {
+  return [
+    { label: '数据库所在分区', free: maintenanceGuard.freeDiskBytes(path.dirname(sqliteDbPath)) },
+    { label: '系统临时目录', free: maintenanceGuard.freeDiskBytes(os.tmpdir()) },
+  ];
+}
+/** 磁盘不够就直说差多少，而不是让它跑到一半 I/O 失败。返回空串表示放行。 */
+function vacuumSpaceShortage() {
+  const estimate = vacuumSpaceEstimate();
+  if (!estimate || !estimate.need) return '';
+  return maintenanceGuard.vacuumSpaceShortage(estimate.need, vacuumSpacePlaces());
+}
+/** 确认弹窗里那句「两处都够不够」的明细。 */
+function vacuumSpaceSummary() {
+  return vacuumSpacePlaces()
+    .map(function (place) {
+      return (
+        place.label + ' ' + (place.free < 0 ? '未知' : maintenanceGuard.formatBytes(place.free))
+      );
+    })
+    .join('、');
+}
+/** 空洞少到可忽略时直说：这次优化基本只是重建统计信息，别为了几 MB 重写整库。 */
+function vacuumReclaimHint(estimate) {
+  if (!estimate || estimate.reclaimable * 100 >= estimate.fileSize) return '';
+  return '（几乎没有空洞，本次优化的主要收益是重建统计信息）';
+}
+async function performMaintenance(operation) {
+  try {
+    // A UI write must fail promptly rather than wait on the maintenance write lock.
+    db.db.pragma('busy_timeout = 0');
+    maintenanceResult = { operation, status: 'running' };
+    const result = await runDatabaseMaintenance(sqliteDbPath, operation);
+    maintenanceResult = { operation, status: 'complete', result };
+    logger.info('Database maintenance complete:', operation, result);
+  } catch (error) {
+    // 闸门已经拦在前面了，这里再撞锁说明是没预料到的占用方（外部工具、别的实例）。
+    // 裸的 `database is locked` 没人看得懂，换成一句能行动的话，同时保留原始信息便于排查。
+    const raw = (error && error.message) || '';
+    const locked = /database is locked|SQLITE_BUSY/i.test(raw);
+    maintenanceResult = {
+      operation,
+      status: 'failed',
+      error: locked ? '数据库被其他程序占用，请关闭后重试（' + raw + '）' : raw,
+    };
+    logger.error('Database maintenance failed:', error);
+    if (operation !== 'ensureFtsIndex' && mainWindow && !mainWindow.isDestroyed()) {
+      void dialog.showMessageBox(mainWindow, { type: 'error', message: maintenanceResult.error });
+    }
+  } finally {
+    db.db.pragma('busy_timeout = 8000');
+    optimizeTaskRunning = false;
+    emitBackgroundTasksChangedThrottled(true);
+  }
+}
 var tunnelTask = {
   enabled: false,
   running: false,
@@ -405,6 +546,7 @@ var invalidCleanupTask = {
 var isDev = process.argv.includes('--dev');
 var startupStageT0 = Date.now();
 function startupStageLog(stage, detail) {
+  startupMetrics.mark(stage);
   var elapsed = Date.now() - startupStageT0;
   if (detail != null && String(detail).length > 0) {
     logger.log('[startup-stage +%dms] %s | %s', elapsed, stage, String(detail));
@@ -534,7 +676,7 @@ function reconcileThemeStyleSettings() {
 function createDefaultSettings() {
   return {
     autoScanOnStartup: false,
-    /** 启动后空闲时自动补全缺失缩略图（与扫描队列互斥） */
+    /** 启动后空闲时自动补全缺失缩略图与 dHash（与扫描队列互斥） */
     autoThumbBackfillOnStartup: false,
     /** 缩略图补全同时处理张数（1–8），过大易占内存并加重磁盘随机读 */
     thumbBackfillConcurrency: 3,
@@ -587,10 +729,23 @@ function createDefaultSettings() {
     hlsMaxCacheEntries: 48,
     /** 界面语言：zh-CN | en */
     uiLocale: 'zh-CN',
+    /**
+     * 搜图匹配阈值（基线差口径，见 src/ai/embedding.js）。不再是「取相似度最高的 60 条」：
+     * 达标即可，条数由它决定。0 表示不过滤，越大越严（可能一张都不返回）。
+     */
+    aiSearchMatchThreshold: MATCH_THRESHOLD_RANGE.default,
   };
 }
 
 var settings = createDefaultSettings();
+
+/**
+ * 搜图检索要带上的参数。阈值由设置在渲染进程侧改、主进程侧读，因此这里总是取当前值。
+ * 传 undefined 时 IndexStore 会用它自己的默认值（两者同源，见 src/ai/index-store.js）。
+ */
+function searchMatchOptions() {
+  return { threshold: Number(settings.aiSearchMatchThreshold) };
+}
 
 /** 供 IPC 返回，避免渲染进程持有主进程对象引用、并保证可结构化克隆 */
 function cloneSettingsForIpc() {
@@ -648,6 +803,12 @@ function ensureSettingsShape() {
     subColor = 'white';
   settings.subtitleColor = subColor;
   if (settings.uiLocale !== 'en' && settings.uiLocale !== 'zh-CN') settings.uiLocale = 'zh-CN';
+  var matchThreshold = Number(settings.aiSearchMatchThreshold);
+  if (!isFinite(matchThreshold)) matchThreshold = MATCH_THRESHOLD_RANGE.default;
+  settings.aiSearchMatchThreshold = Math.max(
+    MATCH_THRESHOLD_RANGE.min,
+    Math.min(MATCH_THRESHOLD_RANGE.max, matchThreshold),
+  );
   var previewBoolKeys = [
     'previewShowFileName',
     'previewShowDateTaken',
@@ -895,7 +1056,9 @@ function runFolderScanInWorker(normalizedRootPath) {
       // Worker 在加载大库映射 / 全量枚举时可能数秒～数十秒无消息；过短会误杀。真死锁仍会被终止。
       var scanWorkerHeartbeatMs = 120000;
       if (silentMs > scanWorkerHeartbeatMs) {
-        logger.task('scan', 'heartbeat.timeout', 'silentMs=' + silentMs, { startedAt: workerScanStartedAt });
+        logger.task('scan', 'heartbeat.timeout', 'silentMs=' + silentMs, {
+          startedAt: workerScanStartedAt,
+        });
         finish({
           cancelled: false,
           error:
@@ -922,8 +1085,12 @@ function runFolderScanInWorker(normalizedRootPath) {
             msg.finalProgress,
           );
         }
-        var scanStatus = msg.error ? 'error' : (msg.cancelled ? 'cancelled' : 'done');
-        logger.task('scan', scanStatus, msg.error || '', { startedAt: workerScanStartedAt, current: msg.finalProgress ? msg.finalProgress.current : 0, total: msg.finalProgress ? msg.finalProgress.total : 0 });
+        var scanStatus = msg.error ? 'error' : msg.cancelled ? 'cancelled' : 'done';
+        logger.task('scan', scanStatus, msg.error || '', {
+          startedAt: workerScanStartedAt,
+          current: msg.finalProgress ? msg.finalProgress.current : 0,
+          total: msg.finalProgress ? msg.finalProgress.total : 0,
+        });
         finish({
           cancelled: !!msg.cancelled,
           error: msg.error || null,
@@ -1033,6 +1200,11 @@ function getScanQueueStatus() {
 }
 
 function enqueueScanTask(task) {
+  // 反方向也要堵：启动期的库迁移/索引任务正持着写锁时起扫描，扫描自己就会撞
+  // `database is locked`。闸门双向才算闸门。
+  if (optimizeTaskRunning || dbWriteQueue.isBusy()) {
+    return Promise.resolve({ success: false, error: maintenanceBusyMessage() });
+  }
   return new Promise(function (resolve) {
     scanQueue.push({
       id: scanTaskIdSeq++,
@@ -1078,7 +1250,16 @@ async function processScanQueue() {
         if (wr && wr.scanResult && wr.scanResult.perf && wr.scanResult.perf.length > 0) {
           var perf = wr.scanResult.perf;
           var totalMs = perf[perf.length - 1] ? perf[perf.length - 1].elapsed : 0;
-          logger.task('scan', 'perf.summary', perf.map(function (p) { return p.label + '=' + p.step + 'ms'; }).join(' '), { startedAt: workerScanStartedAt || Date.now(), totalMs: totalMs });
+          logger.task(
+            'scan',
+            'perf.summary',
+            perf
+              .map(function (p) {
+                return p.label + '=' + p.step + 'ms';
+              })
+              .join(' '),
+            { startedAt: workerScanStartedAt || Date.now(), totalMs: totalMs },
+          );
         }
       }
       // 无论成功/失败/取消，都发送完成信号，让渲染层退出“准备中...”
@@ -1203,23 +1384,50 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
   async function processOne(row) {
     if (thumbnailBackfill.cancelled) return;
     thumbnailBackfill.currentFile = row.file_path || '';
+    var skipThumbnail = row.has_thumbnail === 1;
     try {
-      var topts = getThumbOptions();
-      var thumb;
-      if (isVideoPath(row.file_path)) {
-        thumb = await extractVideoThumbnailWithFfmpeg(row.file_path, topts);
-        if (!thumb) {
-          thumb = await buildVideoPlaceholderThumbnail(topts);
-        }
+      if (skipThumbnail) {
+        // 已有缩略图：跳过生成，只计算 dHash
+        thumbnailBackfill.success++;
       } else {
-        thumb = await loadSharp()(row.file_path)
-          .rotate()
-          .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: topts.quality })
-          .toBuffer();
+        var topts = getThumbOptions();
+        var thumb;
+        if (isVideoPath(row.file_path)) {
+          thumb = await extractVideoThumbnailWithFfmpeg(row.file_path, topts);
+          if (!thumb) {
+            thumb = await buildVideoPlaceholderThumbnail(topts);
+          }
+        } else {
+          thumb = await loadSharp()(row.file_path)
+            .rotate()
+            .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: topts.quality })
+            .toBuffer();
+        }
+        db.updatePhotoThumbnail(row.id, thumb);
+        thumbnailBackfill.success++;
       }
-      db.updatePhotoThumbnail(row.id, thumb);
-      thumbnailBackfill.success++;
+      // 同步计算 dHash（仅图片）
+      if (!isVideoPath(row.file_path)) {
+        try {
+          var dhash = await computeDhash(row.file_path);
+          if (dhash) {
+            db.updatePhotoDhash(
+              row.id,
+              dhash,
+              getDhashBuckets(dhash),
+              row.date_modified,
+              row.file_size,
+            );
+          }
+        } catch (eDhash) {
+          logger.warn(
+            '[thumb-backfill] dHash failed for:',
+            row.file_path,
+            eDhash && eDhash.message,
+          );
+        }
+      }
     } catch (e) {
       thumbnailBackfill.failed++;
       if (thumbnailBackfill.failedPaths.length < THUMB_BACKFILL_FAILED_PATHS_MAX) {
@@ -1253,6 +1461,8 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
 }
 
 async function runThumbnailBackfill(limit) {
+  if (optimizeTaskRunning || dbWriteQueue.isBusy())
+    return { started: false, reason: 'maintenance' };
   const taskStart = Date.now();
   logger.log('[runThumbnailBackfill] task started, limit=', limit);
   if (thumbnailBackfill.running) {
@@ -1272,6 +1482,9 @@ async function runThumbnailBackfill(limit) {
   logger.log('[runThumbnailBackfill] state initialized');
 
   try {
+    // 先确保 dhash 列和 LSH 表已创建
+    if (typeof db.ensureDhashSchema === 'function') db.ensureDhashSchema();
+
     // 让出多次事件循环，让 UI 先更新状态再开始，避免启动就卡死
     logger.log('[runThumbnailBackfill] yielding for UI update');
     const yieldStart = Date.now();
@@ -1549,6 +1762,8 @@ function getDuplicateHashTaskProgress() {
 }
 
 async function runDuplicateHashDetection() {
+  if (optimizeTaskRunning || dbWriteQueue.isBusy())
+    return { started: false, reason: 'maintenance' };
   if (duplicateHashTask.running) {
     return { started: false, reason: 'running' };
   }
@@ -1686,11 +1901,23 @@ async function runDuplicateHashDetection() {
       duplicateHashBgLog('cancelled', '', true);
     }
     duplicateHashBgLog('finish', '', true);
-    logger.task('dup-hash', 'done', 'hashed=' + duplicateHashTask.hashed + ' failed=' + duplicateHashTask.failed + ' groups=' + duplicateHashTask.duplicateGroups, { startedAt: duplicateHashTask.startedAt });
+    logger.task(
+      'dup-hash',
+      'done',
+      'hashed=' +
+        duplicateHashTask.hashed +
+        ' failed=' +
+        duplicateHashTask.failed +
+        ' groups=' +
+        duplicateHashTask.duplicateGroups,
+      { startedAt: duplicateHashTask.startedAt },
+    );
     return { started: true };
   } catch (eRun) {
     duplicateHashBgLog('error', eRun && eRun.message ? eRun.message : String(eRun), true);
-    logger.task('dup-hash', 'error', eRun && eRun.message ? eRun.message : String(eRun), { startedAt: duplicateHashTask.startedAt });
+    logger.task('dup-hash', 'error', eRun && eRun.message ? eRun.message : String(eRun), {
+      startedAt: duplicateHashTask.startedAt,
+    });
     throw eRun;
   } finally {
     duplicateHashTask.running = false;
@@ -1758,6 +1985,26 @@ function scheduleAutoDuplicateHashDetection() {
   }, 700);
 }
 
+/**
+ * 跑一批「清理失效记录」。
+ *
+ * ⚠️ 这**不只是读**：`cleanupMissingFilesYielding` 内部是
+ * `BEGIN TRANSACTION … DELETE FROM photos WHERE id = ? … COMMIT`，是一段独占写锁的事务。
+ * 它过去两个调用点（启动期顺带清理 / 用户手动清理）都直接调用、**不认识写库队列**，
+ * 于是「批量 DELETE」和「启动期缩略图标记修复 / 延迟索引 / FTS 维护」会同时抢同一把写锁：
+ * 谁先拿到谁跑，后到的只能靠 `busy_timeout = 8000` 硬等，超了就 `database is locked`。
+ * 实测（2026-09-29 真库启动记录）里 `invalid-cleanup` 的批次与队列里第一个任务的窗口
+ * 完全重叠，只是那批恰好 `deleted = 0`（没真的写）才没炸。
+ *
+ * 所以从队列里排队走：同一时刻只有一个人持写锁。这里只包**单批**、不包整个清理循环，
+ * 批次之间队列会空出来给扫描 / 其他维护插队，不会被一个长清理长期霸占。
+ */
+function runInvalidCleanupBatch(options) {
+  return dbWriteQueue.run('invalid-cleanup', function () {
+    return db.cleanupMissingFilesYielding(options);
+  });
+}
+
 function scheduleStartupInvalidCleanup() {
   if (startupInvalidCleanupTask.running) return;
   startupInvalidCleanupTask.running = true;
@@ -1798,7 +2045,8 @@ function scheduleStartupInvalidCleanup() {
       finish();
       return;
     }
-    db.cleanupMissingFilesYielding({
+    // 队列里排队跑：这批是写事务，别和启动期迁移抢写锁。
+    runInvalidCleanupBatch({
       batchSize: BATCH_SIZE,
       afterId: startupInvalidCleanupTask.afterId,
       existsSyncSlice: 64,
@@ -1877,30 +2125,42 @@ function schedulePostWindowDeferredTasks() {
     scheduleStartupInvalidCleanup();
   }, 2200);
   setTimeout(function () {
-    try {
-      if (db && typeof db.applyDeferredThumbnailFix === 'function') {
-        db.applyDeferredThumbnailFix();
-        startupStageLog('post-window-deferred.thumbnail-fix.start');
-      }
-    } catch (eT) {
-      logger.error(
-        '[startup] deferred-thumbnail-fix failed:',
-        eT && eT.message ? eT.message : String(eT),
-      );
-    }
+    if (!db || typeof db.applyDeferredThumbnailFix !== 'function') return;
+    void dbWriteQueue
+      .run('thumbnail-fix', function () {
+        return db.applyDeferredThumbnailFix().then(function (report) {
+          // 如实报告：到底建了哪几个索引、扫了多少行 / 修了多少行、花了多久。
+          // 旧代码无条件打印「created thumbnail missing indexes」，每次启动都出现，
+          // 排查时根本看不出它是在干活还是空转了几十秒。
+          logger.log('[db migration] thumbnail-fix', JSON.stringify(report));
+          return report;
+        });
+      })
+      .catch(function (eThumb) {
+        logger.error(
+          '[startup] deferred-thumbnail-fix failed:',
+          eThumb && eThumb.message ? eThumb.message : String(eThumb),
+        );
+      });
   }, 5000);
-  setTimeout(function () {
-    try {
-      if (db && typeof db.rebuildFtsIndex === 'function') {
-        db.rebuildFtsIndex();
-        startupStageLog('post-window-deferred.fts-rebuild.done');
-      }
-    } catch (eFts) {
-      logger.error(
-        '[startup] deferred-fts-rebuild failed:',
-        eFts && eFts.message ? eFts.message : String(eFts),
-      );
+  setTimeout(function prepareSearchIndex() {
+    if (isQuitting || !db) return;
+    if (maintenanceBusy()) {
+      setTimeout(prepareSearchIndex, 5000).unref();
+      return;
     }
+    optimizeTaskRunning = true;
+    // 再入一次队列：上面的 maintenanceBusy() 只是快照，排队本身才是「不抢锁」的保证。
+    void dbWriteQueue
+      .run('fts-index', function () {
+        startupStageLog('post-window-deferred.fts-worker.start');
+        return performMaintenance('ensureFtsIndex');
+      })
+      .then(function () {
+        startupStageLog(
+          'post-window-deferred.fts-worker.' + (maintenanceResult && maintenanceResult.status),
+        );
+      });
   }, 6000);
 }
 
@@ -1919,19 +2179,38 @@ function scheduleDeferredPhotoIndexesOnce(reason) {
   );
   setTimeout(function () {
     if (!sqliteDbPath) return;
-    var path = require('path');
-    var Worker = require('worker_threads').Worker;
-    var worker = new Worker(path.join(__dirname, 'workers', 'deferred-index-worker.js'), {
-      workerData: { dbPath: sqliteDbPath },
-    });
-    worker.on('message', function (msg) {
-      startupStageLog('deferred-index.worker.done', JSON.stringify(msg));
-    });
-    worker.on('error', function (eIdx) {
-      logger.error(
-        '[startup] deferred-photo-indexes worker error:',
-        eIdx && eIdx.message ? eIdx.message : String(eIdx),
-      );
+    // 与缩略图标记修复 / FTS 维护排队，不并排抢同一把写锁。等 worker 退出（连接关掉）才算完。
+    void dbWriteQueue.run('deferred-index', function () {
+      return new Promise(function (resolve) {
+        var path = require('path');
+        var Worker = require('worker_threads').Worker;
+        var worker;
+        try {
+          worker = new Worker(path.join(__dirname, 'workers', 'deferred-index-worker.js'), {
+            workerData: { dbPath: sqliteDbPath },
+          });
+        } catch (eSpawn) {
+          // 起不来也要 resolve：这个 Promise 不 settle 会把整条写库队列永久卡住。
+          startupStageLog(
+            'deferred-index.worker.done',
+            JSON.stringify({ failed: true, error: eSpawn && eSpawn.message }),
+          );
+          resolve();
+          return;
+        }
+        var reported = null;
+        worker.on('message', function (msg) {
+          reported = msg;
+        });
+        worker.on('error', function (eIdx) {
+          reported = { failed: true, error: eIdx && eIdx.message ? eIdx.message : String(eIdx) };
+          logger.error('[startup] deferred-photo-indexes worker error:', reported.error);
+        });
+        worker.on('exit', function (code) {
+          startupStageLog('deferred-index.worker.done', JSON.stringify(reported || { exit: code }));
+          resolve();
+        });
+      });
     });
   }, firstDelay);
 }
@@ -2430,9 +2709,24 @@ function createWindow(appIcon) {
 
 // 必须在 app.ready 之前注册，否则 <video> 等媒体元素拒绝从自定义协议加载流
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'video', privileges: { secure: true, supportFetchAPI: true, stream: true, bypassCSP: true, corsEnabled: true } },
-  { scheme: 'photo', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } },
-  { scheme: 'thumb', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } },
+  {
+    scheme: 'video',
+    privileges: {
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true,
+      corsEnabled: true,
+    },
+  },
+  {
+    scheme: 'photo',
+    privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true },
+  },
+  {
+    scheme: 'thumb',
+    privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true },
+  },
 ]);
 
 app
@@ -2441,8 +2735,45 @@ app
     startupStageLog('app.whenReady');
     var userDataPath = app.getPath('userData');
     var dbPath = path.join(userDataPath, 'photos.db');
+    startupMetrics.setOutput(path.join(userDataPath, 'startup-performance.json'));
     var catalogCachePath = path.join(userDataPath, 'catalog-cache.db');
     sqliteDbPath = dbPath;
+    semanticSearch = new (require('./main/semantic-search').SemanticSearch)(
+      dbPath,
+      path.join(path.dirname(dbPath), 'ai-search'),
+      {
+        // 搜图是纯只读：索引进行中把请求托给正在跑的索引 worker（它已经载好模型），
+        // 用已落库的向量出结果，于是「边建索引边搜图」成立、结果只覆盖已索引的照片。
+        // 不能改成「另起一个 worker」——同一进程里并发载入第二份模型会把进程搞崩（实测）。
+        // suggest（预选词打分）与 search 同为只读、同样只需文本编码器，走同一条路。
+        concurrentReads: ['search', 'suggest'],
+        relayReads: ['search', 'suggest'],
+        // 检索与打分都不该冲掉索引进度（percent / processed / currentFile），保留原 phase。
+        preserveProgress: ['search', 'suggest'],
+      },
+    );
+    faceService = new (require('./main/face-service').FaceService)(
+      dbPath,
+      path.join(path.dirname(dbPath), 'face-index'),
+    );
+    // 下载模型与建索引互斥：同时跑会各占一套模型、反复读 photos.db，谁都跑不快。
+    // 只读查询（搜图、人物列表、人物照片）不受这两个开关影响，索引期间照常可用。
+    // 数据库维护（VACUUM / 重建缩略图标记）期间同样要拦：维护需要独占写锁，
+    // 索引 worker 一边跑一边写会把维护顶成 `database is locked`。这里返回的是**错误码**
+    // 而不是 false，界面才能说清「是数据库维护在占着」而不是笼统的「AI 任务正在运行」。
+    semanticSearch.canRun = function () {
+      if (optimizeTaskRunning) return 'AI_MAINTENANCE';
+      return !faceService.status().busy;
+    };
+    faceService.canRun = function () {
+      if (optimizeTaskRunning) return 'AI_MAINTENANCE';
+      return !semanticSearch.status().busy;
+    };
+    // 搜图曾经另有一道闸门（人脸索引在跑时直接拒绝）。现已撤除：
+    // 真正的约束是内存，而「人脸索引 + 一个搜图 worker」实测根本不崩——人脸模型才 41 MB，
+    // 会崩的是**同一份 SigLIP2 被并发载入两遍**（内存耗尽），那条路已经由 relay 彻底堵死：
+    // 搜图索引在跑时搜索托给同一个 worker，永远不会有第二份 SigLIP2。
+    // 加上搜图现在只载文本编码器（textOnly，省掉视觉那约 95 MB），这条路径只会更轻。
     settingsFilePath = path.join(userDataPath, 'settings.json');
     if (isDev) {
       var dbExists = false;
@@ -2573,7 +2904,7 @@ app
               headers: { 'Content-Type': 'image/jpeg' },
             });
           }
-          var data = fs.readFileSync(photo.file_path);
+          var data = Readable.toWeb(fs.createReadStream(photo.file_path));
           var mimeMap = {
             '.jpg': 'image/jpeg',
             '.jpeg': 'image/jpeg',
@@ -2702,7 +3033,9 @@ app
           if (this._remaining <= 0) {
             controller.close();
             if (this._fd != null) {
-              try { fs.closeSync(this._fd); } catch (_e) {}
+              try {
+                fs.closeSync(this._fd);
+              } catch (_e) {}
               this._fd = null;
             }
             return;
@@ -2712,7 +3045,9 @@ app
             var bytesRead = fs.readSync(this._fd, this._buf, 0, toRead, this._pos);
             if (bytesRead <= 0) {
               controller.close();
-              try { fs.closeSync(this._fd); } catch (_e2) {}
+              try {
+                fs.closeSync(this._fd);
+              } catch (_e2) {}
               this._fd = null;
               return;
             }
@@ -2722,14 +3057,18 @@ app
           } catch (err) {
             controller.error(err);
             if (this._fd != null) {
-              try { fs.closeSync(this._fd); } catch (_e3) {}
+              try {
+                fs.closeSync(this._fd);
+              } catch (_e3) {}
               this._fd = null;
             }
           }
         },
         cancel: function () {
           if (this._fd != null) {
-            try { fs.closeSync(this._fd); } catch (_e4) {}
+            try {
+              fs.closeSync(this._fd);
+            } catch (_e4) {}
             this._fd = null;
           }
         },
@@ -2784,9 +3123,15 @@ app
           previewJpegMaxQueue: 48,
           /** /api/root-folders、/api/stats 等大查询走只读 Worker，避免内嵌网页拖死主进程 */
           sqliteReadPath: dbPath,
+          semanticSearch: semanticSearch,
+          faceService: faceService,
           getBrowseFolderIncludeSubfolders: function () {
             reloadSettingsFromDiskSilently();
             return settings.browseFolderIncludeSubfolders !== false;
+          },
+          /** 网页端搜图用与桌面同一份阈值：两边共用 sever 上的一套设置。 */
+          getAiSearchMatchThreshold: function () {
+            return settings.aiSearchMatchThreshold;
           },
         });
         webServer.setPassword(settings.webPassword || '');
@@ -2838,6 +3183,12 @@ app
     tunnelTask.enabled = false;
 
     // === IPC Handlers ===
+    ipcMain.once('notify-browse-photos-ready', () => {
+      startupStageLog('renderer.first-grid-paint');
+    });
+    ipcMain.on('begin-browse-request', (event, sequence) => {
+      browseRequests.begin(event.sender, sequence);
+    });
 
     ipcMain.on('notify-browse-ui-ready', function () {
       startupStageLog('ipc.notify-browse-ui-ready');
@@ -2960,6 +3311,7 @@ app
     });
 
     ipcMain.handle('start-thumbnail-backfill', async function (event, limit) {
+      if (optimizeTaskRunning) return { success: false, error: '数据库维护进行中' };
       const startTime = Date.now();
       logger.log('[start-thumbnail-backfill] IPC received, limit=', limit);
       if (isFolderScanRunning()) {
@@ -3031,11 +3383,14 @@ app
     });
 
     ipcMain.handle('maintenance-cleanup-missing-files', async function () {
-      if (isFolderScanRunning()) {
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
       if (invalidCleanupTask.running) {
         return { success: false, error: '清理任务已在运行' };
+      }
+      // 清理是分批 DELETE（写事务），属于「库正被写」的一方：
+      // 启动期迁移 / 扫描 / 补图 / 重复检测 / 写库队列里还有人在跑，都不许开枪。
+      // 这里用的是一次性判断（不做重试），所以不会有「排队等队列空」的饥饿问题。
+      if (maintenanceBusy()) {
+        return { success: false, error: maintenanceBusyMessage() };
       }
       var confirmRes = dialog.showMessageBoxSync(mainWindow, {
         type: 'warning',
@@ -3082,7 +3437,7 @@ app
               invalidCleanupTask.running &&
               !invalidCleanupTask.cancelled
             ) {
-              var r = await db.cleanupMissingFilesYielding({
+              var r = await runInvalidCleanupBatch({
                 batchSize: 1200,
                 afterId: afterId,
                 existsSyncSlice: 64,
@@ -3113,70 +3468,61 @@ app
       return { success: true };
     });
 
-    ipcMain.handle('maintenance-rebuild-thumbnail-flags', async function () {
-      if (isFolderScanRunning()) {
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
-      if (optimizeTaskRunning) {
-        return { success: false, error: '另一项维护任务正在运行，请稍后再试' };
-      }
+    ipcMain.handle('maintenance-rebuild-thumbnail-flags', function () {
+      if (maintenanceBusy()) return { success: false, error: maintenanceBusyMessage() };
       optimizeTaskRunning = true;
       emitBackgroundTasksChangedThrottled(true);
-
-      // 大库全表更新可能耗时较长，后台异步执行
       setTimeout(() => {
-        try {
-          var result = db.rebuildThumbnailFlags();
-          logger.log('Rebuild thumbnail flags done:', result);
-        } catch (err) {
-          logger.error('Rebuild thumbnail flags error:', err);
-        } finally {
-          optimizeTaskRunning = false;
-          emitBackgroundTasksChangedThrottled(true);
-        }
+        void dbWriteQueue.run('maintenance-rebuild-thumbnail-flags', () =>
+          performMaintenance('rebuildThumbnailFlags'),
+        );
       }, 0);
-
       return { success: true };
     });
 
-    ipcMain.handle('maintenance-optimize-database', function () {
-      if (isFolderScanRunning()) {
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
-      if (optimizeTaskRunning) {
-        return { success: false, error: '优化已在进行中' };
-      }
-      var confirmRes = dialog.showMessageBoxSync(mainWindow, {
+    ipcMain.handle('maintenance-optimize-database', async function () {
+      if (maintenanceBusy()) return { success: false, error: maintenanceBusyMessage() };
+      // VACUUM 要先另写一份临时库，磁盘不够就是跑到一半 I/O 失败；先算清楚再问要不要做。
+      const shortage = vacuumSpaceShortage();
+      if (shortage) return { success: false, error: shortage };
+      const estimate = vacuumSpaceEstimate();
+      const confirmation = await dialog.showMessageBox(mainWindow, {
         type: 'warning',
         buttons: ['取消', '确认优化'],
         defaultId: 0,
         cancelId: 0,
         title: '优化数据库',
         message: '即将执行数据库 VACUUM 优化。',
-        detail: '建议先备份数据库（复制 photos.db）。大库可能耗时较长，优化期间请勿关闭应用。确认后继续？',
+        detail:
+          '建议先使用备份功能备份数据库。大库可能耗时较长，优化期间请勿关闭应用。' +
+          (estimate && estimate.need
+            ? '本次需要额外约 ' +
+              maintenanceGuard.formatBytes(estimate.need) +
+              ' 临时空间，两处都要够：' +
+              vacuumSpaceSummary() +
+              '。库内可回收约 ' +
+              maintenanceGuard.formatBytes(estimate.reclaimable) +
+              vacuumReclaimHint(estimate) +
+              '。'
+            : ''),
       });
-      if (confirmRes !== 1) {
-        return { success: false, error: '用户取消' };
-      }
+      if (confirmation.response !== 1) return { success: false, error: '用户取消' };
+      // 弹窗期间可能有人起了扫描 / 索引，或者磁盘又被别的程序吃掉，所以复查一遍。
+      if (maintenanceBusy()) return { success: false, error: maintenanceBusyMessage() };
+      const recheck = vacuumSpaceShortage();
+      if (recheck) return { success: false, error: recheck };
       optimizeTaskRunning = true;
       emitBackgroundTasksChangedThrottled(true);
-
-      // 大数据库 VACUUM 可能耗时很长，后台异步执行避免卡住界面
       setTimeout(() => {
-        try {
-          db.optimizeDatabase();
-        } catch (err) {
-          logger.error('Optimize database error:', err);
-        } finally {
-          optimizeTaskRunning = false;
-          emitBackgroundTasksChangedThrottled(true);
-        }
+        void dbWriteQueue.run('maintenance-optimize-database', () =>
+          performMaintenance('optimizeDatabase'),
+        );
       }, 0);
-
       return { success: true };
     });
 
     ipcMain.handle('maintenance-start-duplicate-hash-detection', async function () {
+      if (optimizeTaskRunning) return { success: false, error: '数据库维护进行中' };
       if (isFolderScanRunning()) {
         return { success: false, error: '扫描进行中，请稍后再试' };
       }
@@ -3394,11 +3740,54 @@ app
     ipcMain.handle('maintenance-find-similar-photos', function (event, options) {
       options = options || {};
       if (!db) return [];
-      db.ensureDhashSchema();
       var photoId = parseInt(options.photoId, 10);
-      var threshold = parseInt(options.threshold, 10) || 12;
+      var threshold =
+        parseInt(options.threshold, 10) || parseInt(settings.similarThreshold, 10) || 12;
       if (!isFinite(photoId) || photoId <= 0) return [];
-      return similarDetection.findSimilarPhotos(db, photoId, threshold);
+      try {
+        db.ensureDhashSchema();
+        var t0 = Date.now();
+        var result = similarDetection.findSimilarPhotos(db, photoId, threshold);
+        var elapsed = Date.now() - t0;
+        if (elapsed > 5000) {
+          logger.warn(
+            '[maintenance-find-similar-photos] slow query: ' +
+              elapsed +
+              'ms for photoId=' +
+              photoId,
+          );
+        }
+        return result;
+      } catch (e) {
+        logger.error(
+          '[maintenance-find-similar-photos] error for photoId=' + photoId + ':',
+          e && e.message ? e.message : e,
+        );
+        throw e;
+      }
+    });
+
+    /** 批量按 ID 查询照片详情 */
+    ipcMain.handle('maintenance-get-photos-by-ids', function (event, ids) {
+      if (!db || !Array.isArray(ids) || ids.length === 0) return [];
+      // 调用方是「查找相似照片」的结果回传，长度跟着相似结果走 —— 同样不能展开成
+      // `IN (?,?,...)`，理由与 similar-detection.js 里那处一致，见 src/main/sql-id-list.js。
+      // （旧写法还把同一条 SQL prepare 了两次：一次给 .all、一次给 .apply 的 this。）
+      var sql =
+        'SELECT id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite FROM photos WHERE ' +
+        idListPredicate('id');
+      var rows = db.prepare(sql).all(toIdListJson(ids));
+      var plain = [];
+      for (var i = 0; i < rows.length; i++) {
+        var obj = {};
+        for (var key in rows[i]) {
+          if (Object.prototype.hasOwnProperty.call(rows[i], key)) {
+            obj[key] = rows[i][key];
+          }
+        }
+        plain.push(obj);
+      }
+      return plain;
     });
 
     ipcMain.handle('get-background-tasks', function () {
@@ -3419,7 +3808,10 @@ app
         thumbs: getThumbnailBackfillProgress(),
         invalidCleanup: getInvalidCleanupTaskProgress(),
         duplicateHash: getDuplicateHashTaskProgress(),
+        face: faceService ? faceService.status() : {},
+        semantic: semanticSearch ? semanticSearch.status() : {},
         optimizing: optimizeTaskRunning,
+        maintenance: maintenanceResult,
       };
     });
 
@@ -3675,7 +4067,7 @@ app
       options = options || {};
       var startedAt = Date.now();
       try {
-        /** 只读大查询固定 Worker（池 + oneshot），主进程不写 sync 聚合 */
+        /** 只读大查询固定走有界 Worker 池，主进程不执行同步聚合。 */
         var readPath = sqliteDbPath || dbPath;
         if (!readPath) {
           throw new Error('get-root-folders: database path unavailable');
@@ -3775,7 +4167,12 @@ app
       if (!readPath) {
         throw new Error('get-folder-covers: database path unavailable');
       }
-      return await runDbReadWorkerOnly(readPath, 'getFolderCovers', opts);
+      return await runDbReadWorkerOnly(
+        readPath,
+        'getFolderCovers',
+        opts,
+        browseRequests.control(event.sender, opts),
+      );
     });
 
     ipcMain.handle(
@@ -3786,7 +4183,12 @@ app
     );
 
     ipcMain.handle('get-photos', function (event, options) {
-      return db.getPhotos(options);
+      return runDbReadWorkerOnly(
+        sqliteDbPath,
+        'getPhotos',
+        options || {},
+        browseRequests.control(event.sender, options),
+      );
     });
 
     ipcMain.handle('get-photo-dimensions', async function (event, photoId) {
@@ -3814,7 +4216,12 @@ app
       if (opts.includeSubfolders === undefined) {
         opts.includeSubfolders = settings.browseFolderIncludeSubfolders !== false;
       }
-      return db.getFolderPhotos(folderPath, opts);
+      return runDbReadWorkerOnly(
+        sqliteDbPath,
+        'getFolderPhotos',
+        Object.assign(opts, { folderPath }),
+        browseRequests.control(event.sender, opts),
+      );
     });
 
     ipcMain.handle('get-date-groups', async function (event, options) {
@@ -3829,8 +4236,14 @@ app
     ipcMain.handle('get-date-photos', async function (event, dateStr, options) {
       try {
         var op = Object.assign({}, options || {}, { dateStr: dateStr });
-        return await runDbReadWorkerOnly(sqliteDbPath, 'getDatePhotos', op);
+        return await runDbReadWorkerOnly(
+          sqliteDbPath,
+          'getDatePhotos',
+          op,
+          browseRequests.control(event.sender, op),
+        );
       } catch (e) {
+        if (e && e.message === 'db-read cancelled') throw e;
         logger.error('get-date-photos worker failed:', e && e.message ? e.message : e);
         throw new Error('get-date-photos failed: db_read_unavailable', { cause: e });
       }
@@ -3841,7 +4254,70 @@ app
     });
 
     ipcMain.handle('search-photos', function (event, query, options) {
-      return db.searchPhotos(query, options);
+      return runDbReadWorkerOnly(
+        sqliteDbPath,
+        'searchPhotos',
+        Object.assign({}, options || {}, { query }),
+        browseRequests.control(event.sender, options),
+      );
+    });
+
+    ipcMain.handle('ai-search-status', async function () {
+      return semanticSearch.refresh();
+    });
+    ipcMain.handle('ai-search-install', function () {
+      var task = semanticSearch.start('install');
+      emitBackgroundTasksChangedThrottled(true);
+      return task;
+    });
+    ipcMain.handle('ai-search-index', function () {
+      var task = semanticSearch.start('index');
+      emitBackgroundTasksChangedThrottled(true);
+      return task;
+    });
+    ipcMain.handle('ai-search-cancel', function () {
+      return semanticSearch.cancel();
+    });
+    ipcMain.handle('ai-search-query', function (_event, query) {
+      return semanticSearch.run('search', query, searchMatchOptions());
+    });
+    /**
+     * 预选词打分。
+     *
+     * 两种入参形状都用：
+     *   - `{ lang, limit }`：**正常路径**。词源在服务端（`src/ai/search-vocabulary.js` 的
+     *     几百词开放词表），按真实命中数排序后返回前 N 个。界面不再自己带词表，
+     *     于是桌面端与网页端不可能漂移。
+     *   - `['词', ...]`（数组，老契约）：只对这几个词打分。留着是为了让老调用方与
+     *     静态守护断言继续有效，正常界面已经不走这条路。
+     * 失败就让界面自己决定怎么退化，不是致命错误。
+     */
+    ipcMain.handle('ai-search-suggest', function (_event, request) {
+      var payload = searchMatchOptions();
+      if (Array.isArray(request)) {
+        var list = request.slice(0, 64).map(function (item) {
+          return String(item == null ? '' : item);
+        });
+        if (!list.length) return Promise.resolve({ sampled: 0, terms: [] });
+        payload.candidates = list;
+      } else {
+        var scope = request && typeof request === 'object' ? request : {};
+        payload.lang = scope.lang ? String(scope.lang) : '';
+        if (scope.limit !== undefined) payload.limit = Number(scope.limit);
+      }
+      return semanticSearch.run('suggest', '', payload);
+    });
+    ipcMain.handle('face-action', function (_event, operation, args) {
+      if (operation === 'status') return faceService.refresh();
+      if (operation === 'install' || operation === 'index') {
+        // 「另一套索引在跑 / 数据库维护在跑」都由 faceService.canRun 判定，
+        // start() 会把拒因当错误码抛出去（AI_BUSY / AI_MAINTENANCE），这里不重复判断。
+        var faceTask = faceService.start(operation);
+        emitBackgroundTasksChangedThrottled(true);
+        return faceTask;
+      }
+      if (operation === 'cancel') return faceService.cancel();
+      return faceService.run(operation, args);
     });
 
     ipcMain.handle('remove-folder', function (event, rootPath) {
@@ -4034,8 +4510,14 @@ app
     ipcMain.on('scan-complete', function () {});
     ipcMain.on('trigger-scan', function () {}); // 避免未注册 warning
 
-    app.on('before-quit', function () {
+    app.on('before-quit', function (event) {
+      if (optimizeTaskRunning) {
+        event.preventDefault();
+        return;
+      }
       isQuitting = true;
+      if (semanticSearch) semanticSearch.dispose();
+      if (faceService) faceService.dispose();
       if (startupInvalidCleanupTask.timer) {
         clearTimeout(startupInvalidCleanupTask.timer);
         startupInvalidCleanupTask.timer = null;

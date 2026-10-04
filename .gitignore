@@ -3,6 +3,13 @@ release/
 dist/
 out/
 
+# Android local configuration and generated output
+android-app/.gradle/
+android-app/.idea/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+
 # Logs
 *.log
 npm-debug.log*
@@ -33,4 +40,3 @@ Desktop.ini
 # cloudflared（npm run download-cloudflared，打包时由 afterPack 复制到 resources/bin）
 /bin/cloudflared
 /bin/cloudflared.exe
-

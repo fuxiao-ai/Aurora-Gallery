@@ -124,6 +124,9 @@ function WebServer(db, port, opts) {
     typeof opts.getBrowseFolderIncludeSubfolders === 'function'
       ? opts.getBrowseFolderIncludeSubfolders
       : null;
+  /** 与桌面同一份搜图匹配阈值：阈值在桌面端设置里调，网页端只是照用 */
+  this.getAiSearchMatchThreshold =
+    typeof opts.getAiSearchMatchThreshold === 'function' ? opts.getAiSearchMatchThreshold : null;
 
   // /api/login 简单限流（按 IP）
   this.loginRate = {
@@ -162,6 +165,8 @@ function WebServer(db, port, opts) {
   this._previewJpegQueue = [];
   /** 与桌面 IPC 一致：大聚合走只读 Worker，避免 /api 拖死主线程 */
   this.sqliteReadPath = typeof opts.sqliteReadPath === 'string' ? opts.sqliteReadPath : '';
+  this.semanticSearch = opts.semanticSearch || null;
+  this.faceService = opts.faceService || null;
 
   this.hlsManager =
     this.hlsRootDir && this.ffmpegPath
@@ -407,6 +412,8 @@ WebServer.prototype.handleRequest = function (req, res) {
       'application/javascript; charset=utf-8',
       'no-store, max-age=0',
     );
+  } else if (pathname === '/gallery-design.css') {
+    this.serveStaticFile(res, 'css/gallery-design.css', 'text/css; charset=utf-8');
   } else if (pathname === '/app-icon.svg') {
     this.serveStaticFile(
       res,
@@ -457,6 +464,68 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.handleDatePhotos(req, res, query);
   } else if (pathname === '/api/search') {
     this.handleSearch(req, res, query);
+  } else if (pathname === '/api/person-rename') {
+    this.handlePersonRename(req, res);
+  } else if (
+    pathname === '/api/people' ||
+    pathname === '/api/person-photos' ||
+    pathname === '/api/face-status'
+  ) {
+    if (req.method !== 'GET') {
+      this.jsonResponse(res, { error: 'method_not_allowed' }, 405, req);
+      return;
+    }
+    if (!this.faceService) {
+      this.jsonResponse(res, { error: 'FACE_UNAVAILABLE' }, 503, req);
+      return;
+    }
+    const operation = pathname === '/api/people' ? 'groups' : 'photos';
+    const task =
+      pathname === '/api/face-status'
+        ? this.faceService.refresh()
+        : this.faceService.run(operation, { after: query.after, personId: query.personId });
+    task
+      .then((result) => {
+        if (!res.destroyed) this.jsonResponse(res, result, 200, req);
+      })
+      .catch((error) => {
+        if (!res.destroyed) this.jsonResponse(res, { error: error.message }, 503, req);
+      });
+  } else if (pathname === '/api/ai-search-suggest') {
+    this.handleAiSearchSuggest(req, res);
+  } else if (pathname === '/api/ai-search' || pathname === '/api/ai-search-status') {
+    if (req.method !== 'GET') {
+      this.jsonResponse(res, { error: 'method_not_allowed' }, 405, req);
+      return;
+    }
+    if (!this.semanticSearch) {
+      this.jsonResponse(res, { error: 'AI_UNAVAILABLE' }, 503, req);
+      return;
+    }
+    if (pathname === '/api/ai-search-status') {
+      const service = this.semanticSearch;
+      const refresh = service.refresh();
+      refresh
+        .then(() => {
+          if (!res.destroyed) this.jsonResponse(res, service.status(), 200, req);
+        })
+        .catch((error) => {
+          if (!res.destroyed) this.jsonResponse(res, { error: error.message }, 503, req);
+        });
+    } else {
+      // 阈值与桌面共用同一份设置；取不到就交给 IndexStore 用它自己的默认值。
+      const threshold = this.getAiSearchMatchThreshold
+        ? Number(this.getAiSearchMatchThreshold())
+        : undefined;
+      this.semanticSearch
+        .run('search', query.q, { threshold })
+        .then((data) => {
+          if (!res.destroyed) this.jsonResponse(res, data, 200, req);
+        })
+        .catch((error) => {
+          if (!res.destroyed) this.jsonResponse(res, { error: error.message }, 503, req);
+        });
+    }
   } else if (pathname === '/api/preview-next') {
     this.handlePreviewNext(req, res, query);
   } else if (pathname === '/api/preview-random-batch') {
@@ -505,6 +574,14 @@ WebServer.prototype.handleRequest = function (req, res) {
       path.join(this.webDir, 'vendor', 'hls.min.js'),
       'application/javascript; charset=utf-8',
     );
+  } else if (pathname === '/photo-compare.css') {
+    this.serveStaticFile(res, 'css/photo-compare.css', 'text/css; charset=utf-8');
+  } else if (pathname === '/js/photo-compare.js') {
+    this.serveStaticFile(res, 'js/photo-compare.js', 'application/javascript; charset=utf-8');
+  } else if (pathname === '/js/ai-views.js') {
+    this.serveStaticFile(res, 'js/ai-views.js', 'application/javascript; charset=utf-8');
+  } else if (pathname === '/ai-web-views.css') {
+    this.serveStaticFile(res, 'css/ai-web-views.css', 'text/css; charset=utf-8');
   } else if (pathname === '/js/app.js') {
     this.serveStaticFile(res, path.join('js', 'app.js'), 'application/javascript; charset=utf-8');
   } else if (pathname === '/js/web-theme-shared.js') {
@@ -638,11 +715,31 @@ WebServer.prototype.handleStats = function (req, res) {
     });
 };
 
+WebServer.prototype.respondWithDbRead = function (req, res, operation, options) {
+  if (!this.sqliteReadPath) {
+    this.jsonResponse(res, { error: 'db_read_unavailable' }, 503, req);
+    return;
+  }
+  const controller = new AbortController();
+  const cancel = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  res.once('close', cancel);
+  if (res.destroyed || req.aborted) controller.abort();
+  runDbReadWorkerOnly(this.sqliteReadPath, operation, options, { signal: controller.signal })
+    .then((result) => {
+      if (!res.destroyed) this.jsonResponse(res, result, 200, req);
+    })
+    .catch((error) => {
+      if (!res.destroyed) this.jsonResponse(res, { error: error.message }, 503, req);
+    })
+    .finally(() => res.removeListener('close', cancel));
+};
+
 WebServer.prototype.handlePhotos = function (req, res, query) {
   var options = this.parsePageOptions(query);
   options.lite = true;
-  var result = this.db.getPhotos(options);
-  this.jsonResponse(res, result, 200, req);
+  this.respondWithDbRead(req, res, 'getPhotos', options);
 };
 
 WebServer.prototype.handleFolderPhotos = function (req, res, query) {
@@ -659,8 +756,7 @@ WebServer.prototype.handleFolderPhotos = function (req, res, query) {
   ) {
     options.includeSubfolders = this.getBrowseFolderIncludeSubfolders();
   }
-  var result = this.db.getFolderPhotos(folderPath, options);
-  this.jsonResponse(res, result, 200, req);
+  this.respondWithDbRead(req, res, 'getFolderPhotos', Object.assign(options, { folderPath }));
 };
 
 WebServer.prototype.handleDateGroups = function (req, res, query) {
@@ -670,7 +766,7 @@ WebServer.prototype.handleDateGroups = function (req, res, query) {
     var so = String(query.sortOrder).toLowerCase();
     options.sortOrder = so === 'asc' ? 'asc' : 'desc';
   }
-  this.jsonResponse(res, this.db.getDateGroups(options), 200, req);
+  this.respondWithDbRead(req, res, 'getDateGroups', options);
 };
 
 WebServer.prototype.handleDatePhotos = function (req, res, query) {
@@ -681,8 +777,7 @@ WebServer.prototype.handleDatePhotos = function (req, res, query) {
   }
   var options = this.parsePageOptions(query);
   options.lite = true;
-  var result = this.db.getDatePhotos(dateStr, options);
-  this.jsonResponse(res, result, 200, req);
+  this.respondWithDbRead(req, res, 'getDatePhotos', Object.assign(options, { dateStr }));
 };
 
 WebServer.prototype.handleSearch = function (req, res, query) {
@@ -693,8 +788,7 @@ WebServer.prototype.handleSearch = function (req, res, query) {
   }
   var options = this.parsePageOptions(query);
   options.lite = true;
-  var result = this.db.searchPhotos(q, options);
-  this.jsonResponse(res, result, 200, req);
+  this.respondWithDbRead(req, res, 'searchPhotos', Object.assign(options, { query: q }));
 };
 
 WebServer.prototype.handlePreviewNext = function (req, res, query) {
@@ -758,8 +852,28 @@ WebServer.prototype.handlePreviewRandomBatch = function (req, res, query) {
   ) {
     options.includeSubfolders = this.getBrowseFolderIncludeSubfolders();
   }
-  var photos = this.db.getRandomPreviewPhotoBatch(options) || [];
-  this.jsonResponse(res, { photos: photos }, 200, req);
+  // 走有界只读池，不再在主进程同步查库：这条查询在 122 万行 / 12.97 GB 的库上曾是一次
+  // 3.7 秒的同步调用（详见 database.js getRandomPreviewPhotoBatch 的方法注释），
+  // 期间整个桌面端主进程被冻住。
+  var self = this;
+  if (!self.sqliteReadPath) {
+    self.jsonResponse(res, { error: 'db_read_unavailable' }, 503, req);
+    return;
+  }
+  runDbReadWorkerOnly(self.sqliteReadPath, 'getRandomPreviewPhotoBatch', options)
+    .then(function (photos) {
+      if (!res.destroyed) self.jsonResponse(res, { photos: photos || [] }, 200, req);
+    })
+    .catch(function (eRand) {
+      if (!res.destroyed) {
+        self.jsonResponse(
+          res,
+          { error: String(eRand && eRand.message ? eRand.message : eRand) },
+          503,
+          req,
+        );
+      }
+    });
 };
 
 WebServer.prototype.handleFolderTree = function (req, res, query) {
@@ -783,43 +897,19 @@ WebServer.prototype.handleFolderTree = function (req, res, query) {
 };
 
 WebServer.prototype.handleFolderCovers = function (req, res, query) {
-  var self = this;
-  var options = self.parsePageOptions(query || {});
-  if (!self.sqliteReadPath) {
-    self.jsonResponse(res, { error: 'db_read_unavailable' }, 503, req);
-    return;
-  }
-  runDbReadWorkerOnly(self.sqliteReadPath, 'getFolderCovers', options)
-    .then(function (data) {
-      self.jsonResponse(res, data, 200, req);
-    })
-    .catch(function (e) {
-      self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
-    });
+  this.respondWithDbRead(req, res, 'getFolderCovers', this.parsePageOptions(query || {}));
 };
 
 WebServer.prototype.handleImmediateSubfolderCovers = function (req, res, query) {
-  var self = this;
-  if (!self.sqliteReadPath) {
-    self.jsonResponse(res, { error: 'db_read_unavailable' }, 503, req);
-    return;
-  }
   var parentPath = (query.parentPath || '').trim();
   if (!parentPath) {
-    self.jsonResponse(res, [], 200, req);
+    this.jsonResponse(res, [], 200, req);
     return;
   }
-  var mediaType = query.mediaType || query.media_filter || query.media;
-  runDbReadWorkerOnly(self.sqliteReadPath, 'getImmediateSubfolderCovers', {
+  this.respondWithDbRead(req, res, 'getImmediateSubfolderCovers', {
     parentPath: parentPath,
-    mediaType: mediaType,
-  })
-    .then(function (covers) {
-      self.jsonResponse(res, covers || [], 200, req);
-    })
-    .catch(function (e) {
-      self.jsonResponse(res, { error: String(e && e.message ? e.message : e) }, 500, req);
-    });
+    mediaType: query.mediaType || query.media_filter || query.media,
+  });
 };
 
 WebServer.prototype.handleRootFolders = function (req, res, query) {
@@ -1135,7 +1225,7 @@ WebServer.prototype.serveVideoStream = async function (req, res, filePath) {
       'Content-Length': chunkSize,
       'Content-Type': contentType,
       'Cache-Control': 'public, max-age=3600',
-      'ETag': etag,
+      ETag: etag,
     });
     var rs = fs.createReadStream(filePath, { start: start, end: end });
     rs.on('error', function () {
@@ -1152,7 +1242,7 @@ WebServer.prototype.serveVideoStream = async function (req, res, filePath) {
     'Content-Length': size,
     'Content-Type': contentType,
     'Cache-Control': 'public, max-age=3600',
-    'ETag': etag,
+    ETag: etag,
   });
   var rs2 = fs.createReadStream(filePath);
   rs2.on('error', function () {
@@ -1217,7 +1307,11 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
   }
 
   if (!this.hlsManager || !this.ffmpegPath) {
-    logger.warn('[video-playback] HLS unavailable: hlsManager=%s ffmpegPath=%s', !!this.hlsManager, !!this.ffmpegPath);
+    logger.warn(
+      '[video-playback] HLS unavailable: hlsManager=%s ffmpegPath=%s',
+      !!this.hlsManager,
+      !!this.ffmpegPath,
+    );
     this.jsonResponse(res, {
       tier: r.tier === 'hls_remux' ? 'hls_remux' : 'hls_transcode',
       mode: 'hls',
@@ -1243,7 +1337,12 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
       return;
     }
     var pl = playbackStrategy.hlsPlaylistPath(result.sessionId);
-    logger.log('[video-playback] HLS session ready: id=%d tier=%s sessionId=%s', id, tier, result.sessionId);
+    logger.log(
+      '[video-playback] HLS session ready: id=%d tier=%s sessionId=%s',
+      id,
+      tier,
+      result.sessionId,
+    );
     self.jsonResponse(res, {
       tier: tier,
       mode: 'hls',
@@ -1262,20 +1361,40 @@ WebServer.prototype.handleVideoPlaybackApi = async function (res, query) {
   this.hlsManager.ensureSession(photo, hlsOpts, function (err, result) {
     var elapsed = Date.now() - hlsStartTime;
     if (err) {
-      logger.warn('[video-playback] HLS ensureSession failed: id=%d mode=%s elapsed=%dms error=%s', id, hlsMode, elapsed, err.message);
+      logger.warn(
+        '[video-playback] HLS ensureSession failed: id=%d mode=%s elapsed=%dms error=%s',
+        id,
+        hlsMode,
+        elapsed,
+        err.message,
+      );
       if (hlsMode === 'remux') {
         logger.log('[video-playback] Retrying with transcode mode for id=%d', id);
-        self.hlsManager.ensureSession(photo, { mode: 'transcode', videoHeight: hlsOpts.videoHeight }, function (err2, result2) {
-          var elapsed2 = Date.now() - hlsStartTime;
-          if (err2) {
-            logger.warn('[video-playback] HLS transcode also failed: id=%d elapsed=%dms error=%s', id, elapsed2, err2.message);
-          }
-          sendHlsResult('hls_transcode', err2, result2);
-        });
+        self.hlsManager.ensureSession(
+          photo,
+          { mode: 'transcode', videoHeight: hlsOpts.videoHeight },
+          function (err2, result2) {
+            var elapsed2 = Date.now() - hlsStartTime;
+            if (err2) {
+              logger.warn(
+                '[video-playback] HLS transcode also failed: id=%d elapsed=%dms error=%s',
+                id,
+                elapsed2,
+                err2.message,
+              );
+            }
+            sendHlsResult('hls_transcode', err2, result2);
+          },
+        );
         return;
       }
     } else {
-      logger.log('[video-playback] HLS ensureSession success: id=%d mode=%s elapsed=%dms', id, hlsMode, elapsed);
+      logger.log(
+        '[video-playback] HLS ensureSession success: id=%d mode=%s elapsed=%dms',
+        id,
+        hlsMode,
+        elapsed,
+      );
     }
     sendHlsResult(hlsMode === 'remux' ? 'hls_remux' : 'hls_transcode', err, result);
   });
@@ -2035,7 +2154,12 @@ WebServer.prototype.handleHlsFile = function (req, res, pathname) {
   fs.stat(full, function (err, st) {
     if (err || !st.isFile()) {
       if (err) {
-        logger.warn('[HLS] File not found: sessionId=%s file=%s error=%s', sessionId, file, err.message);
+        logger.warn(
+          '[HLS] File not found: sessionId=%s file=%s error=%s',
+          sessionId,
+          file,
+          err.message,
+        );
       } else {
         logger.warn('[HLS] Not a file: sessionId=%s file=%s', sessionId, file);
       }
@@ -2669,7 +2793,9 @@ WebServer.prototype.handleToggleFavorite = function (req, res) {
     return;
   }
   var body = '';
-  req.on('data', function (chunk) { body += chunk; });
+  req.on('data', function (chunk) {
+    body += chunk;
+  });
   req.on('end', function () {
     try {
       var data = JSON.parse(body);
@@ -2687,6 +2813,113 @@ WebServer.prototype.handleToggleFavorite = function (req, res) {
     } catch (e) {
       self.jsonResponse(res, { error: 'invalid request' }, 400, req);
     }
+  });
+};
+
+/**
+ * 预选词打分（POST /api/ai-search-suggest）。
+ *
+ * 与桌面端同一件事、同一个 worker 操作。两种 body：
+ *   - `{ lang, limit }`：**正常路径**，词源在服务端（`src/ai/search-vocabulary.js`），
+ *     按真实命中数取前 N 个。桌面端与网页端因此用的是同一份词表、同一套排序。
+ *   - `{ candidates: [...] }`：老契约，只给这几个词打分（留着兼容）。
+ * 阈值读的是与桌面同一份设置，因此两端筛出来的词一致。
+ */
+WebServer.prototype.handleAiSearchSuggest = function (req, res) {
+  var self = this;
+  if (req.method !== 'POST') {
+    this.jsonResponse(res, { error: 'method_not_allowed' }, 405, req);
+    return;
+  }
+  if (!this.semanticSearch) {
+    this.jsonResponse(res, { error: 'AI_UNAVAILABLE' }, 503, req);
+    return;
+  }
+  var maxBody = 64 * 1024;
+  var body = '';
+  req.on('data', function (chunk) {
+    body += chunk;
+    if (body.length > maxBody) req.destroy();
+  });
+  req.on('end', function () {
+    var data = null;
+    try {
+      data = JSON.parse(body);
+    } catch (e) {
+      /* 坏 body 由下面的校验分支统一拒绝 */
+    }
+    var payload = {};
+    if (data && Array.isArray(data.candidates)) {
+      var list = data.candidates.slice(0, 64).map(function (item) {
+        return String(item == null ? '' : item);
+      });
+      if (!list.length) {
+        self.jsonResponse(res, { error: 'AI_SUGGEST_INVALID' }, 400, req);
+        return;
+      }
+      payload.candidates = list;
+    } else if (data && typeof data === 'object') {
+      payload.lang = data.lang ? String(data.lang) : '';
+      if (data.limit !== undefined) payload.limit = Number(data.limit);
+    } else {
+      self.jsonResponse(res, { error: 'AI_SUGGEST_INVALID' }, 400, req);
+      return;
+    }
+    if (self.getAiSearchMatchThreshold)
+      payload.threshold = Number(self.getAiSearchMatchThreshold());
+    self.semanticSearch
+      .run('suggest', '', payload)
+      .then((result) => {
+        if (!res.destroyed) self.jsonResponse(res, result, 200, req);
+      })
+      .catch((error) => {
+        if (!res.destroyed) self.jsonResponse(res, { error: error.message }, 503, req);
+      });
+  });
+};
+
+/**
+ * 人物改名（POST /api/person-rename）。
+ * 名字是唯一会写进人脸索引的用户数据，所以只收 personId + name，其余一律拒绝；
+ * 空名字表示「取消命名」，人物回到「未命名人物」，与桌面端行为一致。
+ */
+WebServer.prototype.handlePersonRename = function (req, res) {
+  var self = this;
+  if (req.method !== 'POST') {
+    this.jsonResponse(res, { error: 'method_not_allowed' }, 405, req);
+    return;
+  }
+  if (!this.faceService) {
+    this.jsonResponse(res, { error: 'FACE_UNAVAILABLE' }, 503, req);
+    return;
+  }
+  var body = '';
+  req.on('data', function (chunk) {
+    body += chunk;
+  });
+  req.on('end', function () {
+    var data = null;
+    try {
+      data = JSON.parse(body);
+    } catch (e) {
+      /* 坏 body 不单独回错，统一走下面的校验分支返回 FACE_NAME_INVALID */
+    }
+    var personId = data ? parseInt(data.personId, 10) : NaN;
+    // name 必须是字符串：客户端把名字传成数字时若退化成空串，会变成一次静默的
+    // 「清空名字」。空串本身是合法输入（= 取消命名），但类型不对一律拒绝。
+    var name = data && typeof data.name === 'string' ? data.name.trim() : null;
+    if (name === null || name.length > 80 || !Number.isSafeInteger(personId) || personId <= 0) {
+      self.jsonResponse(res, { error: 'FACE_NAME_INVALID' }, 400, req);
+      return;
+    }
+    self.faceService
+      .run('rename', { personId: personId, name: name })
+      .then(function (result) {
+        if (!res.destroyed) self.jsonResponse(res, result || {}, 200, req);
+      })
+      .catch(function (error) {
+        if (!res.destroyed) self.jsonResponse(res, { error: error.message }, 503, req);
+      });
   });
 };
 
@@ -2711,10 +2944,18 @@ WebServer.prototype.handleDownload = async function (req, res, query) {
     }
     var ext = path.extname(photo.file_path).toLowerCase();
     var mimeMap = {
-      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-      '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
-      '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v',
-      '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.mp4': 'video/mp4',
+      '.mov': 'video/quicktime',
+      '.m4v': 'video/x-m4v',
+      '.avi': 'video/x-msvideo',
+      '.mkv': 'video/x-matroska',
+      '.webm': 'video/webm',
     };
     var contentType = mimeMap[ext] || 'application/octet-stream';
     var fileName = path.basename(photo.file_path);

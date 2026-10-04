@@ -9,6 +9,7 @@
 'use strict';
 
 const { hammingDistanceEarlyExit } = require('./perceptual-hash');
+const { idListPredicate, toIdListJson } = require('./sql-id-list');
 
 /**
  * 第零层：dHash 精确匹配的组列表
@@ -139,11 +140,18 @@ function findSimilarPhotos(db, photoId, threshold) {
     'SELECT DISTINCT photo_id FROM photo_dhash_lsh WHERE photo_id != ? AND (' +
     conditions.join(' OR ') +
     ')';
+  var t0 = Date.now();
   var candidates = db.prepare(sql).all(photoId);
+  var lshElapsed = Date.now() - t0;
 
   // 精确过滤汉明距离
   var results = [];
-  if (candidates.length === 0) return results;
+  if (candidates.length === 0) {
+    if (lshElapsed > 1000) {
+      console.warn('[findSimilarPhotos] LSH query slow: ' + lshElapsed + 'ms, 0 candidates (photoId=' + photoId + '). Missing idx_lsh_lookup?');
+    }
+    return results;
+  }
 
   // 批量查询候选的 dhash
   var ids = candidates
@@ -155,21 +163,25 @@ function findSimilarPhotos(db, photoId, threshold) {
     });
   if (ids.length === 0) return results;
 
-  var placeholders = ids
-    .map(function () {
-      return '?';
-    })
-    .join(',');
+  // ⚠️ 这里曾经是 `WHERE id IN (?,?,...,?)` 展开全部 id —— 必炸。
+  // 候选动辄十几万（本机真库实测最坏 179169 个），远超 SQLite 单条语句的宿主参数上限
+  // 32766，用户侧看到的就是「查找相似照片失败：too many SQL variables」。
+  // 现在把整个列表作为**一个** JSON 参数交给 json_each，变量个数恒为 1。
+  // 取舍与实测数据见 src/main/sql-id-list.js 的模块注释。
   var candStmt = db.prepare(
-    'SELECT id, dhash FROM photos WHERE id IN (' + placeholders + ') AND dhash IS NOT NULL',
+    'SELECT id, dhash FROM photos WHERE dhash IS NOT NULL AND ' + idListPredicate('id'),
   );
-  var candRows = candStmt.all.apply(candStmt, ids);
+  var candRows = candStmt.all(toIdListJson(ids));
 
   for (var j = 0; j < candRows.length; j++) {
     var cr = candRows[j];
     if (cr.dhash && hammingDistanceEarlyExit(dhash, cr.dhash, threshold) <= threshold) {
       results.push(cr.id);
     }
+  }
+  var totalElapsed = Date.now() - t0;
+  if (totalElapsed > 1000) {
+    console.warn('[findSimilarPhotos] slow: ' + totalElapsed + 'ms, candidates=' + candidates.length + ', results=' + results.length + ' (photoId=' + photoId + ')');
   }
   return results;
 }

@@ -6,6 +6,15 @@
     { label: 'XL', basis: 320 },
   ];
 
+  /**
+   * 每页张数档位。这是渲染端唯一一份：底栏「每页数量」控件、设置页下拉的校验都从它取。
+   * 主进程另有两份等价字面量（`src/main.js` 与 `src/main/settings.js` 的 ensureSettingsShape，
+   * 均为 `[10, 20, 50, 80, 100, 200]`），它们无法 require 本文件，改这里时记得同步。
+   */
+  var BROWSE_PAGE_SIZE_TIERS = [10, 20, 50, 80, 100, 200];
+  /** 与主进程 createDefaultSettings().browsePageSize 一致 */
+  var DEFAULT_BROWSE_PAGE_SIZE = 100;
+
   function snapBrowseCardBasis(n) {
     var x = parseInt(n, 10);
     if (isNaN(x)) x = 180;
@@ -20,6 +29,34 @@
       }
     }
     return best;
+  }
+
+  /**
+   * 把任意输入收进档位表。**取最近档位而不是直接判非法**：底栏控件是「上一档 / 下一档」，
+   * 若允许表外值流进来，档位下标就会算不出来（`indexOf` = -1），± 键直接失效。
+   * 非数字（含 null / 空串）回落到默认 100。
+   */
+  function snapBrowsePageSize(n) {
+    var x = parseInt(n, 10);
+    if (!isFinite(x)) return DEFAULT_BROWSE_PAGE_SIZE;
+    var best = BROWSE_PAGE_SIZE_TIERS[0];
+    var bestD = Infinity;
+    for (var i = 0; i < BROWSE_PAGE_SIZE_TIERS.length; i++) {
+      var d = Math.abs(x - BROWSE_PAGE_SIZE_TIERS[i]);
+      if (d < bestD) {
+        bestD = d;
+        best = BROWSE_PAGE_SIZE_TIERS[i];
+      }
+    }
+    return best;
+  }
+
+  function browsePageSizeTierIndex(size) {
+    var b = snapBrowsePageSize(size);
+    for (var i = 0; i < BROWSE_PAGE_SIZE_TIERS.length; i++) {
+      if (BROWSE_PAGE_SIZE_TIERS[i] === b) return i;
+    }
+    return BROWSE_PAGE_SIZE_TIERS.indexOf(DEFAULT_BROWSE_PAGE_SIZE);
   }
 
   function browseCardTierIndexForBasis(basis) {
@@ -97,7 +134,11 @@
 
   global.RendererUtils = Object.assign({}, global.RendererUtils || {}, {
     CARD_SIZE_TIERS: CARD_SIZE_TIERS,
+    BROWSE_PAGE_SIZE_TIERS: BROWSE_PAGE_SIZE_TIERS,
+    DEFAULT_BROWSE_PAGE_SIZE: DEFAULT_BROWSE_PAGE_SIZE,
     snapBrowseCardBasis: snapBrowseCardBasis,
+    snapBrowsePageSize: snapBrowsePageSize,
+    browsePageSizeTierIndex: browsePageSizeTierIndex,
     browseCardTierIndexForBasis: browseCardTierIndexForBasis,
     normalizePositiveIntFilter: normalizePositiveIntFilter,
     normalizePositiveFloatFilter: normalizePositiveFloatFilter,

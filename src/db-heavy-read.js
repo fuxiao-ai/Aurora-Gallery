@@ -221,31 +221,56 @@ function runGetRootFoldersLite(db) {
 }
 
 /**
+ * `runGetStatsAgg` 用的那条语句。单独抽出来是为了让回归能对它跑 `EXPLAIN QUERY PLAN` ——
+ * 这条查询的性能全靠「每个指标各自走一条覆盖索引」，塌回成一条 `SELECT COUNT(*), SUM(...) FROM photos`
+ * 不会算错数、只会悄悄从 0.9 秒变成 5.8 秒，光靠比对结果值抓不住。
+ */
+function statsAggSql() {
+  const videoIn =
+    "'mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2'";
+  const fileTypeNorm = "lower(replace(file_type, '.', ''))";
+  return `SELECT
+           (SELECT COUNT(*) FROM photos) AS c_total,
+           (SELECT COALESCE(SUM(file_size), 0) FROM photos) AS sum_size,
+           (SELECT COUNT(DISTINCT folder_path) FROM photos) AS c_distinct_folders,
+           (SELECT COUNT(*) FROM photos WHERE ${fileTypeNorm} IN (${videoIn})) AS c_video,
+           (SELECT COALESCE(SUM(file_size), 0) FROM photos WHERE ${fileTypeNorm} IN (${videoIn})) AS sum_video_size,
+           (SELECT COUNT(*) FROM photos WHERE is_favorite = 1) AS c_fav,
+           (SELECT MIN(date_taken) FROM photos) AS min_date,
+           (SELECT MAX(date_taken) FROM photos) AS max_date`;
+}
+
+/**
+ * 顶栏 / 侧栏的全库统计。
+ *
+ * ⚠️ 必须写成**每个指标一条子查询**，不能合成一趟 `SELECT COUNT(*), SUM(...), COUNT(DISTINCT ...) FROM photos`。
+ * 一趟写法的 SELECT 列表同时要 file_size / file_type / is_favorite / date_taken / folder_path 五列，
+ * 没有任何一个索引能同时覆盖它们，SQLite 只能 `SCAN photos`——而 `photos` 的 `thumbnail` BLOB 内联在行中间
+ * （见 `database.js` 的 createCoreSchema），整表扫描等于把十几 GB 的缩略图溢出页读一遍。
+ *
+ * 拆开之后每条都能吃到一条已有的覆盖索引（真库 1,224,615 行 / 12.97 GB 实测）：
+ *
+ * | 指标 | 执行计划 | 耗时 |
+ * | --- | --- | ---: |
+ * | `COUNT(*)` | COVERING INDEX idx_photos_hasThumb | 0.5 ms |
+ * | `SUM(file_size)` | COVERING INDEX idx_photos_size | 80.7 ms |
+ * | `COUNT(DISTINCT folder_path)` | COVERING INDEX idx_photos_folder | 188.3 ms |
+ * | 视频张数 | COVERING INDEX idx_photos_type | 353.1 ms |
+ * | 视频体积 | INDEX idx_photos_agg_root_folder_video（只回表 25,585 行视频） | 116.3 ms |
+ * | 收藏张数 | COVERING INDEX idx_photos_favorite | 0.0 ms |
+ * | `MIN/MAX(date_taken)` | COVERING INDEX idx_photos_date | 0.0 ms |
+ *
+ * 同一份结果：一趟 **5803 ms** → 拆开 **888 ms**（6.5×），且**不需要新增任何索引**。
+ *
+ * 唯一会退化的情形是「视频占比很高」的库：`SUM(file_size) WHERE 视频` 需要 file_type 与 file_size 两列，
+ * 现有索引都不覆盖；本机库只有 25,585 张视频（2%）所以 116 ms 就够了。真遇到视频为主的库，
+ * 再补一个表达式索引 `(lower(replace(file_type,'.','')), file_size)`（约 20 MB / 122 万行）即可把这条也变成
+ * 纯索引扫描——合成库上实测整条统计从 157 ms 降到 27.7 ms。**当前刻意不加**，避免为少数库付索引写入成本。
+ *
  * @param {import('better-sqlite3').Database} db
  */
 function runGetStatsAgg(db) {
-  const videoIn =
-    "'mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2'";
-  const row = db
-    .prepare(
-      `SELECT
-           COUNT(*) AS c_total,
-           COALESCE(SUM(file_size), 0) AS sum_size,
-           COUNT(DISTINCT folder_path) AS c_distinct_folders,
-           COALESCE(
-             SUM(CASE WHEN lower(replace(file_type, '.', '')) IN (${videoIn}) THEN 1 ELSE 0 END),
-             0
-           ) AS c_video,
-           COALESCE(
-             SUM(CASE WHEN lower(replace(file_type, '.', '')) IN (${videoIn}) THEN file_size ELSE 0 END),
-             0
-           ) AS sum_video_size,
-           COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0) AS c_fav,
-           MIN(date_taken) AS min_date,
-           MAX(date_taken) AS max_date
-         FROM photos`,
-    )
-    .get();
+  const row = db.prepare(statsAggSql()).get();
 
   // 统计人脸数据
   var faceStats = { totalFaces: 0, photosWithFaces: 0 };
@@ -461,98 +486,37 @@ function runGetFolderCovers(db, options) {
  */
 function runGetImmediateSubfolderCovers(db, options) {
   options = options || {};
-  var parentPath = String(options.parentPath || '')
-    .trim()
-    .replace(/\\/g, '/');
-  var mediaType = String(options.mediaType || '').toLowerCase();
+  var normalized = String(options.parentPath || '').trim().replace(/\\/g, '/');
+  var parentPath = normalized === '/' ? '/' : normalized.replace(/\/+$/, '');
   if (!parentPath) return [];
-
-  // 1. Find rootId
-  var rootRow = db
-    .prepare('SELECT DISTINCT root_id FROM photos WHERE folder_path = ? LIMIT 1')
-    .get(parentPath);
-  var rootId = rootRow && rootRow.root_id ? Number(rootRow.root_id) : null;
-  if (!rootId) return [];
-
-  // 2. Build WHERE conditions
-  var conditions = ['root_id = ?', "folder_path LIKE ? ESCAPE '\\'", 'folder_path != ?'];
-  var baseParams = [rootId, parentPath + '/%', parentPath];
-  if (mediaType === 'image') {
-    conditions.push(sqlFileTypeIsImageExpr());
-  } else if (mediaType === 'video') {
-    conditions.push(sqlFileTypeIsVideoExpr());
-  }
-  var whereSql = conditions.join(' AND ');
-
-  // 3. Get all distinct folder_paths to find direct children
-  var allPaths = db
-    .prepare('SELECT DISTINCT folder_path FROM photos WHERE ' + whereSql)
-    .all(...baseParams);
-  var parentLen = parentPath.length;
-  var byChild = {};
-  for (var i = 0; i < allPaths.length; i++) {
-    var fp = allPaths[i].folder_path;
-    var rel = fp.slice(parentLen + 1);
-    var slash = rel.indexOf('/');
-    var childName = slash < 0 ? rel : rel.slice(0, slash);
-    if (!childName) continue;
-    var childPath = parentPath + '/' + childName;
-    if (!byChild[childPath]) {
-      byChild[childPath] = { folder_path: childPath, folder_photo_count: 0 };
-    }
-    byChild[childPath].folder_photo_count++;
-  }
-
-  var childPaths = Object.keys(byChild);
-  if (childPaths.length === 0) return [];
-
-  // 4. Batch get covers: IN + window function
-  var ph = childPaths.map(function () {
-    return '?';
-  });
-  var inWhere = 'WHERE ' + whereSql + ' AND folder_path IN (' + ph.join(',') + ')';
-  var inParams = baseParams.concat(childPaths);
-  var coverOrderSql = folderCoverPickOrderBySql();
-  var sql =
-    'WITH filtered AS (\n' +
-    '  SELECT id, file_name, folder_path, has_thumbnail, file_type\n' +
-    '  FROM photos\n' +
-    '  ' +
-    inWhere +
-    '\n),' +
-    'ranked AS (\n' +
-    '  SELECT\n' +
-    '    id, file_name, folder_path, has_thumbnail,\n' +
-    '    ROW_NUMBER() OVER (PARTITION BY folder_path ORDER BY ' +
-    coverOrderSql +
-    ') AS rn\n' +
-    '  FROM filtered\n' +
-    ')\n' +
-    'SELECT id, file_name, folder_path, has_thumbnail\n' +
-    'FROM ranked\n' +
-    'WHERE rn = 1\n' +
-    'ORDER BY folder_path ASC';
-
-  var covers = db.prepare(sql).all(...inParams);
-
-  // 5. Merge
-  var coverByPath = {};
-  for (var j = 0; j < covers.length; j++) {
-    coverByPath[covers[j].folder_path] = covers[j];
-  }
-  var out = [];
-  for (var k = 0; k < childPaths.length; k++) {
-    var cp = childPaths[k];
-    var cover = coverByPath[cp];
-    out.push({
-      folder_path: cp,
-      folder_photo_count: byChild[cp].folder_photo_count,
-      id: cover ? cover.id : null,
-      has_thumbnail: cover ? !!cover.has_thumbnail : false,
-      file_name: cover && cover.file_name != null ? cover.file_name : '',
-    });
-  }
-  return out;
+  // Match descendants by literal path prefix, including parents with no direct photos.
+  var prefix = parentPath.endsWith('/') ? parentPath : parentPath + '/';
+  var escaped = prefix.replace(/[\\%_]/g, '\\$&') + '%';
+  var windowsPrefix = prefix.replace(/\//g, '\\');
+  var windowsEscaped = windowsPrefix.replace(/[\\%_]/g, '\\$&') + '%';
+  var conditions = ["(folder_path LIKE ? ESCAPE '\\' OR folder_path LIKE ? ESCAPE '\\')"];
+  var media = String(options.mediaType || '').toLowerCase();
+  if (media === 'image') conditions.push(sqlFileTypeIsImageExpr());
+  if (media === 'video') conditions.push(sqlFileTypeIsVideoExpr());
+  var sql = `
+    WITH descendants AS (
+      SELECT id, file_name, file_type, has_thumbnail,
+             substr(replace(folder_path, '\\', '/'), ?) AS relative_path
+      FROM photos WHERE ${conditions.join(' AND ')}
+    ), children AS (
+      SELECT *, ? || CASE WHEN instr(relative_path, '/') > 0
+        THEN substr(relative_path, 1, instr(relative_path, '/') - 1)
+        ELSE relative_path END AS child_path
+      FROM descendants WHERE relative_path != ''
+    ), ranked AS (
+      SELECT *, COUNT(*) OVER (PARTITION BY child_path) AS folder_photo_count,
+        ROW_NUMBER() OVER (PARTITION BY child_path ORDER BY ${folderCoverPickOrderBySql()}) AS rn
+      FROM children
+    )
+    SELECT child_path AS folder_path, folder_photo_count, id, has_thumbnail, file_name
+    FROM ranked WHERE rn = 1 ORDER BY child_path ASC
+  `;
+  return db.prepare(sql).all(Array.from(prefix).length + 1, escaped, windowsEscaped, prefix);
 }
 
 /**
@@ -579,11 +543,18 @@ function runGetDateGroups(db, options) {
     .all(...params);
 }
 
-/**
- * @param {import('better-sqlite3').Database} db
- * @param {string} dateStr
- * @param {{ sortBy?: string, sortOrder?: string, page?: number, pageSize?: number, favoritesOnly?: boolean, mediaType?: string, lite?: boolean }} [options]
- */
+/** Return the next calendar day for an ISO date, independent of the host timezone. */
+function nextCalendarDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr))) throw new Error('Invalid date');
+  var day = new Date(dateStr + 'T00:00:00.000Z');
+  if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== dateStr) {
+    throw new Error('Invalid date');
+  }
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+/** Query a calendar day using an indexed half-open range. */
 function runGetDatePhotos(db, dateStr, options) {
   options = options || {};
   var sortBy = options.sortBy || 'file_name';
@@ -605,10 +576,12 @@ function runGetDatePhotos(db, dateStr, options) {
     mediaSql =
       " AND lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
   }
-  var whereSql = favoritesOnly
-    ? 'date(date_taken) = ? AND is_favorite = 1' + mediaSql
-    : 'date(date_taken) = ?' + mediaSql;
-  var total = db.prepare('SELECT COUNT(*) as count FROM photos WHERE ' + whereSql).get(dateStr);
+  // 范围查询替代 date(date_taken) = ?，让 idx_photos_date 索引生效（1.7s → 38ms）
+  var nextDate = nextCalendarDate(dateStr);
+  var rangeWhere = favoritesOnly
+    ? 'date_taken >= ? AND date_taken < ? AND is_favorite = 1' + mediaSql
+    : 'date_taken >= ? AND date_taken < ?' + mediaSql;
+  var total = db.prepare('SELECT COUNT(*) as count FROM photos WHERE ' + rangeWhere).get(dateStr, nextDate);
   var photoCols = lite
     ? 'id, file_name, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite'
     : 'id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite';
@@ -617,14 +590,14 @@ function runGetDatePhotos(db, dateStr, options) {
       'SELECT ' +
         photoCols +
         ' FROM photos WHERE ' +
-        whereSql +
+        rangeWhere +
         ' ORDER BY ' +
         order +
         ' ' +
         dir +
         ' LIMIT ? OFFSET ?',
     )
-    .all(dateStr, pageSize, offset);
+    .all(dateStr, nextDate, pageSize, offset);
   return {
     photos: photos,
     total: total ? total.count : 0,
@@ -746,12 +719,14 @@ function runGetDuplicateHashGroupsBundle(db, options) {
 }
 
 module.exports = {
+  nextCalendarDate: nextCalendarDate,
   rootFolderStatsCacheMediaKey: rootFolderStatsCacheMediaKey,
   tryReadRootFolderStatsCache: tryReadRootFolderStatsCache,
   runAggregateStatsForSingleRoot: runAggregateStatsForSingleRoot,
   runGetRootFoldersAgg: runGetRootFoldersAgg,
   runGetRootFoldersLite: runGetRootFoldersLite,
   runGetStatsAgg: runGetStatsAgg,
+  statsAggSql: statsAggSql,
   runGetFolderTree: runGetFolderTree,
   runGetFolderCovers: runGetFolderCovers,
   runGetImmediateSubfolderCovers: runGetImmediateSubfolderCovers,
