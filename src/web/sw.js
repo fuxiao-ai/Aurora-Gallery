@@ -1,6 +1,9 @@
 /* global self, caches */
 /* Service worker for installability and faster shell load. */
-var CACHE_NAME = 'aurora-gallery-shell-v29';
+// 🔴 缓存策略是 cache-first：`index.html` / `js/app.js` 一旦被缓存，改磁盘文件**不会**
+// 让已装过 PWA 的设备看到新版本。所以每次改到 SHELL_ASSETS 里的资源，都要把这里 +1
+// （activate 会清掉旧 cache，install 会重新预缓存），否则改动只在新设备上生效。
+var CACHE_NAME = 'aurora-gallery-shell-v42';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -13,6 +16,9 @@ var SHELL_ASSETS = [
   '/hls-attach.js',
   '/js/web-theme-shared.js',
   '/js/app.js',
+  '/js/photo-info-fields.js?v=1',
+  '/settings-page.css?v=1',
+  '/js/settings-page.js?v=1',
   '/js/photo-compare.js?v=1',
   '/photo-compare.css?v=1',
   '/js/ai-views.js?v=1',

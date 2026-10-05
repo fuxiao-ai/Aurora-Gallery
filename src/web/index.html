@@ -17,7 +17,7 @@
     <link rel="icon" type="image/png" sizes="512x512" href="/app-icon-512.png?v=5" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5" />
     <link rel="preload" href="/playback-strategy.js" as="script" />
-    <link rel="preload" href="/js/web-theme-shared.js?v=3" as="script" />
+    <link rel="preload" href="/js/web-theme-shared.js?v=9" as="script" />
     <link rel="preload" href="/js/app.js?v=4" as="script" />
     <title>拂晓图库 · Aurora Gallery</title>
     <style>
@@ -104,6 +104,13 @@
         z-index: 0;
         overflow: hidden;
       }
+
+      /* === 材质纹理（第三维 uiTexture）===
+         ⚠️ 这里**不再**自建全屏装饰层：实测证明打在任何面板背后的层都看不见（收尾层把
+            面板拍成了不透明实色），纹理改由 gallery-design.css 末尾贴在「可见面」上。
+            网页端只需按 TEXTURE_TOKENS 把 --bg-texture / --texture-size 写进 root.style
+            （见 web-theme-shared.js 的 applyWebThemeVariables），
+            变量兜底值与可见面规则都在 gallery-design.css，两端共用一份。 */
       .aurora-blob {
         position: absolute;
         border-radius: 50%;
@@ -234,9 +241,20 @@
         background: color-mix(in srgb, var(--accent) 10%, transparent);
         border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
       }
-      .header-theme-select {
-        min-width: 132px;
-        max-width: 172px;
+      /* 顶栏下拉框：唯一来源 —— 六个 .header-*-select 共用同一骨架。
+         差异只有两处，各自独立成块：玻璃质感（变体 A/B）+ 宽度（尺寸修饰）。 */
+      .header-theme-select,
+      .header-card-aspect-select,
+      .header-sort-select,
+      .header-media-filter-select,
+      .header-accent-select,
+      .header-background-select {
+        /* 变体 B（扁平）默认底色 */
+        --header-select-fill: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 65%, var(--glass)) 0%,
+          var(--glass) 100%
+        );
         border-radius: 999px;
         font-size: 13px;
         padding: 8px 30px 8px 14px;
@@ -248,108 +266,75 @@
         background:
           url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
             no-repeat right 12px center / 12px 12px,
-          linear-gradient(
-            180deg,
-            color-mix(in srgb, var(--bg-card) 58%, transparent) 0%,
-            color-mix(in srgb, var(--glass) 78%, transparent) 100%
-          );
+          var(--header-select-fill);
+      }
+      /* 变体 A（毛玻璃）：主题风格 / 卡片比例 / 强调色 / 背景基调 */
+      .header-theme-select,
+      .header-card-aspect-select,
+      .header-accent-select,
+      .header-background-select {
+        --header-select-fill: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 58%, transparent) 0%,
+          color-mix(in srgb, var(--glass) 78%, transparent) 100%
+        );
         backdrop-filter: blur(16px) saturate(1.3);
         -webkit-backdrop-filter: blur(16px) saturate(1.3);
         transition: border-color 0.2s ease;
       }
-      .header-theme-select:hover {
-        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
-      }
-      .header-theme-select:focus {
-        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
+      /* 宽度修饰：六个下拉框唯一的尺寸差异 */
+      .header-theme-select {
+        min-width: 132px;
+        max-width: 172px;
       }
       .header-card-aspect-select {
         min-width: 110px;
         max-width: 140px;
-        border-radius: 999px;
-        font-size: 13px;
-        padding: 8px 30px 8px 14px;
-        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
-        color: var(--text);
-        outline: none;
-        cursor: pointer;
-        appearance: none;
-        background:
-          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
-            no-repeat right 12px center / 12px 12px,
-          linear-gradient(
-            180deg,
-            color-mix(in srgb, var(--bg-card) 58%, transparent) 0%,
-            color-mix(in srgb, var(--glass) 78%, transparent) 100%
-          );
-        backdrop-filter: blur(16px) saturate(1.3);
-        -webkit-backdrop-filter: blur(16px) saturate(1.3);
-        transition: border-color 0.2s ease;
-      }
-      .header-card-aspect-select:hover {
-        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
-      }
-      .header-card-aspect-select:focus {
-        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
       }
       .header-sort-select {
         min-width: 120px;
         max-width: 150px;
-        border-radius: 999px;
-        font-size: 13px;
-        padding: 8px 30px 8px 14px;
-        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
-        color: var(--text);
-        outline: none;
-        cursor: pointer;
-        appearance: none;
-        background:
-          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
-            no-repeat right 12px center / 12px 12px,
-          linear-gradient(
-            180deg,
-            color-mix(in srgb, var(--bg-card) 65%, var(--glass)) 0%,
-            var(--glass) 100%
-          );
-      }
-      .header-sort-select:hover {
-        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
-      }
-      .header-sort-select:focus {
-        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
       }
       .header-media-filter-select {
         min-width: 90px;
         max-width: 110px;
         flex: 0 0 104px;
         width: 104px;
-        border-radius: 999px;
-        font-size: 13px;
-        padding: 8px 30px 8px 14px;
-        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
-        color: var(--text);
-        outline: none;
-        cursor: pointer;
-        appearance: none;
-        background:
-          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2399a3e8' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
-            no-repeat right 12px center / 12px 12px,
-          linear-gradient(
-            180deg,
-            color-mix(in srgb, var(--bg-card) 65%, var(--glass)) 0%,
-            var(--glass) 100%
-          );
       }
+      /* 强调色 / 背景基调：只在桌面端出现，选项名短，宽度刻意收窄 */
+      .header-accent-select {
+        min-width: 104px;
+        max-width: 132px;
+      }
+      .header-background-select {
+        min-width: 96px;
+        max-width: 124px;
+      }
+      .header-theme-select:hover,
+      .header-card-aspect-select:hover,
+      .header-accent-select:hover,
+      .header-background-select:hover,
+      .header-sort-select:hover {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border));
+      }
+      /* 媒体筛选的 hover 边框刻意更淡（既有差异，保留） */
       .header-media-filter-select:hover {
         border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
       }
-      .header-media-filter-select:focus {
+      .header-theme-select:focus,
+      .header-card-aspect-select:focus,
+      .header-sort-select:focus,
+      .header-media-filter-select:focus,
+      .header-accent-select:focus,
+      .header-background-select:focus {
         border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
       }
       .header-theme-select option,
       .header-card-aspect-select option,
       .header-sort-select option,
-      .header-media-filter-select option {
+      .header-media-filter-select option,
+      .header-accent-select option,
+      .header-background-select option {
         background: #1a1a2e;
         color: #e0e0e0;
       }
@@ -538,53 +523,8 @@
       }
 
       /* comment cleaned */
-      .tree-root {
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 4px;
-        padding-bottom: 4px;
-      }
-      .tree-root .tree-header {
-        display: flex;
-        align-items: center;
-        padding: 10px 12px;
-        gap: 8px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-        border-radius: var(--radius);
-      }
-      .tree-root .tree-header:hover {
-        background: var(--bg-hover);
-      }
-      .tree-toggle {
-        width: 18px;
-        font-size: 10px;
-        text-align: center;
-        flex-shrink: 0;
-        cursor: pointer;
-        color: var(--text-muted);
-        transition: transform 0.2s;
-        user-select: none;
-        border-radius: 8px;
-        line-height: 1;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .tree-toggle:hover {
-        color: var(--text);
-        background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
-      }
-      .tree-children {
-        padding-left: 10px;
-        overflow: hidden;
-      }
-      .tree-node > .folder-item {
-        font-weight: normal;
-      }
-      .tree-children.collapsed {
-        display: none;
-      }
+      /* 目录树（.tree-*）的样式在共用的 gallery-design.css 里 —— 桌面端与网页端
+         读同一份，本页不再重复声明（本文件的内联样式先于它加载，重复只会更容易读错）。 */
 
       /* comment cleaned */
       .date-sidebar-sort {
@@ -1355,27 +1295,126 @@
         font-size: 13px;
         opacity: 0.85;
       }
-      .pagination button.pagination-random {
-        min-width: 52px;
+      /* 「随机」是这一排里唯一的**动作型**按钮（其余是取值型：每页数量 / 卡片尺寸），
+         所以做成实心强调色 + 图标 + 投影，一眼看得出能点。
+
+         🔴 底色用 `color-mix(in srgb, var(--accent) 40%, #101820)` 而不是纯 `var(--accent)`：
+         网页端的 `--accent` 由 `web-theme-shared.js` 按主题写入，既有深色档（默认 `#7b8cff`、
+         白字只有 2.98）也有亮色档，纯强调色 + 固定前景色跨主题读不清。这条 40% + #101820 + 白字
+         与桌面端 `.browse-footer-actions .pagination-random` 是同一配方（最差档 ≥ 4.5:1），
+         也和两端的 `.btn-primary` 同一套视觉语言。
+
+         🔴 选择器写成 `#randomPageBtn` 是有意的：上面 `.pagination button:hover:not(:disabled):not(.active)`
+         特异性是 (0,4,1)，而 `button.pagination-random:hover` 这类只有 (0,3,1) ——
+         **原来的 hover 一直是被那条通用规则静默盖掉的**（写在前面更没救）。用 id 提到 (1,2,0)
+         才压得稳，不用赌文件里的先后顺序。 */
+      #randomPageBtn {
+        gap: 5px;
+        min-width: 72px;
         padding: 0 14px;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
-        background: linear-gradient(
-          135deg,
-          color-mix(in srgb, var(--accent) 22%, transparent),
-          color-mix(in srgb, var(--accent) 10%, transparent)
+        /* 闪动光晕的两层伪元素贴住这个盒子（见下方「闪动光晕」）。
+           ⚠️ 网页端这个按钮**在** `.pagination` 里，能从 `.pagination button` 继承到
+           `border-radius: 999px`，但那份基础样式**没有** `position` —— 别省这一句。 */
+        position: relative;
+        /* 表面光晕 A（顶部透光）：与桌面端 `.browse-footer-actions .pagination-random`
+           逐字同款。🔴 必须写 `background-color` —— `background` 简写会把下一句
+           `background-image` 重置掉，而下面 hover / :active 是同一族声明，
+           鼠标一划上去表面辉光就静默消失。强度与几何的依据见桌面端那段长注释。 */
+        background-color: color-mix(in srgb, var(--accent) 40%, #101820);
+        background-image: radial-gradient(
+          130% 78% at 50% -18%,
+          color-mix(in srgb, var(--accent) 62%, transparent) 0%,
+          transparent 100%
         );
-        border-color: color-mix(in srgb, var(--accent) 35%, var(--glass-border));
-        color: var(--accent);
+        border-color: transparent;
+        color: #fff;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        /* 第二条是表面光晕 B（四周内圈光，模糊 10px < 文字到边距离，照不到文字）。
+           桌面端那句还有一条 `inset 0 1px 0` 顶部内高光，网页端原本就没有 —— 这里也不补，
+           两端各自的既有差异不在本次改动范围内。 */
+        box-shadow:
+          0 2px 10px color-mix(in srgb, var(--accent) 36%, transparent),
+          inset 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
+        transition:
+          background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+          border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+          color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+          box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+          transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       }
-      .pagination button.pagination-random:hover {
-        background: linear-gradient(
-          135deg,
-          color-mix(in srgb, var(--accent) 36%, transparent),
-          color-mix(in srgb, var(--accent) 18%, transparent)
-        );
-        border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border));
-        box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);
+      #randomPageBtn .icon {
+        width: 14px;
+        height: 14px;
+      }
+      #randomPageBtn:hover:not(:disabled) {
+        background-color: color-mix(in srgb, var(--accent) 48%, #101820);
+        border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow:
+          0 7px 20px color-mix(in srgb, var(--accent) 62%, transparent),
+          inset 0 0 14px color-mix(in srgb, var(--accent) 62%, transparent);
+      }
+      #randomPageBtn:active:not(:disabled) {
+        transform: translateY(0) scale(0.97);
+        box-shadow:
+          0 1px 4px color-mix(in srgb, var(--accent) 34%, transparent),
+          inset 0 0 10px color-mix(in srgb, var(--accent) 38%, transparent);
+      }
+      /* 🔴 禁用态要显式摘掉表面光晕 A（background-image）。
+         网页端按钮的禁用背景色来自通用规则 `.pagination button:disabled`（只写 opacity），
+         它**不会**动 background-image —— 漏这一条，禁用按钮上仍浮着一层强调色顶部辉光。 */
+      #randomPageBtn:disabled {
+        background-image: none;
+      }
+      /* 闪动光晕 —— 与桌面端 `.browse-footer-actions .pagination-random::before/::after`
+         同一套配方、同一组关键帧名（两端要能一眼对上）。取舍与坑见桌面端那段长注释，这里只记网页端特有的两条：
+         🔴 伪元素同样要 `pointer-events: none`（否则覆盖在按钮内容上，点击落不到按钮）；
+         🔴 网页端按钮是**药丸形**（继承 `.pagination button` 的 `border-radius: 999px`），
+            所以这里必须写 `border-radius: inherit`，写死 10px 会在圆角处露出方角光晕。 */
+      #randomPageBtn::before,
+      #randomPageBtn::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+      }
+      #randomPageBtn::before {
+        /* 静态兜底：动画被 reduced-motion 压掉后 fill-mode 默认 none 会回落到这里，
+           不给值就是回落成 1（最亮峰值）。理由详见桌面端那段注释。 */
+        opacity: 0.35;
+        box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 62%, transparent);
+        animation: randomBtnGlowBreathe 2.6s ease-in-out infinite;
+      }
+      #randomPageBtn::after {
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+        animation: randomBtnGlowPing 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+      }
+      @keyframes randomBtnGlowBreathe {
+        0%,
+        100% {
+          opacity: 0.24;
+        }
+        50% {
+          opacity: 0.86;
+        }
+      }
+      @keyframes randomBtnGlowPing {
+        0% {
+          box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 58%, transparent);
+        }
+        62%,
+        100% {
+          box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+        }
+      }
+      #randomPageBtn:disabled::before,
+      #randomPageBtn:disabled::after {
+        display: none;
       }
       .page-numbers {
         display: flex;
@@ -1631,6 +1670,23 @@
         word-break: break-all;
         color: var(--text);
       }
+      /* AI 标签：与桌面端同一套类名、同一份注册表产出。网页端没有搜图页，
+         所以这里只有不可点的 <span>（注册表不传 tagClickable 时的分支）。 */
+      .preview-info-value-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .preview-info-tag {
+        padding: 2px 9px;
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--text-secondary);
+        background: color-mix(in srgb, var(--bg-card) 62%, transparent);
+        cursor: default;
+      }
       .preview-info-empty {
         padding: 20px 16px;
         color: var(--text-muted);
@@ -1767,6 +1823,42 @@
       }
       .preview-next {
         right: 16px;
+      }
+
+      /* === 全屏浮层控件显隐 ===
+         全屏播放时四组浮层控件（左上放映区 / 右上关闭区 / 左右切换 / 右下缩放百分比）
+         必须同进同出：进全屏先自动收起，鼠标一移动全部淡入，静止约 1.1s 后一起淡出。
+         判据只有 `is-fullscreen` + `fs-ui-visible` 两个类，都由 app.js 的
+         syncPreviewFullscreenChrome / revealPreviewFullscreenUiOnMove 派生 —— 别在别处 add/remove。
+
+         ⚠️ 只对 ≥601px 生效（即 state.isMobile === false，见 app.js 里
+         `isMobile: window.innerWidth <= 600`）：移动端沿用「点一下图片唤出左右切换」的
+         mobile-nav-visible 那一套（见下方 @media (max-width: 600px)）。两套判据一旦同时
+         生效会互相盖，所以这里用断点隔开，不要再合并。 */
+      @media (min-width: 601px) {
+        .preview-overlay.is-fullscreen .preview-slideshow-controls,
+        .preview-overlay.is-fullscreen .preview-window-controls,
+        .preview-overlay.is-fullscreen .preview-nav,
+        .preview-overlay.is-fullscreen .preview-zoom-box {
+          opacity: 0;
+          pointer-events: none;
+          transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .preview-overlay.is-fullscreen .preview-slideshow-controls,
+        .preview-overlay.is-fullscreen .preview-window-controls {
+          transform: translateY(-10px);
+        }
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-slideshow-controls,
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-window-controls,
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-nav,
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-zoom-box {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-slideshow-controls,
+        .preview-overlay.is-fullscreen.fs-ui-visible .preview-window-controls {
+          transform: translateY(0);
+        }
       }
 
       .preview-slideshow-controls {
@@ -2016,9 +2108,6 @@
         .date-count {
           padding: 2px 8px;
         }
-        .tree-children {
-          padding-left: 8px;
-        }
         .date-year {
           padding-left: 11px;
           padding-right: 11px;
@@ -2166,7 +2255,9 @@
         .header-theme-select,
         .header-card-aspect-select,
         .header-sort-select,
-        .header-media-filter-select {
+        .header-media-filter-select,
+        .header-accent-select,
+        .header-background-select {
           display: none;
         }
         .toolbar {
@@ -2182,23 +2273,6 @@
           gap: 6px;
         }
         /* comment cleaned */
-        .settings-page {
-          padding: 16px 12px !important;
-        }
-        .settings-header {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 12px;
-        }
-        .settings-title {
-          font-size: 18px;
-        }
-        .setting-item {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 8px;
-          padding: 12px;
-        }
         .empty-state {
           min-height: min(42vh, 360px);
           padding: 28px 16px 36px;
@@ -2521,6 +2595,14 @@
           animation-iteration-count: 1 !important;
           transition-duration: 0.01ms !important;
         }
+        /* 豁免「随机」的闪动光晕（与桌面端 styles.css 尾部那对孪生规则逐条对应）。
+           本机 Windows 实测就是 `reduce`，不豁免等于这套光晕一次都看不见。
+           它是重点功能的可辨识信号，且是 2.6s 低频呼吸而非高频闪烁。 */
+        #randomPageBtn::before,
+        #randomPageBtn::after {
+          animation-duration: 2.6s !important;
+          animation-iteration-count: infinite !important;
+        }
       }
 
       /* 首屏加载：全屏转圈（不受上方 * 的 animation 禁用影响） */
@@ -2617,67 +2699,6 @@
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 16%, transparent);
       }
-      /* comment cleaned：与桌面端一致，底栏内靠右，不占网格层 */
-      .zoom-control {
-        position: relative;
-        flex-shrink: 0;
-        align-self: center;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--bg-card) 48%, transparent) 0%,
-          color-mix(in srgb, var(--glass) 88%, transparent) 100%
-        );
-        backdrop-filter: blur(16px) saturate(1.3);
-        -webkit-backdrop-filter: blur(16px) saturate(1.3);
-        border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
-        border-radius: 999px;
-        padding: 4px 12px;
-        box-sizing: border-box;
-        min-height: var(--browse-bar-control-h, 36px);
-        z-index: 2;
-        transition: all 0.2s ease;
-      }
-      .zoom-control:hover {
-        border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
-      }
-      .zoom-control button {
-        width: var(--browse-bar-control-h, 36px);
-        height: var(--browse-bar-control-h, 36px);
-        flex-shrink: 0;
-        border: none;
-        background: none;
-        color: var(--text-secondary);
-        font-size: 18px;
-        line-height: 1;
-        cursor: pointer;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
-      }
-      .zoom-control button:hover {
-        background: var(--bg-hover);
-        color: var(--accent);
-        transform: scale(1.06);
-      }
-      .zoom-control .zoom-label {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--accent);
-        min-width: 28px;
-        min-height: var(--browse-bar-control-h, 36px);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        user-select: none;
-        letter-spacing: 0.5px;
-      }
-
       /* 2026-04 网页端视觉升级 */
       :root {
         --shell-gap: 16px;
@@ -2920,8 +2941,7 @@
       .browse-footer {
         padding: 14px 18px 16px;
       }
-      .pagination,
-      .zoom-control {
+      .pagination {
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
       }
       .preview-overlay {
@@ -3848,6 +3868,7 @@
         <option value="uniform_1_1">1:1 固定</option>
         <option value="uniform_4_3">4:3 固定</option>
         <option value="uniform_3_4">3:4 固定</option>
+        <option value="uniform_9_16">9:16 固定</option>
         <option value="uniform_16_9">16:9 固定</option>
       </select>
       <select id="webThemeStyle" class="header-theme-select" aria-label="主题风格" title="主题风格">
@@ -3855,10 +3876,91 @@
         <option value="ice_deep">深空冰蓝</option>
         <option value="amber_dawn">晨光琥珀</option>
         <option value="forest_shadow">森影暮霭</option>
+        <option value="ember_night">暗夜余烬</option>
+        <option value="graphite_night">石墨夜色</option>
+        <option value="nebula_violet">星云紫夜</option>
+        <option value="pine_abyss">松渊墨绿</option>
+        <option value="mocha_night">摩卡夜色</option>
+        <option value="glass_night">玻璃夜色</option>
+        <option value="aurora_night">渐变夜幕</option>
         <option value="sky_light">晴空浅蓝</option>
         <option value="cherry_blossom">樱雾粉昼</option>
         <option value="lavender_dusk">暮紫微光</option>
         <option value="arctic_mint">薄荷极光</option>
+        <option value="desert_sand">暖沙晨曦</option>
+        <option value="paper_gray">素纸浅灰</option>
+        <option value="sage_morning">鼠尾草晨雾</option>
+        <option value="apricot_haze">杏色薄雾</option>
+        <option value="frost_cyan">霜青微光</option>
+        <option value="glass_day">玻璃白昼</option>
+        <option value="aurora_dawn">渐变晨曦</option>
+        <option value="">自定义组合</option>
+      </select>
+      <select
+        id="webAccentSelect"
+        class="header-accent-select"
+        aria-label="强调色"
+        title="强调色（与「界面风格」独立）"
+        onchange="changeWebAccent(this.value)"
+      >
+        <option value="violet">紫罗兰</option>
+        <option value="cyan">青蓝</option>
+        <option value="teal">青绿</option>
+        <option value="rose">玫红</option>
+        <option value="amber">琥珀</option>
+        <option value="mono">中性</option>
+        <option value="coral">珊瑚</option>
+        <option value="indigo">靛蓝</option>
+        <option value="green">翠绿</option>
+        <option value="red">赤红</option>
+      </select>
+      <select
+        id="webBackgroundSelect"
+        class="header-background-select"
+        aria-label="背景基调"
+        title="背景基调（与「界面风格」独立）"
+        onchange="changeWebBackground(this.value)"
+      >
+        <option value="default">默认</option>
+        <option value="ink">墨色</option>
+        <option value="warm">暖调</option>
+        <option value="cool">冷调</option>
+        <option value="amoled">纯黑</option>
+        <option value="glass">玻璃</option>
+        <option value="aurora">渐变</option>
+        <option value="paper">纸感</option>
+        <option value="mist">海雾</option>
+        <option value="forest">深林</option>
+        <option value="clay">陶石</option>
+      </select>
+      <select
+        id="webTextureSelect"
+        class="header-background-select"
+        aria-label="材质纹理"
+        title="材质纹理（与「界面风格」「背景基调」独立，可任意叠加）"
+        onchange="changeWebTexture(this.value)"
+      >
+        <option value="none">无</option>
+        <option value="grain">颗粒</option>
+        <option value="paper">纸纤维</option>
+        <option value="linen">亚麻</option>
+        <option value="frost">磨砂</option>
+        <option value="grid">十字网</option>
+        <option value="dots">点阵</option>
+        <option value="stripe">竖条纹</option>
+        <option value="wood">木纹</option>
+      </select>
+      <select
+        id="webOpacitySelect"
+        class="header-background-select"
+        aria-label="面板透明度"
+        title="面板透明度（只影响界面框架，照片不受影响；与「材质纹理」独立，可任意叠加）"
+        onchange="changeWebOpacity(this.value)"
+      >
+        <option value="opaque">不透明</option>
+        <option value="slight">轻微</option>
+        <option value="medium">中等</option>
+        <option value="clear">通透</option>
       </select>
       <select
         id="sortSelect"
@@ -3874,6 +3976,15 @@
         <option value="file_size|DESC">体积从大到小</option>
         <option value="file_size|ASC">体积从小到大</option>
       </select>
+      <button
+        type="button"
+        class="header-settings-btn"
+        onclick="openWebSettingsPage()"
+        aria-label="设置"
+        title="设置"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#icon-settings" /></svg>
+      </button>
     </div>
 
     <!-- Main -->
@@ -3919,6 +4030,7 @@
               title="随机跳转页码"
               aria-label="随机页码"
             >
+              <svg class="icon" aria-hidden="true"><use href="#icon-shuffle" /></svg>
               随机
             </button>
             <select
@@ -4000,10 +4112,79 @@
           <option value="ice_deep">深空冰蓝</option>
           <option value="amber_dawn">晨光琥珀</option>
           <option value="forest_shadow">森影暮霭</option>
+          <option value="ember_night">暗夜余烬</option>
+          <option value="graphite_night">石墨夜色</option>
+          <option value="nebula_violet">星云紫夜</option>
+          <option value="pine_abyss">松渊墨绿</option>
+          <option value="mocha_night">摩卡夜色</option>
+          <option value="glass_night">玻璃夜色</option>
+          <option value="aurora_night">渐变夜幕</option>
           <option value="sky_light">晴空浅蓝</option>
           <option value="cherry_blossom">樱雾粉昼</option>
           <option value="lavender_dusk">暮紫微光</option>
           <option value="arctic_mint">薄荷极光</option>
+          <option value="desert_sand">暖沙晨曦</option>
+          <option value="paper_gray">素纸浅灰</option>
+          <option value="sage_morning">鼠尾草晨雾</option>
+          <option value="apricot_haze">杏色薄雾</option>
+          <option value="frost_cyan">霜青微光</option>
+          <option value="glass_day">玻璃白昼</option>
+          <option value="aurora_dawn">渐变晨曦</option>
+          <option value="">自定义组合</option>
+        </select>
+      </div>
+      <div class="sheet-row">
+        <label for="mobileAccentSelect">强调色</label>
+        <select id="mobileAccentSelect" onchange="changeWebAccent(this.value)">
+          <option value="violet">紫罗兰</option>
+          <option value="cyan">青蓝</option>
+          <option value="teal">青绿</option>
+          <option value="rose">玫红</option>
+          <option value="amber">琥珀</option>
+          <option value="mono">中性</option>
+          <option value="coral">珊瑚</option>
+          <option value="indigo">靛蓝</option>
+          <option value="green">翠绿</option>
+          <option value="red">赤红</option>
+        </select>
+      </div>
+      <div class="sheet-row">
+        <label for="mobileBackgroundSelect">背景基调</label>
+        <select id="mobileBackgroundSelect" onchange="changeWebBackground(this.value)">
+          <option value="default">默认</option>
+          <option value="ink">墨色</option>
+          <option value="warm">暖调</option>
+          <option value="cool">冷调</option>
+          <option value="amoled">纯黑</option>
+          <option value="glass">玻璃</option>
+          <option value="aurora">渐变</option>
+          <option value="paper">纸感</option>
+          <option value="mist">海雾</option>
+          <option value="forest">深林</option>
+          <option value="clay">陶石</option>
+        </select>
+      </div>
+      <div class="sheet-row">
+        <label for="mobileTextureSelect">材质纹理</label>
+        <select id="mobileTextureSelect" onchange="changeWebTexture(this.value)">
+          <option value="none">无</option>
+          <option value="grain">颗粒</option>
+          <option value="paper">纸纤维</option>
+          <option value="linen">亚麻</option>
+          <option value="frost">磨砂</option>
+          <option value="grid">十字网</option>
+          <option value="dots">点阵</option>
+          <option value="stripe">竖条纹</option>
+          <option value="wood">木纹</option>
+        </select>
+      </div>
+      <div class="sheet-row">
+        <label for="mobileOpacitySelect">面板透明度</label>
+        <select id="mobileOpacitySelect" onchange="changeWebOpacity(this.value)">
+          <option value="opaque">不透明</option>
+          <option value="slight">轻微</option>
+          <option value="medium">中等</option>
+          <option value="clear">通透</option>
         </select>
       </div>
       <div class="sheet-row">
@@ -4062,6 +4243,13 @@
       <div class="sheet-actions">
         <button type="button" onclick="closeMobileFilterSheet()">关闭</button>
       </div>
+      <button
+        type="button"
+        class="sheet-settings-link"
+        onclick="closeMobileFilterSheet(); openWebSettingsPage();"
+      >
+        更多设置（外观 · 快捷键 · 存储 · 网络）
+      </button>
     </div>
 
     <!-- Preview -->
@@ -4258,14 +4446,23 @@
       </div>
     </div>
 
+    <!-- 设置页：与桌面端同一套 7 面板信息架构，网页端只读镜像 + 少量本地偏好。
+         面板骨架与内容全部由 js/settings-page.js 渲染（这里只留一个挂载点）。 -->
+    <div class="web-settings" id="webSettingsPage" hidden></div>
+
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
-    <script src="/js/web-theme-shared.js?v=3"></script>
+    <script src="/js/web-theme-shared.js?v=9"></script>
     <link rel="stylesheet" href="/photo-compare.css?v=1" />
     <script src="/js/photo-compare.js?v=1"></script>
+    <!-- 照片信息面板的字段注册表：与桌面端共用同一份，网页端只读桌面端勾好的字段集 -->
+    <script src="/js/photo-info-fields.js?v=1"></script>
     <!-- 搜图 / 人物的入口在文件栏，结果落进主照片网格，不再需要独立弹窗样式 -->
     <link rel="stylesheet" href="/ai-web-views.css?v=1" />
+    <link rel="stylesheet" href="/settings-page.css?v=1" />
     <script src="/js/ai-views.js?v=1"></script>
     <script src="/js/app.js?v=4"></script>
+    <!-- 必须排在 app.js 之后：它要调用 app.js 挂到 window 上的换主题 / 换每页数量等入口 -->
+    <script src="/js/settings-page.js?v=1"></script>
   </body>
 </html>

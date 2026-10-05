@@ -42,6 +42,13 @@ jobs:
       - name: Download cloudflared
         run: npm run download-cloudflared
 
+      # 随包内置 AI 模型（人脸 YuNet + w600k_mbf、搜图 SigLIP2 文本 + 视觉，约 400 MB）。
+      # 这一步要联网从 InsightFace Release 与 Hugging Face 拉模型；失败不让流水线变红：
+      # afterPack 找不到 models/ 时只是退回旧行为（用户首次使用时在设置里下载模型）。
+      - name: Bundle AI models
+        continue-on-error: true
+        run: npm run bundle-models
+
       - name: Build
         run: npm run dist
 

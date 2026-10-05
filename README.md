@@ -11,7 +11,7 @@
 | **npm package**         | `aurora-gallery`                                                            |
 | **Bundle ID** (`appId`) | `com.foredawn.aurora-gallery`                                               |
 
-**Current release:** `1.2.0` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
+**Current release:** `1.3.0` (same as [`package.json`](package.json) `version`; bump before shipping and sync “About” and similar strings).
 
 **Release notes:** see [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -34,7 +34,7 @@ High-level overview; details follow the in-app **Settings** pages.
 - **Favorites & OS integration**: favorites participate in filters; open files or folders in the **system file manager**.
 - **Image preview**: zoom, pan, rotate, fullscreen; optional filename/time/size **info bar**.
 - **Video preview**: playback controls; **slideshow** (sequential or random); main window close behavior is configurable (see shortcuts help).
-- **UI**: multiple **themes** (light/dark and accents); **minimal UI** (hotkeys to hide chrome); **tray**: minimize to background with quick restore/quit.
+- **UI**: **22 theme presets** (11 dark / 11 light, including **glass / gradient** material tones) with independently adjustable accent color (**10**), background tone (**11**), **material texture** (**8**: grain / paper / linen / frost / grid / dots / stripes / wood) **panel opacity** (**3**: slight / medium / clear — only the UI chrome turns translucent; photos always stay opaque) and **window backdrop** (**4**: solid + acrylic light / medium / strong — the three acrylic levels make the **whole window** translucent so the desktop shows through, each level more transparent than the last; requires an app restart, and system blur needs Windows 11 22H2 or newer) (Settings → App; the top-bar dropdown switches them all, with **hover-to-preview** — window backdrop lives in Settings only, since it is a window-creation parameter that cannot be previewed before restart); **minimal UI** (hotkeys to hide chrome); **tray**: minimize to background with quick restore/quit.
 
 ### Startup & automation (General settings)
 
@@ -155,6 +155,7 @@ npm run dev
 - `npm run dist:win` — Windows installer (NSIS)
 - `npm run dist:mac` — macOS DMG
 - `npm run download-cloudflared` — fetch `cloudflared` for packaging or local tunnel
+- `npm run bundle-models` — build the bundled AI models into `models/` (face detector + recognizer, semantic-search encoder) for packaging; `--face-from` / `--search-from` copy from an existing cache instead of downloading
 - `npm run smoke:db` — DB smoke test (`scripts/db-smoke.js`)
 
 ## Build artifacts
@@ -188,8 +189,8 @@ Typical outputs:
 Push a tag matching `v*` to trigger the GitHub Actions workflow (`.github/workflows/release.yml`). It builds **Windows** (`windows-latest`) and **macOS** (`macos-latest`) in parallel and uploads artifacts to a GitHub Release.
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 The workflow automatically downloads the correct `cloudflared` binary per platform, rebuilds native modules, runs `electron-builder`, and publishes the installers to the release page.
@@ -199,16 +200,21 @@ The workflow automatically downloads the correct `cloudflared` binary per platfo
 ```text
 src/
   main.js                # Electron main entry (orchestrates modules below)
-  main/
-    ipc-handlers.js      # IPC handlers
-    task-scheduler.js    # Background task scheduling
-    settings.js          # Settings management
-    utils.js             # Main-process utilities
-    thumbnail-backfill.js
-    duplicate-detection.js
-    window-tray.js
-    cloudflare-tunnel.js
-    logger.js            # Structured logging with level control
+  main/                  # Every file here is reached from main.js at runtime
+    ai-index-gate.js       # Whether an AI index job may start (VACUUM / rebuild only)
+    browse-requests.js     # Browse request coalescing
+    database-maintenance.js
+    db-write-queue.js      # The single write-lock admission point, 4 priority tiers
+    face-service.js        # Face detection / grouping worker
+    interaction-preempt.js # User interaction preempts background tasks
+    logger.js              # Structured logging with level control
+    maintenance-guard.js   # Maintenance busy gating
+    perceptual-hash.js     # dHash computation
+    semantic-search.js     # Semantic (text -> image) search worker
+    semantic-tags.js       # Zero-shot content tags (read-only index connection)
+    similar-detection.js   # Visual similarity grouping
+    sql-id-list.js         # Safe `IN (...)` builder (host parameter limit)
+    startup-metrics.js     # Startup stage timing
   preload.js             # Secure bridge (photoAPI)
   web-server.js          # Built-in web (API, static, video/subtitles/HLS)
   database.js            # SQLite access
@@ -245,6 +251,8 @@ src/
   hls-attach.js
   playback-strategy.js
 ```
+
+> Every module under `src/main/` must be reachable from `main.js` / `preload.js`; `scripts/module-reachability-regression.js` fails the suite if an unreachable file appears. Editing a file that nothing `require`s changes nothing at runtime — that is how the `width`/`height` backfill contract once went missing (2026-10-05).
 
 ## Module overview
 

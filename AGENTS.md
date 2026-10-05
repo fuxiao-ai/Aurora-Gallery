@@ -6,7 +6,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 Aurora Gallery (拂晓图库, npm `aurora-gallery`) is a local-first Electron photo library app with a built-in web server for LAN access. It handles large libraries (tens of thousands to millions of photos, including RAW) using SQLite (`better-sqlite3`, WAL mode) with worker threads for scanning and heavy DB reads.
 
-**Version**: 1.2.0 — release version lives in `package.json`; bump before shipping and sync "About" strings.
+**Version**: 1.3.0 — release version lives in `package.json`; bump before shipping and sync "About" strings.
 
 ## Requirements
 
@@ -37,9 +37,10 @@ npm run dist                # Installer for current platform (downloads cloudfla
 npm run dist:win            # Windows NSIS installer
 npm run dist:mac            # macOS DMG
 npm run download-cloudflared # Fetch cloudflared binary for packaging/tunneling
+npm run bundle-models       # Build bundled AI models into models/ (face + search) for packaging
 ```
 
-**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 18 checks) in the Electron runtime — database smoke, query / worker-pool / maintenance / browse / compare / semantic / face / people-page / search-page / navigation / layout / face-task / face-concurrency / ai-lifecycle regressions, plus three static guards (`css-reference-regression`, `dead-reference-regression`, `check-text-corruption`). Run `npm run lint` and `npm run version-check` before shipping. See `docs/static-guards.md`.
+**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 41 scripts) in the Electron runtime — database smoke, query / worker-pool / maintenance / browse / compare / semantic / face / people-page / search-page / navigation / layout / face-task / face-concurrency / ai-lifecycle regressions, plus eight static guards (`control-styles-regression`, `theme-regression`, `css-reference-regression`, `dead-reference-regression`, `photo-info-fields-regression`, `photo-tags-regression`, `photo-metadata-backfill-regression`, `check-text-corruption`). Run `npm run lint` and `npm run version-check` before shipping. See `docs/static-guards.md`.
 
 ## High-Level Architecture
 
@@ -96,11 +97,15 @@ Fully bilingual (zh-CN / en) as of v1.0.3. Locale key is `uiLocale` (`zh-CN` or 
 
 ### Refactoring in Progress
 
-`src/renderer/app.js` and `src/main.js` remain large files. Part of `main.js` has been split into `src/main/*.js`, but **check actual imports before assuming a module is connected to the runtime**. Only these are wired up: `browse-requests`, `database-maintenance`, `maintenance-guard`, `semantic-search`, `face-service`, `perceptual-hash`, `similar-detection`, `startup-metrics`, `logger`.
+`src/renderer/app.js` and `src/main.js` remain large files. Part of `main.js` has been split into `src/main/*.js`, but **check actual imports before assuming a module is connected to the runtime** — a module that nothing `require`s is dead code that will silently diverge.
 
-Everything else in that directory — `ipc-handlers.js`, `task-scheduler.js`, `thumbnail-backfill.js`, `settings.js`, `window-tray.js`, `duplicate-detection.js`, `dhash-backfill.js`, `cloudflare-tunnel.js`, `utils.js` — is an **unconnected orphan chain**: those files only require each other, never `main.js`. Their logic also exists in duplicated form inside `main.js` (e.g. `createDefaultSettings`, the thumbnail backfill loop now living in `runRowsWithThumbConcurrency`), so editing them changes nothing at runtime. The duplicates have already drifted — `src/main/settings.js` and `main.js` disagree on `autoThumbBackfillOnStartup` and `thumbBackfillConcurrency`.
+`src/renderer/modules/*.js` was removed (orphaned dead code).
 
-`src/renderer/modules/*.js` was removed (orphaned dead code). When editing the large files, prefer small, focused changes. When adding new features, use the modular locations that are actually wired up.
+**2026-10-05 — the `src/main/*.js` orphan chain was removed (T6).** Nine files (`ipc-handlers.js`, `task-scheduler.js`, `thumbnail-backfill.js`, `settings.js`, `window-tray.js`, `duplicate-detection.js`, `dhash-backfill.js`, `cloudflare-tunnel.js`, `utils.js`) only required each other and were never reached from `main.js`; ~3100 lines deleted. Their logic had been duplicated inside `main.js` (e.g. `createDefaultSettings`, the thumbnail-backfill loop in `runRowsWithThumbConcurrency`) and the copies had **drifted** — most seriously, the `width`/`height` backfill contract that `database.js#_sqlBackfillPendingExpr()` depends on existed *only* in the dead `thumbnail-backfill.js`, so the live backfill never wrote dimensions and its candidate set could never converge. That logic has been ported into `main.js`; see `scripts/photo-metadata-backfill-regression.js`.
+
+🔴 **Do not add unreachable modules under `src/main/`.** `scripts/module-reachability-regression.js` asserts that every `.js` there is statically reachable from `src/main.js` / `src/preload.js`. If you split code out, wire it up in the same commit. Note the general rule this cost us: **a regression that pins a dead file is a false green** — before asserting "this contract is implemented", confirm the file under test is actually `require`d.
+
+When editing the large files, prefer small, focused changes. When adding new features, use the modular locations that are actually wired up (`src/main/` now holds only reachable modules: `ai-index-gate`, `browse-requests`, `database-maintenance`, `db-write-queue`, `face-service`, `interaction-preempt`, `logger`, `maintenance-guard`, `perceptual-hash`, `semantic-search`, `semantic-tags`, `similar-detection`, `sql-id-list`, `startup-metrics`).
 
 ### IPC Boundary
 
@@ -126,6 +131,12 @@ The web app (`src/web/`) is served as static assets by `web-server.js`:
 - `src/web/js/app.js` — web app logic
 - `src/web/js/ai-views.js` — 「搜图 / 人物」adapter: the file-bar tabs own the entry and results
   are rendered into the shared `#photoGrid`, so preview / slideshow / favorite / selection are reused
+- `src/web/js/photo-info-fields.js` — **not** web-only: the single source of truth for the preview
+  "Photo info" panel fields (groups, zh/en labels, default visibility, value formatters, renderer).
+  Loaded by the desktop renderer, the web page, **and** `require()`d by the main process (which uses
+  its `FIELD_IDS` as the settings whitelist). Adding a field means editing only this file; if the
+  field needs a DB column, declare it as `column:` — `scripts/photo-info-fields-regression.js`
+  cross-checks every `column` against `database.js#getPhotoInfo()`'s SQL.
 - `src/web/css/` — stylesheets (`gallery-design.css`, `photo-compare.css`, `ai-web-views.css`);
   `semantic-search.css` / `people.css` are now loaded only by the desktop renderer, for its
   AI settings panels (`settingsOnly` mode)
@@ -159,8 +170,9 @@ sidebar (folder / date) must go through `leaveAiViewForBrowse` (desktop) /
 - `no-empty: allowEmptyCatch`
 - Globals are split between Node/CommonJS (`src/**/*.js`, `scripts/**/*.js`) and Browser (`src/renderer/**/*.js`, `src/web/**/*.js`, `src/hls-attach.js`, `src/playback-strategy.js`)
 - Additional browser globals declared: `requestIdleCallback`, `confirm`, `appAlert`, `appConfirm`, `Logger`, `RendererFacesUI`, `api`, `formatNumber`
+- Ignored: `.workbuddy/**` (tool workspace — memory/docs plus throwaway debug scripts under `.workbuddy/artifacts/`; they are not product code and used to turn `npm run lint` permanently red)
 
-Baseline status: **0 errors, 5 warnings** (unused-variable warnings for reserved callbacks/imports). Run lint for the current result.
+Baseline status: **0 errors, 2 warnings** (both in `src/web/js/app.js`: `changeWebOpacity` / `changeWebTexture` are invoked from HTML `onchange` so static analysis cannot see the use — do not "fix" them). The baseline dropped from 7 to 2 when T6 deleted the orphan chain (which accounted for `cloudflare-tunnel.js` 2, `ipc-handlers.js` 2, `window-tray.js` 1). If the count rises again, check for newly unreachable modules first — `module-reachability-regression` will flag them. `npm run lint` (`eslint .`) and `npx eslint src scripts` report the identical result.
 
 ## Logging
 

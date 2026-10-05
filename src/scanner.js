@@ -304,7 +304,32 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     this.progress.ioThrottleMs = ioProfile.ioThrottleMs;
     this.progress.workerNormal = ioProfile.normalWorkers;
     this.progress.workerRaw = ioProfile.rawWorkers;
-    await this.enumerateFiles(rootPath, files, 0, null, scanOpts);
+    // 🔴 根目录登记必须在**枚举之前**。理由：设置页「媒体库」列表只认 `root_folders` 表，
+    // 而枚举整棵目录树在大库上要跑很久（本项目 K:\COS 就有三万多文件夹）。这一行过去写在
+    // `enumerateFiles` 之后，于是用户点完「添加目录」要等枚举跑完、列表里才冒出这一行 ——
+    // 观感就是「添加了没刷新」。提前登记后，扫描一启动列表就能看到它（数量先为 0，
+    // 随扫描批次增长）。对已有根目录是幂等的（INSERT OR IGNORE）。
+    var rootId = this.db.addRootFolder(rootPath);
+    if (!rootId) {
+      throw new Error('无法添加根目录：' + rootPath);
+    }
+    try {
+      await this.enumerateFiles(rootPath, files, 0, null, scanOpts);
+    } catch (err) {
+      // 防御性回滚：枚举阶段真抛错时撤回刚登记的空根，免得媒体库列表里留一个永远
+      // 扫不出内容、只能手动移除的空壳。
+      // ⚠️ 注意 `enumerateFiles` 当前把 fs 错误（路径不存在 / 无权限）**吞成空结果**，
+      // 所以「选了个已被删掉的目录」不会走到这里 —— 那种情况下根会留下、数量为 0，
+      // 与本次改动前一致（空目录本身是合法场景，不能一概撤根）。
+      // ⚠️ 只包枚举这一句：插入阶段的失败不撤根 —— 那会儿可能已经写了部分照片，
+      // 用户重扫即可，撤根反而会把已入库的记录一起删掉。
+      try {
+        this.db.removeRootFolder(rootPath);
+      } catch (eDel) {
+        // 撤回失败不掩盖原始错误：扫描错误优先上报
+      }
+      throw err;
+    }
     perfMark('enumerate-files');
 
     if (!scanOpts.includeRaw) {
@@ -326,11 +351,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     var scannedPathSet = new Set(files);
     perfMark('build-scanned-set');
 
-    var rootId = this.db.addRootFolder(rootPath);
-
-    if (!rootId) {
-      throw new Error('无法添加根目录：' + rootPath);
-    }
+    // rootId 已在枚举前登记（见上方 addRootFolder），这里直接用。
 
     // 加载已有文件（规范化路径 -> 修改时间+大小），用于快速增量比对
     var existingMap = new Map();
@@ -654,6 +675,8 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
     var width = 0;
     var height = 0;
     var thumbnail = null;
+    // 实际生成缩略图时用的目标档位；没生成就保持 0（写库时记为「未知」）
+    var generatedThumbSize = 0;
     var cameraMake = null;
     var cameraModel = null;
     var lensModel = null;
@@ -717,6 +740,7 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
             .jpeg({ quality: tq })
             .toBuffer();
           thumbnail = thumbBuffer;
+          generatedThumbSize = tsz;
         } catch (e) {}
       } catch (e) {}
     }
@@ -793,6 +817,9 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
       dateModified,
       thumbnail || null,
       thumbnail ? 1 : 0,
+      // 缩略图规格：如实记录生成时的目标档位与编码格式（编码在 714 行固定为 JPEG）
+      thumbnail ? generatedThumbSize : 0,
+      thumbnail ? 'jpeg' : '',
       cameraMake,
       cameraModel,
       lensModel,

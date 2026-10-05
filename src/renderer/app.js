@@ -1,4 +1,4 @@
-/** 网格卡片档位：与右下角 zoomLabel、设置页下拉一致（basis 写入 browseCardSize） */
+/** 网格卡片档位：与底栏「尺寸」下拉、设置页 `#settingBrowseCardSize` 一致（basis 写入 browseCardSize） */
 var RendererUtils = window.RendererUtils || {};
 var api = window.RendererApi || null;
 var sidebarUi = window.RendererSidebarUI || {};
@@ -54,16 +54,7 @@ var snapBrowseCardBasis =
     }
     return best;
   };
-var browseCardTierIndexForBasis =
-  RendererUtils.browseCardTierIndexForBasis ||
-  function (basis) {
-    var b = snapBrowseCardBasis(basis);
-    for (var j = 0; j < CARD_SIZE_TIERS.length; j++) {
-      if (CARD_SIZE_TIERS[j].basis === b) return j;
-    }
-    return 2;
-  };
-/** 每页张数档位与收档：底栏「每页数量」控件按它逐档走，与主进程校验同一套值 */
+/** 每页张数档位与收档：底栏「每页」下拉按它取值，与主进程校验同一套值 */
 var BROWSE_PAGE_SIZE_TIERS = RendererUtils.BROWSE_PAGE_SIZE_TIERS || [10, 20, 50, 80, 100, 200];
 var snapBrowsePageSize =
   RendererUtils.snapBrowsePageSize ||
@@ -81,29 +72,28 @@ var snapBrowsePageSize =
     }
     return best;
   };
-var browsePageSizeTierIndex =
-  RendererUtils.browsePageSizeTierIndex ||
-  function (size) {
-    var b = snapBrowsePageSize(size);
-    for (var j = 0; j < BROWSE_PAGE_SIZE_TIERS.length; j++) {
-      if (BROWSE_PAGE_SIZE_TIERS[j] === b) return j;
-    }
-    return BROWSE_PAGE_SIZE_TIERS.indexOf(100);
-  };
+// 「档位下标」（`browsePageSizeTierIndex` / `browseCardTierIndexForBasis`）只有 −/+ 药丸需要：
+// 要「当前是第几档」才能算 ±1。底栏那两个控件换成下拉后，用户直接选中档位本身，
+// 渲染端不再需要下标 —— 真源仍在 utils.js（主进程校验与未来调用方要用）。
+// 「网格与比例」的归一与编解码只有一份实现（`utils.js` 的 `BROWSE_CARD_RATIOS` 一族），
+// 这里只做转发 —— 与 `snapBrowseCardBasis` 等一样，靠 index.html 里 utils.js 先于本文件加载。
+// 设置页下拉、底栏 `#browseGridStyleSelect` 与这两个归一函数此前各持一份字面量，
+// 现在三处都收敛到 utils.js；漏掉任一处，两处下拉就会对同一个 state 显示出不同的读数。
 function normalizeBrowseCardRatio(v) {
-  var s = String(v || '').trim();
-  if (s === '1 / 1' || s === '3 / 4' || s === '4 / 3' || s === '9 / 16' || s === '16 / 9') return s;
-  return '1 / 1';
+  return RendererUtils.normalizeBrowseCardRatio(v);
 }
 function normalizeBrowseThumbCrop(v) {
   if (v === true || v === 1 || v === '1') return true;
   return false;
 }
 function normalizeBrowseCardLayout(v) {
-  var s = String(v || '')
-    .trim()
-    .toLowerCase();
-  return s === 'uniform' ? 'uniform' : 'masonry';
+  return RendererUtils.normalizeBrowseCardLayout(v);
+}
+function encodeBrowseGridStyleValue(layoutMode, cardRatio) {
+  return RendererUtils.encodeBrowseGridStyleValue(layoutMode, cardRatio);
+}
+function parseBrowseGridStyleValue(raw) {
+  return RendererUtils.parseBrowseGridStyleValue(raw);
 }
 function normalizeLaunchDefaultPage(v) {
   var s = String(v || '')
@@ -156,6 +146,12 @@ var state = {
   previewPhotos: [],
   previewTotalPhotos: 0,
   previewTotalPages: 0,
+  /**
+   * 「照片信息」面板启用的字段 id（设置页勾选结果）。
+   * null = 还没从设置里同步过 → 交给注册表的默认集；真实值由
+   * settingsSync.applyInfoPanelFieldsFromSettings() 写入，绝不在别处硬编码字段清单。
+   */
+  infoPanelFields: null,
   previewLoadingPage: 0, // 0=不加载
   previewPageStart: 1, // previewPhotos 中第一张照片对应的页码
   rootFolders: [],
@@ -281,8 +277,10 @@ var $$ = function (sel) {
 var dom = {
   sidebarContent: $('#sidebarContent'),
   sidebarContentDuplicate: $('#sidebarContentDuplicate'),
-  folderNavBar: $('#folderNavBar'),
-  folderNavUp: $('#folderNavUp'),
+  pathBar: $('#pathBar'),
+  pathBack: $('#pathBack'),
+  pathForward: $('#pathForward'),
+  pathUp: $('#pathUp'),
   statsBar: $('#statsBar'),
   scanProgress: $('#taskPanel'),
   progressText: $('#progressText'),
@@ -294,16 +292,19 @@ var dom = {
   mediaFilterSelect: $('#mediaFilterSelect'),
   sortSelect: $('#sortSelect'),
   photoGrid: $('#photoGrid'),
-  emptyState: $('#emptyState'),
   pagination: $('#pagination'),
   pageInfo: $('#pageInfo'),
   prevPage: $('#prevPage'),
   nextPage: $('#nextPage'),
   randomPageBtn: $('#randomPageBtn'),
+  // 底栏右侧那三个「标签 + 下拉」：可见性挂在**外层 field** 上（标签要跟着一起收），
+  // 读数/提交在里面的 select 上。见 ui-navigation.js 的 setBrowseGridControlsVisible。
+  browseGridStyleControl: $('#browseGridStyleControl'),
   pageSizeControl: $('#pageSizeControl'),
-  pageSizeLabel: $('#pageSizeLabel'),
-  pageSizeDecBtn: $('#pageSizeDecBtn'),
-  pageSizeIncBtn: $('#pageSizeIncBtn'),
+  zoomControl: $('#zoomControl'),
+  browseGridStyleSelect: $('#browseGridStyleSelect'),
+  browsePageSizeSelect: $('#browsePageSizeSelect'),
+  browseCardSizeSelect: $('#browseCardSizeSelect'),
   previewOverlay: $('#previewOverlay'),
   previewBody: $('#previewBody'),
   previewImage: $('#previewImage'),
@@ -320,6 +321,7 @@ var dom = {
   previewFullscreenBtn: $('#previewFullscreenBtn'),
   previewSubtitleTrackSelect: $('#previewSubtitleTrackSelect'),
   settingsPage: $('#settingsPage'),
+  homePage: $('#homePage'),
   contentArea: $('#contentArea'),
   settingsAddBtn: $('#settingsAddBtn'),
   settingsFolderList: $('#settingsFolderList'),
@@ -431,15 +433,19 @@ async function cycleUiThemePreset() {
       break;
     }
   }
-  var next = presets[startIdx] || { id: defId };
+  var next = presets[startIdx];
+  if (!next) return;
   try {
-    var r = await api.updateSettings({ themeStyle: next.id });
+    // ⚠️ 必须把预设展开成三元组一起提交：主进程只认三元组，themeStyle 只是派生标签
+    var r = await api.updateSettings({
+      themeStyle: next.id,
+      theme: next.theme,
+      uiAccent: next.uiAccent,
+      uiBackground: next.uiBackground,
+    });
     syncAppearanceFromSettings(r);
     setGeneralSettingsAppliedFromObject(r);
-    var st = document.getElementById('settingThemeStyle');
-    if (st) st.value = normalizeThemeStyle(r.themeStyle);
-    var qt = document.getElementById('quickThemeStyle');
-    if (qt) qt.value = normalizeThemeStyle(r.themeStyle);
+    syncAppearanceControls(r);
     if (dom.settingAutoScan) dom.settingAutoScan.checked = !!r.autoScanOnStartup;
     if (dom.settingAutoThumbBackfillOnStartup)
       dom.settingAutoThumbBackfillOnStartup.checked = !!r.autoThumbBackfillOnStartup;
@@ -449,12 +455,645 @@ async function cycleUiThemePreset() {
   }
 }
 
+/**
+ * 读「界面风格 / 强调色 / 背景基调」控件，得出最终外观三元组。
+ *
+ * 规则：风格下拉指向具体预设 → 以预设三元组为准（用户刚选了整套预设）；
+ * 下拉是空串（自定义组合）→ 以强调色 / 背景两个控件为准。
+ * 防御：下拉仍是预设、但两个控件与预设不符（说明联动没跟上，例如脚本直接改了控件值）时
+ * 以控件为准 —— **绝不吞掉用户刚改的那一维**。
+ */
+function getAppearanceControlValue() {
+  var accentEl = document.getElementById('settingUiAccent');
+  var bgEl = document.getElementById('settingUiBackground');
+  var texEl = document.getElementById('settingUiTexture');
+  var opaEl = document.getElementById('settingUiOpacity');
+  var wbdEl = document.getElementById('settingUiWindowBackdrop');
+  var styleId = getThemeStyleControlValue();
+  var preset = appearanceUi.resolveThemeTriple ? appearanceUi.resolveThemeTriple(styleId) : null;
+  var curTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  // 纹理（第三维）/ 透明度（第五维）/ 窗口背景（窗口级开关）都**不属于任何预设**，
+  // 两条分支都必须原样带着它们走，否则「套预设」或「改强调色」会把用户选的纹理 /
+  // 透明度 / 窗口背景静默清回 none / opaque / solid。
+  var texture = normalizeUiTexture(texEl ? texEl.value : undefined);
+  var opacity = normalizeUiOpacity(opaEl ? opaEl.value : undefined);
+  var windowBackdrop = normalizeUiWindowBackdrop(wbdEl ? wbdEl.value : undefined);
+  if (preset) {
+    var cAccent = accentEl ? normalizeUiAccent(accentEl.value) : preset.uiAccent;
+    var cBg = bgEl ? normalizeUiBackground(bgEl.value) : preset.uiBackground;
+    if (cAccent === preset.uiAccent && cBg === preset.uiBackground) {
+      return {
+        themeStyle: styleId,
+        theme: preset.theme,
+        uiAccent: preset.uiAccent,
+        uiBackground: preset.uiBackground,
+        uiTexture: texture,
+        uiOpacity: opacity,
+        uiWindowBackdrop: windowBackdrop,
+      };
+    }
+  }
+  var accent = normalizeUiAccent(accentEl ? accentEl.value : undefined);
+  var bg = normalizeUiBackground(bgEl ? bgEl.value : undefined);
+  return {
+    themeStyle: appearanceUi.inferThemeStyleFromTriple
+      ? appearanceUi.inferThemeStyleFromTriple(curTheme, accent, bg)
+      : '',
+    theme: curTheme,
+    uiAccent: accent,
+    uiBackground: bg,
+    uiTexture: texture,
+    uiOpacity: opacity,
+    uiWindowBackdrop: windowBackdrop,
+  };
+}
+
+/** 回显外观五个控件；风格下拉由三元组反推（凑不出任何预设 → 空串「自定义组合」） */
+function syncAppearanceControls(s) {
+  if (!s) return;
+  var theme = s.theme === 'light' ? 'light' : 'dark';
+  var accent = normalizeUiAccent(s.uiAccent);
+  var bg = normalizeUiBackground(s.uiBackground);
+  var texture = normalizeUiTexture(s.uiTexture);
+  var opacity = normalizeUiOpacity(s.uiOpacity);
+  var windowBackdrop = normalizeUiWindowBackdrop(s.uiWindowBackdrop);
+  var styleId = appearanceUi.inferThemeStyleFromTriple
+    ? appearanceUi.inferThemeStyleFromTriple(theme, accent, bg)
+    : normalizeThemeStyle(s.themeStyle);
+  var stEl = document.getElementById('settingThemeStyle');
+  if (stEl) stEl.value = styleId;
+  // 顶栏下拉：没有 value="" 的死选项，所以凑不出预设时要落到「强调色」组里当前那一项，
+  // 否则 .value 会设成一个不存在的值 → selectedIndex 变 -1、收起状态一片空白。
+  var qtEl = document.getElementById('quickThemeStyle');
+  if (qtEl) {
+    qtEl.value = themeOptionForTriple(theme, accent, bg);
+    if (qtEl.selectedIndex < 0) qtEl.selectedIndex = 0;
+  }
+  var acEl = document.getElementById('settingUiAccent');
+  if (acEl) acEl.value = accent;
+  var bgEl = document.getElementById('settingUiBackground');
+  if (bgEl) bgEl.value = bg;
+  var texEl = document.getElementById('settingUiTexture');
+  if (texEl) texEl.value = texture;
+  var opaEl = document.getElementById('settingUiOpacity');
+  if (opaEl) opaEl.value = opacity;
+  // 窗口背景只有设置页一处控件（不进顶栏 → 也不参与触发按钮的后缀文案）
+  var wbdEl = document.getElementById('settingUiWindowBackdrop');
+  if (wbdEl) wbdEl.value = windowBackdrop;
+  // 「改了但还没重启」提示：只有拿到主进程给的「已生效值」才敢判断；拿不到（本层自己拼的
+  // 对象，例如回滚路径）就**不动**这个提示 —— 否则会误报或误清。
+  var wbdHintEl = document.getElementById('settingWindowBackdropRestartHint');
+  if (wbdHintEl && s.uiWindowBackdropApplied != null) {
+    wbdHintEl.hidden = windowBackdrop === normalizeUiWindowBackdrop(s.uiWindowBackdropApplied);
+  }
+  // 顶栏触发按钮的文案镜像 select 的选中项 —— 每次回显都跟着刷一遍
+  syncQuickThemeTrigger();
+}
+
 function normalizeUiAccent(a) {
   return appearanceUi.normalizeUiAccent(a);
 }
 
 function normalizeUiBackground(b) {
   return appearanceUi.normalizeUiBackground(b);
+}
+
+function normalizeUiTexture(t) {
+  return appearanceUi.normalizeUiTexture(t);
+}
+
+function normalizeUiOpacity(o) {
+  return appearanceUi.normalizeUiOpacity(o);
+}
+
+function normalizeUiWindowBackdrop(b) {
+  return appearanceUi.normalizeUiWindowBackdrop(b);
+}
+
+/**
+ * 用户主动选了某个「界面风格」预设 → 把预设展开写进三个控件（两维 + 另一个风格下拉）。
+ *
+ * 🔴 这一步不是"回显"，是**语义**。`getAppearanceControlValue()` 的规则是：
+ *   风格下拉=具体预设 → 拿「强调色 / 背景基调」的**当前控件值**与预设比对，
+ *   一致才采纳预设；不一致就退回「以控件为准」（为了保护"只改一维"的场景，不能反转）。
+ * 而用户点预设时，这两个控件还停在**上一套的残留值**上 → 判不相等 → 退回控件分支 →
+ * 推出的三元组与保存前逐位相同 → `persistGeneralSettingsFromControls` 的变更检测判
+ * 「无变化」→ **整次切换被静默吞掉**（症状：切界面风格毫无反应，且两个风格下拉各自停在
+ * 不同的值上）。展开后控件与预设一致，预设才真的被采纳。
+ *
+ * 两个风格下拉也一起对齐：`getThemeStyleControlValue()` 在焦点判定失效时会回落读
+ * `#settingThemeStyle`，只写触发的那一个会让它读到**旧预设** → 又退回控件分支 →
+ * 明暗维度（theme）会跟着丢。
+ *
+ * 顶栏下拉把「强调色 / 背景基调」也做成了可选项（值为 `accent:<id>` / `bg:<id>` 前缀），
+ * 这里解析前缀 → 只改对应那一维，另一维保持用户当前选择（这就是「自定义」的语义）。
+ */
+var THEME_OPTION_ACCENT_PREFIX = 'accent:';
+var THEME_OPTION_BG_PREFIX = 'bg:';
+var THEME_OPTION_TEXTURE_PREFIX = 'texture:';
+var THEME_OPTION_OPACITY_PREFIX = 'opacity:';
+
+/**
+ * 顶栏下拉里「只改某一维」的选项（值为 `<维>:<id>`）→ 目标控件 + 归一函数。
+ * 各前缀共用一份解析，避免在 expandThemePresetToControls / resolveQuickThemeOptionTriple
+ * 各写一套 if 链（加第五维时必然漏一处）。
+ * @returns {{raw:string, elId:string, norm:Function}|null}
+ */
+function resolveThemeOptionDimension(raw) {
+  var s = String(raw == null ? '' : raw);
+  var table = [
+    [THEME_OPTION_ACCENT_PREFIX, 'settingUiAccent', normalizeUiAccent],
+    [THEME_OPTION_BG_PREFIX, 'settingUiBackground', normalizeUiBackground],
+    [THEME_OPTION_TEXTURE_PREFIX, 'settingUiTexture', normalizeUiTexture],
+    [THEME_OPTION_OPACITY_PREFIX, 'settingUiOpacity', normalizeUiOpacity],
+  ];
+  for (var i = 0; i < table.length; i++) {
+    if (s.indexOf(table[i][0]) === 0) {
+      return { raw: s.slice(table[i][0].length), elId: table[i][1], norm: table[i][2] };
+    }
+  }
+  return null;
+}
+
+/** 顶栏下拉的回显值：能凑出预设就用预设 id，否则落到「强调色」组里当前那一项 */
+function themeOptionForTriple(theme, accent, bg) {
+  var presetId = appearanceUi.inferThemeStyleFromTriple
+    ? appearanceUi.inferThemeStyleFromTriple(theme, accent, bg)
+    : '';
+  if (presetId) return presetId;
+  return THEME_OPTION_ACCENT_PREFIX + normalizeUiAccent(accent);
+}
+
+function expandThemePresetToControls(id) {
+  var raw = String(id == null ? '' : id);
+  var dim = resolveThemeOptionDimension(raw);
+  if (dim) {
+    var target = document.getElementById(dim.elId);
+    if (target) target.value = dim.norm(dim.raw);
+    // 其余维不动：控件与下拉值不再自洽，save 时走「以控件为准」分支 → 正是想要的结果
+    return true;
+  }
+  var preset = appearanceUi.resolveThemeTriple ? appearanceUi.resolveThemeTriple(raw) : null;
+  if (!preset) return false;
+  var styleIds = ['settingThemeStyle', 'quickThemeStyle'];
+  for (var i = 0; i < styleIds.length; i++) {
+    var el = document.getElementById(styleIds[i]);
+    if (el) el.value = raw;
+  }
+  var acEl = document.getElementById('settingUiAccent');
+  if (acEl) acEl.value = preset.uiAccent;
+  var bgEl = document.getElementById('settingUiBackground');
+  if (bgEl) bgEl.value = preset.uiBackground;
+  // ⚠️ 预设**不含**纹理 / 透明度这两维 → 这里绝不能碰 #settingUiTexture / #settingUiOpacity，
+  // 否则套一次预设就把它们清了
+  return true;
+}
+
+/* ============================================================================
+ * 顶栏「界面风格」自建弹层 —— 鼠标悬浮即预览
+ * ============================================================================
+ * 为什么必须自建：#quickThemeStyle 是原生 <select>，而 Windows 上它展开的列表由**系统弹出
+ * 菜单**渲染，<option> 不是可命中的 DOM 元素 → mouseover / mouseenter 根本派发不到 JS。
+ * 「鼠标划过主题名即预览」用原生控件实现不了，这是平台限制而非代码问题。
+ *
+ * 数据源仍然只有那一个 <select>：弹层**每次打开**从它的 <optgroup>/<option> 动态重建
+ * （连文案都直接取，跟着 i18n 走），点选时写回 select.value 并派发 change → 完全复用既有
+ * 落库链路（expandThemePresetToControls + persistGeneralSettingsFromControls）。
+ * 所以**不存在第二份主题名列表**，也就不会有「预设加了、弹层忘了加」这种漂移。
+ *
+ * 🔴 三条不可动摇的规则：
+ *   1. 预览**绝不落库**：预览路径里不许出现 persistGeneralSettingsFromControls。
+ *   2. 预览**绝不写启动快照**：一律 `syncAppearanceFromSettings(triple, { skipSnapshot: true })`。
+ *      否则鼠标扫过 18 项就会把启动首帧快照写成最后扫到的那个主题（刷新/崩溃后首帧变样）。
+ *   3. 还原回到**会话开始时采集的真实三元组**，不能拿"上一个预览值"当基线 ——
+ *      否则连续 hover 会一轮轮叠上去、还原不回去。
+ * ========================================================================== */
+
+/** 悬浮多久才真的预览：防「鼠标划过去时闪一串颜色」，同时保持跟手 */
+var QUICK_THEME_PREVIEW_DELAY_MS = 90;
+
+var quickThemePreview = {
+  active: false, // 是否已经改过 html 属性（决定还原时要不要写回）
+  snapshot: null, // 会话开始时的真实三元组（未被预览污染）
+  timer: 0, // 悬浮停留计时器
+  hoverValue: null, // 最后一次悬浮到的 option 值
+};
+
+/** 读 html 上的真实三元组 —— 只在预览会话开始时调用（那一刻一定还没被预览改过） */
+function readAppliedAppearanceTriple() {
+  var root = document.documentElement;
+  return {
+    theme: root.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    uiAccent: normalizeUiAccent(root.getAttribute('data-accent')),
+    // ⚠️ bg 不存在时 getAttribute 返回 null，normalizeUiBackground 会落成 'default' —— 正好
+    uiBackground: normalizeUiBackground(root.getAttribute('data-bg')),
+    // 纹理同理：关闭态不设属性 → null → 'none'。🔴 必须带上这一维，
+    // 否则悬浮预览结束时按快照还原会把纹理清掉（快照缺字段 = 还原成 none）。
+    uiTexture: normalizeUiTexture(root.getAttribute('data-texture')),
+    // 透明度同理：opaque 档不设属性 → null → 'opaque'。
+    uiOpacity: normalizeUiOpacity(root.getAttribute('data-opacity')),
+    // 🔴 窗口背景**也必须带上**，理由同上（且后果更难看）：solid 档不设属性 → null → 'solid'。
+    // 快照缺这个字段 → 鼠标扫一遍顶栏主题再移开，还原时会把数据属性抹掉，
+    // 「亚克力」的窗口当场从「透」变回「不透」——而窗口本身还是透明的（两半失配）。
+    uiWindowBackdrop: normalizeUiWindowBackdrop(root.getAttribute('data-window-backdrop')),
+  };
+}
+
+/** option 值 → 完整外观：预设取预设表；accent: / bg: / texture: / opacity: 前缀只换那一维（其余取 base） */
+function resolveQuickThemeOptionTriple(value, base) {
+  var raw = String(value == null ? '' : value);
+  if (!raw) return null;
+  var dim = resolveThemeOptionDimension(raw);
+  if (dim) {
+    var next = {
+      theme: base.theme,
+      uiAccent: base.uiAccent,
+      uiBackground: base.uiBackground,
+      uiTexture: base.uiTexture,
+      uiOpacity: base.uiOpacity,
+      // 窗口背景不在顶栏菜单里，但**预览也要原样带着它** —— 它同样是 syncAppearanceFromSettings
+      // 的输入，缺了就在「鼠标划过主题」这一刻被清成 solid。
+      uiWindowBackdrop: base.uiWindowBackdrop,
+    };
+    if (raw.indexOf(THEME_OPTION_ACCENT_PREFIX) === 0) next.uiAccent = dim.norm(dim.raw);
+    else if (raw.indexOf(THEME_OPTION_BG_PREFIX) === 0) next.uiBackground = dim.norm(dim.raw);
+    else if (raw.indexOf(THEME_OPTION_TEXTURE_PREFIX) === 0) next.uiTexture = dim.norm(dim.raw);
+    else next.uiOpacity = dim.norm(dim.raw);
+    return next;
+  }
+  var preset = appearanceUi.resolveThemeTriple ? appearanceUi.resolveThemeTriple(raw) : null;
+  if (!preset) return null;
+  // 纹理 / 透明度 / 窗口背景都是**正交维度**、不属于预设 → 套预设时原样保留
+  // （否则悬浮预览一下就把它们弄丢了）
+  return {
+    theme: preset.theme,
+    uiAccent: preset.uiAccent,
+    uiBackground: preset.uiBackground,
+    uiTexture: base.uiTexture,
+    uiOpacity: base.uiOpacity,
+    uiWindowBackdrop: base.uiWindowBackdrop,
+  };
+}
+
+function cancelQuickThemeHoverTimer() {
+  if (quickThemePreview.timer) {
+    clearTimeout(quickThemePreview.timer);
+    quickThemePreview.timer = 0;
+  }
+}
+
+/** 悬浮进入某项：延迟一下再预览（快速划过的项不会被预览） */
+function scheduleQuickThemePreview(value) {
+  var v = String(value == null ? '' : value);
+  // 同一项内部移动（进出子元素也会触发 mouseover）不重新计时，否则永远等不到预览
+  if (quickThemePreview.hoverValue === v) return;
+  cancelQuickThemeHoverTimer();
+  quickThemePreview.hoverValue = v;
+  quickThemePreview.timer = setTimeout(function () {
+    quickThemePreview.timer = 0;
+    previewQuickThemeOption(quickThemePreview.hoverValue);
+  }, QUICK_THEME_PREVIEW_DELAY_MS);
+}
+
+/** 真正做预览：只改 html 属性 —— 不落库、不写快照 */
+function previewQuickThemeOption(value) {
+  var menu = document.getElementById('quickThemeMenu');
+  if (!menu || menu.hidden) return;
+  if (!quickThemePreview.snapshot) quickThemePreview.snapshot = readAppliedAppearanceTriple();
+  var triple = resolveQuickThemeOptionTriple(value, quickThemePreview.snapshot);
+  if (!triple) return;
+  quickThemePreview.active = true;
+  syncAppearanceFromSettings(triple, { skipSnapshot: true });
+  markQuickThemeOptionPreviewing(String(value));
+}
+
+/** 结束预览并还原。在"从未预览过"时是安全的 no-op */
+function endQuickThemePreview() {
+  cancelQuickThemeHoverTimer();
+  quickThemePreview.hoverValue = null;
+  var snap = quickThemePreview.snapshot;
+  var wasActive = quickThemePreview.active;
+  quickThemePreview.active = false;
+  quickThemePreview.snapshot = null;
+  if (wasActive && snap) syncAppearanceFromSettings(snap, { skipSnapshot: true });
+  markQuickThemeOptionPreviewing(null);
+}
+
+/** 标出「正在预览」的项 —— 让用户分得清"预览"与"已生效" */
+function markQuickThemeOptionPreviewing(value) {
+  var menu = document.getElementById('quickThemeMenu');
+  if (!menu) return;
+  var items = menu.querySelectorAll('[data-theme-option]');
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (value != null && it.getAttribute('data-theme-option') === value) it.classList.add('is-previewing');
+    else it.classList.remove('is-previewing');
+  }
+}
+
+/** 标出「当前生效」的项 */
+function markQuickThemeOptionSelected(value) {
+  var menu = document.getElementById('quickThemeMenu');
+  if (!menu) return;
+  var want = String(value == null ? '' : value);
+  var items = menu.querySelectorAll('[data-theme-option]');
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var on = it.getAttribute('data-theme-option') === want;
+    if (on) {
+      it.classList.add('is-selected');
+      it.setAttribute('aria-selected', 'true');
+    } else {
+      it.classList.remove('is-selected');
+      it.setAttribute('aria-selected', 'false');
+    }
+  }
+}
+
+/**
+ * 把「正交维度」当前生效的名字缀到触发按钮文案后面（「夜幕经典 · 木纹 · 通透」）。
+ *
+ * 纹理（第三维）与透明度（第五维）都**不属于预设** → 顶栏 select 的选中值只能落在
+ * 「风格 / 强调色」那一支上，于是用户刚点完「木纹」，按钮文案会立刻跳回风格名，
+ * **看起来像没生效**。后缀上去之后，生效与否一眼可见。
+ *
+ * @param {string} text 基础文案
+ * @param {Array<[string, Function, string]>} dims `[控件 id, 归一函数, 关闭态值]`
+ */
+function appendOrthogonalDimensionLabels(text, dims) {
+  for (var i = 0; i < dims.length; i++) {
+    var el = document.getElementById(dims[i][0]);
+    if (!el) continue;
+    var val = dims[i][1](el.value);
+    if (val === dims[i][2]) continue; // 关闭态（none / opaque）不缀
+    var opt = el.options[el.selectedIndex];
+    var name = opt ? String(opt.textContent || '').trim() : val;
+    if (name && text.indexOf(name) < 0) text = text ? text + ' · ' + name : name;
+  }
+  return text;
+}
+
+/** 触发按钮文案 = 当前 select 选中项的文字（自动跟随 i18n，绝不在这里写死主题名） */
+function syncQuickThemeTrigger() {
+  var sel = document.getElementById('quickThemeStyle');
+  var label = document.getElementById('quickThemeStyleLabel');
+  if (sel && label) {
+    var opt = sel.options[sel.selectedIndex];
+    var text = opt ? String(opt.textContent || '').trim() : '';
+    text = appendOrthogonalDimensionLabels(text, [
+      ['settingUiTexture', normalizeUiTexture, 'none'],
+      ['settingUiOpacity', normalizeUiOpacity, 'opaque'],
+    ]);
+    label.textContent = text;
+  }
+  var menu = document.getElementById('quickThemeMenu');
+  if (menu && !menu.hidden) markQuickThemeOptionSelected(sel ? sel.value : '');
+}
+
+/**
+ * 从 <select> 重建弹层内容 —— **每次打开都重建**。
+ * 这样项文案永远跟随当前语言（i18n 改了 option 的 textContent，我们不缓存它），
+ * 且新增预设只需改 index.html 那一处，弹层自动跟上。
+ */
+function buildQuickThemeMenu() {
+  var sel = document.getElementById('quickThemeStyle');
+  var menu = document.getElementById('quickThemeMenu');
+  if (!sel || !menu) return;
+  var current = String(sel.value || '');
+  var frag = document.createDocumentFragment();
+  var groups = sel.querySelectorAll('optgroup');
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    var head = document.createElement('div');
+    head.className = 'theme-menu-group';
+    head.setAttribute('role', 'presentation');
+    head.textContent = String(grp.getAttribute('label') || '');
+    frag.appendChild(head);
+    var opts = grp.querySelectorAll('option');
+    for (var o = 0; o < opts.length; o++) {
+      frag.appendChild(buildQuickThemeMenuItem(opts[o], current));
+    }
+  }
+  menu.replaceChildren(frag);
+}
+
+function buildQuickThemeMenuItem(optEl, current) {
+  var value = String(optEl.value || '');
+  var item = document.createElement('div');
+  item.className = 'theme-menu-item';
+  item.setAttribute('role', 'option');
+  item.setAttribute('data-theme-option', value);
+  item.setAttribute('tabindex', '-1');
+  var isSel = value === current;
+  item.setAttribute('aria-selected', isSel ? 'true' : 'false');
+  if (isSel) item.classList.add('is-selected');
+  var text = document.createElement('span');
+  text.className = 'theme-menu-item-label';
+  text.textContent = String(optEl.textContent || '').trim();
+  item.appendChild(text);
+  return item;
+}
+
+/**
+ * 弹层定位：贴着按钮，且**翻不出视口**。
+ * 弹层是 position:fixed 且挂在 body 下（不在 .topbar 里）—— .topbar 带 backdrop-filter，
+ * 会给 position:fixed 的后代创建**新的包含块**，放里面会以 56px 高的顶栏为参考系而整体错位。
+ */
+function positionQuickThemeMenu() {
+  var menu = document.getElementById('quickThemeMenu');
+  var btn = document.getElementById('quickThemeStyleButton');
+  if (!menu || !btn || menu.hidden) return;
+  var r = btn.getBoundingClientRect();
+  var mw = menu.offsetWidth;
+  var mh = menu.offsetHeight;
+  var vw = document.documentElement.clientWidth;
+  var vh = document.documentElement.clientHeight;
+  var gap = 6;
+  var left = r.right - mw; // 右对齐按钮：顶栏右侧没有别的元素会被盖住
+  if (left > vw - mw - 8) left = vw - mw - 8;
+  if (left < 8) left = 8;
+  var top = r.bottom + gap;
+  if (top + mh > vh - 8) {
+    var above = r.top - gap - mh; // 下面放不下就翻到按钮上方
+    top = above >= 8 ? above : Math.max(8, vh - 8 - mh);
+  }
+  menu.style.left = Math.round(left) + 'px';
+  menu.style.top = Math.round(top) + 'px';
+}
+
+function openQuickThemeMenu() {
+  var menu = document.getElementById('quickThemeMenu');
+  var btn = document.getElementById('quickThemeStyleButton');
+  if (!menu || !btn || !menu.hidden) return;
+  buildQuickThemeMenu();
+  menu.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  positionQuickThemeMenu();
+  // 焦点落到当前生效项：方向键才有起点，也避免"打开后焦点还在按钮上"的双焦点
+  var sel = document.getElementById('quickThemeStyle');
+  focusQuickThemeOption(sel ? String(sel.value || '') : '');
+}
+
+function closeQuickThemeMenu() {
+  var menu = document.getElementById('quickThemeMenu');
+  var btn = document.getElementById('quickThemeStyleButton');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function quickThemeMenuItems() {
+  var menu = document.getElementById('quickThemeMenu');
+  return menu ? Array.prototype.slice.call(menu.querySelectorAll('[data-theme-option]')) : [];
+}
+
+function focusQuickThemeOption(value) {
+  var items = quickThemeMenuItems();
+  if (!items.length) return;
+  var want = String(value == null ? '' : value);
+  var idx = 0;
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].getAttribute('data-theme-option') === want) {
+      idx = i;
+      break;
+    }
+  }
+  setQuickThemeFocus(items, idx);
+}
+
+/**
+ * 键盘移动：只挪 roving 焦点 + 预览，**绝不动 select.value**（动它就是落库了）。
+ * 键盘是明确意图，所以这里**立即**预览，不走那 90ms 的防误触延迟。
+ */
+function setQuickThemeFocus(items, idx) {
+  if (!items.length) return;
+  if (idx < 0) idx = items.length - 1;
+  if (idx >= items.length) idx = 0;
+  for (var i = 0; i < items.length; i++) {
+    var on = i === idx;
+    items[i].classList.toggle('is-focused', on);
+    items[i].setAttribute('tabindex', on ? '0' : '-1');
+  }
+  var el = items[idx];
+  if (!el) return;
+  if (typeof el.focus === 'function') el.focus();
+  quickThemePreview.hoverValue = el.getAttribute('data-theme-option');
+  previewQuickThemeOption(quickThemePreview.hoverValue);
+}
+
+/** 点选某项：这是**唯一**会产生落库的入口 */
+function commitQuickThemeOption(value) {
+  var sel = document.getElementById('quickThemeStyle');
+  if (!sel) return;
+  cancelQuickThemeHoverTimer();
+  closeQuickThemeMenu();
+  var next = String(value == null ? '' : value);
+  if (sel.value === next) {
+    // 点的是当前生效项：不会有落库发生，但界面可能正停在别的预览值上 → 必须还原，
+    // 否则会停在预览态、与"当前生效"不符。
+    endQuickThemePreview();
+    syncQuickThemeTrigger();
+    return;
+  }
+  // 丢弃预览会话状态但**不还原** —— 紧接着的 change 链路会把 html 写成新值，
+  // 此刻先还原反而会闪一下旧主题。顺序很重要。
+  quickThemePreview.active = false;
+  quickThemePreview.snapshot = null;
+  quickThemePreview.hoverValue = null;
+  sel.value = next;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** 绑定触发按钮与弹层的一切交互；由 bindEvents 调用一次 */
+function initQuickThemeMenu() {
+  var btn = document.getElementById('quickThemeStyleButton');
+  var menu = document.getElementById('quickThemeMenu');
+  if (!btn || !menu) return;
+
+  syncQuickThemeTrigger();
+
+  btn.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (menu.hidden) {
+      openQuickThemeMenu();
+    } else {
+      closeQuickThemeMenu();
+      endQuickThemePreview();
+    }
+  });
+  btn.addEventListener('keydown', function (e) {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menu.hidden) {
+      e.preventDefault();
+      openQuickThemeMenu();
+    } else if (e.key === 'Escape' && !menu.hidden) {
+      closeQuickThemeMenu();
+      endQuickThemePreview();
+    }
+  });
+
+  menu.addEventListener('mouseover', function (e) {
+    var item = e.target && e.target.closest ? e.target.closest('[data-theme-option]') : null;
+    if (!item) return;
+    scheduleQuickThemePreview(item.getAttribute('data-theme-option'));
+  });
+  // 移出弹层即还原：预览是临时的，鼠标一离开就该回到当前生效主题
+  menu.addEventListener('mouseleave', function () {
+    endQuickThemePreview();
+  });
+  menu.addEventListener('click', function (e) {
+    var item = e.target && e.target.closest ? e.target.closest('[data-theme-option]') : null;
+    if (!item) return;
+    e.preventDefault();
+    e.stopPropagation();
+    commitQuickThemeOption(item.getAttribute('data-theme-option'));
+  });
+  menu.addEventListener('keydown', function (e) {
+    var items = quickThemeMenuItems();
+    if (!items.length) return;
+    var cur = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setQuickThemeFocus(items, cur + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setQuickThemeFocus(items, cur - 1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setQuickThemeFocus(items, 0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setQuickThemeFocus(items, items.length - 1);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (cur >= 0) commitQuickThemeOption(items[cur].getAttribute('data-theme-option'));
+    } else if (e.key === 'Escape' || e.key === 'Tab') {
+      closeQuickThemeMenu();
+      endQuickThemePreview();
+      if (e.key === 'Escape' && typeof btn.focus === 'function') btn.focus();
+    }
+  });
+
+  // 点外部关闭：走 capture 阶段，避免被别处的 stopPropagation 挡掉
+  document.addEventListener(
+    'mousedown',
+    function (e) {
+      if (menu.hidden) return;
+      var t = e.target;
+      if ((t && menu.contains(t)) || (t && btn.contains(t))) return;
+      closeQuickThemeMenu();
+      endQuickThemePreview();
+    },
+    true,
+  );
+
+  // 窗口尺寸变化：弹层是 fixed 定位，必须跟着按钮挪，否则会飘在原地
+  window.addEventListener('resize', function () {
+    if (!menu.hidden) positionQuickThemeMenu();
+  });
+
+  // 语言切换：i18n 的 applyDom() 末尾会派发 localechange，用它刷新按钮文案与项选中态
+  window.addEventListener('localechange', syncQuickThemeTrigger);
 }
 
 function normalizeSubtitleFontFamily(v) {
@@ -537,8 +1176,8 @@ function syncSubtitleStyleControlsFromSettings(s) {
 }
 
 /** 根据完整设置同步 html 的 data-theme / data-accent / data-bg */
-function syncAppearanceFromSettings(s) {
-  return appearanceUi.syncAppearanceFromSettings(s);
+function syncAppearanceFromSettings(s, options) {
+  return appearanceUi.syncAppearanceFromSettings(s, options);
 }
 
 function isKeyEventFromTypingField(target) {
@@ -590,32 +1229,37 @@ async function tickBackgroundTasksOnce() {
 
 /** 管理页上次定位的面板 id（如 settingsSectionStorage） */
 var SETTINGS_LAST_SECTION_LS_KEY = 'photoManager.settingsLastSection.v1';
-/** 两栏化后的 6 个面板 id，顺序须与 index.html 的 [data-settings-panel] 一致 */
+/** 两栏化后的 8 个面板 id，顺序须与 index.html 的 [data-settings-panel] 一致 */
 var VALID_SETTINGS_SECTION_IDS = {
   settingsSectionFolders: 1,
   settingsSectionBrowse: 1,
+  settingsSectionShortcuts: 1,
   settingsSectionStorage: 1,
   settingsSectionTasks: 1,
-  settingsSectionApp: 1,
+  settingsSectionAiIndex: 1,
+  settingsSectionAppearance: 1,
   settingsSectionNetwork: 1,
 };
 /**
  * 历史 id → 当前面板 id。
- * 设置页经历过两次改版（单页 8 区块 → 两栏 6 面板 → 两栏 7 面板），localStorage 里
+ * 设置页经历过三次改版（单页 8 区块 → 两栏 6 面板 → 两栏 7 面板），localStorage 里
  * 可能还存着任一代的旧值，直接把老用户丢回默认位置体验很差；这里做一次映射，
  * 写回时也统一存新 id。
  * 注意 `settingsSectionPeople` 在两代里同名，normalize 后仍指向自己，无需别名。
  */
 var SETTINGS_SECTION_ID_ALIAS = {
-  // 搜图 / 人物这三个名字换过好几代：8 区块时代的「语义 / 人脸」、6 面板时代的
-  // 「智能索引」、7~8 面板时代的「搜图 / 人物」两个独立类目。它们现在都并进了
-  // 「后台任务」（索引本来就是一类长跑任务），老用户的 localStorage 一律归一到这里。
-  settingsSectionSearch: 'settingsSectionTasks',
-  settingsSectionPeople: 'settingsSectionTasks',
-  settingsSectionSemantic: 'settingsSectionTasks',
-  settingsSectionAi: 'settingsSectionTasks',
-  settingsSectionCloseBehavior: 'settingsSectionApp',
-  settingsSectionGeneral: 'settingsSectionApp',
+  // 搜图 / 人物这几个名字换过好几代：8 区块时代的「语义 / 人脸」、6 面板时代的
+  // 「智能索引」、7 面板时代并进「后台任务」。2026-10-05 第四次改版又把索引从
+  // 「后台任务」拆出来、独立成「AI 与索引」—— 这几个老名字一律归一到新面板，
+  // 老用户点开就能看到搬过去的「搜图索引 / 人物索引」两节。
+  settingsSectionSearch: 'settingsSectionAiIndex',
+  settingsSectionPeople: 'settingsSectionAiIndex',
+  settingsSectionSemantic: 'settingsSectionAiIndex',
+  settingsSectionAi: 'settingsSectionAiIndex',
+  // 2026-10-05 第三次改版：「应用」拆成「外观与行为」，另新增独立的「快捷键」面板。
+  settingsSectionApp: 'settingsSectionAppearance',
+  settingsSectionCloseBehavior: 'settingsSectionAppearance',
+  settingsSectionGeneral: 'settingsSectionAppearance',
   settingsSectionMedia: 'settingsSectionStorage',
 };
 
@@ -648,6 +1292,15 @@ function restoreSettingsPageSectionScroll() {
   if (!el) return;
   renderSettingsNav(id);
   requestAnimationFrame(function () {
+    // 🔴 必须在这一刻**重新取一次落点**，不能沿用闭包里那份 id：
+    //    rAF 是延后执行的，画导航（上面那行，同步）与切面板之间隔了一帧。
+    //    这一帧里任何别的路径都可能把落点改掉 —— 用户点导航（点击路径会同步
+    //    落库 + 切面板）、或自动化脚本直接调 scrollToSettingsSection。
+    //    沿用旧 id 就会把**内容**弹回上一个板块，而**导航**已经是新板块 →
+    //    「高亮在 A、内容是 B」。重取一次，任何来源的改动都不会被这一帧覆盖。
+    //    （实测复现：2026-10-05 截设置页时导航在「应用」、内容却是「媒体库」。）
+    var now = getLastSettingsSectionId();
+    if (document.getElementById(now)) id = now;
     settingsUi.showSettingsPanel(id);
   });
 }
@@ -734,34 +1387,18 @@ function registerRuntimeApiListeners() {
     tickBackgroundTasksOnce();
   });
 
-  // 监听系统菜单触发的添加文件夹
-  api.onTriggerScan(function (folderPath) {
-    scanFlow.doScanFolder({
-      state: state,
-      dom: dom,
-      api: api,
-      folderPath: folderPath,
-      onUpdateProgress: function (c, t, f) {
-        updateProgress(c, t, f);
-      },
-      onLoadStats: loadStats,
-      onLoadRootFolders: loadRootFolders,
-      onRenderSettingsFolderList: renderSettingsFolderList,
-      onRenderDuplicateSidebar: renderDuplicateSidebar,
-      onLoadDuplicateGroups: loadDuplicateGroups,
-      onLoadPhotos: loadPhotos,
-      onAlert: appAlert,
-      onTickBackgroundTasksOnce: tickBackgroundTasksOnce,
-      onMarkBrowseDataStale: markBrowseDataStale,
-    });
-  });
-
   // 监听自动扫描开始的信号
   api.onScanStart(function () {
     state.isScanning = true;
     if (dom.scanProgress) dom.scanProgress.style.display = 'block';
     updateProgress(0, 1, '准备中...');
     startScanLiveRefresh();
+    // 待扫描的根目录在扫描一开始就已登记进 root_folders（见 scanner.js 的 addRootFolder 位置），
+    // 设置页此刻拉着刷一次，新目录不必干等 scanLiveRefresh 那一拍 3 秒。即便这一拍还没读到
+    // （worker 刚起、登记尚未落库），后面有 3 秒轮询兜底，不会白刷。
+    if (state.currentTab === 'settings') {
+      void loadRootFolders(true, true);
+    }
     tickBackgroundTasksOnce();
   });
 
@@ -794,6 +1431,14 @@ function registerRuntimeApiListeners() {
       loadPhotos();
     }
     tickBackgroundTasksOnce();
+  });
+
+  // 启动期把 AI 标签补写进索引库后（只在真的补到标签时才推）重画信息面板。
+  // 标签存在搜图索引库里、不是 photos 的列，所以没有任何别的路径能让它自己变新：
+  // 不接这个通知，用户就得切走再切回才看得到。面板没开时也照调 ——
+  // refreshOpenPreviewInfoPanel() 自带「没开就返回」的守卫，不会白拉一次磁盘。
+  api.onAiTagsUpdated(function () {
+    refreshOpenPreviewInfoPanel();
   });
 }
 
@@ -890,14 +1535,12 @@ function applyStartupLandingPage() {
     state.generalSettingsApplied && state.generalSettingsApplied.launchDefaultPage,
   );
   if (launchDefaultPage === 'welcome') {
-    state.currentTab = 'folders';
-    state.currentView = 'all';
-    state.currentPath = '';
-    state.currentDate = '';
-    state.searchQuery = '';
-    state.page = 1;
-    state.suppressAutoLoadOnce = true;
-    showTabContent('folders');
+    // 「欢迎页」现在是独立的首页（Home）：纯静态导航页，零查询、零 IPC。
+    // 旧实现靠 `state.suppressAutoLoadOnce` 跳过首次 loadPhotos，好让欢迎卡留在
+    // #photoGrid 里；那是一次性标志，天生不支持「可再次进入」。那个标志与它的两处
+    // 消费已整条删除，首页改走 openHomePage()（与设置页同族的页面路径，不碰网格）。
+    // 这里同样不再预设 currentView / currentPath 等浏览状态：首页不读它们。
+    void openHomePage();
     return;
   }
   if (launchDefaultPage === 'all_folders') {
@@ -929,13 +1572,21 @@ async function init() {
     if (dgs === 'asc' || dgs === 'desc') state.dateGroupsSortOrder = dgs;
   } catch (eDgs) {}
   await applyInitialSettingsSnapshot();
+  // 侧栏宽度必须在首屏前落位。本机大库上 loadRootFolders 要十几秒，排在它后面会让
+  // 「已保存宽度生效」和「可拖动」都晚十几秒才发生 —— 期间侧栏停在 CSS 默认 260px，
+  // 且用户去拖那根分隔条毫无反应。它只依赖静态 DOM（#sidebarResizer / #sidebar /
+  // .main-layout > .app-rail）与 localStorage，与 loadRootFolders 的产物无关，故安全前移。
+  if (sidebarResizer && typeof sidebarResizer.initSidebarResizer === 'function')
+    sidebarResizer.initSidebarResizer();
   // 先根目录 lite + 侧栏补全；全库统计 getStats 延后一帧，避免与首屏网格抢同一段主进程 DB 时间
   await loadRootFolders(true, true);
   bindEvents();
-  if (sidebarResizer && typeof sidebarResizer.initSidebarResizer === 'function')
-    sidebarResizer.initSidebarResizer();
   await yieldToPaint();
   applyStartupLandingPage();
+  // 启动过程中的中间态（落点判定、位置快照恢复）不该进历史 —— 落地完成后以当前位置
+  // 重建栈，用户第一次点「后退」才有明确去处，而不是退回「启动时的默认落点」。
+  // 之后 scheduleBrowseReload 的异步链还会再记一次同一位置，被 pushEntry 去重挡掉。
+  if (navHistory) navHistory.reset(captureBrowseLocation());
   registerRuntimeApiListeners();
   requestAnimationFrame(function () {
     void loadStats();
@@ -972,11 +1623,17 @@ function isFolderSidebarTab(tab) {
 }
 
 /**
- * 把当前 tab 映射到 <html> 上的三个 page-open 类（侧栏让位全走 CSS）。
+ * 把当前 tab 映射到 <html> 上的四个 page-open 类（侧栏让位与页面显隐全走 CSS）。
  *
- * 三者互斥、且只由 tab 决定 —— 这里是全工程唯一的写者，由 syncNavigationRail 调用，
+ * 四者互斥、且只由 tab 决定 —— 这里是全工程唯一的写者，由 syncNavigationRail 调用，
  * 而 syncNavigationRail 又是所有切页路径的必经点（showTabContent / openSettingsPage /
  * leaveAiViewForBrowse）。
+ *
+ * 🔴 `home-page-open` 同时负责首页的**显隐**（.home-page 默认 display:none，
+ *    `html.home-page-open` 时 display:block），以及 #contentArea / #sidebar 的让位。
+ *    把显隐也挂在这个派生类上（而不是在 openHomePage / 各退出路径里写 style.display）
+ *    是刻意的：任何把 state.currentTab 切走的路径本来就会重建这个类，于是「退出首页」
+ *    自动成立，不存在「某条路径忘了收起首页、看起来点了没反应」这种漏网。
  *
  * 为什么必须是「派生」而不是各自 add/remove：settings-page-open 原先只在
  * openSettingsPage 里 add、closeSettingsPage 里 remove，只要有一条路径改了
@@ -993,6 +1650,7 @@ function syncPageOpenClasses(tab) {
   root.classList.toggle('settings-page-open', tab === 'settings');
   root.classList.toggle('search-page-open', tab === 'search');
   root.classList.toggle('people-page-open', tab === 'people');
+  root.classList.toggle('home-page-open', tab === 'home');
 }
 
 function createSidebarRequestGate(view, key) {
@@ -1083,10 +1741,12 @@ function bindEvents() {
       });
     },
     onPersistGeneralSettings: persistGeneralSettingsFromControls,
+    onThemePresetExpand: expandThemePresetToControls,
     onPersistUiLocale: persistUiLocaleFromControl,
     onToggleWebServerEnabled: toggleWebServerEnabled,
     onToggleTunnelEnabled: toggleTunnelEnabled,
     onPersistBrowsePrefs: persistBrowsePrefsFromForm,
+    onPersistInfoPanelFields: persistInfoPanelFieldsFromForm,
   });
 
   uiEvents.bindMiscControls({
@@ -1095,6 +1755,7 @@ function bindEvents() {
     },
     onThumbSettingChange: updateThumbPendingHint,
     onQuickThemeChange: persistGeneralSettingsFromControls,
+    onThemePresetExpand: expandThemePresetToControls,
     onTopbarLocaleChange: function () {
       void persistUiLocaleFromControl('topbar');
     },
@@ -1103,6 +1764,11 @@ function bindEvents() {
     },
   });
 
+  // 顶栏主题弹层（悬浮预览 / 点选落库）。刻意内聚在 app.js 里而不是拆进 ui-events：
+  // 它依赖 app.js 内部的预览会话状态与外观同步函数，拆开只会让回调列表膨胀。
+  // ⚠️ #quickThemeStyle 自身的 change 绑定仍留在 ui-events（落库链路不动）。
+  initQuickThemeMenu();
+
   uiEvents.bindShellInlineActions({
     onMenuAction: function (action) {
       void menuAction(action);
@@ -1110,23 +1776,23 @@ function bindEvents() {
     onOpenSettingsPage: function () {
       void openSettingsPage();
     },
+    onOpenHomePage: function () {
+      void openHomePage();
+    },
     onToggleTaskPanelCollapse: toggleTaskPanelCollapse,
     onPauseResumeScan: handlePauseResumeScan,
     onCancelScan: handleCancelScan,
     onCancelThumbnailBackfill: cancelThumbnailBackfill,
-    onCancelFaceScan: cancelFaceScan,
     onCancelDuplicateHashDetection: cancelDuplicateHashDetection,
-    onCardSizeDec: function () {
-      changeCardSize(-1);
+    // 底栏右侧那三个控件都是下拉：选中即提交（与设置页那三份同语义）。
+    onBrowseCardSizeChange: function (value) {
+      void changeBrowseCardSize(value);
     },
-    onCardSizeInc: function () {
-      changeCardSize(1);
+    onBrowsePageSizeChange: function (value) {
+      void changeBrowsePageSize(value);
     },
-    onPageSizeDec: function () {
-      void changeBrowsePageSize(-1);
-    },
-    onPageSizeInc: function () {
-      void changeBrowsePageSize(1);
+    onBrowseGridStyleChange: function (value) {
+      void changeBrowseGridStyle(value);
     },
     onCloseSettingsPage: closeSettingsPage,
     onApplyThumbSettings: applyThumbSettings,
@@ -1159,10 +1825,11 @@ function bindEvents() {
     onPreviewMoveToTrash: previewMoveToTrash,
     onTogglePreviewInfoPanel: togglePreviewInfoPanel,
     onSubmitCloseChoice: submitCloseChoice,
-    onExportRootFoldersList: exportRootFoldersList,
-    onImportRootFoldersList: importRootFoldersList,
+    onSetAllInfoPanelFieldsChecked: setAllInfoPanelFieldsChecked,
+    onResetInfoPanelFieldsToDefault: resetInfoPanelFieldsToDefault,
     onExportThumbnailBackfillFailedPaths: exportThumbnailBackfillFailedPaths,
   });
+  bindHomePageActions();
   initPreviewWindowMaxButtonState();
 
   var hlsApplyBtn = document.getElementById('hlsCacheSettingsApplyBtn');
@@ -1333,6 +2000,9 @@ function bindEvents() {
     onCyclePreviewRotate: cyclePreviewRotateAction,
     onPreviewOpenExternal: previewOpenExternal,
     onToggleChromeCollapsed: toggleChromeCollapsed,
+    onOpenHomePage: function () {
+      void openHomePage();
+    },
   });
 
   uiEvents.bindPreviewUiMeta({
@@ -1404,20 +2074,22 @@ function bindEvents() {
     onCloseMobileSidebar: sidebarUi.closeMobileSidebar,
   });
 
-  if (dom.folderNavUp) {
-    dom.folderNavUp.addEventListener('click', function () {
-      var parentPath = dom.folderNavUp.getAttribute('data-parent-path');
-      if (parentPath) {
-        viewFolder(parentPath);
-      } else {
-        viewAllFolderCovers();
-      }
-    });
-  }
+  // 路径栏（上级按钮 + 面包屑）的事件：统一由 path-crumbs.js 的实例绑，
+  // 包括那条「无上级时按钮直接隐藏、不再退化成回总览」的规则 —— 见那里。
+  // 同一个动作不放两个地方：回总览的入口就是面包屑第一段。
+  if (pathCrumbs) pathCrumbs.bind();
+
+  // 导航历史（后退 / 前进）：两个按钮 + Alt+←/→（mac 另收 Cmd+[ / ]）+ 鼠标侧键 X1/X2。
+  // 侧键的 mousedown/mouseup/auxclick 连发在模块内按方向去抖，这里不重复处理。
+  if (navHistory) navHistory.bind();
 
   uiEvents.bindCardShineTracking();
 
   window.addEventListener('localechange', function () {
+    // 信息面板的分组标题 / 字段名同样是渲染时生成的 → 开着的面板要按新语言重画
+    try {
+      refreshOpenPreviewInfoPanel();
+    } catch (eInfoI18n) {}
     try {
       updateBrowsePathLabel();
     } catch (ePath) {}
@@ -1469,6 +2141,8 @@ function bindEvents() {
         }
         void refreshThumbnailBackfillStatus();
         void refreshDuplicateHashStatus();
+        // 字段勾选框的文案是渲染时拼出来的（没走 data-i18n）→ 换语言必须重画
+        settingsSync.renderInfoPanelFieldsForm({ state: state });
         var hlsGbEl2 = document.getElementById('settingHlsMaxCacheGb');
         var hlsEnEl2 = document.getElementById('settingHlsMaxCacheEntries');
         var hlsHintEl2 = document.getElementById('hlsCacheSettingsHint');
@@ -1555,14 +2229,6 @@ function initPreviewWindowMaxButtonState() {
 function togglePreviewWindowMaximize() {
   if (!(api && api.has && api.has('maximizeWindow'))) return;
   api.maximizeWindow();
-}
-
-/** 是否仍为首次欢迎页（#emptyState 在网格内且未隐藏） */
-function isWelcomeHomeVisible() {
-  var es = document.getElementById('emptyState');
-  if (!es || !dom.photoGrid || es.parentNode !== dom.photoGrid) return false;
-  if (es.style.display === 'none') return false;
-  return true;
 }
 
 function ensureBrowseCaches() {
@@ -1731,6 +2397,33 @@ function syncBrowseChromeAfterSoftSettingsReturn() {
 }
 
 // === Tab switching ===
+/**
+ * 带词跳到搜图页并立即搜索（照片信息面板的「AI 标签」胶囊点下去走这里）。
+ *
+ * ⚠️ 顺序不能反：`aiViews.search()` 要**先**调，`showTabContent('search')` 后调。
+ * 因为 `aiViews.enter()` 会**刻意清空** `state.aiSearchQuery`（换视图不该延续上一个词），
+ * 先切页再设值会被它抹掉；而 `search()` 在「当前不在搜图页」时会把词暂存给下一次 `enter()`
+ * 消费 —— 于是两种入口（已在搜图页 / 不在搜图页）都能只调一次就正确。
+ *
+ * ⚠️ 必须先关预览：标签长在预览的信息面板里，而预览是 1000 层级的上层遮罩，
+ * 不关掉的话搜图结果会渲染在它背后，用户看到的是「点了没反应」。
+ *
+ * 🔴 **判据是 `state.currentView`，绝不是 `state.currentTab`。**
+ *    实测（2026-10-05）：`state.currentTab` 只在侧栏点击处理器（`ui-events.js`）与
+ *    `showTabContent` 的 search/people 分支里被写 —— 走上「搜图页 → 文件夹」这条路时
+ *    **它不会被复位**（直接调 `showTabContent('folders')` 后仍是 `'search'`）。
+ *    拿它当判据 ⇒ 从搜图页切走后点胶囊会跳过切页 ⇒ **静默无反应**（标签点了跟没点一样，
+ *    没有任何报错）。`state.currentView` 进出 AI 视图时双向都写（`'ai_search'` ↔ `'all'`），
+ *    而且它正是 `aiViews.isSearch()` 用的那一份 —— 判据与执行方同源才不会互相打脸。
+ */
+function openSemanticSearch(query) {
+  var q = String(query || '').trim();
+  if (!q) return;
+  if (dom.previewOverlay && dom.previewOverlay.classList.contains('active')) closePreview();
+  if (aiViews) void aiViews.search(q);
+  if (state.currentView !== 'ai_search') showTabContent('search');
+}
+
 function showTabContent(tab, opts) {
   opts = opts || {};
   // syncNavigationRail 内含页面态 class 的派生（settings / search / people-page-open），
@@ -1749,7 +2442,6 @@ function showTabContent(tab, opts) {
     tabsUi.prepareBrowsingShell({
       dom: dom,
       currentView: state.currentView,
-      isWelcomeHomeVisible: isWelcomeHomeVisible(),
     });
     // 主区工具栏 / 分页 / 缩放控件在这两页整体让位（搜索框与人物列表都搬到了侧栏）。
     tabsUi.applyCollectionView({
@@ -1776,7 +2468,6 @@ function showTabContent(tab, opts) {
       tabsUi.prepareBrowsingShell({
         dom: dom,
         currentView: state.currentView,
-        isWelcomeHomeVisible: isWelcomeHomeVisible(),
       });
       syncBrowseChromeAfterSoftSettingsReturn();
       return;
@@ -1793,7 +2484,6 @@ function showTabContent(tab, opts) {
       tabsUi.prepareBrowsingShell({
         dom: dom,
         currentView: state.currentView,
-        isWelcomeHomeVisible: isWelcomeHomeVisible(),
       });
       tabsUi.applyDuplicatesView({
         dom: dom,
@@ -1815,7 +2505,6 @@ function showTabContent(tab, opts) {
   tabsUi.prepareBrowsingShell({
     dom: dom,
     currentView: state.currentView,
-    isWelcomeHomeVisible: isWelcomeHomeVisible(),
   });
 
   // 离开“重复项”时解除锁定，避免 loadPhotos 把右侧强制拉回 duplicates
@@ -1860,10 +2549,6 @@ function showTabContent(tab, opts) {
   // 切 tab 时右侧也要跟着刷新：folders 默认显示“所有照片”，dates 默认显示“所有日期”
   // （否则只切了侧栏，右侧仍停留在旧内容，必须再点 sidebar 才会触发 loadPhotos）
   if (tab === 'folders') {
-    if (state.suppressAutoLoadOnce) {
-      state.suppressAutoLoadOnce = false;
-      return;
-    }
     if (state.currentView !== 'folder' && state.currentView !== 'folder_overview') {
       state.currentView = 'all';
       state.currentPath = '';
@@ -1874,10 +2559,6 @@ function showTabContent(tab, opts) {
       void loadPhotos();
     });
   } else if (tab === 'dates') {
-    if (state.suppressAutoLoadOnce) {
-      state.suppressAutoLoadOnce = false;
-      return;
-    }
     if (state.currentView === 'folder' || state.currentView === 'folder_overview') {
       state.currentView = 'all';
       state.currentPath = '';
@@ -1888,6 +2569,124 @@ function showTabContent(tab, opts) {
       void loadPhotos();
     });
   }
+}
+
+// ===== 首页（Home）=====
+/**
+ * 浏览类 tab 白名单 —— 「进入某个页面之前，先记住从哪个浏览位置来的」这件事，
+ * 首页（state.tabBeforeHome）与设置页（state.tabBeforeSettings）各有一份状态，
+ * 但**判据是同一套**。settingsFlow 里那份是它自己文件内的副本（该 IIFE 不能反向引用
+ * app.js 的函数），两处必须同时改。
+ */
+function normalizeBrowseTab(tab) {
+  return tab === 'folders' ||
+    tab === 'dates' ||
+    tab === 'duplicates' ||
+    tab === 'people' ||
+    tab === 'search'
+    ? tab
+    : 'folders';
+}
+
+/**
+ * 打开首页。与 openSettingsPage 同族：首页是一条「页面」，不是浏览位置，
+ * 因此它不进 BROWSABLE_VIEWS、不进导航历史栈。
+ *
+ * 🔴 这里**不碰任何 DOM 显隐**：首页的显示、以及 #contentArea / #sidebar 的让位，
+ * 全由 `html.home-page-open` 一个 class 决定（styles.css），而该 class 的唯一写者
+ * 是 syncNavigationRail → syncPageOpenClasses 这条派生链。所以本函数只做两件事：
+ * 记住来处、把 tab 切到 'home'，其余交给派生。
+ */
+function openHomePage() {
+  // 早退判据用的是**派生状态**（首页是不是真的在显示），不是 state.currentTab ——
+  // 后者在本项目里以「不一定跟界面对齐」著称（`showTabContent` 的 folders / dates
+  // 两支就不写它，详见 openSemanticSearch 上面的注释）。拿它判会出现
+  // 「界面早已不在首页、点按钮却静默无反应」。
+  if (document.documentElement.classList.contains('home-page-open')) return;
+  // 从设置页过来：先走**完整的**设置页退出流程（停快捷键录制 / 停 hydrate 轮询 /
+  // 摘 settingsBtn 的 active / 恢复侧栏），再切首页 —— 与 rail 上点「文件」是同一条
+  // 退出路径，不另造一条。若只切 tab 不管设置页，会留下「右栏还是设置页」的半截界面。
+  if (state.currentTab === 'settings') closeSettingsPage();
+  state.tabBeforeHome = normalizeBrowseTab(state.currentTab);
+  state.currentTab = 'home';
+  syncNavigationRail('home');
+}
+
+/**
+ * 首页唯一的入口分发。所有可点节点都是原生 `<button data-home-goto="…">`，
+ * 鼠标 click 与键盘 Enter/Space 走**同一个**函数（不存在两套跳转逻辑）。
+ *
+ * 值域（四种前缀）：
+ *   `view:<视图>[:video]` —— 切浏览视图；带 `:video` 时同时把底栏筛选切到「仅视频」
+ *   `tab:<标签页>`        —— showTabContent（dates / search / people）
+ *   `panel:<面板id>`      —— 先 openSettingsPage()，**再** scrollToSettingsSection()
+ *
+ * 🔴 全部分支都只做导航：不发 IPC、不弹系统对话框（不调 handleAddFolder）、不扫描、
+ * 不建索引、不读写数据库。这是「首页是纯导航页」这条范围线的落地判据（守护按此断言）。
+ */
+function handleHomeGoto(spec) {
+  var parts = String(spec || '').split(':');
+  var kind = parts[0];
+  var arg = parts[1] || '';
+  if (kind === 'view') {
+    // 「只看视频」必须真的带上筛选：项目里**没有**「视频」视图 —— 视频是底栏
+    // #mediaFilterSelect 上的一个筛选值。不带筛选的话它就和卡 1 的「所有照片」是
+    // 同一个落点，两个不同文案指向同一处，用户会以为是两回事（§4.2 的落点唯一性）。
+    if (parts[2] === 'video') {
+      state.mediaFilter = 'video';
+      if (dom.mediaFilterSelect) dom.mediaFilterSelect.value = 'video';
+    }
+    if (arg === 'folder_overview') viewAllFolderCovers();
+    else viewAllPhotos();
+    return;
+  }
+  if (kind === 'tab') {
+    if (!arg) return;
+    // ⚠️ 与 rail 点击处理器（ui-events.js 的 bindNavTabs）同形：**先**把 tab 落到
+    // state.currentTab，**再**调 showTabContent。
+    // 原因是 showTabContent 只在 search / people 两支里自己写 state.currentTab，
+    // folders / dates 那两支不写（既有约定，见 openSemanticSearch 上面的长注释）。
+    // 漏了这一步，从首页点「日期」就会留下「界面已经是日期页、state.currentTab 还是
+    // 'home'」的分裂 —— 而顶栏「首页」按钮正是拿这个字段判「是否已经在首页」，
+    // 于是下一次点它会静默早退（症状：点了没反应）。
+    state.currentTab = arg;
+    showTabContent(arg);
+    return;
+  }
+  if (kind === 'panel') {
+    if (!arg) return;
+    // 顺序不可反：scrollToSettingsSection 只在设置页已经显示（且面板已展开）后才有落点。
+    void openSettingsPage().then(function () {
+      if (state.currentTab !== 'settings') return;
+      scrollToSettingsSection(arg);
+    });
+  }
+}
+
+/**
+ * 首页的入口交互：**一个**委托 listener 挂在 #homePage 上，同时吃 click 与 keydown。
+ *
+ * 节点是原生 <button> ⇒ Enter/Space 本来就会被浏览器合成 click，所以 click 分支已经
+ * 覆盖键盘；这里再显式写一条 keydown 分支，是为了把「两个通道调同一个函数」这条契约
+ * 摆在代码里（也防将来有人把按钮换成 div —— 那时 click 分支就再也接不到键盘了）。
+ * 两条分支都先 preventDefault：Enter 的默认动作正是合成 click，不拦会跳两次。
+ */
+function bindHomePageActions() {
+  var root = dom.homePage;
+  if (!root) return;
+  function activate(target) {
+    var el = target && target.closest ? target.closest('[data-home-goto]') : null;
+    if (!el) return false;
+    handleHomeGoto(el.getAttribute('data-home-goto'));
+    return true;
+  }
+  root.addEventListener('click', function (e) {
+    if (activate(e.target)) e.preventDefault();
+  });
+  root.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    if (activate(e.target)) e.preventDefault();
+  });
 }
 
 // 打开管理页面（从 topbar 按钮触发）
@@ -1958,6 +2757,15 @@ function closeSettingsPage() {
     onStopSettingsHydrateRetry: stopSettingsHydrateRetry,
     onStopThumbnailBackfillPolling: stopThumbnailBackfillPolling,
     onShowTabContent: function (t, o) {
+      // 「返回」回到的是**来处**：从首页进的设置页，返程就是首页。
+      // ⚠️ 不能把 'home' 丢给 showTabContent（那里没有 home 分支，会切出一页空白）；
+      // 也不能在这里叫 openHomePage() —— settingsFlow 刚把 state.currentTab 设回 'home'，
+      // openHomePage 见到 tab 已是 home 会直接早退，派生类反而没人重建。
+      // 这里只需要把派生重建一次，剩下的交给 `html.home-page-open` 那条链。
+      if (t === 'home') {
+        syncNavigationRail('home');
+        return;
+      }
       showTabContent(t, o);
     },
   });
@@ -2038,7 +2846,9 @@ function stopScanLiveRefresh() {
 function startScanLiveRefresh() {
   if (state.scanLiveRefreshTimer) return;
   state.scanLiveRefreshTimer = setInterval(async function () {
-    if (!state.isScanning) {
+    // isScanQueued：T2 起扫描可能长时间等在写库闸门后面，那段时间 worker 还没起、
+    // isScanning 为 false，但刷新不能就此停掉 —— 否则扫描真正开始时侧栏数字不再更新。
+    if (!state.isScanning && !state.isScanQueued) {
       stopScanLiveRefresh();
       return;
     }
@@ -2470,11 +3280,19 @@ async function loadDateGroups() {
  * 不经过 showTabContent，所以在这里把标签与导轨收回浏览项，并让适配层摘掉 AI 工具栏。
  */
 function leaveAiViewForBrowse(tab) {
-  if (!aiViews || !aiViews.isShowing()) return;
+  // ⚠️ 这个函数不只是「退出 AI 视图」：它同时是 viewAllPhotos / viewFavorites /
+  // viewAllFolderCovers / viewFolder 四个视图入口**唯一的公共前缀**，而这四个入口
+  // 都不经过 showTabContent。首页卡内的「所有照片 / 所有目录 / 只看视频」正好也走这里。
+  //
+  // 原判据 `!aiViews.isShowing()` 就早退，在首页独立成页后会漏掉一件事：
+  // 从首页点「所有照片」时 AI 视图并没有在显示 ⇒ 早退 ⇒ state.currentTab 仍是 'home'
+  // ⇒ `home-page-open` 摘不掉 ⇒ 首页正好盖在刚加载好的照片流上面（表现为「点了没反应」）。
+  // 所以判据扩成「AI 视图在显示 **或** 当前停在首页」—— 两条都要经过 syncNavigationRail。
+  if (state.currentTab !== 'home' && (!aiViews || !aiViews.isShowing())) return;
   state.currentTab = tab;
-  // syncNavigationRail 顺带把三个 page-open 类对齐到 tab（含 settings-page-open 的摘除）
+  // syncNavigationRail 顺带把四个 page-open 类对齐到 tab（含 settings / home 的摘除）
   syncNavigationRail(tab);
-  aiViews.leave();
+  if (aiViews) aiViews.leave();
 }
 
 function viewAllPhotos() {
@@ -2482,6 +3300,8 @@ function viewAllPhotos() {
   state.currentView = 'all';
   state.page = 1;
   updateSidebarActive();
+  recordBrowseLocation();
+  updatePathBar();
   loadPhotos();
 }
 
@@ -2490,6 +3310,8 @@ function viewFavorites() {
   state.currentView = 'favorites';
   state.page = 1;
   updateSidebarActive();
+  recordBrowseLocation();
+  updatePathBar();
   if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) {
     state.previewPhotos = [];
     state.previewPageStart = 1;
@@ -2509,6 +3331,7 @@ function viewDuplicates() {
   state.currentTab = 'duplicates';
   state.currentView = 'duplicates';
   updateBrowsePathLabel();
+  recordBrowseLocation();
   sidebarUi.ensureDuplicateSidebarVisible(dom);
   if (dom.sidebarContent) {
     if (state.duplicateHasScanned && state.duplicateGroups && state.duplicateGroups.length) {
@@ -2558,6 +3381,8 @@ function viewAllFolderCovers() {
   state.currentView = 'folder_overview';
   state.page = 1;
   updateSidebarActive();
+  recordBrowseLocation();
+  updatePathBar();
   loadPhotos();
 }
 
@@ -2577,7 +3402,8 @@ function viewFolder(folderPath) {
     dom.photoGrid.scrollTop = 0;
   }
   updateSidebarActive();
-  updateFolderNavBar();
+  updatePathBar();
+  recordBrowseLocation();
   scheduleBrowseReload(function () {
     if (state.currentTab === 'folders' && state.currentPath) {
       sidebarTree.expandTreeToFolder(state.currentPath);
@@ -2592,6 +3418,8 @@ function viewDate(dateStr) {
   state.currentDate = dateStr;
   state.page = 1;
   updateSidebarActive();
+  recordBrowseLocation();
+  updatePathBar();
   loadPhotos();
 }
 
@@ -2696,6 +3524,12 @@ function formatFolderCountLabel(n) {
 
 function updateBrowsePathLabel() {
   if (!dom.currentPath) return;
+  // 兜底记录导航历史：切 tab / 从设置软返回等会**隐式**改位置的路径不经过 view* 入口，
+  // 靠这里补齐。栈内按位置键去重，所以 view* 里那次显式记录加这次仍是一步。
+  recordBrowseLocation();
+  // 面包屑会被整体重写（innerHTML），所以先关掉可能开着的同级下拉：
+  // 否则末段按钮被换掉后，菜单还挂着一个已失效的锚点。
+  if (pathCrumbs) pathCrumbs.close();
   switch (state.currentView) {
     case 'duplicates':
       dom.currentPath.textContent = tUi('path.duplicates', '重复照片（哈希）');
@@ -2712,8 +3546,8 @@ function updateBrowsePathLabel() {
       dom.currentPath.textContent = tUi('path.folderOverview', '\u{1F5C2}\uFE0F 所有目录');
       break;
     case 'folder': {
-      var name = (state.currentPath || '').split(/[\\/]/).pop() || '';
-      dom.currentPath.textContent = '\u{1F4C1} ' + name;
+      // 完整路径分段（每段可点跳该层 + 末段可切同级目录），不再只渲染末级目录名
+      if (pathCrumbs) pathCrumbs.refresh();
       break;
     }
     case 'date':
@@ -2733,6 +3567,9 @@ function updateBrowsePathLabel() {
 }
 
 function updateSidebarActive() {
+  // 首页：rail 上没有任何按钮对应它，侧栏也整体让位（见 styles.css 的 home-page-open 段）。
+  // 这里显式停住 —— 否则会落到最后的 else 去同步「日期」高亮，在停在首页时白改一次侧栏。
+  if (state.currentTab === 'home') return;
   if (state.currentTab === 'settings') renderSettingsNav(getLastSettingsSectionId());
   else if (state.currentTab === 'duplicates') renderDuplicateSidebar();
   else if (isFolderSidebarTab(state.currentTab)) syncFolderSidebarHighlight();
@@ -2771,40 +3608,213 @@ function syncFolderSidebarHighlight() {
   if (hit) hit.classList.add('active');
 }
 
-function updateFolderNavBar() {
-  var bar = dom.folderNavBar;
-  var btn = dom.folderNavUp;
-  if (!bar || !btn) return;
-  if (state.currentView !== 'folder' || !state.currentPath) {
-    bar.style.display = 'none';
-    return;
+/* ---------------------------------------------------------------------------
+ * 路径栏（面包屑）接线
+ *
+ * 实现全在 `path-crumbs.js`（纯函数 + mount 实例），这里只负责把 app 的能力喂进去：
+ * 那个模块**不读** app 的 state，一切都走下面这些回调，所以它能在沙箱里单测。
+ *
+ * 历史：桌面端原先只有侧栏里一条「返回上级」按钮（#folderNavBar），到根目录就整条
+ * 隐藏；内容区顶栏那个 #currentPath 只渲染一个末级目录名。于是「自己在路径的第几层」
+ * 完全不可见，跳回任意一层祖先要连点 N 次。现在合成一条路径栏：
+ * 左端 ← 回上级，中间每段可点跳该层，末段点开列同级目录（横向换目录不必先退再进）。
+ * ------------------------------------------------------------------------- */
+
+/** i18n 键 → 中文兜底（英文由 i18n.js 提供） */
+var PATH_CRUMBS_ZH = {
+  'path.crumbRoot': '所有目录',
+  'path.crumbExpand': '展开完整路径',
+  'path.crumbSwitch': '切换到同级目录',
+  'path.folderOverview': '\u{1F5C2}\uFE0F 所有目录',
+};
+
+var pathCrumbs = window.RendererPathCrumbs
+  ? window.RendererPathCrumbs.mount({
+      bar: dom.pathBar,
+      host: dom.currentPath,
+      up: dom.pathUp,
+      deps: {
+        normalizePath: function (p) {
+          return sidebarTree.normalizePath(p);
+        },
+        isAncestorOf: function (ancestor, descendant) {
+          return sidebarTree.isFolderPathAncestor(ancestor, descendant);
+        },
+        queryChildFolders: function (p) {
+          return sidebarTree.queryChildFolders(p);
+        },
+        getState: function () {
+          return state;
+        },
+        t: function (key) {
+          return tUi(key, PATH_CRUMBS_ZH[key] || key);
+        },
+        tFmt: function (key, map) {
+          return tUiFmt(key, map, '返回上级：' + (map && map.name ? map.name : ''));
+        },
+        // 下面这三个在 app.js 尾部才赋值（`var escapeHtml = ...`），所以包一层延迟取 ——
+        // 直接把当时的 undefined 交给模块，运行期会静默炸在渲染里。
+        escapeHtml: function (v) {
+          return escapeHtml(v);
+        },
+        escapeAttr: function (v) {
+          return escapeAttr(v);
+        },
+        formatNumber: function (n) {
+          return formatNumber(n);
+        },
+        onNavigateFolder: function (p) {
+          viewFolder(p);
+        },
+        onNavigateOverview: function () {
+          viewAllFolderCovers();
+        },
+      },
+    })
+  : null;
+
+/** 整条路径栏一次刷完（上级按钮 + 面包屑）。viewFolder 里同步调，别等 loadPhotos 链路。 */
+function updatePathBar() {
+  if (!pathCrumbs) return;
+  pathCrumbs.updateUp();
+  updateBrowsePathLabel();
+}
+
+/* ---------------------------------------------------------------------------
+ * 导航历史（后退 / 前进）接线
+ *
+ * 栈本身在 `nav-history.js`，这里只回答「位置是什么」和「怎么回到某个位置」。
+ *
+ * 为什么要它：面包屑解决了「跳到第 N 层祖先」，但解决不了「刚才在另一个目录」——
+ * 用户在两个目录之间来回对比时，仍要顺着树爬回去。后退 / 前进把这件事变成一次点击，
+ * 并且和快捷键（Alt+←/→、mac 的 Cmd+[ / ]、鼠标侧键 X1/X2）共用同一条栈。
+ *
+ * 记录口刻意做成两级：**view* 入口同步记一次**（不依赖异步链路），
+ * `updateBrowsePathLabel()` 里再兜底记一次（覆盖切 tab / 软返回等隐式改位置的路径）。
+ * 栈内按位置键去重，所以重复记不会长栈 —— 见 nav-history.js 的 pushEntry。
+ * ------------------------------------------------------------------------- */
+
+/** i18n 键 → 中文兜底 */
+var NAV_HISTORY_ZH = {
+  'path.back': '后退',
+  'path.forward': '前进',
+  'path.backFmt': '后退：{name}',
+  'path.forwardFmt': '前进：{name}',
+  'path.favorites': '\u2B50 收藏',
+};
+
+/** 能进历史的位置类型。搜图 / 人物 / 设置各有独立视图态与恢复入口，不进这条栈。 */
+var BROWSABLE_VIEWS = ['all', 'folder_overview', 'folder', 'date', 'favorites', 'duplicates'];
+
+/** 当前浏览位置快照；null = 不该进历史 */
+function captureBrowseLocation() {
+  // 首页不是浏览位置：它不进导航历史栈（与设置页同族的理由 —— 它是「到站口」，
+  // 不是某一站）。挡在这里而不是挡在调用点，是因为调用点有五六个（recordBrowseLocation
+  // 的几条入口 + init() 的启动重建），漏一个就会往栈里塞一个假位置。
+  if (state.currentTab === 'home') return null;
+  var view = state.currentView || 'all';
+  if (BROWSABLE_VIEWS.indexOf(view) < 0) return null;
+  var tab = state.currentTab || '';
+  if (view === 'folder') {
+    var p = state.currentPath ? sidebarTree.normalizePath(state.currentPath) : '';
+    return p ? { view: 'folder', path: p, tab: tab } : null;
   }
-  var path = sidebarTree.normalizePath(state.currentPath);
-  var lastSep = path.lastIndexOf('\\');
-  var parentPath = '';
-  if (lastSep > 0) {
-    parentPath = path.substring(0, lastSep);
+  if (view === 'date') {
+    return state.currentDate ? { view: 'date', date: String(state.currentDate), tab: tab } : null;
   }
-  var isRoot = false;
-  if (Array.isArray(state.rootFolders)) {
-    for (var i = 0; i < state.rootFolders.length; i++) {
-      if (sidebarTree.normalizePath(state.rootFolders[i].path) === path) {
-        isRoot = true;
-        break;
-      }
-    }
+  // all / favorites / folder_overview / duplicates 只认 view：
+  // ⚠️ `viewAllPhotos()` 不会清空 state.currentPath，若把 path 也塞进键，
+  // 同一个「所有照片」会因为上一个目录不同而算出两个位置。
+  return { view: view, tab: tab };
+}
+
+/** 位置的可读名（后退 / 前进按钮的 title） */
+function describeBrowseLocation(loc) {
+  if (!loc) return '';
+  if (loc.view === 'folder' && loc.path) {
+    var parts = String(loc.path).split('\\');
+    return parts[parts.length - 1] || String(loc.path);
   }
-  if (isRoot || !parentPath) {
-    bar.style.display = 'none';
-    return;
+  if (loc.view === 'date' && loc.date) return formatDateLabel(loc.date);
+  if (loc.view === 'folder_overview')
+    return tUi('path.folderOverview', '\u{1F5C2}\uFE0F 所有目录');
+  if (loc.view === 'favorites') return tUi('path.favorites', NAV_HISTORY_ZH['path.favorites']);
+  if (loc.view === 'duplicates') return tUi('path.duplicates', '重复照片（哈希）');
+  return tUi('path.allPhotos', '所有照片');
+}
+
+/** 把某个历史位置应用回去。期间 nav-history 会抑制记录（否则后退会自己长出新的一步）。 */
+function applyBrowseLocation(loc) {
+  if (!loc) return;
+  // 位置挂在别的 tab 下（文件夹 ↔ 日期 ↔ 重复）时，先把 tab 骨架切过去。
+  // 刻意不传 fromTab：`showTabContent` 只在 fromTab 有值时才套用 tabMemory，
+  // 否则它会用「上次在这个 tab 的浏览位置」把我们要恢复的位置覆盖掉。
+  var tab = loc.tab;
+  if (
+    tab &&
+    tab !== state.currentTab &&
+    (tab === 'folders' || tab === 'dates' || tab === 'duplicates')
+  ) {
+    showTabContent(tab);
   }
-  var label = btn.querySelector('span');
-  var name = parentPath;
-  var nameSep = parentPath.lastIndexOf('\\');
-  if (nameSep >= 0) name = parentPath.substring(nameSep + 1);
-  if (label) label.textContent = name || '返回上级';
-  btn.setAttribute('data-parent-path', parentPath);
-  bar.style.display = '';
+  switch (loc.view) {
+    case 'folder':
+      if (loc.path) viewFolder(loc.path);
+      break;
+    case 'folder_overview':
+      viewAllFolderCovers();
+      break;
+    case 'date':
+      if (loc.date) viewDate(loc.date);
+      break;
+    case 'favorites':
+      viewFavorites();
+      break;
+    case 'duplicates':
+      viewDuplicates();
+      break;
+    default:
+      viewAllPhotos();
+  }
+}
+
+var navHistory = window.RendererNavHistory
+  ? window.RendererNavHistory.mount({
+      back: dom.pathBack,
+      forward: dom.pathForward,
+      deps: {
+        applyLocation: function (loc) {
+          applyBrowseLocation(loc);
+        },
+        describeLocation: function (loc) {
+          return describeBrowseLocation(loc);
+        },
+        t: function (key) {
+          return tUi(key, NAV_HISTORY_ZH[key] || key);
+        },
+        tFmt: function (key, map) {
+          var zh = NAV_HISTORY_ZH[key] || key;
+          if (!map) return tUi(key, zh);
+          for (var k in map) {
+            if (Object.prototype.hasOwnProperty.call(map, k)) {
+              zh = zh.split('{' + k + '}').join(String(map[k]));
+            }
+          }
+          return tUi(key, zh);
+        },
+        // 设置页是真模态（左侧分栏被占），让历史导航让位；搜图 / 人物页**不挡** ——
+        // 那两页没有自己的返回入口，挡住等于把用户关在里面。
+        canNavigate: function () {
+          return !document.documentElement.classList.contains('settings-page-open');
+        },
+      },
+    })
+  : null;
+
+/** 记录当前浏览位置（各导航入口调用；同位置幂等） */
+function recordBrowseLocation() {
+  if (!navHistory) return;
+  navHistory.record(captureBrowseLocation());
 }
 
 function syncDateSidebarHighlight() {
@@ -2870,7 +3880,15 @@ async function renderSettingsFolderList(options) {
   var hasReal =
     !!container.querySelector('.folder-manage-table') ||
     !!container.querySelector('.settings-empty');
-  if (hasReal && state._settingsFolderListFp != null) {
+  // 🔴 只有 skipFetch（调用方明确要求「用内存里的 state.rootFolders 重画一遍」）才可以拿
+  // `state.rootFolders` 做短路判据。绝不能拿它给「去数据库拉一次」的默认路径做前置闸门：
+  // `state.rootFolders` 是一份**可能过时的缓存**，它没被谁更新过就等于「数据没变」——
+  // 而真正的事实是 root_folders 表已经变了（最典型：扫描登记了新根，而
+  // loadRootFolders 的 lite 分支当时读到的还是空表、没写回 state.rootFolders）。
+  // 那时这里会一直判等 → 直接 return → 连 2.2 秒的设置页轮询也叫不动它 →
+  // 列表**永久**停在旧内容（实测扫描早已结束、库里已有根，界面 160 秒不刷新）。
+  // 默认路径一律先拉再比（下面 fetch 之后的指纹比较才是正确用法）。
+  if (skipFetch && hasReal && state._settingsFolderListFp != null) {
     var fpMem = fingerprintSettingsFolderRows(state.rootFolders);
     if (fpMem === state._settingsFolderListFp) {
       return;
@@ -3109,6 +4127,20 @@ function normalizeUiLocale(s) {
   return s === 'en' ? 'en' : 'zh-CN';
 }
 
+/**
+ * 缓存「已应用的一般设置」——用于 settings.js 的变更检测（逐字段比，全等就短路不保存）。
+ *
+ * 🔴 这里是**逐个列举字段**的，不是展开整对象。所以**每新增一维外观都必须加一行**，
+ * 漏了的后果极其隐蔽（2026-10-05 实测）：`settings.js` 比的是
+ * `appearance.uiOpacity === (ap.uiOpacity || 'opaque')`，而 ap 里没有这个键时
+ * 右式恒为 **默认值** → 用户把这一维**切回默认值**（不透明 / 无纹理）时判「无变化」→
+ * 整次保存被短路吞掉。症状 = 「选了通透再想关掉，关不掉」，而开/切其他档全都正常。
+ * 这一条静态护栏（theme-regression §9h）单独守。
+ *
+ * ⚠️ 2026-10-05 再加一维「窗口背景」时**又一次**踩在同一个位置：`uiWindowBackdrop`
+ * 只有「加进来」这一条路，漏了就是「亚克力切不回实色、保存被吞」——因为窗口重启才重建，
+ * 表现比透明度那次更隐蔽（本来就「要重启才生效」，很容易被当成「重启没生效」）。
+ */
 function setGeneralSettingsAppliedFromObject(s) {
   if (!s) return;
   state.generalSettingsApplied = {
@@ -3120,6 +4152,9 @@ function setGeneralSettingsAppliedFromObject(s) {
     theme: s.theme === 'light' ? 'light' : 'dark',
     uiAccent: normalizeUiAccent(s.uiAccent),
     uiBackground: normalizeUiBackground(s.uiBackground),
+    uiTexture: normalizeUiTexture(s.uiTexture),
+    uiOpacity: normalizeUiOpacity(s.uiOpacity),
+    uiWindowBackdrop: normalizeUiWindowBackdrop(s.uiWindowBackdrop),
     subtitleFontFamily: normalizeSubtitleFontFamily(s.subtitleFontFamily),
     subtitleFontSizePx: normalizeSubtitleFontSizePx(s.subtitleFontSizePx, s.subtitleFontSize),
     subtitleFontWeight: normalizeSubtitleFontWeight(s.subtitleFontWeight),
@@ -3132,17 +4167,17 @@ function setGeneralSettingsAppliedFromObject(s) {
 
 function getThemeStyleControlValue() {
   var active = document.activeElement;
-  if (active && active.id === 'settingThemeStyle' && active.value)
-    return normalizeThemeStyle(active.value);
-  if (active && active.id === 'quickThemeStyle' && active.value)
-    return normalizeThemeStyle(active.value);
-  var settingsEl = document.getElementById('settingThemeStyle');
-  if (settingsEl && settingsEl.value) return normalizeThemeStyle(settingsEl.value);
-  var quickEl = document.getElementById('quickThemeStyle');
-  if (quickEl && quickEl.value) return normalizeThemeStyle(quickEl.value);
-  return appearanceUi.getDefaultThemeStyleId
-    ? appearanceUi.getDefaultThemeStyleId()
-    : 'midnight_classic';
+  var activeEl =
+    active && (active.id === 'settingThemeStyle' || active.id === 'quickThemeStyle') ? active : null;
+  var el =
+    activeEl || document.getElementById('settingThemeStyle') || document.getElementById('quickThemeStyle');
+  if (!el) {
+    return appearanceUi.getDefaultThemeStyleId
+      ? appearanceUi.getDefaultThemeStyleId()
+      : 'midnight_classic';
+  }
+  // ⚠️ 空串是合法值（自定义组合），不能用 truthy 判断 —— 否则自定义状态会被读成默认预设
+  return normalizeThemeStyle(el.value);
 }
 
 async function persistGeneralSettingsFromControls() {
@@ -3150,15 +4185,10 @@ async function persistGeneralSettingsFromControls() {
     state: state,
     dom: dom,
     api: api,
-    onGetThemeStyleControlValue: getThemeStyleControlValue,
+    onGetAppearanceControlValue: getAppearanceControlValue,
     onSyncAppearanceFromSettings: syncAppearanceFromSettings,
     onSetGeneralSettingsAppliedFromObject: setGeneralSettingsAppliedFromObject,
-    onSyncThemeStyleControls: function (themeStyleId) {
-      return settingsSync.syncThemeStyleControls({
-        themeStyleId: themeStyleId,
-        onNormalizeThemeStyle: normalizeThemeStyle,
-      });
-    },
+    onSyncAppearanceControls: syncAppearanceControls,
     onApplySubtitleStyleFromSettings: applySubtitleStyleFromSettings,
     onSyncSubtitleStyleControlsFromSettings: syncSubtitleStyleControlsFromSettings,
     onSaveLastSettingsSectionId: saveLastSettingsSectionId,
@@ -3211,8 +4241,49 @@ async function persistBrowsePrefsFromForm() {
   });
 }
 
-// === 扫描选项（已下线） ===
+// === 照片信息面板：显示哪些字段 ===
 
+async function persistInfoPanelFieldsFromForm() {
+  return settingsSync.persistInfoPanelFieldsFromForm({
+    state: state,
+    api: api,
+    appAlert: appAlert,
+    onApplyInfoPanelFieldsFromSettings: function (s) {
+      return settingsSync.applyInfoPanelFieldsFromSettings({
+        state: state,
+        settings: s,
+        onRerender: refreshOpenPreviewInfoPanel,
+      });
+    },
+    onSaveLastSettingsSectionId: saveLastSettingsSectionId,
+    onRenderSettingsNav: renderSettingsNav,
+  });
+}
+
+/** 把勾选框全部置成同一个值再提交（「全选」/「全不选」共用这条） */
+function setAllInfoPanelFieldsChecked(enabled) {
+  var host = document.getElementById('settingsInfoFields');
+  if (!host) return;
+  var checks = host.querySelectorAll('input[data-info-field]');
+  for (var i = 0; i < checks.length; i++) checks[i].checked = !!enabled;
+  void persistInfoPanelFieldsFromForm();
+}
+
+/** 恢复注册表的默认集（不是「全选」——原始值字段默认是关的） */
+function resetInfoPanelFieldsToDefault() {
+  var fields = window.PhotoInfoFields;
+  var host = document.getElementById('settingsInfoFields');
+  if (!fields || !host) return;
+  var def = {};
+  for (var d = 0; d < fields.DEFAULT_FIELD_IDS.length; d++) def[fields.DEFAULT_FIELD_IDS[d]] = true;
+  var checks = host.querySelectorAll('input[data-info-field]');
+  for (var i = 0; i < checks.length; i++) {
+    checks[i].checked = !!def[checks[i].getAttribute('data-info-field')];
+  }
+  void persistInfoPanelFieldsFromForm();
+}
+
+// === 扫描选项（已下线） ===
 /** 在全库/当前视图总数中的 1-based 序号（与分页一致，非仅当前缓冲区内下标） */
 function previewGlobalPositionOne(index) {
   var ps = state.pageSize > 0 ? state.pageSize : 20;
@@ -3286,170 +4357,169 @@ function _removePreviewInfoPanelListeners() {
   document.removeEventListener('keydown', _closePreviewInfoPanelOnEsc);
 }
 
-function escapeHtmlRenderer(str) {
-  if (str == null) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/** 列表行里尺寸列名在不同查询下不一致，按优先级取第一个有效值 */
+function pickPhotoDim(obj, keys) {
+  for (var i = 0; i < keys.length; i++) {
+    var v = obj[keys[i]];
+    if (v != null && v > 0) return v;
+  }
+  return null;
 }
 
-function formatSizeRenderer(bytes) {
-  if (!bytes || bytes <= 0) return '0 B';
-  var units = ['B', 'KB', 'MB', 'GB'];
-  var i = 0;
-  while (bytes >= 1024 && i < units.length - 1) {
-    bytes /= 1024;
-    i++;
+/** 信息面板「浏览」分组的读数：`序号 / 总数`（随机模式的序号与底栏那颗「随机」同源） */
+function previewInfoPositionText() {
+  if (!(state.previewTotalPhotos > 0)) return '';
+  var posNum = state.slideshowRandom
+    ? state.previewRandomPositionNum > 0
+      ? state.previewRandomPositionNum
+      : previewGlobalPositionOne(state.previewIndex)
+    : previewGlobalPositionOne(state.previewIndex);
+  return posNum + ' / ' + state.previewTotalPhotos;
+}
+
+/** 当前启用的字段集（收敛未知 id / 去重 / 按注册表排序都由注册表负责） */
+function infoPanelFieldIds() {
+  var fields = window.PhotoInfoFields;
+  return fields ? fields.normalizeFieldIds(state.infoPanelFields) : [];
+}
+
+function infoPanelLocale() {
+  return window.I18n && typeof window.I18n.getLocale === 'function'
+    ? window.I18n.getLocale()
+    : 'zh-CN';
+}
+
+/**
+ * 渲染「照片信息」面板。
+ *
+ * 字段、顺序、标签**全部**来自 `src/web/js/photo-info-fields.js` 的注册表 —— 这里不硬编码
+ * 任何一行，于是「设置页能勾的」与「面板能画的」在结构上不可能漂开（这一轮之前两处各写
+ * 一份硬编码清单，网页端那份连尺寸单位都少了个 px）。
+ */
+function renderPreviewInfoPanel(info) {
+  var contentEl = dom.previewInfoPanelContent;
+  if (!contentEl) return;
+  var fields = window.PhotoInfoFields;
+  if (!fields) {
+    // 注册表没加载上时必须显式说出来 —— 静默留白会被当成「这张照片没有任何信息」
+    contentEl.innerHTML = '<div class="preview-info-empty">照片信息模块未加载</div>';
+    return;
   }
-  return bytes.toFixed(i === 0 ? 0 : 2) + ' ' + units[i];
+  contentEl.innerHTML = fields.buildSectionsHtml(info, {
+    fields: infoPanelFieldIds(),
+    locale: infoPanelLocale(),
+    position: previewInfoPositionText(),
+    // 桌面端有搜图页 → AI 标签渲染成可点胶囊（点了带词跳过去搜）。
+    // 网页端没有搜图页，那边不传这个开关，胶囊会渲染成不可点的 <span>。
+    tagClickable: true,
+  });
+  bindPreviewInfoTagClicks(contentEl);
+}
+
+/**
+ * AI 标签胶囊 → 搜图页。
+ *
+ * 每次重画都要重挂：`innerHTML` 会把旧节点连同监听器一起丢掉，所以绑定必须写在渲染函数里，
+ * 不能放到初始化阶段（那样只有第一次打开预览能点）。
+ */
+function bindPreviewInfoTagClicks(contentEl) {
+  var tags = contentEl.querySelectorAll('.preview-info-tag[data-ai-tag]');
+  for (var i = 0; i < tags.length; i++) {
+    (function (el) {
+      el.addEventListener('click', function (event) {
+        // 面板挂在预览遮罩层里：不拦住冒泡，点击会被预览的「点空白处关闭」等处理器接走。
+        event.preventDefault();
+        event.stopPropagation();
+        openSemanticSearch(el.getAttribute('data-ai-tag'));
+      });
+    })(tags[i]);
+  }
 }
 
 function loadPreviewInfoPanel(photo) {
-  var contentEl = dom.previewInfoPanelContent;
-  if (!contentEl) return;
-  function renderSections(info) {
-    var sections = [];
-    function startSection(title) {
-      sections.push(
-        '<div class="preview-info-section"><div class="preview-info-section-title">' +
-          escapeHtmlRenderer(title) +
-          '</div>',
-      );
-    }
-    function endSection() {
-      sections.push('</div>');
-    }
-    function addToSection(label, value) {
-      if (value == null || value === '' || value === 0) return;
-      sections.push(
-        '<div class="preview-info-row"><span class="preview-info-label">' +
-          escapeHtmlRenderer(label) +
-          '</span><span class="preview-info-value">' +
-          escapeHtmlRenderer(String(value)) +
-          '</span></div>',
-      );
-    }
-    var hasBasic =
-      info.file_name ||
-      info.file_path ||
-      info.file_type ||
-      (info.width && info.height) ||
-      info.file_size;
-    if (hasBasic) {
-      startSection('基本信息');
-      addToSection('文件名', info.file_name);
-      addToSection('路径', info.file_path);
-      addToSection('类型', info.file_type);
-      if (info.width != null && info.height != null && info.width > 0 && info.height > 0)
-        addToSection('尺寸', info.width + ' × ' + info.height + ' px');
-      if (info.file_size) addToSection('大小', formatSizeRenderer(info.file_size));
-      endSection();
-    }
-    var hasTime = info.date_taken || info.date_modified;
-    if (hasTime) {
-      startSection('时间');
-      addToSection(
-        '拍摄时间',
-        info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '',
-      );
-      addToSection(
-        '修改时间',
-        info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '',
-      );
-      endSection();
-    }
-    var hasParam = info.focal_length || info.aperture || info.iso_speed || info.shutter_speed;
-    if (hasParam) {
-      startSection('拍摄参数');
-      addToSection('焦距', info.focal_length ? info.focal_length + ' mm' : '');
-      addToSection('光圈', info.aperture ? 'f/' + info.aperture : '');
-      addToSection('ISO', info.iso_speed);
-      addToSection('快门速度', info.shutter_speed);
-      endSection();
-    }
-    var hasDevice = info.camera_make || info.camera_model || info.lens_model;
-    if (hasDevice) {
-      startSection('设备');
-      addToSection('相机品牌', info.camera_make);
-      addToSection('相机型号', info.camera_model);
-      addToSection('镜头', info.lens_model);
-      endSection();
-    }
-    if (info.gps_latitude != null && info.gps_longitude != null) {
-      startSection('位置');
-      addToSection(
-        'GPS',
-        Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6),
-      );
-      endSection();
-    }
-    if (state.previewTotalPhotos > 0) {
-      var posNum = state.slideshowRandom
-        ? state.previewRandomPositionNum > 0
-          ? state.previewRandomPositionNum
-          : previewGlobalPositionOne(state.previewIndex)
-        : previewGlobalPositionOne(state.previewIndex);
-      startSection('浏览');
-      addToSection('位置', posNum + ' / ' + state.previewTotalPhotos);
-      endSection();
-    }
-    contentEl.innerHTML = sections.length
-      ? sections.join('')
-      : '<div class="preview-info-empty">无可用信息</div>';
-  }
-  function pickPhotoDim(obj, keys) {
-    for (var i = 0; i < keys.length; i++) {
-      var v = obj[keys[i]];
-      if (v != null && v > 0) return v;
-    }
-    return null;
-  }
-  var baseInfo = {
+  if (!photo) return;
+  // 先用列表里已有的基础信息立即上屏（省掉一次 IPC 往返的空白），再用完整行与实时尺寸补齐。
+  // 🔴 两条异步来源必须并进**同一个** merged 对象后再重画。曾各自持有自己的对象分别渲染
+  //    （完整行渲染 merged、尺寸回补渲染 baseInfo）→「谁后到谁赢」：尺寸后到就吞掉
+  //    「媒体类型 / 所属图库」，完整行后到就吞掉「尺寸 / 宽高比 / 总像素」。必现而非偶发。
+  var merged = {
+    id: photo.id,
     file_name: photo.file_name || '',
     file_path: photo.file_path || '',
+    folder_path: photo.folder_path || '',
     file_type: photo.file_type || '',
     width: pickPhotoDim(photo, ['width', 'pixel_width', 'file_width', 'media_width']),
     height: pickPhotoDim(photo, ['height', 'pixel_height', 'file_height', 'media_height']),
     file_size: photo.file_size || 0,
     date_taken: photo.date_taken || '',
     date_modified: photo.date_modified || '',
+    is_favorite: photo.is_favorite,
   };
-  renderSections(baseInfo);
+  renderPreviewInfoPanel(merged);
+
+  /**
+   * 把一批读数并进 merged 再重画（唯一写入口）。
+   * 🔴 尺寸「不降级」：库里存的是 0 时不许覆盖 sharp 实时读到的真实值 —— 本机库
+   *    99.99% 的照片尺寸为 0，压掉之后「尺寸 / 宽高比 / 总像素」三行会一起消失。
+   */
+  function patchInfo(next) {
+    if (!next) return;
+    for (var k in next) {
+      var v = next[k];
+      if (v == null) continue;
+      if ((k === 'width' || k === 'height') && !(v > 0)) continue;
+      merged[k] = v;
+    }
+    renderPreviewInfoPanel(merged);
+  }
+
   if (window.photoAPI && window.photoAPI.getPhotoInfo) {
     window.photoAPI
       .getPhotoInfo(photo.id)
-      .then(function (apiInfo) {
-        if (apiInfo) {
-          var merged = {};
-          for (var k in baseInfo) merged[k] = baseInfo[k];
-          for (var k2 in apiInfo) merged[k2] = apiInfo[k2];
-          renderSections(merged);
-        }
-      })
+      .then(patchInfo)
       .catch(function () {});
   }
-  // 数据库无尺寸时，用 sharp 实时读取并回补
+  // 数据库无尺寸时，用 sharp 实时读取并回补（否则「尺寸 / 宽高比 / 总像素」三行会同时缺失）
   if (
     window.photoAPI &&
     window.photoAPI.getPhotoDimensions &&
-    (baseInfo.width == null || baseInfo.height == null)
+    !(merged.width > 0 && merged.height > 0)
   ) {
     window.photoAPI
       .getPhotoDimensions(photo.id)
       .then(function (dims) {
         if (dims && dims.width > 0 && dims.height > 0) {
-          baseInfo.width = dims.width;
-          baseInfo.height = dims.height;
           // 同步更新内存中的 photo 对象，避免重复读取
           photo.width = dims.width;
           photo.height = dims.height;
-          renderSections(baseInfo);
+          patchInfo(dims);
         }
       })
       .catch(function () {});
   }
+  // AI 内容标签：存在**搜图索引库**（`ai-search/semantic-index.sqlite`）里，不是 `photos`
+  // 的列，所以只能走这条独立通道 —— `getPhotoInfo()` 查的是主库连接，跨不了库。
+  // 同样必须并进 merged 再重画；空数组不 patch（= 这条不显示，与「空值整行隐藏」一致），
+  // 至于「没索引 / 索引了但没标签 / 索引库此刻读不到」三者在这层不区分。
+  if (window.photoAPI && window.photoAPI.getPhotoAiTags) {
+    window.photoAPI
+      .getPhotoAiTags(photo.id, infoPanelLocale())
+      .then(function (tags) {
+        if (tags && tags.length) patchInfo({ ai_tags: tags });
+      })
+      .catch(function () {});
+  }
+}
+
+/**
+ * 设置页改了字段勾选后立刻重画开着的面板。
+ * 面板没开也照样调用 —— 下次打开时 loadPreviewInfoPanel() 会读同一份 state，不会用到旧值。
+ */
+function refreshOpenPreviewInfoPanel() {
+  var panel = dom.previewInfoPanel;
+  if (!panel || !panel.classList.contains('open')) return;
+  var photo = state.previewPhotos && state.previewPhotos[state.previewIndex];
+  if (photo) loadPreviewInfoPanel(photo);
 }
 
 /** 主题 / 自动扫描 / 关闭按钮：与主进程一致（须在 loadSettingsUI 末尾再拉一次，避免 hydrate 期间用户已保存却被旧快照覆盖） */
@@ -3466,12 +4536,15 @@ function syncLiveSettingsWidgetsFromObject(s) {
   if (stEl) stEl.value = String(Math.max(0, Math.min(64, parseInt(s.similarThreshold, 10) || 12)));
   var launchDefaultEl = document.getElementById('settingLaunchDefaultPage');
   if (launchDefaultEl) launchDefaultEl.value = normalizeLaunchDefaultPage(s.launchDefaultPage);
-  settingsSync.syncThemeStyleControls({
-    themeStyleId: s.themeStyle,
-    onNormalizeThemeStyle: normalizeThemeStyle,
-  });
+  syncAppearanceControls(s);
   syncSubtitleStyleControlsFromSettings(s);
   applySubtitleStyleFromSettings(s);
+  // 信息面板字段勾选：state 是唯一运行期真源，面板与设置页都读它
+  settingsSync.applyInfoPanelFieldsFromSettings({
+    state: state,
+    settings: s,
+    onRerender: refreshOpenPreviewInfoPanel,
+  });
   settingsSync.syncWebPasswordUiFromSettings({
     state: state,
     settings: s,
@@ -3495,6 +4568,20 @@ function syncLiveSettingsWidgetsFromObject(s) {
   }
 
   setGeneralSettingsAppliedFromObject(s);
+
+  // 快捷键：**先喂注册表再画界面** —— 注册表是按键判定的唯一入口，
+  // 顺序反了就会出现「界面显示新键、按下去还是旧键」的首帧窗口。
+  if (window.RendererShortcutSettings) {
+    window.RendererShortcutSettings.bindPanel({
+      state: state,
+      api: api,
+      appAlert: appAlert,
+    });
+    window.RendererShortcutSettings.applyFromSettings({
+      state: state,
+      settings: s,
+    });
+  }
 }
 
 async function loadSettingsUI() {
@@ -3991,48 +5078,6 @@ async function cancelDuplicateHashDetection() {
   refreshDuplicateHashStatus();
 }
 
-async function cancelFaceScan() {
-  if (!(api && api.has('faceCancelScan'))) return;
-  await api.faceCancelScan();
-  tickBackgroundTasksOnce();
-}
-
-async function exportRootFoldersList() {
-  if (!(api && api.has('exportRootFoldersJson'))) return;
-  var r = await api.exportRootFoldersJson();
-  if (!r || r.cancelled) return;
-  if (!r.success) {
-    appAlert('导出失败：' + ((r && r.error) || '未知错误'));
-    return;
-  }
-  appAlert('已导出 ' + (r.count || 0) + ' 个目录到：\n' + r.path);
-}
-
-async function importRootFoldersList() {
-  if (!(api && api.has('importRootFoldersJson'))) return;
-  if (
-    !(await appConfirm(
-      '从 JSON 导入目录：将添加已存在路径的根目录并加入扫描队列；不存在的路径会跳过。\n是否继续？',
-    ))
-  )
-    return;
-  var r = await api.importRootFoldersJson();
-  if (!r || r.cancelled) return;
-  if (!r.success) {
-    appAlert('导入失败：' + ((r && r.error) || '未知错误'));
-    return;
-  }
-  markBrowseDataStale({ settingsPageDirty: true });
-  await loadRootFolders(state.rootFolders.length > 0, state.currentTab === 'settings');
-  if (state.currentTab === 'settings') await renderSettingsFolderList();
-  await loadStats();
-  updateFavoriteCountInSidebar();
-  loadPhotos();
-  appAlert(
-    '完成：新增 ' + (r.added || 0) + ' 个目录，跳过不存在路径 ' + (r.skippedMissing || 0) + ' 项。',
-  );
-}
-
 function copyWebUrl() {
   return webAccessUi.copyWebUrl({ state: state });
 }
@@ -4420,13 +5465,11 @@ async function loadPhotos() {
   // 搜图 / 人物：同样的 #photoGrid，换一套数据源；工具栏整体让位（控件都在侧栏）。
   if (state.currentView === 'ai_search' || state.currentView === 'people') {
     if (dom.toolbar) dom.toolbar.style.display = 'none';
-    if (dom.emptyState) dom.emptyState.style.display = 'none';
     if (dom.pagination) dom.pagination.style.display = 'none';
     if (aiViews) await aiViews.load();
     return;
   }
   if (dom.toolbar) dom.toolbar.style.display = 'flex';
-  if (dom.emptyState) dom.emptyState.style.display = 'none';
   if (dom.sortSelect) dom.sortSelect.disabled = state.currentView === 'folder_overview';
 
   if (state.currentView === 'folder_overview') {
@@ -4505,7 +5548,6 @@ async function loadPhotos() {
   var cachedTotal = cr ? Number(cr.total) || 0 : -1;
   var warmGrid =
     (state.currentTab === 'folders' || state.currentTab === 'dates') &&
-    !isWelcomeHomeVisible() &&
     state._photoBrowseCacheFp === browseFp &&
     cr &&
     cachedList &&
@@ -4655,13 +5697,46 @@ function openDuplicatePreview(hash, index) {
 }
 
 // === Card size control ===
-function changeCardSize(direction) {
-  var idx = browseCardTierIndexForBasis(state.cardSize);
-  if (direction < 0) idx = Math.max(0, idx - 1);
-  else if (direction > 0) idx = Math.min(CARD_SIZE_TIERS.length - 1, idx + 1);
-  else return;
-  state.cardSize = CARD_SIZE_TIERS[idx].basis;
-  applyCardSize();
+/**
+ * 底栏「尺寸」改档（下拉）。
+ *
+ * 与「每页数量」「网格与比例」同构：走 `updateSettings` 把这一档写进设置，再用返回的
+ * 设置整体重放一遍 —— 底栏下拉、设置页 `#settingBrowseCardSize`、`state` 三处必须同一个值。
+ * 写库失败回滚，否则界面会显示一个并没生效的档位。
+ *
+ * 与另两个的不同：换卡片尺寸不改变结果集，所以**不重查库**，只改 CSS 变量当场重排。
+ * （这以前是靠 −/+ 药丸走的，只改 `state` 不落库；改成与设置页等价的下拉后必须落库，
+ *   否则「设置页那份会存、底栏这份不会存」——同一状态的两个入口语义不同，正是本文件
+ *   一直在挡的那类静默不一致。）
+ */
+async function changeBrowseCardSize(rawValue) {
+  var size = snapBrowseCardBasis(rawValue);
+  var previous = snapBrowseCardBasis(state.cardSize);
+  if (size === previous) {
+    syncCardSizeControl();
+    return;
+  }
+  state.cardSize = size;
+  syncCardSizeControl();
+  try {
+    var applied = await api.updateSettings({ browseCardSize: size });
+    if (applied) {
+      settingsSync.applyBrowsePreferencesFromSettings({
+        state: state,
+        dom: dom,
+        settings: applied,
+        snapBrowseCardBasis: snapBrowseCardBasis,
+        onApplyCardSize: applyCardSize,
+        onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+        onApplyPageSize: syncPageSizeControl,
+      });
+    }
+    syncCardSizeControl();
+  } catch (e) {
+    state.cardSize = previous;
+    syncCardSizeControl();
+    appAlert('切换缩略图尺寸失败：' + (e && e.message ? e.message : String(e)));
+  }
 }
 
 var _masonryResizeObserver = null;
@@ -4714,35 +5789,47 @@ function applyCardSize() {
     gridVars(dom.photoGrid);
     capMasonryColumns(dom.photoGrid);
   }
-  var label = CARD_SIZE_TIERS[browseCardTierIndexForBasis(state.cardSize)].label;
-  var zoomLabel = document.getElementById('zoomLabel');
-  if (zoomLabel) zoomLabel.textContent = label;
+  // 底栏「尺寸」与「网格与比例」的读数与卡片尺寸同源（都从 state 取），所以挂在这里一起刷新：
+  // 设置页保存、启动应用设置、底栏改档三条路最终都会经过 applyCardSize。
+  // （此前这里还要把档位字母写进右下角那枚药丸读数；换成下拉后读数就是 select 自己。）
+  syncCardSizeControl();
+  syncBrowseGridStyleControl();
 }
 
-/** 底栏「每页数量」读数：始终显示**当前生效**的档位值，而不是用户刚点的那一下。 */
+/** 底栏「尺寸」下拉的读数：始终显示**当前生效**的档位（写库失败回滚后必须跟着回滚）。 */
+function syncCardSizeControl() {
+  if (!dom.browseCardSizeSelect) return;
+  // 先收档再写：表外值（历史设置 / 手改 settings.json）在 `<select>` 里匹配不到任何 option，
+  // 直接赋 value 会让下拉显示成**空白**，看着像坏了。
+  state.cardSize = snapBrowseCardBasis(state.cardSize);
+  var want = String(state.cardSize);
+  if (dom.browseCardSizeSelect.value !== want) dom.browseCardSizeSelect.value = want;
+}
+
+/** 底栏「每页」下拉的读数：始终显示**当前生效**的档位（写库失败回滚后必须跟着回滚）。 */
 function syncPageSizeControl() {
   state.pageSize = snapBrowsePageSize(state.pageSize);
-  if (dom.pageSizeLabel) dom.pageSizeLabel.textContent = String(state.pageSize);
-  var idx = browsePageSizeTierIndex(state.pageSize);
-  if (dom.pageSizeDecBtn) dom.pageSizeDecBtn.disabled = idx <= 0;
-  if (dom.pageSizeIncBtn) dom.pageSizeIncBtn.disabled = idx >= BROWSE_PAGE_SIZE_TIERS.length - 1;
+  if (!dom.browsePageSizeSelect) return;
+  var want = String(state.pageSize);
+  if (dom.browsePageSizeSelect.value !== want) dom.browsePageSizeSelect.value = want;
 }
 
 /**
- * 底栏「每页数量」± 一档。
+ * 底栏「每页」改档（下拉）。
  *
- * 与卡片尺寸**不同**：卡片尺寸只改 CSS 变量、当场重排；每页张数要重新查库，
- * 所以这里走设置持久化那条路（`updateSettings` → 用返回的设置整体重放一遍），
- * 保证底栏、设置页下拉、`state.browsePrefsApplied` 三处不会各说各话。
- * 写库失败则退回原档位——否则界面会显示一个并没生效的张数。
+ * 与卡片尺寸不同：每页张数要重新查库，所以这里走设置持久化那条路
+ * （`updateSettings` → 用返回的设置整体重放一遍），保证底栏下拉、设置页 `#settingBrowsePageSize`、
+ * `state.browsePrefsApplied` 三处不会各说各话。写库失败则退回原档位——否则界面会显示一个
+ * 并没生效的张数。
  */
-async function changeBrowsePageSize(direction) {
-  var idx = browsePageSizeTierIndex(state.pageSize);
-  var next = direction < 0 ? idx - 1 : idx + 1;
-  if (next < 0 || next >= BROWSE_PAGE_SIZE_TIERS.length) return;
-  var size = BROWSE_PAGE_SIZE_TIERS[next];
+async function changeBrowsePageSize(rawValue) {
+  var size = snapBrowsePageSize(rawValue);
   var previous = snapBrowsePageSize(state.pageSize);
-  if (size === previous) return;
+  if (size === previous) {
+    // 选中项与生效值一致（例如从别的档位选回当前档）：把下拉拨回生效值。
+    syncPageSizeControl();
+    return;
+  }
   state.pageSize = size;
   syncPageSizeControl();
   try {
@@ -4766,6 +5853,79 @@ async function changeBrowsePageSize(direction) {
     state.pageSize = previous;
     syncPageSizeControl();
     appAlert('切换每页显示张数失败：' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/**
+ * 底栏「网格与比例」读数：始终显示**当前生效**的组合（`state` 是唯一真相源，
+ * 与设置页 `#settingBrowseGridStyle` 那份同源），而不是刚点的那一下——
+ * 写库失败回滚后，界面必须跟着回滚，否则它在说谎。
+ */
+function syncBrowseGridStyleControl() {
+  if (!dom.browseGridStyleSelect) return;
+  var want = encodeBrowseGridStyleValue(state.cardLayoutMode, state.cardRatio);
+  if (dom.browseGridStyleSelect.value !== want) dom.browseGridStyleSelect.value = want;
+}
+
+/**
+ * 布局模式切换后按当前页结果重画网格（不重查库）。
+ *
+ * `uniform ↔ masonry` 决定卡片用「统一比例」还是「照片自己的比例」，这个开关是
+ * **渲染时**写进 DOM 的（grid 元素的 `data-use-media-ratio` 与 `grid--masonry`），
+ * 不是一条改 CSS 变量就能翻转的规则 —— 所以只靠 `applyCardSize()` 不够。
+ * 复用「缓存秒开」那条路径的当前页结果重画即可。
+ */
+function repaintBrowseGridAfterLayoutChange() {
+  // 只在浏览视图重画：搜图 / 人物视图用的是另一批照片，拿浏览页的缓存去重画会把它们覆盖掉。
+  // （那两页也因此不放出这个控件，见 ai-views.js 的 applyToolbar。）
+  if (state.currentTab !== 'folders' && state.currentTab !== 'dates') return;
+  // 重复页同理：它复用了同名的 dom.photoGrid，但 `_photoBrowseCacheResult` 还是浏览页那一批。
+  if (state.currentView === 'duplicates') return;
+  if (!state._photoBrowseCacheResult) return;
+  paintBrowsePhotoGridShell(state._photoBrowseCacheResult, {});
+}
+
+/**
+ * 底栏「网格与比例」改档。
+ *
+ * 与卡片尺寸档位（`changeBrowseCardSize`）的两处不同：这里必须写库 ——
+ * 设置页有一份等价的 `#settingBrowseGridStyle`，两处若各持一份状态，
+ * 下次进设置页 hydrate 就会把旧值填回表单、再保存时覆盖掉底栏的选择。
+ * 所以与「每页张数」同构：`updateSettings` → 用返回的设置整体重放 → 失败回滚读数。
+ *
+ * 另一处不同：换网格布局不改变结果集，所以**不重查库**，只重画当前这一页。
+ */
+async function changeBrowseGridStyle(rawValue) {
+  var parsed = parseBrowseGridStyleValue(rawValue);
+  var layout = parsed.layout;
+  // 瀑布流不带比例：切到瀑布流时**保留**原比例值，切回「统一高度」还要用它。
+  var ratio = layout === 'uniform' && parsed.ratio ? parsed.ratio : state.cardRatio;
+  if (layout === state.cardLayoutMode && ratio === state.cardRatio) return;
+  var prevLayout = state.cardLayoutMode;
+  var prevRatio = state.cardRatio;
+  state.cardLayoutMode = layout;
+  state.cardRatio = ratio;
+  syncBrowseGridStyleControl();
+  try {
+    var applied = await api.updateSettings({ browseCardLayout: layout, browseCardRatio: ratio });
+    if (applied) {
+      settingsSync.applyBrowsePreferencesFromSettings({
+        state: state,
+        dom: dom,
+        settings: applied,
+        snapBrowseCardBasis: snapBrowseCardBasis,
+        onApplyCardSize: applyCardSize,
+        onSetBrowseAppliedSnapshotFromObject: setBrowseAppliedSnapshotFromObject,
+        onApplyPageSize: syncPageSizeControl,
+      });
+    }
+    syncBrowseGridStyleControl();
+    repaintBrowseGridAfterLayoutChange();
+  } catch (e) {
+    state.cardLayoutMode = prevLayout;
+    state.cardRatio = prevRatio;
+    syncBrowseGridStyleControl();
+    appAlert('切换网格与比例失败：' + (e && e.message ? e.message : String(e)));
   }
 }
 
@@ -4976,6 +6136,9 @@ function closePreview() {
   overlay.classList.add('closing');
   setTimeout(function () {
     overlay.classList.remove('active', 'closing', 'minimized', 'ui-collapsed');
+    // 全屏浮层控件的两个类必须一起清掉：只留 is-fullscreen 会让下一次打开预览时
+    // 浮层控件在不该收起的窗口化模式下也保持 opacity:0（见 styles.css「全屏浮层控件显隐」）。
+    overlay.classList.remove('is-fullscreen', 'fs-ui-visible');
     if (dom.previewImage) {
       dom.previewImage.src = '';
       dom.previewImage.classList.remove('switching');
@@ -5182,6 +6345,9 @@ async function previewFindSimilar() {
       ' 张与「' +
       (photo.file_name || '') +
       '」相似的照片';
+    // 这条消息会**整体覆盖**面包屑（写 textContent 会清掉里面的分段按钮），
+    // 要等下一次 updateBrowsePathLabel 才恢复 —— 与改动前行为一致，刻意保留。
+    if (pathCrumbs) pathCrumbs.close();
     if (dom.currentPath) dom.currentPath.textContent = msg;
   } catch (e) {
     Logger.error('[previewFindSimilar]', e);
@@ -5517,16 +6683,16 @@ window.semanticSettings = window.SemanticSearchUI.mount({
   },
 });
 /**
- * 打开设置页并定位到「搜图索引」那一行。
+ * 打开设置页并定位到「搜图索引」那一节。
  * 搜图 / 人物各有自己的调用点（左栏视图的设置入口、主界面任务面板的「设置」按钮），
- * 但两者的面板已并进「后台任务」，所以这里只切到该面板、再把目标行滚进视野——
+ * 但两者的面板已并进「AI 与索引」，所以这里只切到该面板、再把目标子节滚进视野——
  * 保留「把用户带到目标」的语义，而不是简单粗暴地停在面板顶部。
  */
 async function openSemanticSettings() {
   await openSettingsPage();
   if (state.currentTab !== 'settings') return;
   window.semanticSettings.show();
-  scrollToSettingsSection('settingsSectionTasks');
+  scrollToSettingsSection('settingsSectionAiIndex');
   var mount = document.getElementById('settingsAiSearchMount');
   if (mount) mount.scrollIntoView({ block: 'nearest' });
 }
@@ -5546,7 +6712,7 @@ async function openPeopleSettings() {
   await openSettingsPage();
   if (state.currentTab !== 'settings') return;
   window.peopleSettings.show();
-  scrollToSettingsSection('settingsSectionTasks');
+  scrollToSettingsSection('settingsSectionAiIndex');
   var mount = document.getElementById('settingsAiPeopleMount');
   if (mount) mount.scrollIntoView({ block: 'nearest' });
 }

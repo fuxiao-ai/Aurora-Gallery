@@ -3,6 +3,24 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
+/**
+ * 缩略图编码格式白名单。
+ *
+ * 写入端（扫描 / 回填 / 网页端按需生成）在生成时把**实际用的编码**传进来，这里收口校验，
+ * 免得一个手误的字符串变成将来迁移判断不掉的脏数据 —— 迁移的判据是
+ * `thumb_format <> 'webp'`，写进去一个 `'webP'` 会让那一行**永远被认为需要重生成**。
+ *
+ * 🔴 加 WebP 时要同步改三处：① 本白名单加 `'webp'`；② 各生成点的编码调用改成 `.webp()`；
+ *    ③ 响应头的 `Content-Type` —— `web-server.js` / `main.js` 里硬编码了 8 处 `image/jpeg`。
+ */
+var THUMB_FORMAT_WHITELIST = ['jpeg', 'webp'];
+
+/** 归一化：不在白名单里的一律返回 `''`（未知），而不是原样落库。 */
+function normalizeThumbFormat(value) {
+  var format = value ? String(value).trim().toLowerCase() : '';
+  return THUMB_FORMAT_WHITELIST.indexOf(format) >= 0 ? format : '';
+}
+
 class PhotoDatabase {
   constructor(dbPath) {
     /** 主库文件路径（用于人物聚类快照库 ATTACH 等） */
@@ -149,6 +167,27 @@ class PhotoDatabase {
   }
 
   /**
+   * 「补全任务待处理」的统一谓词 —— 缩略图 / dHash / 原图尺寸三者任一缺失即命中。
+   *
+   * 🔴 必须与 `src/main.js#runRowsWithThumbConcurrency` 的处理逻辑**同源**：那个任务在拿到候选行后
+   * 除了生成缩略图与 dHash，还会读一次 sharp metadata 并回填 `width` / `height`
+   * （见 `updatePhotoDimensions`），所以「缺尺寸」也是它的职责范围。
+   * ⚠️ 2026-10-05 之前这里指向的 `src/main/thumbnail-backfill.js` 是一个**从未被运行时加载**的
+   * 孤儿模块 —— 实现只落在它里面，于是这条谓词与活代码长期不同源：候选集永不收敛、每轮补全
+   * 走遍全库。该逻辑已移植进 `main.js`，孤儿文件已删除（守护 `module-reachability-regression`）。
+   * 只改一边的症状是**静默空转**：进度条分母变成 1200 万，任务却几乎不动，或者反过来
+   * 任务在补尺寸但计数压根不认。
+   *
+   * ⚠️ `width IS NULL OR width = 0` **两个条件都要写**：两阶段导入的存量库里尺寸缺失
+   *    存的是 `0` 而不是 `NULL`，只判 `IS NULL` 一张都命中不了。
+   * ⚠️ 视频的 dHash 恒为 `NULL`（视频不做感知哈希），所以视频会长期留在候选集里；
+   *    但它已有缩略图时 `processOne` 会立刻跳过，代价只是一次索引命中，可接受。
+   */
+  _sqlBackfillPendingExpr() {
+    return "(has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = '' OR width IS NULL OR width = 0)";
+  }
+
+  /**
    * 「所有目录」与子目录封面共用：未筛选时优先首张图片，再按文件名、id；已筛选 image/video 时等价于按文件名、id。
    * 用于 WINDOW 的 ORDER BY 子句或 SELECT ... ORDER BY。
    */
@@ -192,6 +231,11 @@ class PhotoDatabase {
         date_modified TEXT,
         thumbnail BLOB,
         has_thumbnail INTEGER DEFAULT 0,
+        -- 缩略图规格：生成时的**目标档位**（最长边）与编码格式。
+        -- 注意：0 / 空串 表示「本列引入之前的存量」，语义是**未知**，不是「没有缩略图」；
+        -- 判断有没有缩略图一律看 has_thumbnail 列，不要看这两列。
+        thumb_size INTEGER DEFAULT 0,
+        thumb_format TEXT DEFAULT '',
         is_favorite INTEGER DEFAULT 0,
         camera_make TEXT,
         camera_model TEXT,
@@ -243,6 +287,11 @@ class PhotoDatabase {
     this.ensureCoreSchemaReady();
     this.ensureRootFolderStatsCacheSchema();
     this.ensureFtsSchema();
+    // 缩略图规格两列**必须在 init 里同步加**，不能像 is_favorite 那样延时：
+    // 扫描 / 回填 / 网页端按需生成都会经 insertPhoto / updatePhotoThumbnail 写这两列，
+    // 一旦列还没加上（老库首次启动），那几条语句会直接 `no such column` 全部失败。
+    // ALTER TABLE ADD COLUMN 带常量 DEFAULT 是 O(1)，不会拖慢启动。
+    this.ensurePhotosThumbnailMetaColumns();
     // ensurePhotosIsFavoriteColumn: 首窗后延时调度，避免大库 PRAGMA/CREATE INDEX 阻塞启动
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
@@ -284,6 +333,96 @@ class PhotoDatabase {
       );
       void e;
     }
+  }
+
+  /** photos 表上是否有某一列。迁移函数共用，避免每处都抄一遍 PRAGMA 循环。 */
+  hasPhotosColumn(name) {
+    if (!this.hasTable('photos')) return false;
+    var target = String(name || '');
+    var pragma = this.db.prepare('PRAGMA table_info(photos)').all();
+    for (var i = 0; i < pragma.length; i++) {
+      if (pragma[i].name === target) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 确保 photos 表有 `thumb_size` / `thumb_format` 两列（缩略图规格）。
+   *
+   * 为什么要有这两列：在此之前**全库没有任何地方记录缩略图是用什么档位、什么格式生成的**，
+   * 于是「换了 thumbSize 之后哪些图还是旧的」「哪些图还是 JPEG 需要转 WebP」这类问题
+   * 既查不出来也没法做增量迁移，只能整表硬跑。列加上之后，这两个问题都变成一句 WHERE。
+   *
+   * 🔴 **刻意不回填历史行**：`0` / `''` 就是「本列引入之前的存量」。
+   *    全表 `UPDATE photos SET thumb_size = 256` 会独占写锁扫完整个 12 GB 库
+   *    （项目里已有这条红线），而它在迁移判断上和 `0` 是等价的——两者都需要重生成。
+   *    与其花一次全表写锁换一个不改变结论的数字，不如老实留着「未知」。
+   *
+   * ALTER TABLE ADD COLUMN 带常量 DEFAULT 是 O(1)（只改 schema、不重写数据），
+   * 所以这个函数放在 `init()` 里**同步**调用也不会拖慢百万级库的启动。
+   */
+  ensurePhotosThumbnailMetaColumns() {
+    if (!this.hasTable('photos')) return { added: [] };
+    var added = [];
+    try {
+      if (!this.hasPhotosColumn('thumb_size')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN thumb_size INTEGER DEFAULT 0;');
+        added.push('thumb_size');
+      }
+      if (!this.hasPhotosColumn('thumb_format')) {
+        this.db.exec("ALTER TABLE photos ADD COLUMN thumb_format TEXT DEFAULT '';");
+        added.push('thumb_format');
+      }
+      if (added.length) {
+        logger.log('[db migration] added missing thumbnail meta columns: ' + added.join(', '));
+      }
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      // 主进程 / scan-worker / web-server 各持一个 Database 实例，启动早期可能同时跑这里。
+      // 后到的那个会撞 `duplicate column name` —— 那是幂等命中，不是故障。
+      if (/duplicate column name/i.test(message)) {
+        logger.log('[db migration] thumbnail meta columns already added by another connection');
+        return { added: added };
+      }
+      logger.error('[db migration] ensure thumbnail meta columns failed:', message);
+    }
+    return { added: added };
+  }
+
+  /**
+   * 缩略图规格分布：`{ size, format, n }` 按数量倒序。
+   *
+   * ⚠️ 无索引，会扫整张表——12 GB 的库上是**几十秒级**的只读查询，
+   * 只允许从维护/统计入口调用，**不要**放到首屏或每次进设置页时跑。
+   *
+   * @returns {Array<{size: number, format: string, n: number}>}
+   */
+  getThumbnailSpecStats() {
+    if (!this.hasPhotosColumn('thumb_size') || !this.hasPhotosColumn('thumb_format')) return [];
+    return this.db
+      .prepare(
+        `SELECT thumb_size AS size, thumb_format AS format, COUNT(*) AS n
+         FROM photos
+         WHERE thumbnail IS NOT NULL
+         GROUP BY thumb_size, thumb_format
+         ORDER BY n DESC`,
+      )
+      .all();
+  }
+
+  /** 待重生成的缩略图张数：档位不等于目标、或格式不等于目标的行。 */
+  countThumbnailsNeedingRegen(targetSize, targetFormat) {
+    if (!this.hasPhotosColumn('thumb_size') || !this.hasPhotosColumn('thumb_format')) return 0;
+    var size = parseInt(targetSize, 10) || 0;
+    var format = String(targetFormat || '');
+    var row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM photos
+         WHERE thumbnail IS NOT NULL
+           AND (thumb_size <> ? OR thumb_format <> ?)`,
+      )
+      .get(size, format);
+    return row ? Number(row.n) || 0 : 0;
   }
 
   /**
@@ -1380,9 +1519,7 @@ class PhotoDatabase {
 
   getMissingThumbnailCount() {
     var row = this.db
-      .prepare(
-        "SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = ''",
-      )
+      .prepare('SELECT COUNT(*) as count FROM photos WHERE ' + this._sqlBackfillPendingExpr())
       .get();
     return row ? row.count : 0;
   }
@@ -1392,30 +1529,55 @@ class PhotoDatabase {
       .prepare(
         `SELECT id, file_path, has_thumbnail
        FROM photos
-       WHERE has_thumbnail = 0 OR thumbnail IS NULL OR dhash IS NULL OR TRIM(dhash) = ''
+       WHERE ${this._sqlBackfillPendingExpr()}
        ORDER BY id ASC
        LIMIT ?`,
       )
       .all(limit);
   }
 
-  /** 仅取 id > afterId 的缺失缩略图或缺失 dHash，避免同一轮补全对失败记录死循环重试 */
+  /**
+   * 仅取 id > afterId 的待补行（缺缩略图 / 缺 dHash / 缺原图尺寸），
+   * 避免同一轮补全对失败记录死循环重试。
+   *
+   * ⚠️ `dhash` / `width` / `height` **必须出现在 SELECT 里**：上层靠它们判断
+   *    「这次命中只是因为缺尺寸」，从而跳过 `computeDhash`（整图解码）与重复的
+   *    metadata 读取 —— 少了这三列，1224 万行里每一行都会被白解码一遍。
+   */
   getPhotosMissingThumbnailsAfter(afterId, limit) {
     return this.db
       .prepare(
-        `SELECT id, file_path, file_size, date_modified, has_thumbnail
+        `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height
        FROM photos
-       WHERE id > ? AND (has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = '')
+       WHERE id > ? AND ${this._sqlBackfillPendingExpr()}
        ORDER BY id ASC
        LIMIT ?`,
       )
       .all(afterId, limit);
   }
 
-  updatePhotoThumbnail(photoId, thumbnailBuffer) {
+  /**
+   * 写入缩略图，并**如实记录它的规格**（目标档位 / 编码格式）。
+   *
+   * 🔴 `spec` 不是可有可无的装饰：新的 BLOB 一进来，这一行上原有的规格记录就失效了。
+   *    所以拿不到规格时必须写回 `0` / `''`（未知），**绝不能沿用旧值**——
+   *    「记录写着 256、BLOB 其实是 1024」比「没有记录」更坏，因为它会让将来的迁移
+   *    误判成「这张已经符合目标档位」从而跳过。
+   *
+   * @param {number} photoId
+   * @param {Buffer} thumbnailBuffer
+   * @param {{size?: number, format?: string}} [spec] 生成参数；省略则两列记为未知
+   */
+  updatePhotoThumbnail(photoId, thumbnailBuffer, spec) {
+    var size = spec && Number.isFinite(Number(spec.size)) ? parseInt(spec.size, 10) : 0;
+    var format = normalizeThumbFormat(spec && spec.format);
     this.db
-      .prepare('UPDATE photos SET thumbnail = ?, has_thumbnail = 1 WHERE id = ?')
-      .run(thumbnailBuffer, photoId);
+      .prepare(
+        `UPDATE photos
+         SET thumbnail = ?, has_thumbnail = 1, thumb_size = ?, thumb_format = ?
+         WHERE id = ?`,
+      )
+      .run(thumbnailBuffer, size, format, photoId);
   }
 
   photoExists(photoId) {
@@ -1789,14 +1951,28 @@ class PhotoDatabase {
     return photo || null;
   }
 
+  /**
+   * 预览页「照片信息」面板的数据源。字段覆盖面由 `src/web/js/photo-info-fields.js`
+   * 的注册表决定 —— 面板要显示什么，这里就得先查出来，两者一起改。
+   *
+   * `media_kind` 直接复用本类的视频扩展名集合（`_sqlFileTypeIsVideoExpr()`），
+   * 不再在 JS 侧维护第二份扩展名清单，否则「仅视频」筛出来的和面板写的不一致。
+   * `root_path` 走 LEFT JOIN：照片的 root_id 理论上必定命中，但外键没开强制，
+   * 兜底成 NULL 而不是把整条记录丢掉。
+   */
   getPhotoInfo(photoId) {
     const photo = this.db
       .prepare(
-        `SELECT id, file_path, file_name, file_size, file_type, width, height,
-                date_taken, date_modified, is_favorite,
-                camera_make, camera_model, lens_model, focal_length, aperture,
-                iso_speed, shutter_speed, gps_latitude, gps_longitude
-         FROM photos WHERE id = ?`,
+        `SELECT p.id, p.file_path, p.file_name, p.file_size, p.file_type, p.width, p.height,
+                p.folder_path, p.date_taken, p.date_modified, p.is_favorite, p.has_thumbnail,
+                p.file_hash, p.dhash,
+                p.camera_make, p.camera_model, p.lens_model, p.focal_length, p.aperture,
+                p.iso_speed, p.shutter_speed, p.gps_latitude, p.gps_longitude,
+                r.path AS root_path,
+                CASE WHEN ${this._sqlFileTypeIsVideoExpr()} THEN 'video' ELSE 'image' END AS media_kind
+         FROM photos p
+         LEFT JOIN root_folders r ON r.id = p.root_id
+         WHERE p.id = ?`,
       )
       .get(photoId);
     return photo || null;
@@ -1968,9 +2144,10 @@ class PhotoDatabase {
       INSERT OR IGNORE INTO photos
         (root_id, folder_path, file_name, file_path, file_size, file_type,
          width, height, date_taken, date_modified, thumbnail, has_thumbnail,
+         thumb_size, thumb_format,
          camera_make, camera_model, lens_model, focal_length, aperture,
          iso_speed, shutter_speed, gps_latitude, gps_longitude)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       photo.rootId,
@@ -1985,6 +2162,9 @@ class PhotoDatabase {
       photo.dateModified,
       photo.thumbnail,
       photo.hasThumbnail ? 1 : 0,
+      // 没生成缩略图时规格必须是 0 / ''（未知），不能跟着传进来的档位走
+      photo.thumbnail ? parseInt(photo.thumbSize, 10) || 0 : 0,
+      photo.thumbnail ? normalizeThumbFormat(photo.thumbFormat) : '',
       photo.cameraMake || null,
       photo.cameraModel || null,
       photo.lensModel || null,
@@ -2002,9 +2182,10 @@ class PhotoDatabase {
       INSERT OR IGNORE INTO photos
         (root_id, folder_path, file_name, file_path, file_size, file_type,
          width, height, date_taken, date_modified, thumbnail, has_thumbnail,
+         thumb_size, thumb_format,
          camera_make, camera_model, lens_model, focal_length, aperture,
          iso_speed, shutter_speed, gps_latitude, gps_longitude)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
   }
 

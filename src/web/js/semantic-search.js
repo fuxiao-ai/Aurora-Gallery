@@ -269,11 +269,13 @@
      * 用输入框而不是滑杆：有效区间只有 [0, 0.03] 这么窄，滑杆上能对齐的有意义取值就那几档，
      * 拖拽精度还不如直接敲数字；而且滑杆没法表达「清空 = 回到默认」。
      *
-     * 收进折叠块：这一块是「后台任务」清单里的一行，阈值是偶尔才动一次的东西。
+     * 设置项直接铺开、没有折叠入口（用户反馈：不要存在设置项按钮隐藏）。
+     * 这里曾是个 <details> 折叠块，理由是它当初挤在「后台任务」清单里的一行 ——
+     * 那个约束随独立面板消失，折叠也就失去理由。⚠️ 本函数只会在 embedded
+     * （设置页 settingsOnly）分支里被调用，故不再需要折叠与否的分叉。
      */
     function buildTuning() {
-      const tuning = node('details', '', 'ai-tune');
-      tuning.append(node('summary', text('匹配设置', 'Match settings')));
+      const tuning = node('section', '', 'ai-tune');
       if (!options.matchThreshold) {
         tuning.append(
           node(
@@ -308,7 +310,14 @@
       const reset = node('button', text('恢复默认', 'Reset'), 'ai-tune-reset');
       reset.type = 'button';
       reset.addEventListener('click', () => commitThreshold(MATCH_RANGE.default));
-      body.append(thresholdInput, reset);
+      // 可见标签：折叠块取消后，原先承担「这是什么设置」的 summary 一并消失，阈值输入框
+      // 就会变成一只没有可见名字的裸数字框（只剩 aria-label，屏幕阅读器读得到、眼睛读不到）。
+      // 字号字重对齐设置页 `.setting-label` 的约定，与同页其它设置项一致。
+      body.append(
+        node('span', text('匹配阈值', 'Match threshold'), 'ai-tune-label'),
+        thresholdInput,
+        reset,
+      );
       tuning.append(
         body,
         node(
@@ -415,7 +424,7 @@
         // 设置页嵌入式面板不挂 header：命名由设置页的类目标题（「搜图」）承担。
         // 这里曾渲染过一条独立的 h2，结果是同义重复 + 与类目标题名字不一致。
         // 两段静态说明（「用中文、英文等语言描述画面…」「建立索引后，从左栏…」）
-        // 已删除：这一块现在是「后台任务」清单里的一行，同清单其它行只有一行说明，
+        // 已删除：这一块当时是「后台任务」清单里的一行，同清单其它行只有一行说明，
         // 这里堆三段解释会把整行撑高三倍；动态状态由 status 承担。
         dialog.append(controls, status, buildTuning(), errorLine);
         dialog.hidden = false;

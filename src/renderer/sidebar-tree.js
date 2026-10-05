@@ -25,6 +25,33 @@
   /** 最近一次整树渲染的选项（懒物化子层时需要 escape/format/state） */
   var lazyRenderOptions = null;
 
+  /**
+   * 缩进口径（与 styles.css 的「树形目录」一节同源，改一处必须改另一处）：
+   *   - 每级 14px。此前「子层容器 padding-left 16px」+「行内 depth*16」叠加成 32px/级，
+   *     侧栏最窄 200px 时第 4 级就把目录名挤没了。
+   *   - 叶子行没有箭头槽，缩进要补 `TREE_TOGGLE_SLOT + TREE_ROW_GAP`，
+   *     名字才和同级父行的名字对齐（旧口径只补 14px，叶子整体左移 12px）。
+   */
+  var TREE_INDENT_BASE = 12;
+  var TREE_INDENT_STEP = 14;
+  var TREE_TOGGLE_SLOT = 18;
+  var TREE_ROW_GAP = 8;
+
+  /** depth 层「父行」的缩进量 */
+  function treeRowIndent(depth) {
+    return TREE_INDENT_BASE + depth * TREE_INDENT_STEP;
+  }
+
+  /** depth 层「叶子行」的缩进量（补满箭头槽 + 间距，与同级父行的名字对齐） */
+  function treeLeafIndent(depth) {
+    return treeRowIndent(depth) + TREE_TOGGLE_SLOT + TREE_ROW_GAP;
+  }
+
+  /** depth 层节点的子层导线 x：画在该节点箭头槽的中心 */
+  function treeGuideX(depth) {
+    return treeRowIndent(depth) + Math.floor(TREE_TOGGLE_SLOT / 2);
+  }
+
   /** 给某根的树建索引：规范化路径 -> 节点（供懒物化时按路径取子级） */
   function indexTree(rootId, tree) {
     var map = new Map();
@@ -173,7 +200,7 @@
     var html = '';
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
-      var indent = 12 + depth * 16;
+      var indent = treeRowIndent(depth);
       var isActive =
         state.currentView === 'folder' &&
         normalizePath(state.currentPath) === normalizePath(node.fullPath);
@@ -189,7 +216,7 @@
           'px;" data-folder-path="' +
           escapeAttr(node.fullPath) +
           '">' +
-          '<span class="tree-toggle" data-tree-toggle="node">▶</span>' +
+          '<span class="tree-toggle" data-tree-toggle="node"></span>' +
           '<span class="icon">\u{1F4C1}</span>' +
           '<span class="name" title="' +
           escapeHtml(node.fullPath) +
@@ -201,8 +228,11 @@
           '</span>' +
           '</div>';
         // 子层懒渲染：只留一个带路径标记的空容器，首次展开时才物化 DOM
+        // --tree-guide-x 让 styles.css 的导线对齐到本行箭头槽中心
         html +=
-          '<div class="tree-children" style="display:none;" data-lazy-root="' +
+          '<div class="tree-children" style="display:none;--tree-guide-x:' +
+          treeGuideX(depth) +
+          'px;" data-lazy-root="' +
           escapeAttr(options.rootId != null ? String(options.rootId) : '') +
           '" data-lazy-path="' +
           escapeAttr(node.fullPath) +
@@ -216,7 +246,7 @@
           '<div class="folder-item ' +
           (isActive ? 'active' : '') +
           '" style="padding-left:' +
-          (indent + 14) +
+          treeLeafIndent(depth) +
           'px;" data-folder-path="' +
           escapeAttr(node.fullPath) +
           '">' +
@@ -235,21 +265,46 @@
     return html;
   }
 
+  /** 展开动画类 `is-opening` 的清理定时器（按容器持有，连点也不会提前摘掉） */
+  var treeOpenTimers = typeof WeakMap === 'function' ? new WeakMap() : null;
+  var TREE_OPEN_ANIM_MS = 220;
+
+  /**
+   * 展开子层：物化 + 显示 + 箭头转到「展开」位 + （可选）播一次展开动画。
+   * `animate=false` 用于「展开到当前目录」这类程序化路径 —— 多层会同时物化，
+   * 一起播动画只会显得抖。
+   */
+  function openTreeChildren(children, toggleEl, animate) {
+    materializeLazyChildren(children);
+    children.style.display = 'block';
+    if (toggleEl) toggleEl.classList.add('is-expanded');
+    if (animate === false) {
+      children.classList.add('expanded');
+      return;
+    }
+    children.classList.add('expanded', 'is-opening');
+    var prev = treeOpenTimers ? treeOpenTimers.get(children) : null;
+    if (prev) clearTimeout(prev);
+    var timer = setTimeout(function () {
+      children.classList.remove('is-opening');
+      if (treeOpenTimers) treeOpenTimers.delete(children);
+    }, TREE_OPEN_ANIM_MS);
+    if (treeOpenTimers) treeOpenTimers.set(children, timer);
+  }
+
+  function closeTreeChildren(children, toggleEl) {
+    children.style.display = 'none';
+    children.classList.remove('expanded', 'is-opening');
+    if (toggleEl) toggleEl.classList.remove('is-expanded');
+  }
+
   function toggleTreeRoot(toggleEl, e) {
     e.stopPropagation();
     var treeRoot = toggleEl.closest('.tree-root');
     var children = treeRoot.querySelector(':scope > .tree-children');
     if (!children) return;
-    if (children.style.display === 'none') {
-      materializeLazyChildren(children);
-      children.style.display = 'block';
-      children.classList.add('expanded');
-      toggleEl.textContent = '▼';
-    } else {
-      children.style.display = 'none';
-      children.classList.remove('expanded');
-      toggleEl.textContent = '▶';
-    }
+    if (children.style.display === 'none') openTreeChildren(children, toggleEl);
+    else closeTreeChildren(children, toggleEl);
   }
 
   function toggleTreeNode(toggleEl, e) {
@@ -257,16 +312,8 @@
     var treeNode = toggleEl.closest('.tree-node');
     var children = treeNode.querySelector(':scope > .tree-children');
     if (!children) return;
-    if (children.style.display === 'none') {
-      materializeLazyChildren(children);
-      children.style.display = 'block';
-      children.classList.add('expanded');
-      toggleEl.textContent = '▼';
-    } else {
-      children.style.display = 'none';
-      children.classList.remove('expanded');
-      toggleEl.textContent = '▶';
-    }
+    if (children.style.display === 'none') openTreeChildren(children, toggleEl);
+    else closeTreeChildren(children, toggleEl);
   }
 
   function isFolderPathAncestor(ancestor, descendant) {
@@ -331,10 +378,92 @@
   }
 
   /**
+   * 把侧栏里「当前目录」那行滚进可视区。
+   *
+   * 为什么必须有：深层子层是懒渲染的，展开后当前行常在侧栏视口外 ——
+   * 顶栏面包屑告诉用户「你在哪」，侧栏里却看不见高亮，两边对不上。
+   *
+   * 只改 `#sidebarContent` 自己的 `scrollTop`，**不用 `scrollIntoView()`**：
+   * 后者会连同所有祖先滚动容器一起调整（深层子层 `.tree-children` 是
+   * `position: relative`，链路更长），可能把整页布局带走。这里手动算
+   * `block: 'nearest'` 的等价量，只动一个容器，行为可预测。
+   */
+  function scrollActiveFolderIntoView() {
+    var root = document.getElementById('sidebarContent');
+    if (!root) return false;
+    var row = root.querySelector('.folder-item.active[data-folder-path]');
+    if (!row) return false;
+    var view = root.getBoundingClientRect();
+    var box = row.getBoundingClientRect();
+    if (!view.height || !box.height) return false; // 侧栏收起（抽屉态）时高度为 0，不做无谓计算
+    var PAD = 8; // 留一点余量，别让当前行贴着边缘
+    if (box.top < view.top + PAD) {
+      root.scrollTop -= view.top + PAD - box.top;
+    } else if (box.bottom > view.bottom - PAD) {
+      root.scrollTop += box.bottom + PAD - view.bottom;
+    }
+    return true;
+  }
+
+  /** `child` 是否**直接**挂在 `parent` 下（只差一层） */
+  function isDirectChildOf(parent, child) {
+    var prefix = parent + '\\';
+    if (child.indexOf(prefix) !== 0) return false;
+    return child.slice(prefix.length).indexOf('\\') < 0;
+  }
+
+  /**
+   * 取某目录的一级子目录 —— 面包屑「同级下拉」的数据源。
+   *
+   * **纯内存**：数据来自渲染时 `indexTree()` 建好的 `lazyTreeByRoot` 索引，不查库、不发 IPC。
+   * 因此「树还没渲染过」时返回 `null`，调用方必须按「拿不到就整块不显示下拉」处理 ——
+   * 不能退化成空列表，否则会出现一个点了没反应的下拉。
+   *
+   * 口径与侧栏树一致：只含**有照片的目录**（数据源是有照片目录的扁平列表，
+   * `insertTreeNode` 会自动补齐中间层，所以不会出现「父目录查不到」）。
+   *
+   * @returns {Array<{name:string, fullPath:string, photoCount:number, isLeaf:boolean}>|null}
+   */
+  function queryChildFolders(folderPath) {
+    var target = normalizePath(folderPath);
+    if (!target) return null;
+    var opts = lazyRenderOptions || {};
+    var rootFolders = (opts.state && opts.state.rootFolders) || [];
+    for (var r = 0; r < rootFolders.length; r++) {
+      var root = rootFolders[r];
+      var map = lazyTreeByRoot[String(root.id)];
+      if (!map) continue;
+      var rootPath = normalizePath(root.path);
+      // 命中根目录：它的一级子目录 = 索引里 fullPath 直接挂在根下的那些
+      // （根目录自己不是任何节点的 key，不能直接 map.get()）
+      if (rootPath === target) {
+        var level1 = [];
+        map.forEach(function (node) {
+          if (isDirectChildOf(rootPath, node.fullPath)) level1.push(node);
+        });
+        if (level1.length <= 1) return level1;
+        sortTree(level1);
+        return level1;
+      }
+      var node = map.get(target);
+      if (node) return node.children || [];
+    }
+    return null;
+  }
+
+  /**
    * 展开到指定目录。深层子层是懒渲染的，DOM 里可能还不存在，
    * 因此这里改为「按数据链逐级物化 + 展开」，而不是依赖已在 DOM 中的祖先链。
+   *
+   * 外面包一层是为了统一收尾：内层有多个提前 return（根目录本身 / 叶子目录 /
+   * 数据与 DOM 不同步），逐个改容易漏，所以把「让当前行可见」放在包装层。
    */
   function expandTreeToFolder(targetPath) {
+    expandTreeToFolderInner(targetPath);
+    scrollActiveFolderIntoView();
+  }
+
+  function expandTreeToFolderInner(targetPath) {
     var target = normalizePath(targetPath);
     if (!target) return;
     var root = document.getElementById('sidebarContent');
@@ -357,11 +486,12 @@
 
     // 2. 展开根层（目标就是根目录本身时到此为止）
     if (String(container.style.display || '').toLowerCase() !== 'block') {
-      materializeLazyChildren(container);
-      container.style.display = 'block';
-      container.classList.add('expanded');
-      var rootToggle = hostRow.querySelector('.tree-toggle');
-      if (rootToggle && rootToggle.style.visibility !== 'hidden') rootToggle.textContent = '▼';
+      var rootToggleEl = hostRow.querySelector('.tree-toggle');
+      openTreeChildren(
+        container,
+        rootToggleEl && rootToggleEl.style.visibility !== 'hidden' ? rootToggleEl : null,
+        false,
+      );
     }
     if (normalizePath(hostRow.getAttribute('data-root-path')) === target) return;
 
@@ -381,11 +511,8 @@
       if (!wrap) return; // 叶子目录：没有可展开的子层
       var next = wrap.querySelector(':scope > .tree-children');
       if (!next) return;
-      materializeLazyChildren(next);
-      next.style.display = 'block';
-      next.classList.add('expanded');
       var tg = row.querySelector('.tree-toggle');
-      if (tg && tg.style.visibility !== 'hidden') tg.textContent = '▼';
+      openTreeChildren(next, tg && tg.style.visibility !== 'hidden' ? tg : null, false);
       container = next;
     }
   }
@@ -496,8 +623,8 @@
           escapeAttr(root.path) +
           '">' +
           (root._hasSubFolders
-            ? '<span class="tree-toggle" data-tree-toggle="root">▼</span>'
-            : '<span class="tree-toggle" style="visibility:hidden">▶</span>') +
+            ? '<span class="tree-toggle is-expanded" data-tree-toggle="root"></span>'
+            : '<span class="tree-toggle" style="visibility:hidden" aria-hidden="true"></span>') +
           '<span class="icon">\u{1F4C1}</span>' +
           '<span class="name" title="' +
           escapeHtml(root.path) +
@@ -524,7 +651,9 @@
           root.id +
           '" style="display:' +
           (tree.length > 0 ? 'block' : 'none') +
-          ';">';
+          ';--tree-guide-x:' +
+          treeGuideX(0) +
+          'px;">';
         if (tree.length > 0) {
           html += renderTreeNodes(tree, 1, {
             state: state,
@@ -660,8 +789,8 @@
         escapeAttr(root.path) +
         '">' +
         (root._hasSubFolders
-          ? '<span class="tree-toggle" data-tree-toggle="root">▼</span>'
-          : '<span class="tree-toggle" style="visibility:hidden">▶</span>') +
+          ? '<span class="tree-toggle is-expanded" data-tree-toggle="root"></span>'
+          : '<span class="tree-toggle" style="visibility:hidden" aria-hidden="true"></span>') +
         '<span class="icon">\u{1F4C1}</span>' +
         '<span class="name" title="' +
         escapeHtml(root.path) +
@@ -688,7 +817,9 @@
         root.id +
         '" style="display:' +
         (tree.length > 0 ? 'block' : 'none') +
-        ';">';
+        ';--tree-guide-x:' +
+        treeGuideX(0) +
+        'px;">';
       if (tree.length > 0) {
         html += renderTreeNodes(
           tree,
@@ -820,6 +951,8 @@
     toggleTreeNode: toggleTreeNode,
     isFolderPathAncestor: isFolderPathAncestor,
     expandTreeToFolder: expandTreeToFolder,
+    scrollActiveFolderIntoView: scrollActiveFolderIntoView,
+    queryChildFolders: queryChildFolders,
     findFolderSidebarItemEl: findFolderSidebarItemEl,
     renderFolderTree: renderFolderTree,
     renderFolderTreeProgressive: renderFolderTreeProgressive,

@@ -66,6 +66,21 @@ function hasIndex(name) {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
 }
 
+/**
+ * photos 上是否有某一列。
+ * ⚠️ 本 worker 直接用 better-sqlite3，**不走 PhotoDatabase.init()**，所以
+ * `thumb_size` / `thumb_format` 这两列是靠主进程启动时迁移加上的（时序上早于本 worker 启动）。
+ * 这里仍然查一次，是因为「另一个入口以为别人会先做好」正是这个文件历史上踩过的坑。
+ */
+function hasPhotosColumn(name) {
+  if (!hasTable('photos')) return false;
+  var rows = db.prepare('PRAGMA table_info(photos)').all();
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].name === name) return true;
+  }
+  return false;
+}
+
 /** 只建真正缺的那个索引；已存在的连 SQL 都不执行，更不会记进报告。 */
 function ensureIndexes() {
   if (!hasTable('photos')) return;
@@ -127,7 +142,14 @@ function repairFlags(done) {
     'SELECT id FROM photos WHERE id > ? AND id <= ? AND has_thumbnail = 1 AND thumbnail IS NULL',
   );
   var countRange = db.prepare('SELECT COUNT(*) AS n FROM photos WHERE id > ? AND id <= ?');
-  var fixOne = db.prepare('UPDATE photos SET has_thumbnail = 0 WHERE id = ?');
+  // 标记置 0 的同时把规格一并清掉：没有 BLOB 的行不该留着「规格写着 1024」这种更坏的状态，
+  // 那会让将来的迁移以为它已经符合目标档位而跳过它。
+  var hasThumbSpec = hasPhotosColumn('thumb_size') && hasPhotosColumn('thumb_format');
+  var fixOne = db.prepare(
+    hasThumbSpec
+      ? "UPDATE photos SET has_thumbnail = 0, thumb_size = 0, thumb_format = '' WHERE id = ?"
+      : 'UPDATE photos SET has_thumbnail = 0 WHERE id = ?',
+  );
   var fixBatch = db.transaction(function (ids) {
     for (var i = 0; i < ids.length; i += 1) fixOne.run(ids[i]);
   });

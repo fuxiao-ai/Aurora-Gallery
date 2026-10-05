@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Aurora Gallery (拂晓图库, npm `aurora-gallery`) is a local-first Electron photo library app with a built-in web server for LAN access. It handles large libraries (tens of thousands to millions of photos, including RAW) using SQLite (`better-sqlite3`, WAL mode) with worker threads for scanning and heavy DB reads.
 
-**Version**: 1.2.0 — release version lives in `package.json`; bump before shipping and sync "About" strings.
+**Version**: 1.3.0 — release version lives in `package.json`; bump before shipping and sync "About" strings.
 
 ## Requirements
 
@@ -36,9 +36,10 @@ npm run dist                # Installer for current platform (downloads cloudfla
 npm run dist:win            # Windows NSIS installer
 npm run dist:mac            # macOS DMG
 npm run download-cloudflared # Fetch cloudflared binary for packaging/tunneling
+npm run bundle-models       # Build bundled AI models into models/ (face + search) for packaging
 ```
 
-**No test suite exists.** The only automated check is `npm run smoke:db`.
+**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 41 scripts) in the Electron runtime; `npm run smoke:db` runs just the database smoke. `npm run lint` must stay at **0 errors** before shipping — see `AGENTS.md` for the per-directory breakdown.
 
 ## High-Level Architecture
 
@@ -95,9 +96,11 @@ Fully bilingual (zh-CN / en) as of v1.0.3. Locale key is `uiLocale` (`zh-CN` or 
 
 ### Refactoring in Progress
 
-`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3800 lines) are acknowledged technical debt. Part of `main.js` has been split into `src/main/*.js`, but **check actual imports before assuming a module is connected to the runtime**. Only these are wired up: `browse-requests`, `database-maintenance`, `maintenance-guard`, `semantic-search`, `face-service`, `perceptual-hash`, `similar-detection`, `startup-metrics`, `logger`.
+`src/renderer/app.js` (~5400 lines) and `src/main.js` (~3900 lines) are acknowledged technical debt. Part of `main.js` has been split into `src/main/*.js`, but **check actual imports before assuming a module is connected to the runtime** — a module that nothing `require`s is dead code that will silently diverge.
 
-Everything else in that directory — `ipc-handlers.js`, `task-scheduler.js`, `thumbnail-backfill.js`, `settings.js`, `window-tray.js`, `duplicate-detection.js`, `dhash-backfill.js`, `cloudflare-tunnel.js`, `utils.js` — is an **unconnected orphan chain**: those files only require each other, never `main.js`. Their logic also exists in duplicated form inside `main.js` (e.g. `createDefaultSettings`, the thumbnail backfill loop now living in `runRowsWithThumbConcurrency`), so editing them changes nothing at runtime. The duplicates have already drifted — `src/main/settings.js` and `main.js` disagree on `autoThumbBackfillOnStartup` and `thumbBackfillConcurrency`.
+**2026-10-05 — the `src/main/*.js` orphan chain was removed (T6).** Nine files (`ipc-handlers.js`, `task-scheduler.js`, `thumbnail-backfill.js`, `settings.js`, `window-tray.js`, `duplicate-detection.js`, `dhash-backfill.js`, `cloudflare-tunnel.js`, `utils.js`) only required each other and were never reached from `main.js`; ~3100 lines deleted. Their logic had been duplicated inside `main.js` (e.g. `createDefaultSettings`, the thumbnail-backfill loop in `runRowsWithThumbConcurrency`) and the copies had **drifted** — most seriously, the `width`/`height` backfill contract that `database.js#_sqlBackfillPendingExpr()` depends on existed *only* in the dead `thumbnail-backfill.js`, so the live backfill never wrote dimensions and its candidate set could never converge. That logic has been ported into `main.js`; see `scripts/photo-metadata-backfill-regression.js`. `src/main/` now holds only reachable modules (`ai-index-gate`, `browse-requests`, `database-maintenance`, `db-write-queue`, `face-service`, `interaction-preempt`, `logger`, `maintenance-guard`, `perceptual-hash`, `semantic-search`, `semantic-tags`, `similar-detection`, `sql-id-list`, `startup-metrics`).
+
+🔴 **Do not add unreachable modules under `src/main/`.** `scripts/module-reachability-regression.js` asserts every `.js` there is statically reachable from `src/main.js` / `src/preload.js`. If you split code out, wire it up in the same commit. General rule this cost us: **a regression that pins a dead file is a false green** — before asserting "this contract is implemented", confirm the file under test is actually `require`d.
 
 `src/renderer/modules/*.js` was removed (orphaned dead code). When editing the large files, prefer small, focused changes. When adding new features, use the modular locations that are actually wired up.
 
@@ -158,8 +161,9 @@ sidebar (folder / date) must go through `leaveAiViewForBrowse` (desktop) /
 - `no-empty: allowEmptyCatch`
 - Globals are split between Node/CommonJS (`src/**/*.js`, `scripts/**/*.js`) and Browser (`src/renderer/**/*.js`, `src/web/**/*.js`, `src/hls-attach.js`, `src/playback-strategy.js`)
 - Additional browser globals declared: `requestIdleCallback`, `confirm`, `appAlert`, `appConfirm`, `Logger`, `RendererFacesUI`, `api`, `formatNumber`
+- Ignored: `.workbuddy/**` (tool workspace — memory/docs plus throwaway debug scripts under `.workbuddy/artifacts/`; they are not product code and used to turn `npm run lint` permanently red)
 
-Current status: **0 errors, 6 warnings** (all unused-variable warnings for reserved callbacks/imports).
+Current status: **0 errors, 2 warnings** (both in `src/web/js/app.js`: `changeWebOpacity` / `changeWebTexture` are invoked from HTML `onchange` so static analysis cannot see the use — do not "fix" them). The baseline dropped from 7 to 2 when T6 deleted the orphan chain. `npm run lint` (`eslint .`) and `npx eslint src scripts` report the identical result.
 
 ## Logging
 

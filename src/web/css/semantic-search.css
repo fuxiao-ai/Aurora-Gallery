@@ -9,9 +9,15 @@ html {
 }
 
 /* ---------- 基础控件 ---------- */
+/* `.ai-button` 的**唯一来源**。桌面端 `theme-polish.css` 里曾用同特异性的 `.ai-button`
+   再声明一遍（min-height / padding / 圆角 / 描边色 / 底色 / 前景 / 过渡 / hover / disabled），
+   并因为加载顺序更晚而取胜 —— 两份都「看着像生效」，改前一份不会生效。
+   那批取值已并入本节，theme-polish 不再声明 `.ai-button`（只留无关的主题层与
+   `prefers-reduced-motion` 里的过渡关闭）。 */
 .ai-button {
-  padding: 8px 12px;
-  border: 1px solid var(--design-line, var(--border-color, #45505d));
+  padding: 8px 13px;
+  min-height: 36px;
+  border: 1px solid var(--surface-line, var(--design-line, var(--border-color, #45505d)));
   border-radius: 9px;
   color: var(--text-primary, #eef1f5);
   background: var(--bg-card, var(--bg-secondary, #222936));
@@ -24,12 +30,16 @@ html {
     color 150ms ease;
 }
 .ai-button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent, #8abcf5) 45%, var(--design-line, #45505d));
-  background: var(--bg-hover, var(--bg-secondary, #222936));
+  border-color: color-mix(
+    in srgb,
+    var(--accent, #8abcf5) 42%,
+    var(--surface-line, var(--design-line, #45505d))
+  );
+  background: var(--control-hover, var(--bg-hover, var(--bg-secondary, #222936)));
 }
 .ai-button:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 /* 主按钮：hover 也要压住主题层的 .ai-button:hover，所以选择器写得比它更专一。 */
 .ai-button.ai-button-primary,

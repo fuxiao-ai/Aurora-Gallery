@@ -6,6 +6,14 @@ const path = require('path');
 const sharp = require('sharp');
 const { MODEL_KEY, DIMENSIONS, GENERIC_TEXT, loadEncoder, dot } = require('../ai/embedding');
 const { IndexStore } = require('../ai/index-store');
+const {
+  readCachedWordVectors,
+  computeTags,
+  indexesOf,
+  vocabKey,
+  TAG_LANG,
+  TAG_BATCH,
+} = require('../ai/photo-tags');
 const vocabulary = require('../ai/search-vocabulary');
 sharp.concurrency(1);
 /**
@@ -44,6 +52,8 @@ const root = workerData.aiPath;
 const readyFile = path.join(root, 'ready.json');
 const indexPath = path.join(root, 'semantic-index.sqlite');
 const cacheDir = path.join(root, 'models');
+// 标签的参数（语言 / 阈值 / 条数 / 分批大小）只在 src/ai/photo-tags.js 定义一次，
+// 这里与主进程都只是引用 —— 主进程还要用同一套值算词表指纹，各写一份必然漂。
 const progress = (state) => parentPort.postMessage({ progress: state });
 const check = () => {
   if (cancelled) throw new Error('AI_CANCELLED');
@@ -188,6 +198,57 @@ async function readOnly(encoder, store, baselineVector, operation, query, option
   throw new Error('AI_BAD_OPERATION');
 }
 
+/**
+ * 给「已有向量、但标签缺失或词表指纹过期」的行补标签。
+ *
+ * ## 为什么单独一个操作，而不是并进 index
+ *
+ * `index` 的 `batch()` 命中的行会被送去 `encoder.image()` **重新编码图片**（每张都要解码
+ * 文件 + 跑一次视觉塔前向），因为那条谓词的语义是「向量需要重算」。而补标签一行图片都不用读：
+ * 向量就是当初编码的结果，缺的只是「拿它与词表做点积」这一步。混进 index 的后果是
+ * **静默巨量浪费** —— 老索引那 7374 行会因为缺标签被白重编码一遍，且这个代价只有真跑
+ * 一次才看得出来（静态检查全绿）。
+ *
+ * ## 为什么它必须在 loadEncoder 之前返回
+ *
+ * 这里不需要任何 ONNX 会话：图片向量在库里、词表向量在磁盘缓存里、计算是点积。
+ * 如果让它落到下面 `loadEncoder` 那条路上，为了 1.8 秒的纯算术要白载约 1 GB 的会话，
+ * 而内存正是「索引在跑时还能不能搜图」的瓶颈（见 `semantic-search.js` 的 relay 注释）。
+ */
+function refreshTags() {
+  const words = readCachedWordVectors(root, TAG_LANG, MODEL_KEY);
+  // 没有词表向量 = 模型还没装 / 索引还没建过。**只报不抛**：这是「还没准备好」，
+  // 不是错误，调用方据此提示用户去建索引即可。
+  if (!words) return { tagged: 0, total: 0, reason: 'AI_TAG_VOCAB_MISSING' };
+  const store = new IndexStore(workerData.dbPath, indexPath);
+  try {
+    const total = store.pendingTagsCount(words.key);
+    if (!total) return { tagged: 0, total: 0 };
+    let cursor = 0;
+    let done = 0;
+    for (;;) {
+      check();
+      const rows = store.batchPendingTags(cursor, TAG_BATCH, words.key);
+      if (!rows.length) break;
+      const entries = rows.map((row) => ({
+        photoId: row.photo_id,
+        indexes: indexesOf(computeTags(row.vector, words.vectors, row.generic_sim)),
+        key: words.key,
+      }));
+      // 写失败就整批丢掉：游标照常前进，这一批的 tags 仍是 NULL，
+      // 下一轮补标签会重新捞到它们（幂等，不会留下半写状态）。
+      store.setTags(entries);
+      cursor = rows[rows.length - 1].photo_id;
+      done += rows.length;
+      progress({ phase: 'tagging', processed: done, total });
+      if (rows.length < TAG_BATCH) break;
+    }
+    return { tagged: done, total };
+  } finally {
+    store.close();
+  }
+}
+
 async function execute(operation, query, options) {
   fs.mkdirSync(root, { recursive: true });
   if (operation === 'status') {
@@ -209,6 +270,8 @@ async function execute(operation, query, options) {
     } catch (_) {}
     if (!manifest || manifest.model !== MODEL_KEY) throw new Error('AI_MODEL_MISSING');
   }
+  // 补标签必须在 loadEncoder 之前收口（原因见 refreshTags 的注释）。
+  if (operation === 'tag') return refreshTags();
   const originalFetch = global.fetch;
   if (operation === 'install') {
     controller = new AbortController();
@@ -289,6 +352,19 @@ async function execute(operation, query, options) {
       // 一起恢复正常。回归见 scripts/semantic-regression.js 的静态契约。
       return await readOnly(encoder, store, baselineVector, operation, query, options);
     }
+    /**
+     * 标签要用的词表向量。与检索预选词**共用同一份磁盘缓存**，所以上面那个
+     * 「没有缓存就编码一次」的循环（install/index 都会走）已经把这份数据备好了，
+     * 这里通常是零成本读取。万一仍旧读不到（缓存被手工删掉等），退回现场编码一次 ——
+     * 宁可贵 13 秒，也不能让整个建索引因为标签而失败。
+     */
+    const tagLabels = vocabulary.labelsFor(TAG_LANG);
+    const tagCache = readCachedWordVectors(root, TAG_LANG, MODEL_KEY);
+    const tagWords = {
+      vectors: tagCache ? tagCache.vectors : await vocabVectors(encoder, TAG_LANG, tagLabels),
+      key: vocabKey(MODEL_KEY, tagLabels),
+    };
+    check();
     let after = 0;
     let processed = 0;
     let failed = 0;
@@ -340,7 +416,13 @@ async function execute(operation, query, options) {
           const vector = await encoder.image(bytes);
           check();
           // 顺手把基线一起落库：这个向量就在手上，不存下来就要在第一次检索时补算一遍。
-          store.put(photo, vector, dot(baselineVector, vector));
+          const baseline = dot(baselineVector, vector);
+          // 标签同理顺手算掉：图片向量与词表向量此刻都在手上，纯点积、不解码任何东西，
+          // 边际成本≈0。漏算也不算错（batchPendingTags 之后会补），只是白多跑一趟。
+          store.put(photo, vector, baseline, {
+            indexes: indexesOf(computeTags(vector, tagWords.vectors, baseline)),
+            key: tagWords.key,
+          });
           processed++;
           indexed++;
         } catch (error) {

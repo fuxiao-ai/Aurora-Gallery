@@ -12,14 +12,75 @@
           if (!raw) return;
           var o = JSON.parse(raw);
           if (!o || typeof o !== 'object') return;
-          var ACC = { violet: 1, cyan: 1, teal: 1, rose: 1, amber: 1, mono: 1 };
-          var BG = { ink: 1, warm: 1, cool: 1, amoled: 1 };
+          // ⚠️ 下面这几张表都必须与 main.js 的 UI_*_ALLOWED 逐项一致（BG 少一个 default、
+          // TEX 少一个 none、OPA 少一个 opaque、WBD 少一个 solid —— 四个关闭态在首帧都是
+          // 「移除属性」）。漏一项 ⇒ 首帧闪一下再切。
+          var ACC = {
+            violet: 1,
+            cyan: 1,
+            teal: 1,
+            rose: 1,
+            amber: 1,
+            mono: 1,
+            coral: 1,
+            indigo: 1,
+            green: 1,
+            red: 1,
+          };
+          var BG = {
+            ink: 1,
+            warm: 1,
+            cool: 1,
+            amoled: 1,
+            glass: 1,
+            aurora: 1,
+            paper: 1,
+            mist: 1,
+            forest: 1,
+            clay: 1,
+          };
+          var TEX = {
+            grain: 1,
+            paper: 1,
+            linen: 1,
+            frost: 1,
+            grid: 1,
+            dots: 1,
+            stripe: 1,
+            wood: 1,
+          };
+          /* 面板透明度（第五维）。⚠️ 与 main.js 的 UI_OPACITY_ALLOWED、设置页 #settingUiOpacity
+             的 <option> 逐项一致；刻意不含首项 opaque（它 = 不设属性，走 removeAttribute） */
+          var OPA = {
+            slight: 1,
+            medium: 1,
+            clear: 1,
+          };
+          /* 窗口背景（窗口级开关）。⚠️ 与 main.js 的 UI_WINDOW_BACKDROP_ALLOWED、
+             设置页 #settingUiWindowBackdrop 的 <option> 逐项一致；同样刻意不含首项 solid
+             （它 = 不设属性，走 removeAttribute）。
+             🔴 这一维**必须**进首帧脚本：亚克力档下窗口本身是透明的，body 若按不透明底
+             先画一帧，用户会看到「先闪过一整块实色、再突然变透」。 */
+          var WBD = {
+            'acrylic-light': 1,
+            acrylic: 1,
+            'acrylic-strong': 1,
+          };
           var html = document.documentElement;
           if (o.theme === 'light' || o.theme === 'dark') html.setAttribute('data-theme', o.theme);
           if (o.uiAccent && ACC[o.uiAccent]) html.setAttribute('data-accent', o.uiAccent);
           if (o.uiBackground && o.uiBackground !== 'default' && BG[o.uiBackground])
             html.setAttribute('data-bg', o.uiBackground);
           else html.removeAttribute('data-bg');
+          if (o.uiTexture && o.uiTexture !== 'none' && TEX[o.uiTexture])
+            html.setAttribute('data-texture', o.uiTexture);
+          else html.removeAttribute('data-texture');
+          if (o.uiOpacity && o.uiOpacity !== 'opaque' && OPA[o.uiOpacity])
+            html.setAttribute('data-opacity', o.uiOpacity);
+          else html.removeAttribute('data-opacity');
+          if (o.uiWindowBackdrop && o.uiWindowBackdrop !== 'solid' && WBD[o.uiWindowBackdrop])
+            html.setAttribute('data-window-backdrop', o.uiWindowBackdrop);
+          else html.removeAttribute('data-window-backdrop');
         } catch (e) {}
       })();
     </script>
@@ -343,23 +404,110 @@
         <option value="zh-CN" data-i18n="settings.lang.zh">简体中文</option>
         <option value="en" data-i18n="settings.lang.en">English</option>
       </select>
+      <!-- 🔴 这个 <select> 是**语义源**，不是交互控件：它视觉隐藏（.topbar-theme-source）
+           但留在 DOM 里。为什么必须自建弹层：Windows 上原生 <select> 展开的列表由
+           **系统弹出菜单**渲染，<option> 不是可命中的 DOM 元素 → mouseover/mouseenter
+           根本派发不到 JS，「鼠标划过主题名即预览」用原生控件实现不了（平台限制，非代码问题）。
+           为什么保留它：它的 .value 是全项目唯一真相源 —— app.js 的回显 / 预设展开 /
+           焦点判定、settings.js 的同步、theme-regression 的静态断言、
+           theme-switch-probe 的 el.value + dispatchEvent('change') 驱动，全部挂在它身上。
+           留着它，落库链路与既有护栏零改动；下面的弹层**每次打开**从它的 option 动态重建
+           （文案直接取，跟着 i18n 走），所以不存在第二份主题名列表。 -->
       <select
         id="quickThemeStyle"
-        class="topbar-theme-select"
+        class="topbar-theme-select topbar-theme-source"
+        tabindex="-1"
+        aria-hidden="true"
         data-i18n-aria-label="topbar.themeAria"
         data-i18n-title="topbar.themeTitle"
         aria-label="快速切换界面风格"
         title="快速切换界面风格（与桌面端一致）"
       >
-        <option value="midnight_classic" data-i18n="theme.midnight_classic">夜幕经典</option>
-        <option value="ice_deep" data-i18n="theme.ice_deep">深空冰蓝</option>
-        <option value="amber_dawn" data-i18n="theme.amber_dawn">晨光琥珀</option>
-        <option value="forest_shadow" data-i18n="theme.forest_shadow">森影暮霭</option>
-        <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
-        <option value="cherry_blossom" data-i18n="theme.cherry_blossom">樱雾粉昼</option>
-        <option value="lavender_dusk" data-i18n="theme.lavender_dusk">暮紫微光</option>
-        <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
+        <!-- 🔴 三分组：预设 / 强调色 / 背景基调。这里**不能**再放一个 value="" 的
+             「自定义组合」选项 —— 它没有对应控件可调，选中后三元组不变、变更检测当场
+             吞掉，表现为「选了毫无反应、也没有任何可选项」（旧 bug）。改成 optgroup：
+             标题不可选，下面的强调色 / 背景项本身就构成「自定义」的两维入口。 -->
+        <optgroup data-i18n-label="theme.groupPresets" label="快捷风格">
+          <option value="midnight_classic" data-i18n="theme.midnight_classic">夜幕经典</option>
+          <option value="ice_deep" data-i18n="theme.ice_deep">深空冰蓝</option>
+          <option value="amber_dawn" data-i18n="theme.amber_dawn">晨光琥珀</option>
+          <option value="forest_shadow" data-i18n="theme.forest_shadow">森影暮霭</option>
+          <option value="ember_night" data-i18n="theme.ember_night">暗夜余烬</option>
+          <option value="graphite_night" data-i18n="theme.graphite_night">石墨夜色</option>
+          <option value="nebula_violet" data-i18n="theme.nebula_violet">星云紫夜</option>
+          <option value="pine_abyss" data-i18n="theme.pine_abyss">松渊墨绿</option>
+          <option value="mocha_night" data-i18n="theme.mocha_night">摩卡夜色</option>
+          <option value="glass_night" data-i18n="theme.glass_night">玻璃夜色</option>
+          <option value="aurora_night" data-i18n="theme.aurora_night">渐变夜幕</option>
+          <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
+          <option value="cherry_blossom" data-i18n="theme.cherry_blossom">樱雾粉昼</option>
+          <option value="lavender_dusk" data-i18n="theme.lavender_dusk">暮紫微光</option>
+          <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
+          <option value="desert_sand" data-i18n="theme.desert_sand">暖沙晨曦</option>
+          <option value="paper_gray" data-i18n="theme.paper_gray">素纸浅灰</option>
+          <option value="sage_morning" data-i18n="theme.sage_morning">鼠尾草晨雾</option>
+          <option value="apricot_haze" data-i18n="theme.apricot_haze">杏色薄雾</option>
+          <option value="frost_cyan" data-i18n="theme.frost_cyan">霜青微光</option>
+          <option value="glass_day" data-i18n="theme.glass_day">玻璃白昼</option>
+          <option value="aurora_dawn" data-i18n="theme.aurora_dawn">渐变晨曦</option>
+        </optgroup>
+        <optgroup data-i18n-label="theme.groupAccent" label="强调色">
+          <option value="accent:violet" data-i18n="accent.violet">紫罗兰</option>
+          <option value="accent:cyan" data-i18n="accent.cyan">青蓝</option>
+          <option value="accent:teal" data-i18n="accent.teal">青绿</option>
+          <option value="accent:rose" data-i18n="accent.rose">玫红</option>
+          <option value="accent:amber" data-i18n="accent.amber">琥珀</option>
+          <option value="accent:mono" data-i18n="accent.mono">中性</option>
+          <option value="accent:coral" data-i18n="accent.coral">珊瑚</option>
+          <option value="accent:indigo" data-i18n="accent.indigo">靛蓝</option>
+          <option value="accent:green" data-i18n="accent.green">翠绿</option>
+          <option value="accent:red" data-i18n="accent.red">赤红</option>
+        </optgroup>
+        <optgroup data-i18n-label="theme.groupBg" label="背景基调">
+          <option value="bg:default" data-i18n="bg.default">默认</option>
+          <option value="bg:ink" data-i18n="bg.ink">墨色</option>
+          <option value="bg:warm" data-i18n="bg.warm">暖调</option>
+          <option value="bg:cool" data-i18n="bg.cool">冷调</option>
+          <option value="bg:amoled" data-i18n="bg.amoled">纯黑</option>
+          <option value="bg:glass" data-i18n="bg.glass">玻璃</option>
+          <option value="bg:aurora" data-i18n="bg.aurora">渐变</option>
+          <option value="bg:paper" data-i18n="bg.paper">纸感</option>
+          <option value="bg:mist" data-i18n="bg.mist">海雾</option>
+          <option value="bg:forest" data-i18n="bg.forest">深林</option>
+          <option value="bg:clay" data-i18n="bg.clay">陶石</option>
+        </optgroup>
+        <optgroup data-i18n-label="theme.groupTexture" label="材质纹理">
+          <option value="texture:none" data-i18n="texture.none">无</option>
+          <option value="texture:grain" data-i18n="texture.grain">颗粒</option>
+          <option value="texture:paper" data-i18n="texture.paper">纸纤维</option>
+          <option value="texture:linen" data-i18n="texture.linen">亚麻</option>
+          <option value="texture:frost" data-i18n="texture.frost">磨砂</option>
+          <option value="texture:grid" data-i18n="texture.grid">十字网</option>
+          <option value="texture:dots" data-i18n="texture.dots">点阵</option>
+          <option value="texture:stripe" data-i18n="texture.stripe">竖条纹</option>
+          <option value="texture:wood" data-i18n="texture.wood">木纹</option>
+        </optgroup>
+        <optgroup data-i18n-label="theme.groupOpacity" label="面板透明度">
+          <option value="opacity:opaque" data-i18n="opacity.opaque">不透明</option>
+          <option value="opacity:slight" data-i18n="opacity.slight">轻微</option>
+          <option value="opacity:medium" data-i18n="opacity.medium">中等</option>
+          <option value="opacity:clear" data-i18n="opacity.clear">通透</option>
+        </optgroup>
       </select>
+      <!-- 可见触发按钮：文案由 JS 从上面 select 的选中项取（i18n 自动跟随，不在此写死主题名） -->
+      <button
+        type="button"
+        id="quickThemeStyleButton"
+        class="topbar-theme-select topbar-theme-trigger"
+        data-i18n-aria-label="topbar.themeAria"
+        data-i18n-title="topbar.themeTitle"
+        aria-label="快速切换界面风格"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+      >
+        <span class="topbar-theme-trigger-label" id="quickThemeStyleLabel"></span>
+        <span class="topbar-theme-trigger-caret" aria-hidden="true"></span>
+      </button>
     </div>
 
     <!-- 统一后台任务（顶栏下全宽，浏览/管理页均可见） -->
@@ -549,6 +697,36 @@
       <div class="mobile-backdrop" id="mobileBackdrop"></div>
 
       <nav class="app-rail nav-tabs" aria-label="主导航" data-i18n-aria-label="nav.primary">
+        <!-- rail 分三段，用两条 .rail-divider 分开：
+             ①「首页」= 一次页面跳转（与「设置」同族，不是视图，所以不带 .nav-tab）；
+             ② 视图 = 换内容看的四种维度；③ 工具与配置 = 重复 / 设置。
+             首页必须在最上：`.rail-settings` 的 `margin-top:auto` 会独吞 rail 的剩余空间，
+             所以「设置」永远贴底 —— 首页放在别处只会落进「工具」组或悬在半空的空白上。 -->
+        <button
+          type="button"
+          class="rail-item rail-home"
+          id="topbarHomeBtn"
+          data-tab="home"
+          title="首页"
+          data-i18n-title="nav.home"
+          aria-label="首页"
+          data-i18n-aria-label="nav.home"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M4 10.5 12 4l8 6.5V20H4z" />
+            <path d="M9.5 20v-5.5h5V20" />
+          </svg>
+          <span data-i18n="nav.home">首页</span>
+        </button>
+        <div class="rail-divider" aria-hidden="true"></div>
         <button
           type="button"
           class="rail-item nav-tab active"
@@ -644,7 +822,7 @@
           </svg>
           <span data-i18n="nav.people">人物</span>
         </button>
-        <!-- 分组线：上面 4 项是「换内容看的视图」，下面是「干活用的工具 / 配置」。
+        <!-- 第二条分组线：上面 4 项是「换内容看的视图」，下面是「干活用的工具 / 配置」。
              没有它，「重复」看起来就是第五个视图。 -->
         <div class="rail-divider" aria-hidden="true"></div>
         <button
@@ -670,6 +848,9 @@
           </svg>
           <span data-i18n="nav.duplicates">重复</span>
         </button>
+        <!-- 「首页」按钮已上移到 rail 最上（见文件顶部那条注释）。
+             它必须带 data-tab="home"：否则会落进 syncNavigationRail 的
+             `(item.dataset.tab || 'settings') === tab` 兜底，在设置页被一起点亮。 -->
         <button
           type="button"
           class="rail-item rail-settings"
@@ -679,6 +860,9 @@
           aria-label="设置"
           data-i18n-aria-label="nav.settings"
         >
+          <!-- 图标取自 lucide-static v0.544.0 的 `settings`（ISC）。
+               原先是一段手写的 16 边形「齿轮」：8 个齿的顶点半径 4.12~9.49 全不相等、
+               按中心对位的顶点差最大 3.14 —— 右边瘪进去，所以看着像歪的尖刺。 -->
           <svg
             viewBox="0 0 24 24"
             aria-hidden="true"
@@ -688,8 +872,10 @@
             stroke-linecap="round"
             stroke-linejoin="round"
           >
+            <path
+              d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"
+            />
             <circle cx="12" cy="12" r="3" />
-            <path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 1 3h4l1-3 3-1 2-3-2-2 1-3-3-2-1-3Z" />
           </svg>
           <span data-i18n="nav.settings">设置</span>
         </button>
@@ -806,23 +992,6 @@
           </div>
           <div class="ai-people-list" id="peopleList"></div>
         </div>
-        <div class="folder-nav-bar" id="folderNavBar" style="display: none">
-          <button type="button" class="folder-nav-up" id="folderNavUp" title="返回上级">
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-            <span id="folderNavLabel">返回上级</span>
-          </button>
-        </div>
         <div class="sidebar-content" id="sidebarContent">
           <!-- 动态内容 -->
         </div>
@@ -839,16 +1008,106 @@
         class="sidebar-resizer"
         id="sidebarResizer"
         role="separator"
+        tabindex="0"
         aria-orientation="vertical"
         data-i18n-aria-label="sidebar.resizerAria"
-        aria-label="拖动调整侧栏宽度"
+        aria-label="拖动调整侧栏宽度（双击复位）"
       ></div>
 
       <!-- 内容区 -->
       <div class="content-area" id="contentArea">
         <!-- 工具栏 -->
         <div class="toolbar" id="toolbar" style="display: none">
-          <div class="current-path" id="currentPath" data-i18n="path.allPhotos">所有照片</div>
+          <!--
+            路径栏：访问历史（后退 / 前进）+ 上级 + 面包屑。原先只有侧栏里一条
+            「返回上级」按钮（#folderNavBar，已移除）—— 返回按钮与路径名分居侧栏/内容区
+            两处，视线要横跨整个窗口；且路径名只渲染一个末级目录名，中间层既不可见也不可点。
+            现在合成一条：左端 ← → 走访问历史，↑ 回上级（**必须与 ← 不同形状**，否则两个
+            左箭头分不清），中间每段可点跳该层，末段点开列同级目录。
+            历史栈与快捷键在 nav-history.js（Alt+←/→、mac 上 Cmd+[ / ]、鼠标侧键 X1/X2）。
+          -->
+          <div class="path-bar" id="pathBar">
+            <button
+              type="button"
+              class="path-nav"
+              id="pathBack"
+              title="后退"
+              data-i18n-title="path.back"
+              data-i18n-aria-label="path.back"
+              aria-label="后退"
+              disabled
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="path-nav"
+              id="pathForward"
+              title="前进"
+              data-i18n-title="path.forward"
+              data-i18n-aria-label="path.forward"
+              aria-label="前进"
+              disabled
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="path-up"
+              id="pathUp"
+              title="返回上级"
+              data-i18n-title="path.up"
+              data-i18n-aria-label="path.up"
+              aria-label="返回上级"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="6 15 12 9 18 15" />
+                <line x1="12" y1="19" x2="12" y2="9" />
+              </svg>
+            </button>
+            <!-- 内容由 app.js 的 updateBrowsePathLabel() 渲染；这里不能留 data-i18n，
+                 否则静态 i18n 初始化会写 textContent、把面包屑冲掉 -->
+            <nav
+              class="current-path"
+              id="currentPath"
+              data-i18n-aria-label="path.crumbAria"
+              aria-label="当前路径"
+            ></nav>
+          </div>
           <select
             class="sort-select"
             id="mediaFilterSelect"
@@ -873,55 +1132,12 @@
 
         <!-- 照片网格 -->
         <div class="photo-grid" id="photoGrid">
-          <div class="empty-state" id="emptyState">
-            <div class="welcome-mark" aria-hidden="true">
-              <svg><use href="#icon-image" /></svg>
-            </div>
-            <div class="title" data-i18n="welcome.title">欢迎使用拂晓图库</div>
-            <div class="desc">
-              <span data-i18n="welcome.line1">暂无文件夹，请点击「管理设置」添加</span><br />
-              <span data-i18n="welcome.line2">支持 JPEG、PNG、GIF、WebP 等格式</span>
-            </div>
-            <div class="welcome-features">
-              <div class="feature-card">
-                <div class="feature-icon" aria-hidden="true">
-                  <svg><use href="#icon-folder" /></svg>
-                </div>
-                <div class="feature-title" data-i18n="welcome.f1t">文件夹浏览</div>
-                <div class="feature-desc" data-i18n="welcome.f1d">按文件夹结构浏览照片</div>
-              </div>
-              <div class="feature-card">
-                <div class="feature-icon" aria-hidden="true">
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.7"
-                    stroke-linecap="round"
-                  >
-                    <rect x="3" y="5" width="18" height="16" rx="3" />
-                    <path d="M7 3v4m10-4v4M3 11h18m-14 4h3m4 0h3" />
-                  </svg>
-                </div>
-                <div class="feature-title" data-i18n="welcome.f2t">日期排序</div>
-                <div class="feature-desc" data-i18n="welcome.f2d">按拍摄日期分组浏览</div>
-              </div>
-              <div class="feature-card">
-                <div class="feature-icon" aria-hidden="true">
-                  <svg><use href="#icon-similar" /></svg>
-                </div>
-                <div class="feature-title" data-i18n="welcome.f3t">百万级支持</div>
-                <div class="feature-desc" data-i18n="welcome.f3d">SQLite 数据库高效索引</div>
-              </div>
-              <div class="feature-card">
-                <div class="feature-icon" aria-hidden="true">
-                  <svg><use href="#icon-search" /></svg>
-                </div>
-                <div class="feature-title" data-i18n="welcome.f4t">AI 搜图</div>
-                <div class="feature-desc" data-i18n="welcome.f4d">左栏「搜图」用中文描述画面</div>
-              </div>
-            </div>
-          </div>
+          <!-- 🔴 这里原有静态欢迎页 `#emptyState`（.welcome-mark + 4 张 .feature-card），
+               已整体移除：它是「启动欢迎页专用」的节点，而启动欢迎页现在换成了独立的
+               首页（`#homePage`，.main-layout 下、content-area 之外）。它此前能活下来
+               全靠 `state.suppressAutoLoadOnce` 跳过首次 loadPhotos，那个一次性标志已
+               整条删除 ⇒ 这个节点再也不可能被看见。
+               「零结果」态另有实现（ui-grid.js 按 data 动态写入 .empty-state），与本节点无关。 -->
         </div>
 
         <!-- 底栏：分页与网格档位同一行（中间分页、右侧 S/M/L/XL） -->
@@ -942,62 +1158,308 @@
               title="随机跳转页码"
               aria-label="随机页码"
             >
+              <!-- 图标是「这是按钮」最强的信号，也是它区隔于右边三个下拉的地方。
+                   ⚠️ 图标必须是 `data-i18n` span 的**兄弟**：i18n 走的 textContent，
+                   套在外面会被切语言时整块替换掉。 -->
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-shuffle" /></svg>
               <span data-i18n="footer.random">随机</span>
             </button>
-            <!-- 每页数量：与卡片尺寸档位同一副药丸外形（.zoom-control），−/+ 逐档走 BROWSE_PAGE_SIZE_TIERS。
-                 与卡片尺寸一样只在浏览页出现，进智能视图 / 重复页时收掉。 -->
-            <div
-              class="zoom-control zoom-control--page"
-              id="pageSizeControl"
-              style="display: none"
-              role="toolbar"
-              data-i18n-title="footer.pageSizeTitle"
-              data-i18n-aria-label="footer.pageSizeAria"
-              title="每页显示张数"
-              aria-label="每页显示张数"
+            <!-- 网格与比例 / 每页数量 / 卡片尺寸：三个都是「小标签 + 下拉」，与设置页
+                 （`#settingBrowseGridStyle` / `#settingBrowsePageSize` / `#settingBrowseCardSize`）
+                 同一取值域、同一套皮肤。此前每页数量与卡片尺寸是两个 −/+ 药丸，读数只有
+                 「100」「L」这类字符，不点开不知道是什么；改成带标签的下拉后三件同形。
+                 包一层 field 是**为了可见性**：这三个控件同生同死（浏览页显示、集合页收起），
+                 要连标签一起收，所以可见性挂在 field 上，而不是挂在 select 上。
+                 网格与比例的 6 个 `<option value>` 与设置页那份逐位相同（由控制回归钉住），
+                 文案复用 settings.browse.grid.opt.* —— 两处不各写一份。 -->
+            <div class="browse-footer-field" id="browseGridStyleControl" style="display: none">
+              <label
+                class="browse-footer-label"
+                for="browseGridStyleSelect"
+                data-i18n="footer.gridStyleLabel"
+                >网格</label
+              >
+              <select
+                id="browseGridStyleSelect"
+                class="sort-select browse-footer-select"
+                data-i18n-title="footer.gridStyleTitle"
+                data-i18n-aria-label="footer.gridStyleAria"
+                title="网格布局与卡片比例（在「管理设置 → 浏览设置」里也能改）"
+                aria-label="网格布局与卡片比例"
+              >
+                <option value="masonry" data-i18n="settings.browse.grid.opt.masonry">
+                  原比例瀑布流
+                </option>
+                <option value="uniform|1 / 1" data-i18n="settings.browse.grid.opt.u11">
+                  统一高度 · 1:1
+                </option>
+                <option value="uniform|3 / 4" data-i18n="settings.browse.grid.opt.u34">
+                  统一高度 · 3:4
+                </option>
+                <option value="uniform|4 / 3" data-i18n="settings.browse.grid.opt.u43">
+                  统一高度 · 4:3
+                </option>
+                <option value="uniform|9 / 16" data-i18n="settings.browse.grid.opt.u916">
+                  统一高度 · 9:16
+                </option>
+                <option value="uniform|16 / 9" data-i18n="settings.browse.grid.opt.u169">
+                  统一高度 · 16:9
+                </option>
+              </select>
+            </div>
+            <!-- 每页数量的档位与设置页 `#settingBrowsePageSize` 同源（都是 `BROWSE_PAGE_SIZE_TIERS`），
+                 选项是纯数字、两处都不翻译，所以照抄一遍即可（由控制回归逐位比对）。 -->
+            <div class="browse-footer-field" id="pageSizeControl" style="display: none">
+              <label
+                class="browse-footer-label"
+                for="browsePageSizeSelect"
+                data-i18n="footer.pageSizeLabel"
+                >每页</label
+              >
+              <select
+                id="browsePageSizeSelect"
+                class="sort-select browse-footer-select browse-footer-select--num"
+                data-i18n-title="footer.pageSizeTitle"
+                data-i18n-aria-label="footer.pageSizeAria"
+                title="每页显示张数（在「管理设置 → 浏览设置」里也能改）"
+                aria-label="每页显示张数"
+              >
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="80">80</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+              </select>
+            </div>
+            <!-- 卡片尺寸的档位与设置页 `#settingBrowseCardSize` 同源（`CARD_SIZE_TIERS` 的 S/M/L/XL），
+                 标签用「尺寸」而不是「网格卡片」：底栏这一排已经够长，同一屏里「网格」是左边那个下拉。 -->
+            <div class="browse-footer-field" id="zoomControl" style="display: none">
+              <label
+                class="browse-footer-label"
+                for="browseCardSizeSelect"
+                data-i18n="footer.cardSizeLabel"
+                >尺寸</label
+              >
+              <select
+                id="browseCardSizeSelect"
+                class="sort-select browse-footer-select browse-footer-select--num"
+                data-i18n-title="footer.cardSizeTitle"
+                data-i18n-aria-label="footer.cardSizeAria"
+                title="缩略图格子大小（在「管理设置 → 浏览设置」里也能改）"
+                aria-label="缩略图格子大小"
+              >
+                <option value="100">S</option>
+                <option value="140">M</option>
+                <option value="180" selected>L</option>
+                <option value="320">XL</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!--
+        首页（Home）—— 独立页面，与 #settingsPage 同族，住在 .main-layout 下、content-area 之外。
+        它是纯导航页：全页只做跳转，不弹对话框、不扫描、不建索引、不发 IPC、不读数据库。
+
+        🔴 显隐不写 JS：.home-page 默认 display:none，`html.home-page-open` 时 display:block；
+        同一个 class 还负责把 #contentArea 与 #sidebar 让位（见 styles.css 的「首页（Home）」段）。
+        而 `home-page-open` 只由 app.js 的 syncPageOpenClasses() 从 state.currentTab 派生 ——
+        这是全工程唯一的写者，所以任何切页路径（rail 点击 / 视图入口 / 设置页返回 / 启动落地）
+        都会自动收起 Home，不需要在每条退出路径上补一次「隐藏首页」。
+
+        🔴 每个可点节点都带 data-home-goto（唯一落地目标），且一律是原生 <button>：
+        键鼠天然双可达，click 与 Enter/Space 走同一条委托分支（见 app.js 的 handleHomeGoto）。
+        卡片本体刻意不可点 —— 它是介绍容器，样式里没有 cursor:pointer、也没有 hover 抬升。
+
+        装饰（.home-brand 与样式段里的 ①–⑧）一律是 aria-hidden / 伪元素，**不引入新的
+        可点节点、不引入新的 data-home-goto**：可点节点数恒为 10，这是守护 §5 的硬口径。
+      -->
+      <div class="home-page" id="homePage">
+        <div class="home-head">
+          <!-- 装饰：品牌徽标。aria-hidden + 无文案 ⇒ 不占 i18n 词条（守护 §9 对 home.*
+               做「无孤儿」比对，凭空加一条就得两种语言各补一份）。颜色由 CSS 给。 -->
+          <span class="home-brand" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
             >
-              <button
-                type="button"
-                id="pageSizeDecBtn"
-                data-i18n-aria-label="footer.pageSizeDec"
-                aria-label="每页少一些"
-              >
-                −
+              <path d="M4 17.6h16" />
+              <path d="M7.6 17.6a4.4 4.4 0 0 1 8.8 0" />
+              <path d="M12 5.4v2.2" />
+              <path d="M5.3 8.3l1.6 1.6" />
+              <path d="M18.7 8.3l-1.6 1.6" />
+            </svg>
+          </span>
+          <div class="home-title" data-i18n="brand">拂晓图库</div>
+          <div class="home-sub" data-i18n="home.subtitle">
+            照片都放在自己电脑里：原图不动、不上传，打开就能看。
+          </div>
+        </div>
+
+        <div class="home-cta">
+          <button
+            type="button"
+            class="btn btn-primary home-cta-btn"
+            data-home-goto="panel:settingsSectionFolders"
+            data-i18n="home.addFolder"
+          >
+            ＋ 添加目录
+          </button>
+          <span class="home-cta-hint" data-i18n="home.addFolderHint">
+            会打开设置页，在那儿添加和管理目录
+          </span>
+        </div>
+
+        <div class="home-section-head">
+          <span class="home-section-title" data-i18n="home.whatCanDo">能做什么</span>
+          <i aria-hidden="true"></i>
+          <span class="home-section-note" data-i18n="home.sectionNote">
+            卡片是介绍，点里面的按钮直接去
+          </span>
+        </div>
+
+        <div class="home-feature-row" id="homeFeatureRow">
+          <div class="home-feature">
+            <div class="home-feature-head">
+              <span class="home-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M3 6h5l2 3h11v10H3z" />
+                </svg>
+              </span>
+              <div class="home-feature-body">
+                <div class="home-feature-title" data-i18n="home.grp.browse.title">
+                  照片再多也找得到
+                </div>
+                <div class="home-feature-desc" data-i18n="home.grp.browse.desc">
+                  按文件夹翻、按日期翻，几万张也一目了然。
+                </div>
+              </div>
+            </div>
+            <div class="home-feature-links">
+              <button type="button" class="home-chip" data-home-goto="view:all">
+                <span data-i18n="sidebar.allPhotos">所有照片</span>
               </button>
-              <span class="zoom-label" id="pageSizeLabel">100</span>
-              <button
-                type="button"
-                id="pageSizeIncBtn"
-                data-i18n-aria-label="footer.pageSizeInc"
-                aria-label="每页多一些"
-              >
-                +
+              <button type="button" class="home-chip" data-home-goto="view:folder_overview">
+                <span data-i18n="sidebar.allFolders">所有目录</span>
+              </button>
+              <button type="button" class="home-chip" data-home-goto="tab:dates">
+                <span data-i18n="nav.dates">日期</span>
               </button>
             </div>
-            <div
-              class="zoom-control"
-              id="zoomControl"
-              style="display: none"
-              role="toolbar"
-              data-i18n-aria-label="footer.zoomAria"
-              aria-label="缩略图格子大小"
-            >
-              <button
-                type="button"
-                id="cardSizeDecBtn"
-                data-i18n-aria-label="footer.zoomDec"
-                aria-label="缩小一档"
-              >
-                −
+          </div>
+
+          <div class="home-feature">
+            <div class="home-feature-head">
+              <span class="home-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="11" cy="11" r="6" />
+                  <path d="M20 20l-4.5-4.5" />
+                </svg>
+              </span>
+              <div class="home-feature-body">
+                <div class="home-feature-title" data-i18n="home.grp.search.title">
+                  一句话找到那张照片
+                </div>
+                <div class="home-feature-desc" data-i18n="home.grp.search.desc">
+                  说一句「海边的日落」就能找到；照片里的人会自动归类。
+                </div>
+              </div>
+            </div>
+            <div class="home-feature-links">
+              <button type="button" class="home-chip" data-home-goto="tab:search">
+                <span data-i18n="nav.search">搜图</span>
               </button>
-              <span class="zoom-label" id="zoomLabel">L</span>
+              <button type="button" class="home-chip" data-home-goto="tab:people">
+                <span data-i18n="nav.people">人物</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="home-feature">
+            <div class="home-feature-head">
+              <span class="home-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                  <path d="M10 9l5 3.5-5 3.5z" />
+                </svg>
+              </span>
+              <div class="home-feature-body">
+                <div class="home-feature-title" data-i18n="home.grp.large.title">再多也不卡</div>
+                <div class="home-feature-desc" data-i18n="home.grp.large.desc">
+                  上百万张照片照样流畅，视频点开就看，字幕自动加载。
+                </div>
+              </div>
+            </div>
+            <div class="home-feature-links">
+              <button type="button" class="home-chip" data-home-goto="view:all:video">
+                <span data-i18n="home.chip.videos">只看视频</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="home-feature">
+            <div class="home-feature-head">
+              <span class="home-feature-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="8.5" />
+                  <path d="M3.5 12h17M12 3.5c2.4 2.4 2.4 14.6 0 17-2.4-2.4-2.4-14.6 0-17z" />
+                </svg>
+              </span>
+              <div class="home-feature-body">
+                <div class="home-feature-title" data-i18n="home.grp.personal.title">
+                  换个样子，多台设备看
+                </div>
+                <div class="home-feature-desc" data-i18n="home.grp.personal.desc">
+                  主题配色、快捷键都能改成顺手的；手机扫个码，家人一起看。
+                </div>
+              </div>
+            </div>
+            <div class="home-feature-links">
+              <button type="button" class="home-chip" data-home-goto="panel:settingsSectionNetwork">
+                <span data-i18n="settings.nav.network">网络与远程</span>
+              </button>
               <button
                 type="button"
-                id="cardSizeIncBtn"
-                data-i18n-aria-label="footer.zoomInc"
-                aria-label="放大一档"
+                class="home-chip"
+                data-home-goto="panel:settingsSectionAppearance"
               >
-                +
+                <span data-i18n="settings.nav.appearance">外观与行为</span>
+              </button>
+              <button type="button" class="home-chip" data-home-goto="panel:settingsSectionShortcuts">
+                <span data-i18n="settings.nav.shortcuts">快捷键</span>
               </button>
             </div>
           </div>
@@ -1017,29 +1479,13 @@
           data-settings-panel
         >
           <div class="settings-header">
-            <div>
-              <div class="settings-title" data-i18n="settings.foldersTitle">相册目录管理</div>
-              <div class="settings-desc" data-i18n-html="settings.foldersDescHtml"></div>
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.folders">
+                媒体库
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.foldersDesc"></div>
             </div>
             <div class="settings-header-actions">
-              <div class="settings-import-export-row">
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  id="settingsExportFoldersBtn"
-                  data-i18n="settings.exportJson"
-                >
-                  导出目录 JSON
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  id="settingsImportFoldersBtn"
-                  data-i18n="settings.importJson"
-                >
-                  导入目录 JSON
-                </button>
-              </div>
               <button class="btn btn-primary" id="settingsAddBtn" data-i18n="settings.addRoot">
                 添加目录
               </button>
@@ -1047,306 +1493,428 @@
           </div>
           <div class="folder-list" id="settingsFolderList">
             <div class="settings-folder-placeholder" data-i18n="settings.folderPlaceholder">
-              目录列表区域（加载中...）
+              正在读取目录列表…
             </div>
           </div>
         </div>
 
-        <!-- 2 浏览与播放 -->
+        <!-- 2 浏览与显示 -->
         <div class="settings-section settings-panel" id="settingsSectionBrowse" data-settings-panel>
-          <div class="settings-section-title" data-i18n="settings.section.browse">浏览与播放</div>
-          <div class="setting-item settings-browse-item">
-            <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.browse.defaultMode">默认浏览方式</div>
-              <div class="setting-desc" data-i18n="settings.browse.defaultModeDesc">
-                以下选项在更改后会自动保存并刷新当前相册视图（若在管理页中）。
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.browse">
+                浏览与显示
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.browseDesc">
+                决定照片以什么顺序、多大、按什么比例铺在相册里。改完立即生效。
               </div>
             </div>
-            <div class="settings-browse-stack">
-              <section
-                class="settings-browse-group"
-                aria-labelledby="settingsBrowseGroupSortHeading"
-              >
-                <h3
-                  class="settings-browse-group-title"
-                  id="settingsBrowseGroupSortHeading"
-                  data-i18n="settings.browse.groupSort"
+          </div>
+
+          <section
+            class="settings-browse-group stg-card"
+            aria-labelledby="settingsBrowseGroupSortHeading"
+          >
+            <h3
+              class="settings-browse-group-title"
+              id="settingsBrowseGroupSortHeading"
+              data-i18n="settings.browse.groupSort"
+            >
+              排序与目录范围
+            </h3>
+            <div class="settings-browse-group-body">
+              <div class="settings-browse-field">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowseSort"
+                  data-i18n="settings.browse.defaultSort"
+                  >默认排序</label
                 >
-                  排序与目录范围
-                </h3>
-                <div class="settings-browse-group-body">
-                  <div class="settings-browse-field">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowseSort"
-                      data-i18n="settings.browse.defaultSort"
-                      >默认排序</label
-                    >
-                    <select id="settingBrowseSort" class="sort-select settings-browse-select-grow">
-                      <option value="date_taken|DESC" data-i18n="sort.dateTakenDesc">
-                        最新拍摄
-                      </option>
-                      <option value="date_taken|ASC" data-i18n="sort.dateTakenAsc">最早拍摄</option>
-                      <option
-                        value="date_modified|DESC"
-                        data-i18n="settings.browse.sort.dateModifiedDesc"
-                      >
-                        最近修改
-                      </option>
-                      <option
-                        value="date_modified|ASC"
-                        data-i18n="settings.browse.sort.dateModifiedAsc"
-                      >
-                        最早修改
-                      </option>
-                      <option value="file_name|ASC" data-i18n="sort.fileNameAsc">文件名 A-Z</option>
-                      <option value="file_name|DESC" data-i18n="sort.fileNameDesc">
-                        文件名 Z-A
-                      </option>
-                      <option value="file_size|DESC" data-i18n="settings.browse.sort.largestFile">
-                        最大文件
-                      </option>
-                      <option value="file_size|ASC" data-i18n="settings.browse.sort.smallestFile">
-                        最小文件
-                      </option>
-                      <option value="folder_path|ASC" data-i18n="settings.browse.sort.pathAsc">
-                        路径 A-Z
-                      </option>
-                      <option value="folder_path|DESC" data-i18n="settings.browse.sort.pathDesc">
-                        路径 Z-A
-                      </option>
-                    </select>
-                  </div>
-                  <div class="settings-browse-field settings-browse-field--stack">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowseFolderIncludeSubfolders"
-                      data-i18n="settings.browse.folderScope"
-                      >目录浏览范围</label
-                    >
-                    <select
-                      id="settingBrowseFolderIncludeSubfolders"
-                      class="sort-select settings-browse-select-wide"
-                      data-i18n-aria-label="settings.browse.folderScope"
-                      aria-label="目录浏览范围"
-                    >
-                      <option value="1" selected data-i18n="settings.browse.includeSubfolders">
-                        包含子文件夹
-                      </option>
-                      <option value="0" data-i18n="settings.browse.currentFolderOnly">
-                        仅当前文件夹
-                      </option>
-                    </select>
-                    <p
-                      class="settings-browse-hint"
-                      data-i18n-html="settings.browse.folderScopeHintHtml"
-                    ></p>
-                  </div>
-                </div>
-              </section>
-              <section
-                class="settings-browse-group settings-browse-group--page-grid"
-                aria-labelledby="settingsBrowseGroupPageHeading"
-              >
-                <h3
-                  class="settings-browse-group-title"
-                  id="settingsBrowseGroupPageHeading"
-                  data-i18n="settings.browse.groupPageGrid"
+                <select id="settingBrowseSort" class="sort-select settings-browse-select-grow">
+                  <option value="date_taken|DESC" data-i18n="sort.dateTakenDesc">最新拍摄</option>
+                  <option value="date_taken|ASC" data-i18n="sort.dateTakenAsc">最早拍摄</option>
+                  <option
+                    value="date_modified|DESC"
+                    data-i18n="settings.browse.sort.dateModifiedDesc"
+                  >
+                    最近修改
+                  </option>
+                  <option
+                    value="date_modified|ASC"
+                    data-i18n="settings.browse.sort.dateModifiedAsc"
+                  >
+                    最早修改
+                  </option>
+                  <option value="file_name|ASC" data-i18n="sort.fileNameAsc">文件名 A-Z</option>
+                  <option value="file_name|DESC" data-i18n="sort.fileNameDesc">文件名 Z-A</option>
+                  <option value="file_size|DESC" data-i18n="settings.browse.sort.largestFile">
+                    最大文件
+                  </option>
+                  <option value="file_size|ASC" data-i18n="settings.browse.sort.smallestFile">
+                    最小文件
+                  </option>
+                  <option value="folder_path|ASC" data-i18n="settings.browse.sort.pathAsc">
+                    路径 A-Z
+                  </option>
+                  <option value="folder_path|DESC" data-i18n="settings.browse.sort.pathDesc">
+                    路径 Z-A
+                  </option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--stack">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowseFolderIncludeSubfolders"
+                  data-i18n="settings.browse.folderScope"
+                  >目录浏览范围</label
                 >
-                  分页与网格
-                </h3>
-                <div class="settings-browse-group-body settings-browse-group-body--4col">
-                  <div class="settings-browse-field settings-browse-field--tight">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowsePageSize"
-                      data-i18n="settings.browse.pageSize"
-                      >每页显示</label
-                    >
-                    <select
-                      id="settingBrowsePageSize"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.browse.pageSizeAria"
-                      aria-label="每页显示"
-                    >
-                      <option value="10">10</option>
-                      <option value="20">20</option>
-                      <option value="50">50</option>
-                      <option value="80">80</option>
-                      <option value="100">100</option>
-                      <option value="200">200</option>
-                    </select>
-                  </div>
-                  <div class="settings-browse-field settings-browse-field--tight">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowseGridStyle"
-                      data-i18n="settings.browse.gridStyle"
-                      >网格与比例</label
-                    >
-                    <select
-                      id="settingBrowseGridStyle"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.browse.gridStyleAria"
-                      aria-label="网格布局与卡片比例"
-                    >
-                      <option value="masonry" data-i18n="settings.browse.grid.opt.masonry">
-                        原比例瀑布流
-                      </option>
-                      <option value="uniform|1 / 1" data-i18n="settings.browse.grid.opt.u11">
-                        统一高度 · 1:1
-                      </option>
-                      <option value="uniform|3 / 4" data-i18n="settings.browse.grid.opt.u34">
-                        统一高度 · 3:4
-                      </option>
-                      <option value="uniform|4 / 3" data-i18n="settings.browse.grid.opt.u43">
-                        统一高度 · 4:3
-                      </option>
-                      <option value="uniform|9 / 16" data-i18n="settings.browse.grid.opt.u916">
-                        统一高度 · 9:16
-                      </option>
-                      <option value="uniform|16 / 9" data-i18n="settings.browse.grid.opt.u169">
-                        统一高度 · 16:9
-                      </option>
-                    </select>
-                  </div>
-                  <div class="settings-browse-field settings-browse-field--tight">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowseCardSize"
-                      data-i18n="settings.browse.cardTier"
-                      >网格卡片</label
-                    >
-                    <select
-                      id="settingBrowseCardSize"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.browse.cardTierAria"
-                      aria-label="网格卡片大小"
-                    >
-                      <option value="100">S</option>
-                      <option value="140">M</option>
-                      <option value="180" selected>L</option>
-                      <option value="320">XL</option>
-                    </select>
-                  </div>
-                  <div class="settings-browse-field settings-browse-field--tight">
-                    <label
-                      class="setting-inline-label"
-                      for="settingBrowseThumbCrop"
-                      data-i18n="settings.browse.thumbCrop"
-                      >缩微图裁剪</label
-                    >
-                    <select
-                      id="settingBrowseThumbCrop"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.browse.thumbCropAria"
-                      aria-label="缩微图裁剪"
-                    >
-                      <option value="0" data-i18n="settings.browse.thumbCropOff">不裁剪</option>
-                      <option value="1" data-i18n="settings.browse.thumbCropOn">裁剪</option>
-                    </select>
-                  </div>
-                </div>
-              </section>
-              <section
-                class="settings-browse-group"
-                aria-labelledby="settingsBrowseGroupVideoHeading"
-              >
-                <h3
-                  class="settings-browse-group-title"
-                  id="settingsBrowseGroupVideoHeading"
+                <select
+                  id="settingBrowseFolderIncludeSubfolders"
+                  class="sort-select settings-browse-select-wide"
+                  data-i18n-aria-label="settings.browse.folderScope"
+                  aria-label="目录浏览范围"
+                >
+                  <option value="1" selected data-i18n="settings.browse.includeSubfolders">
+                    包含子文件夹
+                  </option>
+                  <option value="0" data-i18n="settings.browse.currentFolderOnly">
+                    仅当前文件夹
+                  </option>
+                </select>
+                <p
+                  class="settings-browse-hint"
+                  data-i18n-html="settings.browse.folderScopeHintHtml"
+                ></p>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-browse-group settings-browse-group--page-grid stg-card"
+            aria-labelledby="settingsBrowseGroupPageHeading"
+          >
+            <h3
+              class="settings-browse-group-title"
+              id="settingsBrowseGroupPageHeading"
+              data-i18n="settings.browse.groupPageGrid"
+            >
+              分页与网格
+            </h3>
+            <div class="settings-browse-group-body settings-browse-group-body--4col">
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowsePageSize"
+                  data-i18n="settings.browse.pageSize"
+                  >每页显示</label
+                >
+                <select
+                  id="settingBrowsePageSize"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.browse.pageSizeAria"
+                  aria-label="每页显示"
+                >
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="80">80</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowseGridStyle"
+                  data-i18n="settings.browse.gridStyle"
+                  >网格与比例</label
+                >
+                <select
+                  id="settingBrowseGridStyle"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.browse.gridStyleAria"
+                  aria-label="网格布局与卡片比例"
+                >
+                  <option value="masonry" data-i18n="settings.browse.grid.opt.masonry">
+                    原比例瀑布流
+                  </option>
+                  <option value="uniform|1 / 1" data-i18n="settings.browse.grid.opt.u11">
+                    统一高度 · 1:1
+                  </option>
+                  <option value="uniform|3 / 4" data-i18n="settings.browse.grid.opt.u34">
+                    统一高度 · 3:4
+                  </option>
+                  <option value="uniform|4 / 3" data-i18n="settings.browse.grid.opt.u43">
+                    统一高度 · 4:3
+                  </option>
+                  <option value="uniform|9 / 16" data-i18n="settings.browse.grid.opt.u916">
+                    统一高度 · 9:16
+                  </option>
+                  <option value="uniform|16 / 9" data-i18n="settings.browse.grid.opt.u169">
+                    统一高度 · 16:9
+                  </option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowseCardSize"
+                  data-i18n="settings.browse.cardTier"
+                  >网格卡片</label
+                >
+                <select
+                  id="settingBrowseCardSize"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.browse.cardTierAria"
+                  aria-label="网格卡片大小"
+                >
+                  <option value="100">S</option>
+                  <option value="140">M</option>
+                  <option value="180" selected>L</option>
+                  <option value="320">XL</option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingBrowseThumbCrop"
+                  data-i18n="settings.browse.thumbCrop"
+                  >缩微图裁剪</label
+                >
+                <select
+                  id="settingBrowseThumbCrop"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.browse.thumbCropAria"
+                  aria-label="缩微图裁剪"
+                >
+                  <option value="0" data-i18n="settings.browse.thumbCropOff">不裁剪</option>
+                  <option value="1" data-i18n="settings.browse.thumbCropOn">裁剪</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-browse-group stg-card"
+            aria-labelledby="settingsBrowseGroupVideoHeading"
+          >
+            <h3
+              class="settings-browse-group-title"
+              id="settingsBrowseGroupVideoHeading"
+              data-i18n="settings.browse.groupVideo"
+            >
+              视频
+            </h3>
+            <div class="settings-browse-group-body">
+              <div class="settings-browse-field">
+                <label
+                  class="setting-inline-label"
+                  for="settingVideoClickBehavior"
                   data-i18n="settings.videoClickBehavior"
+                  >点击视频时</label
                 >
-                  点击视频
-                </h3>
-                <div class="settings-browse-group-body">
-                  <div class="settings-browse-field">
-                    <label
-                      class="setting-inline-label"
-                      for="settingVideoClickBehavior"
-                      data-i18n="settings.videoClickBehavior"
-                      >点击视频</label
-                    >
-                    <select
-                      id="settingVideoClickBehavior"
-                      class="sort-select settings-browse-select-grow"
-                      data-i18n-aria-label="settings.videoClickBehavior"
-                      aria-label="点击视频"
-                    >
-                      <option value="system" data-i18n="settings.videoClickBehavior.system">
-                        系统播放器
-                      </option>
-                      <option value="embedded" data-i18n="settings.videoClickBehavior.embedded">
-                        内嵌预览
-                      </option>
-                    </select>
-                  </div>
-                  <p
-                    class="settings-browse-hint"
-                    data-i18n-html="settings.videoClickBehaviorDesc"
-                  ></p>
+                <select
+                  id="settingVideoClickBehavior"
+                  class="sort-select settings-browse-select-grow"
+                  data-i18n-aria-label="settings.videoClickBehavior"
+                  aria-label="点击视频时的行为"
+                >
+                  <option value="system" data-i18n="settings.videoClickBehavior.system">
+                    用系统播放器打开
+                  </option>
+                  <option value="embedded" data-i18n="settings.videoClickBehavior.embedded">
+                    在应用内播放
+                  </option>
+                </select>
+              </div>
+              <p class="settings-browse-hint" data-i18n-html="settings.videoClickBehaviorDesc"></p>
+            </div>
+          </section>
+
+          <section
+            class="settings-browse-group stg-card"
+            aria-labelledby="settingsBrowseGroupInfoPanelHeading"
+          >
+            <h3
+              class="settings-browse-group-title"
+              id="settingsBrowseGroupInfoPanelHeading"
+              data-i18n="settings.infoPanel.group"
+            >
+              照片信息面板
+            </h3>
+            <div class="settings-browse-group-body">
+              <p class="settings-browse-hint" data-i18n-html="settings.infoPanel.hintHtml"></p>
+              <!--
+                勾选框由注册表（src/web/js/photo-info-fields.js）动态渲染：
+                字段增删只改注册表一处，这里不维护第二份字段清单。
+              -->
+              <div class="settings-info-fields" id="settingsInfoFields"></div>
+              <div class="settings-info-fields-actions">
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="settingsInfoFieldsSelectAllBtn"
+                  data-i18n="settings.infoPanel.selectAll"
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="settingsInfoFieldsClearAllBtn"
+                  data-i18n="settings.infoPanel.clearAll"
+                >
+                  全不选
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  id="settingsInfoFieldsResetBtn"
+                  data-i18n="settings.infoPanel.reset"
+                >
+                  恢复默认
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-browse-group stg-card"
+            aria-labelledby="settingsBrowseGroupSubtitleHeading"
+          >
+            <h3
+              class="settings-browse-group-title"
+              id="settingsBrowseGroupSubtitleHeading"
+              data-i18n="settings.subtitleStyleSection"
+            >
+              视频字幕样式
+            </h3>
+            <div class="settings-browse-group-body">
+              <p class="settings-browse-hint" data-i18n="settings.subtitleStyleDesc"></p>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingSubtitleFontFamily"
+                  data-i18n="settings.subtitle.font"
+                  >字体</label
+                >
+                <select id="settingSubtitleFontFamily" class="sort-select">
+                  <option value="system" data-i18n="settings.subtitle.font.system">系统无衬线</option>
+                  <option value="serif" data-i18n="settings.subtitle.font.serif">衬线字体</option>
+                  <option value="mono" data-i18n="settings.subtitle.font.mono">等宽字体</option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingSubtitleFontSize"
+                  data-i18n="settings.subtitle.size"
+                  >字号</label
+                >
+                <div class="stg-inline">
+                  <input
+                    id="settingSubtitleFontSize"
+                    type="number"
+                    min="12"
+                    max="72"
+                    step="1"
+                    class="settings-number-input settings-number-input--sm"
+                    value="22"
+                    data-i18n-aria-label="settings.subtitle.sizeAria"
+                    aria-label="字幕字号"
+                  />
+                  <span class="setting-inline-label">px</span>
                 </div>
-              </section>
-            </div>
-          </div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
-            <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.subtitleStyleSection">
-                字幕字体样式
               </div>
-              <div class="setting-desc" data-i18n="settings.subtitleStyleDesc">
-                可调整预览视频字幕的字体、大小、粗细与颜色，修改后立即生效并保存。
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingSubtitleFontWeight"
+                  data-i18n="settings.subtitle.weight"
+                  >字重</label
+                >
+                <select id="settingSubtitleFontWeight" class="sort-select">
+                  <option value="normal" data-i18n="settings.subtitle.weight.normal">常规</option>
+                  <option value="medium" data-i18n="settings.subtitle.weight.medium">中等</option>
+                  <option value="bold" data-i18n="settings.subtitle.weight.bold">加粗</option>
+                </select>
+              </div>
+              <div class="settings-browse-field settings-browse-field--tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingSubtitleColor"
+                  data-i18n="settings.subtitle.color"
+                  >颜色</label
+                >
+                <select id="settingSubtitleColor" class="sort-select">
+                  <option value="white" data-i18n="settings.subtitle.color.white">白色（默认）</option>
+                  <option value="yellow" data-i18n="settings.subtitle.color.yellow">淡黄</option>
+                  <option value="cyan" data-i18n="settings.subtitle.color.cyan">浅青</option>
+                  <option value="green" data-i18n="settings.subtitle.color.green">浅绿</option>
+                  <option value="orange" data-i18n="settings.subtitle.color.orange">橙色</option>
+                  <option value="pink" data-i18n="settings.subtitle.color.pink">粉色</option>
+                </select>
               </div>
             </div>
-            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
-              <span class="setting-inline-label" data-i18n="settings.subtitle.font">字体</span>
-              <select id="settingSubtitleFontFamily" class="sort-select">
-                <option value="system" data-i18n="settings.subtitle.font.system">系统无衬线</option>
-                <option value="serif" data-i18n="settings.subtitle.font.serif">衬线字体</option>
-                <option value="mono" data-i18n="settings.subtitle.font.mono">等宽字体</option>
-              </select>
-              <span class="setting-inline-label" data-i18n="settings.subtitle.size">字号</span>
-              <input
-                id="settingSubtitleFontSize"
-                type="number"
-                min="12"
-                max="72"
-                step="1"
-                class="settings-number-input settings-number-input--sm"
-                value="22"
-                data-i18n-aria-label="settings.subtitle.sizeAria"
-                aria-label="字幕字号"
-              />
-              <span class="setting-inline-label">px</span>
-              <span class="setting-inline-label" data-i18n="settings.subtitle.weight">字重</span>
-              <select id="settingSubtitleFontWeight" class="sort-select">
-                <option value="normal" data-i18n="settings.subtitle.weight.normal">常规</option>
-                <option value="medium" data-i18n="settings.subtitle.weight.medium">中等</option>
-                <option value="bold" data-i18n="settings.subtitle.weight.bold">加粗</option>
-              </select>
-              <span class="setting-inline-label" data-i18n="settings.subtitle.color">颜色</span>
-              <select id="settingSubtitleColor" class="sort-select">
-                <option value="white" data-i18n="settings.subtitle.color.white">
-                  白色（默认）
-                </option>
-                <option value="yellow" data-i18n="settings.subtitle.color.yellow">淡黄</option>
-                <option value="cyan" data-i18n="settings.subtitle.color.cyan">浅青</option>
-                <option value="green" data-i18n="settings.subtitle.color.green">浅绿</option>
-                <option value="orange" data-i18n="settings.subtitle.color.orange">橙色</option>
-                <option value="pink" data-i18n="settings.subtitle.color.pink">粉色</option>
-              </select>
-            </div>
-          </div>
+          </section>
         </div>
 
-        <!-- 3 媒体与存储 -->
+        <!-- 3 快捷键 -->
+        <div
+          class="settings-section settings-panel"
+          id="settingsSectionShortcuts"
+          data-settings-panel
+        >
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.shortcuts">
+                快捷键
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.shortcutsDesc">
+                点一下右侧的键位框，然后直接按下你想用的组合键即可。改完立即生效，不需要重启。
+              </div>
+            </div>
+            <div class="settings-header-actions">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="settingsShortcutsResetAllBtn"
+                data-i18n="shortcut.resetAll"
+              >
+                全部恢复默认
+              </button>
+            </div>
+          </div>
+
+          <div
+            class="settings-browse-hint shortcut-conflict-summary"
+            id="settingsShortcutsConflictHint"
+            hidden
+          ></div>
+
+          <!-- 分组与动作由注册表（src/renderer/shortcuts.js）动态渲染：
+               动作增删只改注册表一处，这里不维护第二份键位清单。 -->
+          <div class="shortcut-groups" id="settingsShortcutsList"></div>
+        </div>
+
+        <!-- 4 媒体与存储 -->
         <div
           class="settings-section settings-panel"
           id="settingsSectionStorage"
           data-settings-panel
         >
-          <div class="settings-section-title" data-i18n="settings.section.storage">媒体与存储</div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.storage">
+                媒体与存储
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.storageDesc">
+                控制缩略图的清晰度与体积，以及视频播放时的临时文件占用。
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-item setting-item--stack">
             <div class="setting-info">
               <div class="setting-label" data-i18n="settings.thumbSizeQuality">
                 缩略图尺寸与质量
@@ -1356,7 +1924,7 @@
                 id="thumbSettingHint"
                 data-i18n="settings.thumbSizeQualityDesc"
               >
-                仅影响之后新生成的缩略图；已入库的缩略图不会自动变更。修改下拉后请点击「确认应用」写入配置。
+                尺寸越大越清晰、占用的磁盘也越多。只影响之后新生成的缩略图，已有的不会自动重做。
               </div>
               <div class="thumb-settings-current" id="thumbSettingsCurrentLine" aria-live="polite">
                 当前生效：读取中...
@@ -1370,15 +1938,22 @@
                 已修改选项，请点击「确认应用」后才会写入配置
               </div>
             </div>
-            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
-              <span class="setting-inline-label" data-i18n="settings.thumbMaxEdge">最大边</span>
+            <div class="stg-row-tight">
+              <label class="setting-inline-label" for="settingThumbSize" data-i18n="settings.thumbMaxEdge"
+                >最大边</label
+              >
               <select id="settingThumbSize" class="sort-select">
                 <option value="128" data-i18n="settings.thumb.edge128">128 px（省空间）</option>
                 <option value="192">192 px</option>
                 <option value="256" data-i18n="settings.thumb.edge256">256 px（默认）</option>
                 <option value="320" data-i18n="settings.thumb.edge320">320 px（更清晰）</option>
               </select>
-              <span class="setting-inline-label" data-i18n="settings.thumbJpegQ">JPEG 质量</span>
+              <label
+                class="setting-inline-label"
+                for="settingThumbQuality"
+                data-i18n="settings.thumbJpegQ"
+                >画质</label
+              >
               <select id="settingThumbQuality" class="sort-select">
                 <option value="55" data-i18n="settings.thumb.q55">55（更小文件）</option>
                 <option value="65">65</option>
@@ -1396,24 +1971,37 @@
               </button>
             </div>
           </div>
-          <div class="setting-item" style="flex-direction: column; align-items: stretch; gap: 10px">
+
+          <div class="setting-item setting-item--stack">
             <div class="setting-info">
-              <div class="setting-label" data-i18n="settings.hlsCache">HLS 缓存上限</div>
+              <div class="setting-label" data-i18n="settings.hlsCache">视频播放缓存上限</div>
               <div class="setting-desc" data-i18n="settings.hlsCacheDesc">
-                用于视频边转边播缓存清理。磁盘上限填 0 表示不限制字节，仅按目录数量 LRU 清理。
+                边转边播视频时会生成临时切片，超出上限后自动清理最早的那些。磁盘上限填 0 表示不限制大小，只按数量清理。
               </div>
             </div>
             <div class="hls-cache-input-row">
-              <span class="setting-inline-label" data-i18n="settings.hls.diskCap">磁盘上限</span>
-              <input
-                id="settingHlsMaxCacheGb"
-                type="number"
-                min="0"
-                step="0.5"
-                class="settings-number-input"
-              />
-              <span class="setting-inline-label">GB</span>
-              <span class="setting-inline-label" data-i18n="settings.hls.dirCap">目录上限</span>
+              <label
+                class="setting-inline-label"
+                for="settingHlsMaxCacheGb"
+                data-i18n="settings.hls.diskCap"
+                >磁盘上限</label
+              >
+              <div class="stg-inline">
+                <input
+                  id="settingHlsMaxCacheGb"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  class="settings-number-input"
+                />
+                <span class="setting-inline-label">GB</span>
+              </div>
+              <label
+                class="setting-inline-label"
+                for="settingHlsMaxCacheEntries"
+                data-i18n="settings.hls.dirCap"
+                >目录上限</label
+              >
               <input
                 id="settingHlsMaxCacheEntries"
                 type="number"
@@ -1431,40 +2019,38 @@
               </button>
             </div>
             <div class="setting-desc" id="hlsCacheSettingsHint" data-i18n="settings.hls.hint">
-              建议：1GB / 48 目录。保存后新会话会按新阈值清理缓存。
+              建议 1GB / 48 个目录。保存后从下一次播放开始生效。
             </div>
           </div>
         </div>
 
-        <!-- 4 后台任务 -->
+        <!-- 5 后台任务 -->
         <div class="settings-section settings-panel" id="settingsSectionTasks" data-settings-panel>
-          <div class="settings-section-title" data-i18n="settings.section.tasks">后台任务</div>
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.tasks">后台任务</div>
+              <div class="settings-section-desc" data-i18n="settings.section.tasksDesc">
+                这些任务都在后台慢慢跑，可以随时关掉窗口；同一时间只会进行其中一项。
+              </div>
+            </div>
+          </div>
+
           <div class="settings-task-group">
-            <div
-              class="setting-item settings-task-row"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div
-                style="
-                  display: flex;
-                  align-items: flex-start;
-                  justify-content: space-between;
-                  gap: 12px;
-                "
-              >
-                <div class="setting-info" style="flex: 1; min-width: 0">
+            <div class="setting-item settings-task-row setting-item--stack">
+              <div class="stg-row-split">
+                <div class="setting-info setting-info--grow">
                   <div class="setting-label" data-i18n="settings.task.thumbBackfill">
-                    缩略图补全
+                    补齐缩略图
                   </div>
                   <div
                     class="setting-desc"
                     id="thumbBackfillStatus"
                     data-i18n="settings.task.thumbBackfillDesc"
                   >
-                    为尚无缩略图的照片后台补齐预览图
+                    为还没有预览图的照片生成缩略图
                   </div>
                 </div>
-                <div class="settings-task-actions" style="flex-shrink: 0">
+                <div class="settings-task-actions stg-actions-tight">
                   <button
                     type="button"
                     class="btn btn-sm"
@@ -1489,15 +2075,18 @@
                     disabled
                     data-i18n="settings.task.thumbExportFailedPaths"
                     data-i18n-title="settings.task.thumbExportFailTitle"
-                    title="将当前或上一轮补全中失败文件的路径导出为 txt（每行一条）"
+                    title="将本轮补全中失败的文件路径导出为 txt（每行一条）"
                   >
                     导出失败路径
                   </button>
                 </div>
               </div>
-              <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
-                <span class="setting-inline-label" data-i18n="settings.task.thumbConcurrency"
-                  >同时处理</span
+              <div class="stg-row-tight">
+                <label
+                  class="setting-inline-label"
+                  for="settingThumbBackfillConcurrency"
+                  data-i18n="settings.task.thumbConcurrency"
+                  >同时处理</label
                 >
                 <select
                   id="settingThumbBackfillConcurrency"
@@ -1513,24 +2102,21 @@
                   <option value="6">6</option>
                   <option value="8">8</option>
                 </select>
-                <span
-                  class="setting-desc"
-                  style="margin: 0"
-                  data-i18n="settings.task.thumbConcurrencyHint"
-                  >越大越快，占用内存和磁盘读也更多</span
+                <span class="setting-desc setting-desc--inline" data-i18n="settings.task.thumbConcurrencyHint"
+                  >越大越快，同时占用的内存也更多</span
                 >
               </div>
             </div>
 
             <div class="setting-item settings-task-row">
               <div class="setting-info">
-                <div class="setting-label" data-i18n="settings.task.dupHash">重复照片比对</div>
+                <div class="setting-label" data-i18n="settings.task.dupHash">查找重复照片</div>
                 <div
                   class="setting-desc"
                   id="duplicateHashStatus"
                   data-i18n="settings.task.dupHashDesc"
                 >
-                  比对照片文件内容，找出完全相同的重复项。只处理「还没比对过、且文件仍在电脑上」的照片；若都已比对过，无需再点。
+                  逐张比对照片内容，找出完全相同的重复项。只处理还没比对过、并且文件仍在电脑上的照片。
                 </div>
               </div>
               <div class="settings-task-actions">
@@ -1557,27 +2143,24 @@
                   id="gotoSimilarBtn"
                   data-i18n="settings.task.gotoSimilar"
                   data-i18n-title="settings.task.gotoSimilarTitle"
-                  title="跳转到视觉相似模式，查看 dHash 匹配的分组"
+                  title="打开「视觉相似」分组，查看按画面相似度匹配的结果"
                 >
                   查看视觉相似
                 </button>
               </div>
             </div>
 
-            <div
-              class="setting-item settings-task-row"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
+            <div class="setting-item settings-task-row setting-item--stack">
               <div class="setting-info">
                 <div class="setting-label" data-i18n="settings.task.maintenance">
-                  数据库维护工具
+                  数据库维护
                 </div>
                 <div
                   class="setting-desc"
                   id="maintenanceStatus"
                   data-i18n="settings.task.maintenanceDesc"
                 >
-                  可清理失效记录、重建缩略图标记并优化数据库
+                  清理已失效的记录、重建缩略图标记、压缩数据库，或先备份一份再动手
                 </div>
               </div>
               <div class="settings-maintenance-actions settings-maintenance-row">
@@ -1587,7 +2170,7 @@
                   id="maintenanceCleanupBtn"
                   data-i18n="settings.task.cleanupInvalid"
                 >
-                  清理失效文件记录
+                  清理失效记录
                 </button>
                 <button
                   type="button"
@@ -1603,7 +2186,7 @@
                   id="maintenanceOptimizeBtn"
                   data-i18n="settings.task.optimizeDb"
                 >
-                  优化数据库
+                  压缩数据库
                 </button>
                 <button
                   type="button"
@@ -1611,7 +2194,7 @@
                   id="maintenanceOpenDbFolderBtn"
                   data-i18n="settings.task.openDbFolder"
                 >
-                  打开 SQLite 目录
+                  打开数据目录
                 </button>
                 <button
                   type="button"
@@ -1623,45 +2206,22 @@
                 </button>
               </div>
             </div>
-            <div
-              class="setting-item settings-task-row settings-ai-task"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div class="setting-label" data-i18n="settings.task.aiSearch">搜图索引</div>
-              <section
-                class="settings-ai-task-body"
-                id="settingsAiSearchMount"
-                aria-label="本地 AI 与多语言搜图"
-                data-i18n-aria-label="settings.section.semanticAria"
-              ></section>
-            </div>
-            <div
-              class="setting-item settings-task-row settings-ai-task"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div class="setting-label" data-i18n="settings.task.aiPeople">人物索引</div>
-              <section
-                class="settings-ai-task-body"
-                id="settingsAiPeopleMount"
-                aria-label="人脸识别"
-                data-i18n-aria-label="settings.section.peopleAria"
-              ></section>
-            </div>
+
           </div>
 
           <div class="settings-section">
             <div class="settings-subsection-title" data-i18n="settings.autoRunSection">
-              自动执行
+              启动后自动执行
             </div>
             <p class="settings-browse-hint" data-i18n="settings.autoRunHint">
-              控制应用启动后是否自动执行上面的任务；实际执行同样受互斥规则约束，同一时间只跑一项。
+              打开应用后自动做哪些事。同一时间只会跑一项，互不打架。
             </p>
             <div class="settings-toggle-row">
               <div class="settings-toggle-col">
                 <div class="setting-info">
                   <div class="setting-label" data-i18n="settings.autoScan">启动时自动扫描</div>
                   <div class="setting-desc" data-i18n="settings.autoScanDesc">
-                    打开应用后自动重新扫描所有已添加的目录；开关变更后立即写入配置
+                    打开应用后自动重新扫描已添加的目录，把新增或变动的照片补进索引
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -1672,10 +2232,10 @@
               <div class="settings-toggle-col">
                 <div class="setting-info">
                   <div class="setting-label" data-i18n="settings.autoThumb">
-                    启动时自动补全缩略图与视觉指纹
+                    启动时自动补齐缩略图与指纹
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoThumbDesc">
-                    打开应用后，在后台为缺少缩略图或缺少感知哈希（dHash）的照片补齐数据；与扫描互斥，仅在空闲时执行；开关变更后立即写入配置
+                    在后台为缺少预览图或缺少视觉指纹的照片补齐数据，闲下来才会跑
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -1689,7 +2249,7 @@
                     启动后自动查找重复照片
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoDupDesc">
-                    在后台比对尚未处理过的照片，找出内容完全相同的重复项。若同时开启「启动时自动扫描」，会先扫完目录再开始比对。
+                    在后台比对还没处理过的照片。若同时开启了自动扫描，会等扫描结束后再开始。
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -1702,122 +2262,100 @@
                   class="setting-inline-label"
                   for="settingSimilarThreshold"
                   data-i18n="settings.similarThreshold"
-                  >视觉相似阈值</label
+                  >相似照片判定</label
                 >
                 <select
                   id="settingSimilarThreshold"
                   class="sort-select"
                   data-i18n-aria-label="settings.similarThresholdAria"
-                  aria-label="视觉相似汉明距离阈值"
+                  aria-label="视觉相似判定严格程度"
                 >
-                  <option value="4">4（极严格，几乎完全相同）</option>
-                  <option value="8">8（严格）</option>
-                  <option value="12" selected>12（默认，推荐）</option>
-                  <option value="16">16（宽松）</option>
-                  <option value="20">20（较宽松）</option>
-                  <option value="24">24（非常宽松）</option>
+                  <option value="4">几乎一模一样</option>
+                  <option value="8">很相似</option>
+                  <option value="12" selected>相似（默认，推荐）</option>
+                  <option value="16">有点相似</option>
+                  <option value="20">比较宽松</option>
+                  <option value="24">非常宽松</option>
                 </select>
                 <p class="settings-browse-hint" data-i18n="settings.similarThresholdDesc">
-                  汉明距离阈值，越小越严格。用于预览页「查找相似照片」和重复页「视觉相似」模式
+                  越严格，找出的照片越接近「同一张」。用于预览页的「查找相似照片」和重复页的「视觉相似」。
                 </p>
               </div>
             </div>
           </div>
-
         </div>
 
-        <!-- 5 应用 -->
-        <div class="settings-section settings-panel" id="settingsSectionApp" data-settings-panel>
-          <div class="settings-section-title" data-i18n="settings.section.app">应用</div>
-          <div class="settings-section">
-            <div class="settings-subsection-title" data-i18n="settings.closeSection">关闭按钮</div>
-            <div
-              class="setting-item"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div class="setting-info">
-                <div class="setting-label" data-i18n="settings.closeLabel">
-                  点击标题栏 ✕ / Alt+F4 时：
-                </div>
-                <div class="setting-desc" data-i18n="settings.closeDesc">
-                  控制主窗口关闭按钮的默认动作；选「每次询问」将弹出与当前主题一致的选择对话框（仍可勾选「设为默认」写入此处选项）。修改下拉选项后立即写入配置并生效
-                </div>
-              </div>
-              <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                <select
-                  id="settingWindowClose"
-                  class="sort-select"
-                  data-i18n-aria-label="settings.closeWindowAria"
-                  aria-label="关闭主窗口时的行为"
-                >
-                  <option value="ask" data-i18n="settings.close.ask">每次询问</option>
-                  <option value="tray" data-i18n="settings.close.tray">直接最小化到系统托盘</option>
-                  <option value="quit" data-i18n="settings.close.quit">直接退出程序</option>
-                </select>
+        <!-- 6 AI 与索引 -->
+        <div
+          class="settings-section settings-panel"
+          id="settingsSectionAiIndex"
+          data-settings-panel
+        >
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.ai">AI 与索引</div>
+              <div class="settings-section-desc" data-i18n="settings.section.aiDesc">
+                搜图与人物识别都在本机运行，照片不外传。这一页放模型、索引与识别参数。
               </div>
             </div>
           </div>
+
           <div class="settings-section">
-            <div class="settings-subsection-title" data-i18n="settings.general">通用设置</div>
-            <div
-              class="setting-item"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
+            <div class="settings-subsection-title" data-i18n="settings.task.aiSearch">搜图索引</div>
+            <div class="setting-item settings-task-row settings-ai-index setting-item--stack">
+              <section
+                class="settings-ai-index-body"
+                id="settingsAiSearchMount"
+                aria-label="本地 AI 与多语言搜图"
+                data-i18n-aria-label="settings.section.semanticAria"
+              ></section>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.task.aiPeople">人物索引</div>
+            <div class="setting-item settings-task-row settings-ai-index setting-item--stack">
+              <section
+                class="settings-ai-index-body"
+                id="settingsAiPeopleMount"
+                aria-label="人脸识别"
+                data-i18n-aria-label="settings.section.peopleAria"
+              ></section>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7 外观与行为 -->
+        <div
+          class="settings-section settings-panel"
+          id="settingsSectionAppearance"
+          data-settings-panel
+        >
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.appearance">
+                外观与行为
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.appearanceDesc">
+                选择整套配色，也可以单独微调强调色、背景、纹理与通透程度。改动立即生效并自动保存。
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.appearanceTitle">
+              界面外观
+            </div>
+            <div class="setting-item setting-item--stack">
               <div class="settings-general-row">
-                <div class="settings-general-col">
-                  <div class="setting-info">
-                    <div class="setting-label" data-i18n="settings.uiLanguage">界面语言</div>
-                    <div class="setting-desc" data-i18n="settings.uiLanguageDesc">
-                      切换后立即生效，并写入配置文件
-                    </div>
-                  </div>
-                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                    <select
-                      id="settingUiLocale"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.uiLanguage"
-                      aria-label="界面语言"
-                    >
-                      <option value="zh-CN" data-i18n="settings.lang.zh">简体中文</option>
-                      <option value="en" data-i18n="settings.lang.en">English</option>
-                    </select>
-                  </div>
-                </div>
-                <div class="settings-general-col">
-                  <div class="setting-info">
-                    <div class="setting-label" data-i18n="settings.launchPage">启动默认页</div>
-                    <div class="setting-desc" data-i18n="settings.launchPageDesc">
-                      应用启动后优先进入的页面位置
-                    </div>
-                  </div>
-                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
-                    <select
-                      id="settingLaunchDefaultPage"
-                      class="sort-select"
-                      data-i18n-aria-label="settings.launchPageAria"
-                      aria-label="启动默认页"
-                    >
-                      <option value="welcome" data-i18n="settings.launch.welcome">欢迎页</option>
-                      <option value="all_photos" data-i18n="settings.launch.allPhotos">
-                        所有照片
-                      </option>
-                      <option value="all_folders" data-i18n="settings.launch.allFolders">
-                        所有目录
-                      </option>
-                      <option value="last_position" data-i18n="settings.launch.last">
-                        上次位置
-                      </option>
-                    </select>
-                  </div>
-                </div>
                 <div class="settings-general-col">
                   <div class="setting-info">
                     <div class="setting-label" data-i18n="settings.themeStyle">界面风格</div>
                     <div class="setting-desc" data-i18n="settings.themeStyleDesc">
-                      每套为整体配色（明暗、强调色与背景已搭配好）；也可在菜单「查看」中切换到下一套。变更后立即写入配置
+                      一整套搭配好的配色，选中后下面几项会跟着变；单独调整任意一项后，这里会显示为「自定义组合」
                     </div>
                   </div>
-                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+                  <div class="stg-row-tight">
                     <select
                       id="settingThemeStyle"
                       class="sort-select"
@@ -1832,6 +2370,17 @@
                       <option value="forest_shadow" data-i18n="theme.forest_shadow">
                         森影暮霭
                       </option>
+                      <option value="ember_night" data-i18n="theme.ember_night">暗夜余烬</option>
+                      <option value="graphite_night" data-i18n="theme.graphite_night">
+                        石墨夜色
+                      </option>
+                      <option value="nebula_violet" data-i18n="theme.nebula_violet">
+                        星云紫夜
+                      </option>
+                      <option value="pine_abyss" data-i18n="theme.pine_abyss">松渊墨绿</option>
+                      <option value="mocha_night" data-i18n="theme.mocha_night">摩卡夜色</option>
+                      <option value="glass_night" data-i18n="theme.glass_night">玻璃夜色</option>
+                      <option value="aurora_night" data-i18n="theme.aurora_night">渐变夜幕</option>
                       <option value="sky_light" data-i18n="theme.sky_light">晴空浅蓝</option>
                       <option value="cherry_blossom" data-i18n="theme.cherry_blossom">
                         樱雾粉昼
@@ -1840,52 +2389,257 @@
                         暮紫微光
                       </option>
                       <option value="arctic_mint" data-i18n="theme.arctic_mint">薄荷极光</option>
+                      <option value="desert_sand" data-i18n="theme.desert_sand">暖沙晨曦</option>
+                      <option value="paper_gray" data-i18n="theme.paper_gray">素纸浅灰</option>
+                      <option value="sage_morning" data-i18n="theme.sage_morning">
+                        鼠尾草晨雾
+                      </option>
+                      <option value="apricot_haze" data-i18n="theme.apricot_haze">杏色薄雾</option>
+                      <option value="frost_cyan" data-i18n="theme.frost_cyan">霜青微光</option>
+                      <option value="glass_day" data-i18n="theme.glass_day">玻璃白昼</option>
+                      <option value="aurora_dawn" data-i18n="theme.aurora_dawn">渐变晨曦</option>
+                      <option value="" data-i18n="theme.custom">自定义组合</option>
+                    </select>
+                    <select
+                      id="settingUiAccent"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.accentAria"
+                      aria-label="强调色"
+                    >
+                      <option value="violet" data-i18n="accent.violet">紫罗兰</option>
+                      <option value="cyan" data-i18n="accent.cyan">青蓝</option>
+                      <option value="teal" data-i18n="accent.teal">青绿</option>
+                      <option value="rose" data-i18n="accent.rose">玫红</option>
+                      <option value="amber" data-i18n="accent.amber">琥珀</option>
+                      <option value="mono" data-i18n="accent.mono">中性</option>
+                      <option value="coral" data-i18n="accent.coral">珊瑚</option>
+                      <option value="indigo" data-i18n="accent.indigo">靛蓝</option>
+                      <option value="green" data-i18n="accent.green">翠绿</option>
+                      <option value="red" data-i18n="accent.red">赤红</option>
+                    </select>
+                    <select
+                      id="settingUiBackground"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.backgroundAria"
+                      aria-label="背景基调"
+                    >
+                      <option value="default" data-i18n="bg.default">默认</option>
+                      <option value="ink" data-i18n="bg.ink">墨色</option>
+                      <option value="warm" data-i18n="bg.warm">暖调</option>
+                      <option value="cool" data-i18n="bg.cool">冷调</option>
+                      <option value="amoled" data-i18n="bg.amoled">纯黑</option>
+                      <option value="glass" data-i18n="bg.glass">玻璃</option>
+                      <option value="aurora" data-i18n="bg.aurora">渐变</option>
+                      <option value="paper" data-i18n="bg.paper">纸感</option>
+                      <option value="mist" data-i18n="bg.mist">海雾</option>
+                      <option value="forest" data-i18n="bg.forest">深林</option>
+                      <option value="clay" data-i18n="bg.clay">陶石</option>
+                    </select>
+                    <select
+                      id="settingUiTexture"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.textureAria"
+                      aria-label="材质纹理"
+                    >
+                      <option value="none" data-i18n="texture.none">无</option>
+                      <option value="grain" data-i18n="texture.grain">颗粒</option>
+                      <option value="paper" data-i18n="texture.paper">纸纤维</option>
+                      <option value="linen" data-i18n="texture.linen">亚麻</option>
+                      <option value="frost" data-i18n="texture.frost">磨砂</option>
+                      <option value="grid" data-i18n="texture.grid">十字网</option>
+                      <option value="dots" data-i18n="texture.dots">点阵</option>
+                      <option value="stripe" data-i18n="texture.stripe">竖条纹</option>
+                      <option value="wood" data-i18n="texture.wood">木纹</option>
+                    </select>
+                    <select
+                      id="settingUiOpacity"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.opacityAria"
+                      aria-label="面板透明度"
+                    >
+                      <option value="opaque" data-i18n="opacity.opaque">不透明</option>
+                      <option value="slight" data-i18n="opacity.slight">轻微</option>
+                      <option value="medium" data-i18n="opacity.medium">中等</option>
+                      <option value="clear" data-i18n="opacity.clear">通透</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <!-- 窗口背景 = 窗口级开关，**只有设置页这一处入口**（不进顶栏 #quickThemeStyle：
+                   那一栏的核心交互是「划过即预览」，而这一维重启前不可能预览）。
+                   ⚠️ **刻意单起一行、不并进上面那个 .settings-general-row**：
+                   实测（2026-10-05）并成第 4 列会把每列从 297px 压到 216px，
+                   「界面风格」那 5 个下拉随之从 3 行堆到 5 行、整行高 235 → 335px ——
+                   为了本维而挤高旁边无关的三列，得不偿失。单列一行时 `flex: 1`
+                   会把这一列撑满卡片宽度。 -->
+              <div class="settings-general-row">
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.windowBackdrop">窗口背景</div>
+                    <div class="setting-desc" data-i18n="settings.windowBackdropDesc">
+                      让整个窗口透出桌面，而不只是面板变淡。越往下越透，选好后需要重启应用才生效；Windows 11
+                      22H2 及以上还会带上毛玻璃模糊。
+                    </div>
+                  </div>
+                  <div class="stg-row-tight">
+                    <select
+                      id="settingUiWindowBackdrop"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.windowBackdropAria"
+                      aria-label="窗口背景"
+                    >
+                      <option value="solid" data-i18n="windowBackdrop.solid">实色（不透明）</option>
+                      <option value="acrylic-light" data-i18n="windowBackdrop.acrylic-light">
+                        亚克力 · 轻
+                      </option>
+                      <option value="acrylic" data-i18n="windowBackdrop.acrylic">亚克力 · 中</option>
+                      <option value="acrylic-strong" data-i18n="windowBackdrop.acrylic-strong">
+                        亚克力 · 强
+                      </option>
+                    </select>
+                  </div>
+                  <!-- 「改了但还没重启」时的提示。文本走 data-i18n、**只切换 hidden**：
+                       若改成用 JS 写 textContent，切语言时就会被 i18n 刷成另一种语言的旧文案。 -->
+                  <div
+                    class="setting-desc"
+                    id="settingWindowBackdropRestartHint"
+                    data-i18n="settings.windowBackdropRestartHint"
+                    hidden
+                  >
+                    已改为新的窗口背景，重启应用后生效
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 「语言与启动」原先是「界面外观」那一行里的两列（2026-10-05 拆出）。
+               界面语言与启动落点都不是配色维度：混在外观行里既把主题那 5 个下拉挤成 2 列 3 行，
+               也让人误以为改语言或启动页会影响配色。
+               网页端设置页早就把这两项归在「桌面端」子节、不进「这台设备的外观」，桌面端现在与它对齐。 -->
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.languageStartupTitle">
+              语言与启动
+            </div>
+            <div class="setting-item setting-item--stack">
+              <div class="settings-general-row">
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.uiLanguage">界面语言</div>
+                    <div class="setting-desc" data-i18n="settings.uiLanguageDesc">
+                      切换后界面文字立即变化
+                    </div>
+                  </div>
+                  <div class="stg-row-tight">
+                    <select
+                      id="settingUiLocale"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.uiLanguage"
+                      aria-label="界面语言"
+                    >
+                      <option value="zh-CN" data-i18n="settings.lang.zh">简体中文</option>
+                      <option value="en" data-i18n="settings.lang.en">English</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="settings-general-col">
+                  <div class="setting-info">
+                    <div class="setting-label" data-i18n="settings.launchPage">启动后先看</div>
+                    <div class="setting-desc" data-i18n="settings.launchPageDesc">
+                      打开应用后默认停留的位置
+                    </div>
+                  </div>
+                  <div class="stg-row-tight">
+                    <select
+                      id="settingLaunchDefaultPage"
+                      class="sort-select"
+                      data-i18n-aria-label="settings.launchPageAria"
+                      aria-label="启动后先看"
+                    >
+                      <option value="welcome" data-i18n="settings.launch.welcome">欢迎页</option>
+                      <option value="all_photos" data-i18n="settings.launch.allPhotos">
+                        所有照片
+                      </option>
+                      <option value="all_folders" data-i18n="settings.launch.allFolders">
+                        所有目录
+                      </option>
+                      <option value="last_position" data-i18n="settings.launch.last">
+                        上次离开的位置
+                      </option>
                     </select>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
+          <div class="settings-section">
+            <div class="settings-subsection-title" data-i18n="settings.behaviorTitle">
+              窗口行为
+            </div>
+            <div class="setting-item setting-item--stack">
+              <div class="setting-info">
+                <div class="setting-label" data-i18n="settings.closeLabel">
+                  点击标题栏 ✕ 或按 Alt+F4 时
+                </div>
+                <div class="setting-desc" data-i18n="settings.closeDesc">
+                  选「每次询问」会弹出一个询问窗口，里面可以勾选「以后都这样」把选择记住。文件菜单里的「隐藏到托盘」「退出拂晓图库」不受这里影响。
+                </div>
+              </div>
+              <div class="stg-row-tight">
+                <select
+                  id="settingWindowClose"
+                  class="sort-select"
+                  data-i18n-aria-label="settings.closeWindowAria"
+                  aria-label="关闭主窗口时的行为"
+                >
+                  <option value="ask" data-i18n="settings.close.ask">每次询问我</option>
+                  <option value="tray" data-i18n="settings.close.tray">隐藏到系统托盘（继续后台运行）</option>
+                  <option value="quit" data-i18n="settings.close.quit">直接退出应用</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- 6 网络 -->
+        <!-- 8 网络与远程 -->
         <div
           class="settings-section settings-panel"
           id="settingsSectionNetwork"
           data-settings-panel
         >
-          <div class="settings-section-title" data-i18n="settings.section.network">网络</div>
+          <div class="settings-header">
+            <div class="settings-header-main">
+              <div class="settings-section-title" data-i18n="settings.section.network">
+                网络与远程
+              </div>
+              <div class="settings-section-desc" data-i18n="settings.section.networkDesc">
+                让同一局域网里的手机、平板或别的电脑也能打开这个相册。
+              </div>
+            </div>
+          </div>
+
           <div class="settings-section">
             <div class="settings-subsection-title" data-i18n="settings.network.title">
               局域网访问
             </div>
-            <div
-              class="setting-item"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div
-                style="
-                  display: flex;
-                  align-items: flex-start;
-                  justify-content: space-between;
-                  gap: 12px;
-                "
-              >
-                <div class="setting-info" style="flex: 1; min-width: 0">
-                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+            <div class="setting-item setting-item--stack">
+              <div class="stg-row-split">
+                <div class="setting-info setting-info--grow">
+                  <div class="stg-inline">
                     <div class="setting-label" data-i18n="settings.network.urlLabel">访问地址</div>
                     <span
                       class="setting-status online"
                       id="webServerStatus"
                       data-i18n="settings.network.statusOn"
-                      >运行</span
+                      >运行中</span
                     >
                   </div>
                   <div class="setting-desc" data-i18n="settings.network.urlDesc">
-                    同一局域网内的设备可通过此地址访问相册
+                    在同一局域网里的设备上打开这个地址，就能浏览相册
                   </div>
                 </div>
-                <label class="toggle-switch" style="flex-shrink: 0; margin-top: 2px">
+                <label class="toggle-switch stg-switch-top">
                   <input type="checkbox" id="settingWebServerEnabled" checked />
                   <span class="toggle-slider"></span>
                 </label>
@@ -1896,10 +2650,25 @@
                   >点击复制</span
                 >
               </div>
+              <!--
+                手机扫码。载荷与上面那行「访问地址」**逐字符相同**（都取 state.webUrl，
+                「点击复制」复制的也是它）—— 不允许这里另算一遍地址，否则会出现
+                「扫码装不上、复制却能用」。状态不当时整块 hidden（见 ui-shell.js 的
+                renderWebQr）：绝不留一个指向已关闭服务的旧码。载荷里不含访问密码。
+              -->
+              <div class="web-qr" id="webQrBox" hidden>
+                <img
+                  class="web-qr-img"
+                  id="webQrImg"
+                  alt=""
+                  data-i18n-aria-label="settings.network.qrAria"
+                />
+                <div class="web-qr-hint" data-i18n="settings.network.qrHint">手机扫码打开</div>
+              </div>
             </div>
             <div class="setting-item setting-item-password">
               <div class="setting-info">
-                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                <div class="stg-inline">
                   <div class="setting-label" data-i18n="settings.network.passwordLabel">
                     访问密码
                   </div>
@@ -1911,32 +2680,16 @@
                   >
                 </div>
                 <div class="setting-desc" data-i18n="settings.network.passwordDesc">
-                  设置后浏览器访问需要输入密码（留空则无密码）；输入后请点击「确认应用」保存访问密码。
+                  设置后，浏览器打开时需要先输入这个密码。留空表示不设密码。
                 </div>
               </div>
-              <div
-                class="web-password-controls"
-                style="display: flex; gap: 8px; align-items: center"
-              >
+              <div class="web-password-controls">
                 <input
                   type="password"
                   id="settingWebPassword"
+                  class="settings-input"
                   data-i18n-placeholder="settings.network.passwordPlaceholder"
                   placeholder="设置访问密码"
-                  style="
-                    padding: 6px 12px;
-                    border: 1px solid var(--border);
-                    border-radius: 8px;
-                    background: var(--bg-card);
-                    color: var(--text-primary);
-                    font-size: 13px;
-                    width: 160px;
-                    outline: none;
-                    transition: border-color 0.15s;
-                    position: relative;
-                    z-index: 3;
-                    pointer-events: auto;
-                  "
                 />
                 <button
                   type="button"
@@ -1948,23 +2701,12 @@
                 </button>
               </div>
             </div>
-            <div
-              class="setting-item"
-              style="flex-direction: column; align-items: stretch; gap: 10px"
-            >
-              <div
-                style="
-                  display: flex;
-                  align-items: flex-start;
-                  justify-content: space-between;
-                  gap: 16px;
-                  flex-wrap: wrap;
-                "
-              >
+            <div class="setting-item setting-item--stack">
+              <div class="stg-row-split stg-row-split--wide">
                 <div class="setting-info">
-                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                  <div class="stg-inline">
                     <div class="setting-label" data-i18n="settings.network.tunnel">
-                      Cloudflare Tunnel
+                      公网隧道
                     </div>
                     <span
                       class="setting-status offline"
@@ -1974,7 +2716,7 @@
                     >
                   </div>
                   <div class="setting-desc" data-i18n="settings.network.tunnelDesc">
-                    开启后生成公网地址；为安全起见，必须先设置访问密码。此开关仅控制当前会话，不会默认随应用启动自动开启。
+                    开启后会生成一个临时公网地址，离家也能访问。为避免相册被陌生人看到，必须先设置访问密码。此开关只对本次运行有效，下次启动不会自动开启。
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -1997,28 +2739,8 @@
               >
                 启动日志（仅失败时显示，可复制发给我排查）
               </div>
-              <div
-                style="display: none; gap: 8px; align-items: center; justify-content: space-between"
-                id="tunnelLogRow"
-              >
-                <pre
-                  id="tunnelLogPre"
-                  style="
-                    margin: 0;
-                    white-space: pre-wrap;
-                    word-break: break-word;
-                    max-height: 140px;
-                    overflow: auto;
-                    padding: 10px 12px;
-                    border-radius: 10px;
-                    border: 1px solid var(--border);
-                    background: var(--bg-hover);
-                    color: var(--text-secondary);
-                    font-size: 12px;
-                    line-height: 1.4;
-                    flex: 1;
-                  "
-                ></pre>
+              <div class="tunnel-log-row" id="tunnelLogRow" style="display: none">
+                <pre id="tunnelLogPre" class="stg-log-pre"></pre>
                 <button
                   type="button"
                   class="btn btn-sm"
@@ -2448,6 +3170,20 @@
       </div>
     </div>
 
+    <!-- 顶栏主题弹层（自建 listbox）：每次打开时由 app.js 从 #quickThemeStyle 的 option
+         **动态重建**，所以这里只是个空容器 —— 主题名一律不许在此手抄一份，
+         否则两份真相源必然漂移（新增预设时漏改一处就出鬼）。
+         挂在 <body> 下而不是 .topbar 里：.topbar 带 backdrop-filter，会给 position:fixed
+         的后代创建**新的包含块**，弹层会以 56px 高的顶栏为参考系而整体错位。 -->
+    <div
+      class="theme-menu"
+      id="quickThemeMenu"
+      role="listbox"
+      data-i18n-aria-label="topbar.themeAria"
+      aria-label="快速切换界面风格"
+      hidden
+    ></div>
+
     <!-- 通用主题弹窗（用于 alert/confirm） -->
     <div class="app-dialog-overlay" id="appDialogOverlay" aria-hidden="true" role="presentation">
       <div class="app-dialog-card" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle">
@@ -2474,16 +3210,29 @@
       </div>
     </div>
 
+    <!-- 第三方库（src/renderer/vendor/，MIT，见文件头注释）。放最前：后面任何脚本都能直接用。
+         与 src/web/vendor/hls.min.js 同族 —— vendor 目录不在任何静态守护的扫描范围内。 -->
+    <script src="vendor/qrcode.js"></script>
     <script src="i18n.js"></script>
     <script src="utils.js"></script>
+    <!-- 快捷键注册表：必须早于 nav-history.js / ui-events.js / app.js ——
+         它们的事件处理都改成「问注册表这一下按的是什么动作」，
+         晚于它们加载就会在首帧把用户改过的键位丢掉。 -->
+    <script src="shortcuts.js"></script>
+    <!-- 照片信息面板的字段注册表：桌面端与网页端共用同一份（主进程也 require 它做设置项校验） -->
+    <script src="../web/js/photo-info-fields.js"></script>
     <script src="logger.js"></script>
     <script src="api.js"></script>
     <script src="ui-navigation.js"></script>
     <script src="sidebar-tree.js"></script>
+    <script src="path-crumbs.js"></script>
+    <script src="nav-history.js"></script>
+    <script src="qr-code.js"></script>
     <script src="ui-shell.js"></script>
     <script src="ui-overlays.js"></script>
     <script src="ui-settings.js"></script>
     <script src="settings.js"></script>
+    <script src="shortcut-settings.js"></script>
     <script src="scan-flow.js"></script>
     <script src="../hls-attach.js"></script>
     <script src="../playback-strategy.js"></script>

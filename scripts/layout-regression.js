@@ -161,7 +161,6 @@ function main() {
     'navigationHeading',
     'settingsSidebar',
     'peopleSidebar',
-    'folderNavBar',
     'sidebarContent',
     'sidebarContentDuplicate',
     'sidebarTreeLoadingFooter',
@@ -223,8 +222,19 @@ function main() {
   const railTabs = rail.children.filter((n) => n.attrs['data-tab']);
   assert.deepEqual(
     railTabs.map((n) => n.attrs['data-tab']),
-    ['folders', 'dates', 'search', 'people', 'duplicates'],
-    '左侧图标栏的导航入口与预期不一致（搜图 / 人物 与重复同级）',
+    // 2026-10-05：加上「首页」（`#topbarHomeBtn`），排在**最上**。它是一次页面跳转、
+    // 不是浏览视图，所以**没有** `.nav-tab`（上面那条 staleTabs 断言因此仍然成立），
+    // 但带 `data-tab="home"` 是必需的 —— 否则 `syncNavigationRail` 的
+    // `item.dataset.tab || 'settings'` 兜底会让它在设置页时被一起点亮。
+    // 顺序理由见 navigation-regression 里的「元素序列」断言。
+    ['home', 'folders', 'dates', 'search', 'people', 'duplicates'],
+    '左侧图标栏的导航入口与预期不一致（首页在最上；搜图 / 人物 与重复同级）',
+  );
+  // 两条分组线也得在：它们把 rail 分成「首页 ｜ 视图 ｜ 工具」三段。
+  assert.deepEqual(
+    rail.children.filter((n) => String(n.attrs.class).split(' ').includes('rail-divider')).length,
+    2,
+    'rail 应恰有 2 条分组线（首页 / 视图 / 工具 三段）',
   );
 
   // 结构断言通过后再校验整体标签闭合，避免级联噪声掩盖上面的精确定位

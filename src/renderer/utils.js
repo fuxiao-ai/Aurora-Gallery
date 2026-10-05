@@ -15,6 +15,46 @@
   /** 与主进程 createDefaultSettings().browsePageSize 一致 */
   var DEFAULT_BROWSE_PAGE_SIZE = 100;
 
+  /**
+   * 「网格与比例」的取值域。它是渲染端唯一一份：设置页下拉（`#settingBrowseGridStyle`）
+   * 与底栏控件（`#browseGridStyleSelect`）的 `<option>` 都从这里取/被它校验，
+   * `settings.js` 的解析、`app.js` 的 `state.cardRatio` 归一也都走下面两个函数。
+   *
+   * `masonry` = 原比例瀑布流（每张用照片自己的宽高比）；`uniform|<ratio>` = 统一高度。
+   * 主进程另有两份等价字面量（`src/main.js` 与 `src/main/settings.js` 的 ensureSettingsShape
+   * 各自校验 `1 / 1 | 3 / 4 | 4 / 3 | 9 / 16 | 16 / 9`），它们无法 require 本文件，改这里时记得同步。
+   */
+  var BROWSE_CARD_RATIOS = ['1 / 1', '3 / 4', '4 / 3', '9 / 16', '16 / 9'];
+
+  function normalizeBrowseCardRatio(v) {
+    var s = String(v || '').trim();
+    return BROWSE_CARD_RATIOS.indexOf(s) >= 0 ? s : '1 / 1';
+  }
+
+  function normalizeBrowseCardLayout(v) {
+    var s = String(v || '')
+      .trim()
+      .toLowerCase();
+    return s === 'uniform' ? 'uniform' : 'masonry';
+  }
+
+  /** 把 `state` 的 (layout, ratio) 编成两处下拉共用的 value。 */
+  function encodeBrowseGridStyleValue(layoutMode, cardRatio) {
+    var cl = normalizeBrowseCardLayout(layoutMode);
+    if (cl === 'masonry') return 'masonry';
+    return 'uniform|' + normalizeBrowseCardRatio(cardRatio);
+  }
+
+  /** `encodeBrowseGridStyleValue` 的逆运算；认不出的 value 一律退回瀑布流。 */
+  function parseBrowseGridStyleValue(raw) {
+    var s = String(raw || '').trim();
+    var bar = s.indexOf('|');
+    if (bar > 0 && s.slice(0, bar) === 'uniform') {
+      return { layout: 'uniform', ratio: normalizeBrowseCardRatio(s.slice(bar + 1)) };
+    }
+    return { layout: 'masonry', ratio: null };
+  }
+
   function snapBrowseCardBasis(n) {
     var x = parseInt(n, 10);
     if (isNaN(x)) x = 180;
@@ -136,6 +176,11 @@
     CARD_SIZE_TIERS: CARD_SIZE_TIERS,
     BROWSE_PAGE_SIZE_TIERS: BROWSE_PAGE_SIZE_TIERS,
     DEFAULT_BROWSE_PAGE_SIZE: DEFAULT_BROWSE_PAGE_SIZE,
+    BROWSE_CARD_RATIOS: BROWSE_CARD_RATIOS,
+    normalizeBrowseCardRatio: normalizeBrowseCardRatio,
+    normalizeBrowseCardLayout: normalizeBrowseCardLayout,
+    encodeBrowseGridStyleValue: encodeBrowseGridStyleValue,
+    parseBrowseGridStyleValue: parseBrowseGridStyleValue,
     snapBrowseCardBasis: snapBrowseCardBasis,
     snapBrowsePageSize: snapBrowsePageSize,
     browsePageSizeTierIndex: browsePageSizeTierIndex,

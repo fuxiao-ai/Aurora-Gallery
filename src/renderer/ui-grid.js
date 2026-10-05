@@ -358,6 +358,13 @@
     if (typeof formatNumber !== 'function') return;
 
     var totalPages = result.totalPages;
+    // 🔴 这一句必须排在下面的早退**之前**：`#randomPageBtn` 不在 `.pagination` 里
+    //    （它是 `.browse-footer-actions` 的子节点），`dom.pagination.style.display = 'none'`
+    //    收不起它 —— 写在早退之后就会在「只有一页」时留下一个显眼、能点、却毫无反应的按钮
+    //    （`goToRandomPage()` 对 `tp <= 1` 是静默 return）。browse-grid-style-regression 钉着这条。
+    if (dom.randomPageBtn) {
+      dom.randomPageBtn.disabled = totalPages <= 1;
+    }
     if (totalPages <= 1) {
       dom.pagination.style.display = 'none';
       return;
@@ -366,9 +373,6 @@
     dom.pageInfo.textContent = formatNumber(result.total) + ' 张';
     dom.prevPage.disabled = result.page <= 1;
     dom.nextPage.disabled = result.page >= totalPages;
-    if (dom.randomPageBtn) {
-      dom.randomPageBtn.disabled = totalPages <= 1;
-    }
 
     var pages = generatePageNumbers(result.page, totalPages);
     var html = '';

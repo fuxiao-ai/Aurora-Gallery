@@ -322,10 +322,6 @@ html {
 .people-settings {
   margin: 16px 0;
 }
-.people-settings summary {
-  cursor: pointer;
-  padding: 8px 0;
-}
 .people-settings fieldset {
   border: 0;
   padding: 8px 0;
@@ -338,12 +334,23 @@ html {
   margin: 10px 0;
   flex-wrap: wrap;
 }
-/* 分组阈值输入框，取代原来的「标准 / 严格」下拉，位置形态一致，宽度收窄
-   （只填 0.15–0.90 这种三位小数，跟着 label 的 flex gap 排在文案后面）。
-   「归组方式」下拉与「文件夹层级」输入框共用同一套尺寸，三种控件排在一起才不会参差。 */
+/* 数值输入框（分组阈值 / 文件夹层级）取代原来的「标准 / 严格」下拉，位置形态一致，
+   宽度收窄（只填 0.15–0.90 这种三位小数，跟着 label 的 flex gap 排在文案后面）。
+   ⚠️ 「归组方式」下拉**不能**跟着这个 96px：它的选项是整句文案（中文最长
+   「按目录分域聚类（目录内比对特征）」、英文最长 60 字符），96px 下两端都被截成
+   「Visual clu▾」—— 中文侧同样截断，只是没有对照不容易看出来。下拉改为按内容
+   自适应：Chromium 里 width:auto 会撑到最长选项的宽度。窄屏由 label 的
+   flex-wrap 兜住，max-width 防止它顶破容器。 */
+.people-settings input[type='number'] {
+  width: 96px;
+}
+.people-settings select {
+  width: auto;
+  min-width: 96px;
+  max-width: 100%;
+}
 .people-settings input[type='number'],
 .people-settings select {
-  width: 96px;
   padding: 8px;
   background: var(--bg-card, var(--bg-secondary, #222936));
   color: inherit;

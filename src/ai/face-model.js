@@ -516,6 +516,7 @@ module.exports = {
   VERSION_LABELS,
   labelForVersion,
   FILES,
+  LICENSES,
   TEMPLATE,
   VECTOR_DIM,
   PACK_BYTES,

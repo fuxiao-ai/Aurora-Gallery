@@ -39,12 +39,16 @@
         state.currentTab && state.currentTab !== 'settings'
           ? state.currentTab
           : state.prevTab || 'folders';
+      // ⚠️ `home` 在名单里：从首页点进设置页（卡 4 的三个深链）时，「返回」应当回到首页。
+      // app.js 的 closeSettingsPage 会把回程的 'home' 分流到派生重建（showTabContent
+      // 没有 home 分支，直接传进去会切出一页空白）。
       var ok =
         cur === 'folders' ||
         cur === 'dates' ||
         cur === 'duplicates' ||
         cur === 'people' ||
-        cur === 'search';
+        cur === 'search' ||
+        cur === 'home';
       state.tabBeforeSettings = ok ? cur : 'folders';
     })();
     state.currentTab = 'settings';
@@ -90,6 +94,12 @@
     var dom = options.dom || {};
     var sidebarUi = options.sidebarUi || {};
 
+    // 离开设置页必须先退出「录制快捷键」：它的 keydown 挂在 window 捕获阶段，
+    // 不收掉的话离开设置页后按任何键都还在被它吞（界面已关、用户却按不动别处）。
+    if (window.RendererShortcutSettings && state.shortcutRecording) {
+      window.RendererShortcutSettings.stopRecording({ state: state });
+    }
+
     if (dom.contentArea) dom.contentArea.style.display = '';
     if (dom.settingsPage) dom.settingsPage.style.display = 'none';
     // 同上：页面态 class 由 syncPageOpenClasses 派生，末尾 onShowTabContent → showTabContent
@@ -100,7 +110,8 @@
       restoreTab !== 'dates' &&
       restoreTab !== 'duplicates' &&
       restoreTab !== 'people' &&
-      restoreTab !== 'search'
+      restoreTab !== 'search' &&
+      restoreTab !== 'home'
     ) {
       restoreTab = 'folders';
     }
@@ -188,29 +199,52 @@
   });
 
   // ===== settings-sync.js =====
-  var BROWSE_GRID_STYLE_RATIOS = ['1 / 1', '3 / 4', '4 / 3', '9 / 16', '16 / 9'];
+  /**
+   * 「网格与比例」的取值域与编解码：与底栏 `#browseGridStyleSelect`、`app.js` 的
+   * `state.cardRatio` 共用一份（`utils.js` 的 `BROWSE_CARD_RATIOS` 与那两个 encode/parse）。
+   * 与 `browsePageSizeTiers()` 同理保留同值兜底——本文件可能被单独加载，
+   * 不能假设 utils.js 一定先跑。
+   */
+  function gridStyleRatios() {
+    var list = window.RendererUtils && window.RendererUtils.BROWSE_CARD_RATIOS;
+    return list && list.length ? list : ['1 / 1', '3 / 4', '4 / 3', '9 / 16', '16 / 9'];
+  }
+
+  function normalizeBrowseCardRatio(v) {
+    var u = window.RendererUtils;
+    if (u && typeof u.normalizeBrowseCardRatio === 'function')
+      return u.normalizeBrowseCardRatio(v);
+    var s = String(v || '').trim();
+    return gridStyleRatios().indexOf(s) >= 0 ? s : '1 / 1';
+  }
+
+  function normalizeBrowseCardLayout(v) {
+    var u = window.RendererUtils;
+    if (u && typeof u.normalizeBrowseCardLayout === 'function')
+      return u.normalizeBrowseCardLayout(v);
+    return String(v || '')
+      .trim()
+      .toLowerCase() === 'uniform'
+      ? 'uniform'
+      : 'masonry';
+  }
 
   function encodeBrowseGridStyleValue(layoutMode, cardRatio) {
-    var cl =
-      String(layoutMode || '')
-        .trim()
-        .toLowerCase() === 'uniform'
-        ? 'uniform'
-        : 'masonry';
-    var cr = String(cardRatio || '').trim();
-    if (BROWSE_GRID_STYLE_RATIOS.indexOf(cr) < 0) cr = '1 / 1';
-    if (cl === 'masonry') return 'masonry';
-    return 'uniform|' + cr;
+    var u = window.RendererUtils;
+    if (u && typeof u.encodeBrowseGridStyleValue === 'function')
+      return u.encodeBrowseGridStyleValue(layoutMode, cardRatio);
+    if (normalizeBrowseCardLayout(layoutMode) === 'masonry') return 'masonry';
+    return 'uniform|' + normalizeBrowseCardRatio(cardRatio);
   }
 
   function parseBrowseGridStyleValue(raw) {
+    var u = window.RendererUtils;
+    if (u && typeof u.parseBrowseGridStyleValue === 'function')
+      return u.parseBrowseGridStyleValue(raw);
     var s = String(raw || '').trim();
-    if (s === 'masonry') return { layout: 'masonry', ratio: null };
     var bar = s.indexOf('|');
     if (bar > 0 && s.slice(0, bar) === 'uniform') {
-      var cr = s.slice(bar + 1).trim();
-      if (BROWSE_GRID_STYLE_RATIOS.indexOf(cr) < 0) cr = '1 / 1';
-      return { layout: 'uniform', ratio: cr };
+      return { layout: 'uniform', ratio: normalizeBrowseCardRatio(s.slice(bar + 1)) };
     }
     return { layout: 'masonry', ratio: null };
   }
@@ -239,13 +273,11 @@
     var ps = parseInt(settings.browsePageSize, 10);
     if (browsePageSizeTiers().indexOf(ps) >= 0) state.pageSize = ps;
     var cs = snapBrowseCardBasis(settings.browseCardSize);
-    var cr = String(settings.browseCardRatio || '').trim();
-    if (cr !== '1 / 1' && cr !== '3 / 4' && cr !== '4 / 3' && cr !== '9 / 16' && cr !== '16 / 9')
-      cr = '1 / 1';
+    var cr = normalizeBrowseCardRatio(settings.browseCardRatio);
     state.cardSize = cs;
     state.cardRatio = cr;
     state.thumbCrop = !!settings.browseThumbCrop;
-    state.cardLayoutMode = settings.browseCardLayout === 'uniform' ? 'uniform' : 'masonry';
+    state.cardLayoutMode = normalizeBrowseCardLayout(settings.browseCardLayout);
     state.browseFolderIncludeSubfolders = settings.browseFolderIncludeSubfolders !== false;
     if (dom.sortSelect) dom.sortSelect.value = state.sortBy + '|' + state.sortOrder;
     onApplyCardSize();
@@ -313,12 +345,11 @@
     if (browsePageSizeTiers().indexOf(ps) < 0) ps = 20;
     var cs = snapBrowseCardBasis(csEl.value);
     var parsedGs = parseBrowseGridStyleValue(gsEl.value);
-    var cl = parsedGs.layout === 'uniform' ? 'uniform' : 'masonry';
+    var cl = normalizeBrowseCardLayout(parsedGs.layout);
     var cr =
       parsedGs.layout === 'uniform' && parsedGs.ratio
         ? parsedGs.ratio
-        : String(state.cardRatio || '1 / 1').trim();
-    if (BROWSE_GRID_STYLE_RATIOS.indexOf(cr) < 0) cr = '1 / 1';
+        : normalizeBrowseCardRatio(state.cardRatio);
     var tc = tcEl.value === '1';
     var folderInc = sfEl ? sfEl.value === '1' : state.browseFolderIncludeSubfolders !== false;
     var vcbEl = document.getElementById('settingVideoClickBehavior');
@@ -376,20 +407,20 @@
     var state = options.state || {};
     var dom = options.dom || {};
     var api = options.api || null;
-    var onGetThemeStyleControlValue = options.onGetThemeStyleControlValue;
+    var onGetAppearanceControlValue = options.onGetAppearanceControlValue;
     var onSyncAppearanceFromSettings = options.onSyncAppearanceFromSettings;
     var onSetGeneralSettingsAppliedFromObject = options.onSetGeneralSettingsAppliedFromObject;
-    var onSyncThemeStyleControls = options.onSyncThemeStyleControls;
+    var onSyncAppearanceControls = options.onSyncAppearanceControls;
     var onApplySubtitleStyleFromSettings = options.onApplySubtitleStyleFromSettings;
     var onSyncSubtitleStyleControlsFromSettings = options.onSyncSubtitleStyleControlsFromSettings;
     var onSaveLastSettingsSectionId = options.onSaveLastSettingsSectionId;
     var onRenderSettingsNav = options.onRenderSettingsNav;
     var appAlert = options.appAlert;
     if (!(api && api.has && api.has('updateSettings'))) return;
-    if (typeof onGetThemeStyleControlValue !== 'function') return;
+    if (typeof onGetAppearanceControlValue !== 'function') return;
     if (typeof onSyncAppearanceFromSettings !== 'function') return;
     if (typeof onSetGeneralSettingsAppliedFromObject !== 'function') return;
-    if (typeof onSyncThemeStyleControls !== 'function') return;
+    if (typeof onSyncAppearanceControls !== 'function') return;
     if (typeof onApplySubtitleStyleFromSettings !== 'function') return;
     if (typeof onSyncSubtitleStyleControlsFromSettings !== 'function') return;
     if (
@@ -426,7 +457,8 @@
       !concEl
     )
       return;
-    var tsV = onGetThemeStyleControlValue();
+    // 外观三件套（明暗 / 强调色 / 背景基调）由控件 + 预设共同决定，themeStyle 只是派生标签
+    var appearance = onGetAppearanceControlValue();
     var subFamily = String(subFamilyEl.value || '')
       .trim()
       .toLowerCase();
@@ -468,7 +500,15 @@
       !!autoThumb.checked === ap.autoThumbBackfillOnStartup &&
       !!autoHash.checked === ap.autoHashOnStartup &&
       launchDefaultPage === (ap.launchDefaultPage || 'all_photos') &&
-      tsV === ap.themeStyle &&
+      appearance.theme === (ap.theme === 'light' ? 'light' : 'dark') &&
+      appearance.uiAccent === (ap.uiAccent || 'violet') &&
+      appearance.uiBackground === (ap.uiBackground || 'default') &&
+      appearance.uiTexture === (ap.uiTexture || 'none') &&
+      appearance.uiOpacity === (ap.uiOpacity || 'opaque') &&
+      // ⚠️ 与透明度同一处坑：这里是**逐个字段比**，漏掉哪一维，那一维「切回默认值」就会被
+      // 判成「无变化」→ 整次保存被短路吞掉（窗口背景的症状 = 「亚克力切不回实色」，
+      // 而且因为它本来就要重启才生效，很容易被误当成「重启了也没生效」）。
+      appearance.uiWindowBackdrop === (ap.uiWindowBackdrop || 'solid') &&
       subFamily === ap.subtitleFontFamily &&
       subSize === ap.subtitleFontSizePx &&
       subWeight === ap.subtitleFontWeight &&
@@ -484,7 +524,12 @@
         autoThumbBackfillOnStartup: !!autoThumb.checked,
         autoHashOnStartup: !!autoHash.checked,
         launchDefaultPage: launchDefaultPage,
-        themeStyle: tsV,
+        theme: appearance.theme,
+        uiAccent: appearance.uiAccent,
+        uiBackground: appearance.uiBackground,
+        uiTexture: appearance.uiTexture,
+        uiOpacity: appearance.uiOpacity,
+        uiWindowBackdrop: appearance.uiWindowBackdrop,
         subtitleFontFamily: subFamily,
         subtitleFontSizePx: subSize,
         subtitleFontWeight: subWeight,
@@ -506,7 +551,7 @@
             ? lp
             : 'all_photos';
       }
-      onSyncThemeStyleControls(r.themeStyle);
+      onSyncAppearanceControls(r);
       onSyncSubtitleStyleControlsFromSettings(r);
       onApplySubtitleStyleFromSettings(r);
       if (concEl)
@@ -515,8 +560,8 @@
         similarThresholdEl.value = String(
           Math.max(0, Math.min(64, parseInt(r.similarThreshold, 10) || 12)),
         );
-      onSaveLastSettingsSectionId('settingsSectionApp');
-      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionApp');
+      onSaveLastSettingsSectionId('settingsSectionAppearance');
+      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionAppearance');
     } catch (e) {
       if (typeof appAlert === 'function')
         appAlert(
@@ -539,13 +584,19 @@
           similarThresholdEl.value = String(
             Math.max(0, Math.min(64, parseInt(ap.similarThreshold, 10) || 12)),
           );
-        onSyncThemeStyleControls(ap.themeStyle);
+        onSyncAppearanceControls(ap);
         onSyncSubtitleStyleControlsFromSettings(ap);
         onApplySubtitleStyleFromSettings(ap);
+        // ⚠️ 回滚对象必须带齐**全部正交维度**：这里原先只传了三元组，保存失败时会把
+        // 用户选的纹理 / 透明度一起回滚成 none / opaque（用户没改它们，却被清掉了）。
+        // 窗口背景同理带上（它没有 `uiWindowBackdropApplied` → 属性不会被本层重置）。
         onSyncAppearanceFromSettings({
           theme: ap.theme,
           uiAccent: ap.uiAccent,
           uiBackground: ap.uiBackground,
+          uiTexture: ap.uiTexture,
+          uiOpacity: ap.uiOpacity,
+          uiWindowBackdrop: ap.uiWindowBackdrop,
           autoScanOnStartup: ap.autoScanOnStartup,
           autoThumbBackfillOnStartup: ap.autoThumbBackfillOnStartup,
           autoHashOnStartup: ap.autoHashOnStartup,
@@ -594,7 +645,7 @@
         window.I18n.setLocale(v);
       }
       setLocaleSelectValuePair(v);
-      var sid = typeof getLastSectionId === 'function' ? getLastSectionId() : 'settingsSectionApp';
+      var sid = typeof getLastSectionId === 'function' ? getLastSectionId() : 'settingsSectionAppearance';
       if (typeof onRenderSettingsNav === 'function' && state.currentTab === 'settings')
         onRenderSettingsNav(sid);
       if (typeof options.onAfterLocaleChange === 'function') options.onAfterLocaleChange();
@@ -637,8 +688,8 @@
       if (['ask', 'tray', 'quit'].indexOf(wv) < 0) wv = v;
       state.windowCloseBehaviorApplied = wv;
       sel.value = wv;
-      onSaveLastSettingsSectionId('settingsSectionApp');
-      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionApp');
+      onSaveLastSettingsSectionId('settingsSectionAppearance');
+      if (state.currentTab === 'settings') onRenderSettingsNav('settingsSectionAppearance');
     } catch (e) {
       if (typeof appAlert === 'function')
         appAlert(
@@ -714,6 +765,135 @@
     }
   }
 
+  // ===== 照片信息面板：显示字段勾选 =====
+  //
+  // 勾选框的**结构、顺序、文案**全部由 `src/web/js/photo-info-fields.js` 的注册表给出，
+  // 本文件不写死任何一个字段名 —— 注册表加一个字段，这里自动多一行。
+  // 🔴 标签是渲染时生成的字符串，**不经过 data-i18n** → 切语言必须重画（app.js 的
+  //    localechange 分支里调 renderInfoPanelFieldsForm()）。
+
+  function escHtmlInfo(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function infoPanelLocale() {
+    return window.I18n && typeof window.I18n.getLocale === 'function'
+      ? window.I18n.getLocale()
+      : 'zh-CN';
+  }
+
+  /** 把 state 里的启用集画成勾选框；注册表缺失时清空而不是留半截旧 DOM */
+  function renderInfoPanelFieldsForm(options) {
+    options = options || {};
+    var state = options.state || {};
+    var host = document.getElementById('settingsInfoFields');
+    if (!host) return;
+    var fields = window.PhotoInfoFields;
+    if (!fields) {
+      host.innerHTML = '';
+      return;
+    }
+    var groups = fields.groupFields(state.infoPanelFields, infoPanelLocale());
+    var html = [];
+    for (var g = 0; g < groups.length; g++) {
+      var group = groups[g];
+      html.push(
+        '<div class="settings-info-field-group">' +
+          '<span class="settings-info-field-group-title">' +
+          escHtmlInfo(group.title) +
+          '</span>' +
+          '<div class="settings-info-field-grid">',
+      );
+      for (var f = 0; f < group.fields.length; f++) {
+        var item = group.fields[f];
+        html.push(
+          '<label class="settings-info-field">' +
+            '<input type="checkbox" data-info-field="' +
+            escHtmlInfo(item.id) +
+            '"' +
+            (item.enabled ? ' checked' : '') +
+            ' />' +
+            '<span class="settings-info-field-name">' +
+            escHtmlInfo(item.label) +
+            '</span>' +
+            '</label>',
+        );
+      }
+      html.push('</div></div>');
+    }
+    host.innerHTML = html.join('');
+  }
+
+  /**
+   * 设置里的启用集 → state（唯一运行期真源）+ 重画勾选框，必要时顺带重画开着的面板。
+   * 只在**真的变了**的时候重画面板，否则每次拉设置都会把面板里的滚动位置顶掉。
+   */
+  function applyInfoPanelFieldsFromSettings(options) {
+    options = options || {};
+    var state = options.state || {};
+    var settings = options.settings;
+    var fields = window.PhotoInfoFields;
+    if (!settings || !fields) return;
+    var next = fields.normalizeFieldIds(settings.infoPanelFields);
+    var prev = state.infoPanelFields;
+    var changed = !prev || prev.length !== next.length || prev.join(',') !== next.join(',');
+    state.infoPanelFields = next;
+    renderInfoPanelFieldsForm({ state: state });
+    if (changed && typeof options.onRerender === 'function') options.onRerender();
+  }
+
+  /** 读回勾选框 → 规范化 → 无常变则不发请求 */
+  function readInfoPanelFieldsFromForm() {
+    var host = document.getElementById('settingsInfoFields');
+    var fields = window.PhotoInfoFields;
+    if (!host || !fields) return null;
+    var checks = host.querySelectorAll('input[data-info-field]');
+    var picked = [];
+    for (var i = 0; i < checks.length; i++) {
+      if (checks[i].checked) picked.push(checks[i].getAttribute('data-info-field'));
+    }
+    return fields.normalizeFieldIds(picked);
+  }
+
+  async function persistInfoPanelFieldsFromForm(options) {
+    options = options || {};
+    var state = options.state || {};
+    var api = options.api || null;
+    var appAlert = options.appAlert;
+    if (!(api && api.has && api.has('updateSettings'))) return;
+    var next = readInfoPanelFieldsFromForm();
+    if (next == null) return;
+    var prev = window.PhotoInfoFields.normalizeFieldIds(state.infoPanelFields);
+    // ⚠️ 空数组是合法值（字段可以全关），所以不能用 `if (!next.length) return`
+    if (prev.join(',') === next.join(',')) return;
+    try {
+      var r = await api.updateSettings({ infoPanelFields: next });
+      if (typeof options.onApplyInfoPanelFieldsFromSettings === 'function') {
+        options.onApplyInfoPanelFieldsFromSettings(r);
+      }
+      if (typeof options.onSaveLastSettingsSectionId === 'function')
+        options.onSaveLastSettingsSectionId('settingsSectionBrowse');
+      if (typeof options.onRenderSettingsNav === 'function')
+        options.onRenderSettingsNav('settingsSectionBrowse');
+    } catch (e) {
+      if (typeof appAlert === 'function') {
+        appAlert(
+          tStFmt(
+            'settings.save.infoFieldsFail',
+            { error: e && e.message ? e.message : String(e) },
+            '保存照片信息字段失败：' + (e && e.message ? e.message : String(e)),
+          ),
+        );
+      }
+      // 失败回滚：按 state 里的旧值把勾选框画回去，别让界面停在没落库的状态
+      renderInfoPanelFieldsForm({ state: state });
+    }
+  }
+
   global.RendererSettingsSync = Object.assign({}, global.RendererSettingsSync || {}, {
     applyBrowsePreferencesFromSettings: applyBrowsePreferencesFromSettings,
     syncBrowsePrefsFormFromRuntimeState: syncBrowsePrefsFormFromRuntimeState,
@@ -724,5 +904,8 @@
     persistWindowCloseSetting: persistWindowCloseSetting,
     syncThemeStyleControls: syncThemeStyleControls,
     syncWebPasswordUiFromSettings: syncWebPasswordUiFromSettings,
+    renderInfoPanelFieldsForm: renderInfoPanelFieldsForm,
+    applyInfoPanelFieldsFromSettings: applyInfoPanelFieldsFromSettings,
+    persistInfoPanelFieldsFromForm: persistInfoPanelFieldsFromForm,
   });
 })(window);

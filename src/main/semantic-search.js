@@ -30,14 +30,32 @@ class SemanticSearch {
     if (gate === true || gate === undefined) return '';
     return typeof gate === 'string' ? gate : 'AI_BUSY';
   }
+  /**
+   * 查状态前先跑一遍「准备钩子」（可选，由调用方挂 `beforeRefresh`）。
+   *
+   * 目前唯一的用途是**播种随包内置模型**：安装包里的 `resources/models` 有现成的人脸与搜图
+   * 模型，把它复制进用户目录之后状态才会变成「已就绪」。挂在 refresh 上而不是启动时，
+   * 是因为两个运行时的入口都从这里进来 —— 桌面端是 `ai-search-status` / `face-action`，
+   * 网页端是 `/api/ai-search-status` / `/api/face-status`，它们共用这两个服务实例，
+   * 于是「谁先打开 AI 视图谁触发播种」，且只触发一次（钩子自己 memo）。
+   *
+   * 钩子失败一律吞掉：播种只是省一次下载，不该让「查状态」这个只读动作失败。
+   */
   async refresh() {
+    if (typeof this.beforeRefresh === 'function') {
+      try {
+        await this.beforeRefresh();
+      } catch (error) {
+        logger.warn('[ai] 状态查询前的准备步骤失败: ' + (error && error.message ? error.message : error));
+      }
+    }
     if (this.state.phase === 'idle') await this.run('status');
     return this.status();
   }
 
   run(operation, query, options) {
     if (
-      !(this.config.operations || ['status', 'install', 'index', 'search', 'suggest']).includes(
+      !(this.config.operations || ['status', 'install', 'index', 'search', 'suggest', 'tag']).includes(
         operation,
       )
     )

@@ -45,8 +45,27 @@ function* walk(dir) {
   }
 }
 
+/**
+ * Strip HTML comments before scanning.
+ *
+ * The scan is a bare `/v\d+\.\d+\.\d+/` over the whole file, so a comment that
+ * legitimately cites a *third-party* version (e.g. "图标取自 lucide-static
+ * v0.544.0 的 settings") was reported as application-version drift. Comments
+ * never ship a version to the user, so they must not participate in the check:
+ * a guard that reads comments reports phantom drift, and the only way to
+ * silence it would be deleting the provenance note.
+ *
+ * HTML comments do not nest, so the lazy match is exact here.
+ */
+function stripComments(filePath, content) {
+  if (/\.html?$/.test(filePath)) {
+    return content.replace(/<!--[\s\S]*?-->/g, '');
+  }
+  return content;
+}
+
 function checkFile(filePath, expectedVersion) {
-  const content = fs.readFileSync(filePath, 'utf8');
+  const content = stripComments(filePath, fs.readFileSync(filePath, 'utf8'));
   const matches = content.match(SEMVER_RE);
   if (!matches) return [];
   const issues = [];

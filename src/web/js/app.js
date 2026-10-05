@@ -10,16 +10,176 @@ function photoCacheVersion(photo) {
   return String(photo.file_size || '') + (photo.date_modified || '').replace(/\D/g, '');
 }
 
-function applyWebThemeStyle(id) {
-  var themeId = WebTheme.normalizeWebThemeStyle(id);
-  WebTheme.applyWebThemeVariables(document.documentElement, themeId);
+/** 外观三元组的持久化键（旧键 webThemeStyle 仍写，兼容别处读取） */
+var WEB_APPEARANCE_LS_KEY = 'webAppearance.v3';
+
+/** 读持久化的外观三元组；没有则回落到旧的 webThemeStyle 预设 id */
+function readWebAppearance() {
   try {
-    localStorage.setItem('webThemeStyle', themeId);
+    var raw = localStorage.getItem(WEB_APPEARANCE_LS_KEY);
+    if (raw) {
+      var o = JSON.parse(raw);
+      if (o && typeof o === 'object') {
+        return {
+          themeStyle: typeof o.themeStyle === 'string' ? o.themeStyle : '',
+          uiAccent: o.uiAccent || '',
+          uiBackground: o.uiBackground || '',
+          uiTexture: o.uiTexture || '',
+          uiOpacity: o.uiOpacity || '',
+        };
+      }
+    }
   } catch (e) {}
-  var sel = document.getElementById('webThemeStyle');
-  if (sel) sel.value = themeId;
-  var mobileSel = document.getElementById('mobileThemeStyleSelect');
-  if (mobileSel) mobileSel.value = themeId;
+  var legacy = '';
+  try {
+    legacy = localStorage.getItem('webThemeStyle') || '';
+  } catch (e2) {}
+  return {
+    themeStyle: Object.prototype.hasOwnProperty.call(WebTheme.WEB_THEME_PRESETS, legacy)
+      ? legacy
+      : 'midnight_classic',
+    uiAccent: '',
+    uiBackground: '',
+    uiTexture: '',
+    uiOpacity: '',
+  };
+}
+
+function writeWebAppearance(a) {
+  try {
+    localStorage.setItem(WEB_APPEARANCE_LS_KEY, JSON.stringify(a));
+  } catch (e) {}
+  try {
+    localStorage.setItem('webThemeStyle', a.themeStyle || 'midnight_classic');
+  } catch (e2) {}
+}
+
+function syncWebAppearanceSelects(res) {
+  var ids = ['webThemeStyle', 'mobileThemeStyleSelect'];
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (el) el.value = res.themeStyle;
+  }
+  /* 强调色 / 背景基调：桌面顶栏与移动端面板各一份，必须一起回显 */
+  var accentIds = ['webAccentSelect', 'mobileAccentSelect'];
+  for (var a = 0; a < accentIds.length; a++) {
+    var accentEl = document.getElementById(accentIds[a]);
+    if (accentEl) accentEl.value = res.uiAccent;
+  }
+  var bgIds = ['webBackgroundSelect', 'mobileBackgroundSelect'];
+  for (var b = 0; b < bgIds.length; b++) {
+    var bgEl = document.getElementById(bgIds[b]);
+    if (bgEl) bgEl.value = res.uiBackground;
+  }
+  /* 材质纹理（第三维）：同样是顶栏 + 移动端面板两份，必须一起回显 */
+  var texIds = ['webTextureSelect', 'mobileTextureSelect'];
+  for (var t = 0; t < texIds.length; t++) {
+    var texEl = document.getElementById(texIds[t]);
+    if (texEl) texEl.value = res.uiTexture;
+  }
+  /* 面板透明度（第五维）：同样是两份 */
+  var opaIds = ['webOpacitySelect', 'mobileOpacitySelect'];
+  for (var p = 0; p < opaIds.length; p++) {
+    var opaEl = document.getElementById(opaIds[p]);
+    if (opaEl) opaEl.value = res.uiOpacity;
+  }
+}
+
+/**
+ * 应用外观：预设 id + 可选的强调色 / 背景基调覆盖。
+ * ⚠️ `themeStyle` 是**派生结果**（凑不出预设就为空串 = 自定义组合），不是输入权威 ——
+ * 所以只改强调色时不要把旧 id 当成"覆盖掉 accent"的依据。
+ */
+function applyWebAppearance(appearance) {
+  if (!(window.WebTheme && WebTheme.applyWebThemeVariables)) return null;
+  var incoming = appearance || {};
+  var res = WebTheme.applyWebThemeVariables(
+    document.documentElement,
+    incoming.themeStyle,
+    incoming.uiAccent || undefined,
+    incoming.uiBackground || undefined,
+    incoming.uiTexture || undefined,
+    incoming.uiOpacity || undefined,
+  );
+  writeWebAppearance({
+    themeStyle: res.themeStyle,
+    uiAccent: res.uiAccent,
+    uiBackground: res.uiBackground,
+    uiTexture: res.uiTexture,
+    uiOpacity: res.uiOpacity,
+  });
+  syncWebAppearanceSelects(res);
+  return res;
+}
+
+/** 套用整套预设（顶栏 / 移动端主题下拉的入口）；选「自定义组合」= 保持当前外观只改标签 */
+function applyWebThemeStyle(id) {
+  if (!id) {
+    var cur = readWebAppearance();
+    return applyWebAppearance({
+      themeStyle: '',
+      uiAccent: cur.uiAccent,
+      uiBackground: cur.uiBackground,
+      uiTexture: cur.uiTexture,
+      uiOpacity: cur.uiOpacity,
+    });
+  }
+  // 🔴 套预设只固定三元组，**纹理与透明度都是正交维度、不属于预设** → 必须原样带过来，
+  //    否则「换风格」会把用户选的纹理 / 透明度静默清掉。
+  var cur2 = readWebAppearance();
+  return applyWebAppearance({
+    themeStyle: id,
+    uiTexture: cur2.uiTexture,
+    uiOpacity: cur2.uiOpacity,
+  });
+}
+
+/** 只改强调色，明暗与背景基调保持当前 */
+function changeWebAccent(accent) {
+  var cur = readWebAppearance();
+  return applyWebAppearance({
+    themeStyle: cur.themeStyle,
+    uiAccent: accent,
+    uiBackground: cur.uiBackground,
+    uiTexture: cur.uiTexture,
+    uiOpacity: cur.uiOpacity,
+  });
+}
+
+/** 只改背景基调，明暗与强调色保持当前 */
+function changeWebBackground(bg) {
+  var cur = readWebAppearance();
+  return applyWebAppearance({
+    themeStyle: cur.themeStyle,
+    uiAccent: cur.uiAccent,
+    uiBackground: bg,
+    uiTexture: cur.uiTexture,
+    uiOpacity: cur.uiOpacity,
+  });
+}
+
+/** 只改材质纹理（第三维），明暗 / 强调色 / 背景基调全部保持当前 */
+function changeWebTexture(texture) {
+  var cur = readWebAppearance();
+  return applyWebAppearance({
+    themeStyle: cur.themeStyle,
+    uiAccent: cur.uiAccent,
+    uiBackground: cur.uiBackground,
+    uiTexture: texture,
+    uiOpacity: cur.uiOpacity,
+  });
+}
+
+/** 只改面板透明度（第五维），其余维度全部保持当前 */
+function changeWebOpacity(opacity) {
+  var cur = readWebAppearance();
+  return applyWebAppearance({
+    themeStyle: cur.themeStyle,
+    uiAccent: cur.uiAccent,
+    uiBackground: cur.uiBackground,
+    uiTexture: cur.uiTexture,
+    uiOpacity: opacity,
+  });
 }
 
 function snapBrowseCardBasis(n) {
@@ -46,7 +206,21 @@ function browseCardTierIndexForBasis(basis) {
   return 2;
 }
 
-var CARD_ASPECT_MODES = ['masonry', 'uniform_1_1', 'uniform_4_3', 'uniform_3_4', 'uniform_16_9'];
+// 🔴 这张表是「卡片比例」的**唯一取值域**，必须与 `index.html` 里
+// `#headerCardAspectSelect`（顶栏）和 `#cardAspectSelect`（手机筛选抽屉）的
+// `<option value>` 集合逐位一致 —— 设置页的外观面板也是从这两处克隆选项的。
+// 少一项的后果不是报错而是**静默丢弃**：`normalizeCardAspectMode` 会把它回落成
+// `masonry`，用户点「9:16 固定」当场弹回原比例瀑布流，看着就像控件坏了。
+// （2026-10-05 修：抽屉里一直摆着 `uniform_9_16`，取值域却没有它 → 这一档从来没生效过。）
+// 除 masonry 外的 5 档与桌面端 `utils.js#BROWSE_CARD_RATIOS` 一一对应。
+var CARD_ASPECT_MODES = [
+  'masonry',
+  'uniform_1_1',
+  'uniform_4_3',
+  'uniform_3_4',
+  'uniform_9_16',
+  'uniform_16_9',
+];
 function normalizeCardAspectMode(raw) {
   var s = String(raw || '');
   if (CARD_ASPECT_MODES.indexOf(s) >= 0) return s;
@@ -56,6 +230,7 @@ function getUniformAspectCss(mode) {
   if (mode === 'uniform_1_1') return '1 / 1';
   if (mode === 'uniform_4_3') return '4 / 3';
   if (mode === 'uniform_3_4') return '3 / 4';
+  if (mode === 'uniform_9_16') return '9 / 16';
   if (mode === 'uniform_16_9') return '16 / 9';
   return '';
 }
@@ -405,6 +580,76 @@ function setMobilePreviewNavVisible(visible) {
   }
 }
 
+// ==== 全屏浮层控件显隐（网页端）====
+// 与桌面端 ui-events.js#bindPreviewUiMeta 同一套判据：全屏下四组浮层控件
+// （左上放映区 / 右上关闭区 / 左右切换 / 右下缩放百分比）由 `fs-ui-visible` 统一派生。
+// 样式在 index.html 的「全屏浮层控件显隐」块里，且只对 ≥601px 生效。
+var previewFsUiHideTimer = null;
+var previewFsUiArmRaf = 0;
+// 指针是否压在控件本体上；为真时不收起（否则缩放提示框会在光标底下消失）。
+var previewFsUiPointerOverControls = false;
+
+function isPreviewFullscreenActive() {
+  var overlay = $('#previewOverlay');
+  return !!(overlay && document.fullscreenElement === overlay);
+}
+
+function setPreviewFullscreenUiVisible(visible) {
+  var overlay = $('#previewOverlay');
+  if (!overlay) return;
+  overlay.classList.toggle('fs-ui-visible', !!visible);
+}
+
+function schedulePreviewFullscreenUiHide(delayMs) {
+  if (previewFsUiHideTimer) clearTimeout(previewFsUiHideTimer);
+  previewFsUiHideTimer = setTimeout(function () {
+    previewFsUiHideTimer = null;
+    if (!isPreviewFullscreenActive()) return;
+    if (previewFsUiPointerOverControls) {
+      schedulePreviewFullscreenUiHide(400);
+      return;
+    }
+    setPreviewFullscreenUiVisible(false);
+  }, delayMs || 1400);
+}
+
+function revealPreviewFullscreenUiOnMove(target) {
+  previewFsUiPointerOverControls = !!(
+    target &&
+    target.closest &&
+    target.closest(
+      '.preview-slideshow-controls, .preview-window-controls, .preview-nav, .preview-zoom-box',
+    )
+  );
+  if (previewFsUiArmRaf) return;
+  previewFsUiArmRaf = requestAnimationFrame(function () {
+    previewFsUiArmRaf = 0;
+    setPreviewFullscreenUiVisible(true);
+    schedulePreviewFullscreenUiHide(1100);
+  });
+}
+
+/** 进出全屏的唯一提交点：`is-fullscreen` / `fs-ui-visible` 只许在这里改。 */
+function syncPreviewFullscreenChrome() {
+  var overlay = $('#previewOverlay');
+  if (!overlay) return;
+  var isFs = document.fullscreenElement === overlay;
+  overlay.classList.toggle('is-fullscreen', isFs);
+  // 进出全屏时指针位置是上一次交互的残留（刚点完「全屏」光标还压在按钮上），
+  // 必须重置，否则那一次悬停会把浮层控件永久钉住。
+  previewFsUiPointerOverControls = false;
+  if (isFs) {
+    setPreviewFullscreenUiVisible(true);
+    schedulePreviewFullscreenUiHide(1200);
+  } else {
+    if (previewFsUiHideTimer) {
+      clearTimeout(previewFsUiHideTimer);
+      previewFsUiHideTimer = null;
+    }
+    setPreviewFullscreenUiVisible(false);
+  }
+}
+
 function enforceMobileSubtitleDefault() {
   if (!state.isMobile) return;
   if (state.subtitleEnabled === true) return;
@@ -711,11 +956,7 @@ async function init() {
       }).catch(function () {});
     },
   };
-  var savedTheme = 'midnight_classic';
-  try {
-    savedTheme = WebTheme.normalizeWebThemeStyle(localStorage.getItem('webThemeStyle'));
-  } catch (e) {}
-  applyWebThemeStyle(savedTheme);
+  applyWebAppearance(readWebAppearance());
   try {
     var wdgs = localStorage.getItem('dateGroupsSortOrder');
     if (wdgs === 'asc' || wdgs === 'desc') state.dateGroupsSortOrder = wdgs;
@@ -797,6 +1038,13 @@ function openMobileFilterSheet() {
   var themeSel = $('#webThemeStyle');
   var mobileThemeSel = $('#mobileThemeStyleSelect');
   if (themeSel && mobileThemeSel) mobileThemeSel.value = themeSel.value;
+  /* 桌面顶栏的强调色 / 背景基调同步进面板（两处是同一份状态的两张脸） */
+  var accentSel = $('#webAccentSelect');
+  var mobileAccentSel = $('#mobileAccentSelect');
+  if (accentSel && mobileAccentSel) mobileAccentSel.value = accentSel.value;
+  var bgSel = $('#webBackgroundSelect');
+  var mobileBgSel = $('#mobileBackgroundSelect');
+  if (bgSel && mobileBgSel) mobileBgSel.value = bgSel.value;
   var sortSel = $('#sortSelect');
   var mobileSortSel = $('#mobileSortSelect');
   if (sortSel && mobileSortSel) mobileSortSel.value = sortSel.value;
@@ -1140,6 +1388,19 @@ function bindEvents() {
     previewOverlayEl.addEventListener('click', function (e) {
       if (e.target === previewOverlayEl) closePreview();
     });
+
+    // 全屏下鼠标一动就唤出全部浮层控件（静止约 1.1s 后统一收起）。
+    // 移动端没有鼠标，走 mobile-nav-visible 那条老路，这里直接跳过。
+    previewOverlayEl.addEventListener('mousemove', function (e) {
+      if (state.isMobile) return;
+      if (!previewOverlayEl.classList.contains('is-fullscreen')) return;
+      revealPreviewFullscreenUiOnMove(e.target);
+    });
+    previewOverlayEl.addEventListener('mouseleave', function () {
+      if (!previewOverlayEl.classList.contains('is-fullscreen')) return;
+      previewFsUiPointerOverControls = false;
+      schedulePreviewFullscreenUiHide(180);
+    });
   }
   var previewBody = document.querySelector('.preview-body');
   if (previewBody) {
@@ -1311,7 +1572,10 @@ function bindEvents() {
     });
   }
   syncSlideshowRandomButton();
-  document.addEventListener('fullscreenchange', syncFullscreenButton);
+  document.addEventListener('fullscreenchange', function () {
+    syncFullscreenButton();
+    syncPreviewFullscreenChrome();
+  });
 
   // comment cleaned
   var sidebarContentEl = $('#sidebarContent');
@@ -1814,6 +2078,63 @@ function showSidebarLoadingPlaceholder(hintText) {
 /** 与桌面端一致：避免连续 hydrate 与重新 loadRootFolders 互相覆盖 */
 var webRootFoldersHydrateGen = 0;
 
+/* 目录树缩进口径 —— **必须与 `src/renderer/sidebar-tree.js` 逐字段相同**
+   （守护：`sidebar-tree-regression` 的「两端同口径」一节）。样式在两端共用的
+   `src/web/css/gallery-design.css`，那里有完整的口径说明。
+   父行 `12 + 14d`（自带 18px 箭头槽 + 8px 行 gap），叶子行补满槽宽 + gap
+   才能与同级父行的 `.name` 左缘对齐；导线画在父行箭头槽中心。 */
+var TREE_INDENT_BASE = 12;
+var TREE_INDENT_STEP = 14;
+var TREE_TOGGLE_SLOT = 18;
+var TREE_ROW_GAP = 8;
+
+/** depth 层「父行」的缩进量 */
+function treeRowIndent(depth) {
+  return TREE_INDENT_BASE + depth * TREE_INDENT_STEP;
+}
+
+/** depth 层「叶子行」的缩进量（补满箭头槽 + 间距，与同级父行的名字对齐） */
+function treeLeafIndent(depth) {
+  return treeRowIndent(depth) + TREE_TOGGLE_SLOT + TREE_ROW_GAP;
+}
+
+/** depth 层节点的子层导线 x：画在该节点箭头槽的中心 */
+function treeGuideX(depth) {
+  return treeRowIndent(depth) + Math.floor(TREE_TOGGLE_SLOT / 2);
+}
+
+/** 展开态动画时长（与 gallery-design.css 的 `.is-opening` 对齐） */
+var TREE_OPEN_ANIM_MS = 220;
+
+/** 打开/关闭一个子层容器：类名 + 行内 display 双写，箭头随容器翻转。
+    与桌面端 `openTreeChildren()/closeTreeChildren()` 同一契约（去掉懒物化那部分）。 */
+function setTreeChildrenOpen(children, toggle, open, animate) {
+  if (!children) return;
+  children.style.display = open ? 'block' : 'none';
+  if (open) children.classList.add('expanded');
+  else children.classList.remove('expanded');
+  if (toggle) {
+    if (open) toggle.classList.add('is-expanded');
+    else toggle.classList.remove('is-expanded');
+  }
+  if (!open || animate === false) {
+    children.classList.remove('is-opening');
+    return;
+  }
+  // 重开一次要能重播：先摘掉再强制 reflow，否则连续展开只有第一次有动画
+  children.classList.remove('is-opening');
+  void children.offsetWidth;
+  children.classList.add('is-opening');
+  setTimeout(function () {
+    children.classList.remove('is-opening');
+  }, TREE_OPEN_ANIM_MS);
+}
+
+/** 子层容器标记：关闭态 = 没有 `.expanded`（+ 行内 display:none） */
+function treeChildrenAttrs(depth) {
+  return 'class="tree-children" style="display:none;--tree-guide-x:' + treeGuideX(depth) + 'px;"';
+}
+
 function formatRootFolderCount(n) {
   if (n == null || n === '') return '\u2014';
   return formatNumber(n);
@@ -1859,14 +2180,15 @@ function renderRootFoldersSidebarHtml() {
       var isRootActive = state.currentView === 'root' && state._rootId === f.id;
       html += '<div class="tree-root">';
       html +=
-        '<div class="folder-item tree-header ' +
+        '<div class="folder-item tree-parent ' +
         (isRootActive ? 'active' : '') +
         '" data-root-id="' +
         f.id +
         '" data-action="view-root">' +
-        '<span class="tree-toggle" data-action="toggle-root" data-root-id="' +
+        // 箭头是空的（CSS chevron）：展开态由 `is-expanded` 决定，见 gallery-design.css
+        '<span class="tree-toggle" data-action="toggle-root" data-tree-toggle="root" data-root-id="' +
         f.id +
-        '">\u25B6</span>' +
+        '"></span>' +
         '<span class="icon">\uD83D\uDCC1</span><span class="name" title="' +
         escapeHtml(f.path) +
         '">' +
@@ -1875,7 +2197,13 @@ function renderRootFoldersSidebarHtml() {
         '<span class="count">' +
         formatRootFolderCount(f.photo_count) +
         '</span></div>';
-      html += '<div class="tree-children collapsed" id="treeChildren-' + f.id + '"></div>';
+      // 关闭态：无 `.expanded` + 行内 display:none；子目录拉回来后由 setTreeChildrenOpen 打开
+      html +=
+        '<div class="tree-children" style="display:none;--tree-guide-x:' +
+        treeGuideX(0) +
+        'px;" id="treeChildren-' +
+        f.id +
+        '"></div>';
       html += '</div>';
     }
   }
@@ -1966,15 +2294,14 @@ function loadOneRootFolderTree(root) {
         });
         var tree = buildTree(root.path, subFolders);
         var container = document.getElementById('treeChildren-' + root.id);
+        var treeToggle = container ? container.parentElement.querySelector('.tree-toggle') : null;
         if (container && tree.length > 0) {
           container.innerHTML = renderTreeNodes(tree, 1);
-          container.classList.remove('collapsed');
-          var treeToggle = container.parentElement.querySelector('.tree-toggle');
-          if (treeToggle) treeToggle.textContent = '\u25BC';
+          // 首屏把所有库的树一次铺开：不播开合动画（与桌面端 expandTreeToFolder 同一口径）
+          setTreeChildrenOpen(container, treeToggle, true, false);
         } else if (container) {
-          container.classList.add('collapsed');
-          var treeToggleHidden = container.parentElement.querySelector('.tree-toggle');
-          if (treeToggleHidden) treeToggleHidden.style.visibility = 'hidden';
+          setTreeChildrenOpen(container, treeToggle, false, false);
+          if (treeToggle) treeToggle.style.visibility = 'hidden';
         }
         resolve();
       })
@@ -2044,44 +2371,59 @@ function sortTree(nodes) {
   }
 }
 
+/** 目录行 HTML。缩进口径同桌面端：父行 `12+14d`、叶子行 `+26`（补满箭头槽）。
+    子层容器只留标记，展开态走 `setTreeChildrenOpen()`。 */
 function renderTreeNodes(nodes, depth) {
   var html = '';
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
-    var indent = 16 + depth * 16;
     var isActive = state.currentView === 'folder' && state.currentPath === node.fullPath;
     var hasChildren = node.children.length > 0;
-    var toggleHtml = hasChildren
-      ? '<span class="tree-toggle" data-action="toggle-node">▶</span>'
-      : '<span class="tree-toggle" style="visibility:hidden">▶</span>';
+    var countHtml =
+      node.photoCount > 0 ? '<span class="count">' + formatNumber(node.photoCount) + '</span>' : '';
 
     html += '<div class="tree-node">';
-    html +=
-      '<div class="folder-item ' +
-      (isActive ? 'active' : '') +
-      '" style="padding-left:' +
-      indent +
-      'px;" data-folder-path="' +
-      escapeAttr(node.fullPath) +
-      '">' +
-      toggleHtml +
-      '<span class="icon">' +
-      (hasChildren ? '\uD83D\uDCC1' : '\uD83D\uDCC2') +
-      '</span>' +
-      '<span class="name" title="' +
-      escapeHtml(node.fullPath) +
-      '">' +
-      escapeHtml(node.name) +
-      '</span>';
-    if (node.photoCount > 0) {
-      html += '<span class="count">' + formatNumber(node.photoCount) + '</span>';
-    }
-    html += '</div>';
-
     if (hasChildren) {
       html +=
-        '<div class="tree-children collapsed">' +
+        '<div class="folder-item tree-parent ' +
+        (isActive ? 'active' : '') +
+        '" style="padding-left:' +
+        treeRowIndent(depth) +
+        'px;" data-folder-path="' +
+        escapeAttr(node.fullPath) +
+        '">' +
+        '<span class="tree-toggle" data-action="toggle-node" data-tree-toggle="node"></span>' +
+        '<span class="icon">\uD83D\uDCC1</span>' +
+        '<span class="name" title="' +
+        escapeHtml(node.fullPath) +
+        '">' +
+        escapeHtml(node.name) +
+        '</span>' +
+        countHtml +
+        '</div>';
+      html +=
+        '<div ' +
+        treeChildrenAttrs(depth) +
+        '>' +
         renderTreeNodes(node.children, depth + 1) +
+        '</div>';
+    } else {
+      // 叶子行没有箭头槽，靠 padding 把名字对齐到同级父行（旧实现放了个隐藏的假箭头）
+      html +=
+        '<div class="folder-item ' +
+        (isActive ? 'active' : '') +
+        '" style="padding-left:' +
+        treeLeafIndent(depth) +
+        'px;" data-folder-path="' +
+        escapeAttr(node.fullPath) +
+        '">' +
+        '<span class="icon">\uD83D\uDCC2</span>' +
+        '<span class="name" title="' +
+        escapeHtml(node.fullPath) +
+        '">' +
+        escapeHtml(node.name) +
+        '</span>' +
+        countHtml +
         '</div>';
     }
     html += '</div>';
@@ -2089,34 +2431,23 @@ function renderTreeNodes(nodes, depth) {
   return html;
 }
 
+/** 开合一个子层：判据与桌面端一致（看行内 display），箭头由容器状态驱动 */
+function toggleTreeChildren(toggle, children) {
+  if (!children) return;
+  if (children.style.display === 'none') setTreeChildrenOpen(children, toggle, true, true);
+  else setTreeChildrenOpen(children, toggle, false);
+}
+
 function toggleTreeRoot(toggle, event, _rootId) {
   event.stopPropagation();
-  var children = toggle.closest('.tree-root').querySelector('.tree-children');
-  if (!children) return;
-  var isCollapsed = children.classList.contains('collapsed');
-  if (isCollapsed) {
-    children.classList.remove('collapsed');
-    toggle.textContent = '\u25BC';
-  } else {
-    children.classList.add('collapsed');
-    toggle.textContent = '\u25B6';
-  }
+  toggleTreeChildren(toggle, toggle.closest('.tree-root').querySelector('.tree-children'));
 }
 
 function toggleTreeNode(toggle, event) {
   event.stopPropagation();
   var node = toggle.closest('.tree-node');
   if (!node) return;
-  var children = node.querySelector(':scope > .tree-children');
-  if (!children) return;
-  var isCollapsed = children.classList.contains('collapsed');
-  if (isCollapsed) {
-    children.classList.remove('collapsed');
-    toggle.textContent = '\u25BC';
-  } else {
-    children.classList.add('collapsed');
-    toggle.textContent = '\u25B6';
-  }
+  toggleTreeChildren(toggle, node.querySelector(':scope > .tree-children'));
 }
 
 function viewRootFolder(rootId) {
@@ -2386,10 +2717,9 @@ function applyCardSize() {
     pg.style.setProperty('--grid-card-basis', String(state.cardSize));
     capMasonryColumns(pg);
   }
-  var zl = $('#zoomLabel');
-  if (zl) {
-    zl.textContent = CARD_SIZE_TIERS[browseCardTierIndexForBasis(state.cardSize)].label;
-  }
+  // 网页端没有「S/M/L/XL」读数药丸（卡片尺寸是 `.card-size-btn` 那排按钮），
+  // 曾经这里还写过一句给 `#zoomLabel` 赋读数的代码，但那个 id 只存在于桌面端
+  // index.html —— 一句永远命中不了的死代码，已删。
   // 同步卡片大小按钮状态
   document
     .querySelectorAll('#cardSizeButtons button, #cardSizeGroup button')
@@ -3298,6 +3628,9 @@ function closePreview(fromHistory) {
   }
   setPreviewMobileUiHidden(false);
   setMobilePreviewNavVisible(false);
+  // 关预览时兜底清一次全屏浮层态：exitFullscreen 的 fullscreenchange 是异步的，
+  // 若这次退出全屏没有触发事件，残留的 is-fullscreen 会让下次窗口化预览的浮层控件消失。
+  syncPreviewFullscreenChrome();
   var overlay = $('#previewOverlay');
   var previewBody = document.querySelector('.preview-body');
   if (previewBody) {
@@ -3920,113 +4253,64 @@ function _removePreviewInfoPanelListeners() {
   document.removeEventListener('keydown', _closePreviewInfoPanelOnEsc);
 }
 
+/**
+ * 「照片信息」面板显示哪些字段。
+ *
+ * 字段清单本身在共享注册表 `window.PhotoInfoFields`（`/js/photo-info-fields.js`）里，
+ * 桌面端与网页端同一份；**勾选结果**同样以桌面端为唯一入口，这里通过 `/api/info-fields`
+ * 只读过来。拿不到就留 null → 注册表用默认集，于是网页端不会因为接口异常变空面板。
+ * 缓存按「每次打开面板刷新」失效，桌面端刚改完再打开面板就能看到。
+ */
+var previewInfoFieldsCache = null;
+
+async function refreshPreviewInfoFields() {
+  try {
+    var r = await apiGet('/api/info-fields');
+    if (r && Array.isArray(r.fields)) previewInfoFieldsCache = r.fields;
+  } catch (e) {
+    // 保持 null / 上次的值，不回退成空数组 —— 那会让面板整块空白
+  }
+  return previewInfoFieldsCache;
+}
+
 async function loadPreviewInfoPanel(photo) {
   var contentEl = $('#previewInfoPanelContent');
   if (!contentEl) return;
+  var fieldsApi = window.PhotoInfoFields;
+  if (!fieldsApi) {
+    contentEl.innerHTML = '<div class="preview-info-empty">照片信息模块未加载</div>';
+    return;
+  }
 
-  function renderInfo(info) {
-    var sections = [];
-    function startSection(title) {
-      sections.push(
-        '<div class="preview-info-section"><div class="preview-info-section-title">' +
-          escapeHtml(title) +
-          '</div><div class="preview-info-section-body">',
-      );
-    }
-    function endSection() {
-      sections.push('</div></div>');
-    }
-    function addToSection(label, value) {
-      if (value == null || value === '' || value === 0) return;
-      sections.push(
-        '<div class="preview-info-row"><span class="preview-info-label">' +
-          escapeHtml(label) +
-          '</span><span class="preview-info-value">' +
-          escapeHtml(String(value)) +
-          '</span></div>',
-      );
-    }
+  // 最近一次上屏的数据：/api/info-fields 回来晚于首屏时用它重画，避免闪一下再消失
+  var lastInfo = null;
 
-    // 基本信息
-    var hasBasic =
-      info.file_name ||
-      info.file_path ||
-      info.file_type ||
-      (info.width && info.height) ||
-      info.file_size;
-    if (hasBasic) {
-      startSection('基本信息');
-      addToSection('文件名', info.file_name);
-      addToSection('路径', info.file_path);
-      addToSection('类型', info.file_type);
-      if (info.width && info.height) addToSection('尺寸', info.width + ' × ' + info.height);
-      if (info.file_size) addToSection('大小', formatSize(info.file_size));
-      endSection();
-    }
-
-    // 时间
-    var hasTime = info.date_taken || info.date_modified;
-    if (hasTime) {
-      startSection('时间');
-      addToSection(
-        '拍摄时间',
-        info.date_taken ? info.date_taken.replace('T', ' ').substring(0, 19) : '',
-      );
-      addToSection(
-        '修改时间',
-        info.date_modified ? info.date_modified.replace('T', ' ').substring(0, 19) : '',
-      );
-      endSection();
-    }
-
-    // 拍摄参数
-    var hasParam = info.focal_length || info.aperture || info.iso_speed || info.shutter_speed;
-    if (hasParam) {
-      startSection('拍摄参数');
-      addToSection('焦距', info.focal_length ? info.focal_length + ' mm' : '');
-      addToSection('光圈', info.aperture ? 'f/' + info.aperture : '');
-      addToSection('ISO', info.iso_speed);
-      addToSection('快门速度', info.shutter_speed);
-      endSection();
-    }
-
-    // 设备
-    var hasDevice = info.camera_make || info.camera_model || info.lens_model;
-    if (hasDevice) {
-      startSection('设备');
-      addToSection('相机品牌', info.camera_make);
-      addToSection('相机型号', info.camera_model);
-      addToSection('镜头', info.lens_model);
-      endSection();
-    }
-
-    // 位置
-    if (info.gps_latitude != null && info.gps_longitude != null) {
-      startSection('位置');
-      addToSection(
-        'GPS',
-        Number(info.gps_latitude).toFixed(6) + ', ' + Number(info.gps_longitude).toFixed(6),
-      );
-      endSection();
-    }
-
-    contentEl.innerHTML = sections.length
-      ? sections.join('')
-      : '<div class="preview-info-empty">无可用信息</div>';
+  function render(info) {
+    lastInfo = info;
+    contentEl.innerHTML = fieldsApi.buildSectionsHtml(info, {
+      fields: previewInfoFieldsCache,
+      // 网页端预览没有「第几张 / 共几张」读数 → 不给 position，注册表会跳过「浏览」分组
+      position: '',
+      // 网页端样式依赖这个容器（桌面端没有）
+      sectionBody: true,
+    });
   }
 
   // 先用 photo 对象中已有的基础信息立即渲染，避免空白
   var baseInfo = {
+    id: photo.id,
     file_name: photo.file_name || '',
     file_path: photo.file_path || '',
+    folder_path: photo.folder_path || '',
     file_type: photo.file_type || '',
     width: photo.width || photo.pixel_width || photo.file_width || 0,
     height: photo.height || photo.pixel_height || photo.file_height || 0,
     file_size: photo.file_size || 0,
     date_taken: photo.date_taken || '',
     date_modified: photo.date_modified || '',
+    is_favorite: photo.is_favorite,
   };
-  renderInfo(baseInfo);
+  render(baseInfo);
 
   try {
     var apiInfo = await apiGet('/api/photo-info?id=' + photo.id);
@@ -4035,11 +4319,28 @@ async function loadPreviewInfoPanel(photo) {
       var merged = {};
       for (var k in baseInfo) merged[k] = baseInfo[k];
       for (var k2 in apiInfo) merged[k2] = apiInfo[k2];
-      renderInfo(merged);
+      render(merged);
     }
   } catch (e) {
     // 保留已渲染的基础信息，不再显示错误提示
   }
+
+  // AI 标签在**搜图索引库**里（跨库），单独一条只读接口；拿不到就不加这个键 ——
+  // 注册表把「没有 ai_tags」与「空数组」一视同仁地整行隐藏（网页端没有语言切换，
+  // 用默认的 zh-CN，与它渲染其它字段的口径一致）。
+  try {
+    var tagRes = await apiGet('/api/photo-ai-tags?id=' + photo.id);
+    if (tagRes && Array.isArray(tagRes.tags) && tagRes.tags.length && lastInfo) {
+      lastInfo.ai_tags = tagRes.tags;
+      render(lastInfo);
+    }
+  } catch (e) {
+    // 索引库不存在 / 此刻读不到都走这里，面板少一行而已
+  }
+
+  // 字段集可能刚被桌面端改过：拉到新值后用同一份数据重画一次
+  var ids = await refreshPreviewInfoFields();
+  if (ids && lastInfo) render(lastInfo);
 }
 
 // === 收藏 ===
@@ -4343,6 +4644,9 @@ window.toggleMobileSidebar = toggleMobileSidebar;
 window.openMobileFilterSheet = openMobileFilterSheet;
 window.closeMobileFilterSheet = closeMobileFilterSheet;
 window.applyWebThemeStyle = applyWebThemeStyle;
+window.applyWebAppearance = applyWebAppearance;
+window.changeWebAccent = changeWebAccent;
+window.changeWebBackground = changeWebBackground;
 window.showInstallGuide = showInstallGuide;
 window.changeMediaFilter = changeMediaFilter;
 window.changeSort = changeSort;

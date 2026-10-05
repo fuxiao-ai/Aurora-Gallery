@@ -27,18 +27,50 @@ const Database = require('./database');
 const dbReadWorkerPool = require('./db-read-worker-pool');
 const { runDatabaseMaintenance } = require('./main/database-maintenance');
 const maintenanceGuard = require('./main/maintenance-guard');
-const { createDbWriteQueue } = require('./main/db-write-queue');
+const { createDbWriteQueue, PRIORITY } = require('./main/db-write-queue');
+/**
+ * 「能不能建 AI 索引」的判据。剥成独立模块是为了能被回归脚本真跑 —— 这条判据曾经因为
+ * 与 FTS 共用同一个开关，把开机期的正常点击误报成「数据库维护进行中」。
+ */
+const { aiIndexCanRun } = require('./main/ai-index-gate');
+/**
+ * 用户交互抢占信号：搜图查询进行中时，后台长任务在批次边界停下让位。
+ * 与内嵌网页 API 共用同一份单例（同进程），所以网页端搜图也会让后台任务让位。
+ */
+const { interactionPreempt } = require('./main/interaction-preempt');
+/**
+ * 照片信息面板的字段注册表：与渲染端 / 网页端**同一份**。
+ * 主进程只取它的 id 白名单与默认集做设置项校验 —— 于是「设置页能勾的」与
+ * 「面板能画的」不可能对不上（曾经这类双份硬编码清单漂过好几次）。
+ */
+const PHOTO_INFO_FIELDS = require('./web/js/photo-info-fields.js');
+
 /**
  * 启动期写库任务串行闸门。缩略图标记修复 / 延迟索引 / FTS 维护各起一个 worker，
  * 过去各自 setTimeout 点火、互相不认识，后到的那个等满 busy_timeout=8000 就撞
  * `database is locked`。这里排成一队，并把队列状态并进 maintenanceBusy()，
  * 让界面触发的维护也知道该等、并报出在等谁。
  */
+/**
+ * 🔴 高频批次任务名单：它们现在**每一批都要重入队列**（见 `runThumbnailBackfill` /
+ * `runDuplicateHashDetection`），若照常打点会把启动阶段埋点刷爆 —— 百万库上回填一批 100 张、
+ * 重复哈希一个子批 24 张，走完全库就是几万条 `db-write.start/done`。
+ * 这两个任务本来就各有自己的 logger 输出，这里静默即可。
+ */
+const DB_WRITE_QUIET_TASKS = {
+  'thumbnail-backfill': true,
+  'dup-hash': true,
+  // 扫描（T2 起占一次闸门、租约粒度 = 整次扫描）：时长无上界，一条 db-write.start/done
+  // 跨度可能是几十分钟，混进启动阶段埋点会把「某阶段耗时」算成天文数字。
+  scan: true,
+};
 const dbWriteQueue = createDbWriteQueue({
   onStart: function (name) {
+    if (DB_WRITE_QUIET_TASKS[name]) return;
     startupStageLog('db-write.start', 'task=' + name);
   },
   onSettle: function (name, error) {
+    if (DB_WRITE_QUIET_TASKS[name]) return;
     startupStageLog('db-write.done', 'task=' + name + (error ? ' error=' + error.message : ''));
   },
 });
@@ -52,6 +84,9 @@ const { idListPredicate, toIdListJson } = require('./main/sql-id-list');
 const { computeDhash, getDhashBuckets } = require('./main/perceptual-hash');
 /** 搜图匹配阈值的范围与默认值：唯一定义处（src/ai/index-store.js），设置默认值从它取。 */
 const { MATCH_THRESHOLD_RANGE } = require('./ai/index-store');
+// 随包内置模型（`models/`）的播种层：只读 fs/path/crypto，不碰 electron 与原生模块，
+// 因此可以在主进程顶部直接引，不会给启动加任何重量。
+const bundledModels = require('./ai/bundled-models');
 
 /** 懒加载：避免冷启动即解析 ffmpeg-static 路径（磁盘/解压成本） */
 var cachedFfmpegStaticPath;
@@ -228,6 +263,11 @@ var workerScanProgress = {
 /** 当前目录扫描开始时间（毫秒），用于预计剩余时间 */
 var workerScanStartedAt = 0;
 var scanQueue = [];
+/**
+ * 规范化 rootPath → 扫描任务，用于**同目录去重**（见 `enqueueScanTask`）。
+ * 没这个表的话，重复点「扫描」会真的排两次、扫两遍同一个目录。
+ */
+var scanTasksByRoot = new Map();
 var isScanQueueProcessing = false;
 var currentScanTask = null;
 var scanTaskIdSeq = 1;
@@ -255,8 +295,25 @@ var autoDuplicateHashScheduled = false;
 var autoDuplicateHashRetryTimer = null;
 var sqliteDbPath = '';
 var semanticSearch = null;
+/** 照片信息面板读「AI 内容标签」的只读通道（标签在搜图索引库里，不在 photos 表）。 */
+var semanticTags = null;
 var faceService = null;
+/**
+ * 有维护任务在跑（**两种语义的或集**，供「界面显示优化中 / 长任务避让 / 禁止退出」使用）。
+ *
+ * ⚠️ 它**不再**是 AI 索引的准入判据 —— 见下面 `exclusiveMaintenanceRunning`。
+ */
 var optimizeTaskRunning = false;
+/**
+ * 只有**独占整库**的维护（VACUUM / 重建缩略图标记）才为真，AI 索引必须为它让路。
+ *
+ * 与 `optimizeTaskRunning` 分开的直接原因：启动期的 FTS 索引（`ensureFtsIndex`）也占着
+ * `optimizeTaskRunning`，但它是**批量写**，与 AI 索引走同一条写库队列、彼此不会撞锁。
+ * 两者共用一个变量时，开机十几秒内点「建 AI 索引」会被误报 `AI_MAINTENANCE`。
+ * 判据本身在 `src/main/ai-index-gate.js`（可被回归真跑）。
+ */
+var exclusiveMaintenanceRunning = false;
+
 var maintenanceResult = null;
 function maintenanceBusy() {
   return (
@@ -283,12 +340,22 @@ function dbWriteBusyLabel() {
   if (name === 'deferred-index') return '数据库索引补齐';
   if (name === 'fts-index') return '文件名索引重建';
   if (name === 'invalid-cleanup') return '清理失效文件记录';
+  // 回填 / 重复哈希现在是**按批次**占写锁的，批间会放开让别的任务过，
+  // 所以它们也会出现在 busyName() 里（过去这两个任务压根不进队）。
+  if (name === 'thumbnail-backfill') return '缩略图补全';
+  if (name === 'dup-hash') return '重复文件比对';
+  // 扫描（T2 起）也占闸门：它是最长的一个占用者，报出名字比笼统的「后台任务」有用得多
+  if (name === 'scan') return '目录扫描';
+  // 手动维护这两条一直漏了映射 → 界面会直接显示英文任务名
+  if (name === 'maintenance-rebuild-thumbnail-flags') return '重建缩略图标记';
+  if (name === 'maintenance-optimize-database') return '优化数据库（VACUUM）';
   return name;
 }
 /** 维护被挡时的文案：能让用户知道在等谁、等的是什么，比笼统的 busy 有用得多。 */
 function maintenanceBusyMessage() {
   var label = dbWriteBusyLabel();
-  if (label) return '启动期数据库任务进行中（' + label + '），请等它跑完再试';
+  // 不再写「启动期」：T2 起扫描、手动维护也走同一条队列，被挡住的未必是启动期任务
+  if (label) return '后台任务进行中（' + label + '），请等它跑完再试';
   return '后台任务进行中，请稍后再试';
 }
 function aiIndexTaskBusy() {
@@ -367,7 +434,10 @@ async function performMaintenance(operation) {
     }
   } finally {
     db.db.pragma('busy_timeout = 8000');
+    // 两个标志都在这里收口：`performMaintenance` 是维护的唯一出口（不论走哪个 operation、
+    // 成功还是失败），漏清一个就会让 AI 索引被永久拒之门外 —— 那种卡死没有任何报错。
     optimizeTaskRunning = false;
+    exclusiveMaintenanceRunning = false;
     emitBackgroundTasksChangedThrottled(true);
   }
 }
@@ -618,16 +688,154 @@ configureWritableAppPaths();
 // === Settings ===
 var settingsFilePath;
 
+/**
+ * 强调色 / 背景基调允许集。⚠️ 必须与渲染层 `ui-shell.js` 的 UI_ACCENT_ALLOWED / UI_BG_ALLOWED
+ * 以及 `index.html` 首帧脚本里的 ACC / BG 表逐项一致（`theme-regression` 断言）。
+ * `glass` / `aurora` 是「材质档」：面板 --glass / --bg-card 走半透明 rgba，把 body 里那层
+ * `.aurora-bg` 极光透出来 —— 所以它们的视觉差异主要由**面板透明度**承载，--bg 只是基色。
+ * 后四色 / 后四档（coral / indigo / green / red、paper / mist / forest / clay）是「自定义两维」
+ * 的补充选项，**不被任何预设使用** → 选中时 themeStyle 解析为空串「自定义组合」，是预期行为。
+ */
+var UI_ACCENT_ALLOWED = [
+  'violet',
+  'cyan',
+  'teal',
+  'rose',
+  'amber',
+  'mono',
+  'coral',
+  'indigo',
+  'green',
+  'red',
+];
+var UI_BG_ALLOWED = [
+  'default',
+  'ink',
+  'warm',
+  'cool',
+  'amoled',
+  'glass',
+  'aurora',
+  'paper',
+  'mist',
+  'forest',
+  'clay',
+];
+
+/**
+ * 材质纹理允许集。⚠️ 必须与渲染层 `ui-shell.js` 的 UI_TEXTURE_ALLOWED、`index.html` 首帧脚本里的
+ * TEX 表、网页端 `web-theme-shared.js` 的 WEB_TEXTURE_ALLOWED / TEXTURE_TOKENS 逐项一致
+ * （`theme-regression` 断言）。
+ *
+ * 这是**第三个正交维度**（前两个是强调色 / 背景基调）：纹理画在 `body::after` 装饰层上，
+ * 与底色、强调色、深浅任意叠加 → 「深林 + 亚麻布」「纯黑 + 颗粒」都能选。
+ * `none` 档**不设属性**（与 `data-bg` 的 `default` 档同惯例）→ 渲染层走 `removeAttribute('data-texture')`，
+ * CSS 侧只能写 `:not([data-texture])`。所以这里的 `none` 是**语义占位**，与另外三个下拉的
+ * 「默认 / 自定义组合」占位项同理。
+ *
+ * ⚠️ 纹理**不被任何预设使用**（预设仍然只固定 theme/uiAccent/uiBackground 三个字段）→
+ * 选中纹理时 `themeStyle` 照旧由三元组反推，**不受纹理影响**，这是预期行为。
+ */
+var UI_TEXTURE_ALLOWED = [
+  'none',
+  'grain',
+  'paper',
+  'linen',
+  'frost',
+  'grid',
+  'dots',
+  'stripe',
+  'wood',
+];
+
+/**
+ * 面板透明度允许集。⚠️ 必须与渲染层 `ui-shell.js` 的 UI_OPACITY_ALLOWED、`index.html`
+ * 首帧脚本里的 OPA 表、网页端 `web-theme-shared.js` 的 WEB_OPACITY_ALLOWED / OPACITY_TOKENS
+ * 逐项一致（`theme-regression` 断言）。
+ *
+ * 这是**第五个正交维度**：把「界面框架」那几张面（标题栏 / 顶栏 / 工具栏 / 侧栏 / 图标栏 /
+ * 内容区 / 分页条 / 设置页）的底色按一个 alpha 乘子掺进 transparent，**照片与照片卡片一律不动**。
+ * 与 `uiTexture` 同惯例：`opaque` 档**不设属性**（= 不设 `data-opacity`）→ 默认外观逐字节不变，
+ * CSS 侧一律带 `html[data-opacity]` 闸门。
+ *
+ * 🔴 它与 `uiTexture` 一样**不被任何预设使用**（预设仍只固定 theme/uiAccent/uiBackground）
+ * → 选中时 `themeStyle` 照旧由三元组反推，**不受透明度影响**，这是预期行为。
+ * 🔴 见 `styles.css` 里 `--ui-alpha` 那组注释：只降面板 alpha 是看不出效果的，
+ * 必须**同步提亮 `.aurora-blob`**（与 `glass` / `aurora` 两个材质档同一手）。
+ */
+var UI_OPACITY_ALLOWED = ['opaque', 'slight', 'medium', 'clear'];
+
+/**
+ * 窗口背景允许集 —— 外观家族的**第五个正交维度**，但它**不是配色维度，而是窗口级开关**。
+ *
+ * 语义：`solid`（默认）= 选中这一维之前的样子：窗口**不透明**，其余五维照常工作，
+ * 视觉与性能零影响；`acrylic` = 整个窗口做成透明的「亚克力毛玻璃」，桌面透过面板显示。
+ *
+ * ⚠️ 它的机制与前五维**本质不同**，别照抄那五维的改法：
+ *   1. 前五维全是「html 属性 → CSS 变量块」，改完当帧就变；这一维**一半在主进程** ——
+ *      `transparent` / `backgroundColor` / `backgroundMaterial` 都是 `BrowserWindow` 的
+ *      **创建参数，运行时改不了**（`setBackgroundMaterial` 是唯一的运行时接口，而且只能换
+ *      已有材质的种类，不能把不透明窗口变透明）→ **改这一档必须重启**（或关闭主窗口后
+ *      再从托盘/`activate` 唤出，那条路径会 `createWindow` 重建）。
+ *   2. 渲染层那份 `data-window-backdrop` 只负责「让 body 与面板带上 alpha」，
+ *      必须与窗口参数**同时成立**，缺一半就是「全黑」或「透不出去」的怪相。
+ *   3. 它**不进顶栏 `#quickThemeStyle`**：那一栏的核心交互是「鼠标划过即预览」，
+ *      而这一维在重启前**不可能**预览 → 放进去就是「划过毫无反应」的假承诺。
+ *      所以它只有设置页一处入口，与 `windowCloseBehavior` 同级。
+ *   4. 网页端不涉及（没有窗口）→ `src/web/**` 里**不该出现**这个字段。
+ *
+ * ⚠️ 生效范围：`backgroundMaterial: 'acrylic'` 只在 **Windows 11 22H2（10.0.22621）及以上**
+ *    有效（见 `electron.d.ts` 里 `setBackgroundMaterial` 的原文）。更低的 Windows / macOS
+ *    上窗口照样透明，但**没有系统模糊**（等于「直接看穿」）；系统「设置 → 个性化 → 颜色 →
+ *    透明效果」关掉时，Windows 也会静默降级成实色。三种情况**都不报错**，属预期降级，
+ *    只有主进程日志里会留一条 warn —— 见 `supportsAcrylicBackdrop()`。
+ */
+var UI_WINDOW_BACKDROP_ALLOWED = ['solid', 'acrylic-light', 'acrylic', 'acrylic-strong'];
+
+/**
+ * 这台机器能不能真的拿到「亚克力」模糊。判据只能是**内核版本号**：
+ * Windows 11 在 `os.release()` 里依然自报 `10.0.22631` 这种形态（major 仍是 10），
+ * 所以必须按 build ≥ 22621 判，不能按 major ≥ 11 判。
+ *
+ * ⚠️ 只用于**日志告警**，不用来否决设置：TransparentWindow 的「透明」部分是全平台可用的，
+ * 缺了模糊只是观感差一档，没必要替用户把选项关掉（他也可能在 Linux/macOS 上就要看穿效果）。
+ */
+function supportsAcrylicBackdrop() {
+  if (process.platform !== 'win32') return false;
+  var m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(os.release() || ''));
+  if (!m) return false;
+  var major = parseInt(m[1], 10);
+  var build = parseInt(m[3], 10);
+  return major > 10 || (major === 10 && build >= 22621);
+}
+
 /** 外观风格 id → 渲染层 data-theme / data-accent / data-bg（与 renderer UI_THEME_PRESETS 一致） */
 var THEME_STYLE_PRESETS = {
+  // 深色 11 套（末尾两套是材质档：面板半透明，透出 .aurora-bg 极光层）
   midnight_classic: { theme: 'dark', uiAccent: 'violet', uiBackground: 'default' },
   ice_deep: { theme: 'dark', uiAccent: 'cyan', uiBackground: 'amoled' },
   amber_dawn: { theme: 'dark', uiAccent: 'amber', uiBackground: 'warm' },
-  forest_shadow: { theme: 'dark', uiAccent: 'amber', uiBackground: 'cool' },
+  // 森影暮霭原为 dark+amber+cool，与晨光琥珀（dark+amber+warm）只差背景深浅，差异太小 → 改用 teal
+  forest_shadow: { theme: 'dark', uiAccent: 'teal', uiBackground: 'cool' },
+  ember_night: { theme: 'dark', uiAccent: 'rose', uiBackground: 'ink' },
+  graphite_night: { theme: 'dark', uiAccent: 'mono', uiBackground: 'default' },
+  nebula_violet: { theme: 'dark', uiAccent: 'violet', uiBackground: 'ink' },
+  pine_abyss: { theme: 'dark', uiAccent: 'teal', uiBackground: 'default' },
+  mocha_night: { theme: 'dark', uiAccent: 'amber', uiBackground: 'ink' },
+  glass_night: { theme: 'dark', uiAccent: 'violet', uiBackground: 'glass' },
+  aurora_night: { theme: 'dark', uiAccent: 'teal', uiBackground: 'aurora' },
+  // 浅色 11 套（末尾两套是材质档）
   sky_light: { theme: 'light', uiAccent: 'cyan', uiBackground: 'ink' },
   cherry_blossom: { theme: 'light', uiAccent: 'rose', uiBackground: 'warm' },
   lavender_dusk: { theme: 'light', uiAccent: 'violet', uiBackground: 'warm' },
   arctic_mint: { theme: 'light', uiAccent: 'teal', uiBackground: 'cool' },
+  desert_sand: { theme: 'light', uiAccent: 'amber', uiBackground: 'default' },
+  paper_gray: { theme: 'light', uiAccent: 'mono', uiBackground: 'amoled' },
+  sage_morning: { theme: 'light', uiAccent: 'teal', uiBackground: 'default' },
+  apricot_haze: { theme: 'light', uiAccent: 'amber', uiBackground: 'ink' },
+  frost_cyan: { theme: 'light', uiAccent: 'cyan', uiBackground: 'cool' },
+  glass_day: { theme: 'light', uiAccent: 'cyan', uiBackground: 'glass' },
+  aurora_dawn: { theme: 'light', uiAccent: 'violet', uiBackground: 'aurora' },
 };
 
 function inferThemeStyleFromTriple(theme, accent, bg) {
@@ -642,34 +850,31 @@ function inferThemeStyleFromTriple(theme, accent, bg) {
   return null;
 }
 
-/** themeStyle 有效时以预设为准写回 triple；否则由旧 triple 推断 themeStyle（兼容无此字段的旧配置） */
+/**
+ * 归一外观设置：**三元组 (theme, uiAccent, uiBackground) 是唯一权威**，`themeStyle` 只是由它
+ * 派生的标签；凑不出任何预设时置空串（渲染层显示「自定义组合」）。
+ *
+ * ⚠️ 不要再让 themeStyle 反过来覆盖 triple —— 强调色与背景基调现在是独立可选的，反向覆盖会把
+ * 用户刚改的那一维静默吞掉（历史行为：改完强调色保存又被预设拍回去）。
+ * 要「套用预设」必须由调用方把预设展开成三个字段再提交（渲染层 `UI_THEME_PRESETS` 已带三元组）。
+ * 老配置无需迁移：旧版本每次归一都会把 triple 写成预设值，所以磁盘上的 triple 与 themeStyle 天然一致。
+ */
 function reconcileThemeStyleSettings() {
-  var uiAccents = ['violet', 'cyan', 'teal', 'rose', 'amber', 'mono'];
-  var uiBgs = ['default', 'ink', 'warm', 'cool', 'amoled'];
-  var ids = Object.keys(THEME_STYLE_PRESETS);
-  var ts = settings.themeStyle;
-  if (typeof ts === 'string' && ids.indexOf(ts) >= 0) {
-    var pack = THEME_STYLE_PRESETS[ts];
-    settings.theme = pack.theme === 'light' ? 'light' : 'dark';
-    settings.uiAccent = pack.uiAccent;
-    settings.uiBackground = pack.uiBackground;
-    if (uiAccents.indexOf(settings.uiAccent) < 0) settings.uiAccent = 'violet';
-    if (uiBgs.indexOf(settings.uiBackground) < 0) settings.uiBackground = 'default';
-    return;
+  settings.theme = settings.theme === 'light' ? 'light' : 'dark';
+  if (UI_ACCENT_ALLOWED.indexOf(settings.uiAccent) < 0) settings.uiAccent = 'violet';
+  if (UI_BG_ALLOWED.indexOf(settings.uiBackground) < 0) settings.uiBackground = 'default';
+  if (UI_TEXTURE_ALLOWED.indexOf(settings.uiTexture) < 0) settings.uiTexture = 'none';
+  if (UI_OPACITY_ALLOWED.indexOf(settings.uiOpacity) < 0) settings.uiOpacity = 'opaque';
+  // 窗口背景是**窗口级开关**，不进三元组、也不影响 themeStyle 反推（预设一概不碰它）。
+  if (UI_WINDOW_BACKDROP_ALLOWED.indexOf(settings.uiWindowBackdrop) < 0) {
+    settings.uiWindowBackdrop = 'solid';
   }
-  if (settings.theme !== 'light') settings.theme = 'dark';
-  if (uiAccents.indexOf(settings.uiAccent) < 0) settings.uiAccent = 'violet';
-  if (uiBgs.indexOf(settings.uiBackground) < 0) settings.uiBackground = 'default';
   var inferred = inferThemeStyleFromTriple(
     settings.theme,
     settings.uiAccent,
     settings.uiBackground,
   );
-  settings.themeStyle = inferred || 'midnight_classic';
-  var p2 = THEME_STYLE_PRESETS[settings.themeStyle];
-  settings.theme = p2.theme === 'light' ? 'light' : 'dark';
-  settings.uiAccent = p2.uiAccent;
-  settings.uiBackground = p2.uiBackground;
+  settings.themeStyle = inferred || '';
 }
 
 /** 新安装或配置文件损坏时的完整默认形状（与磁盘合并时以磁盘键覆盖同名字段） */
@@ -688,6 +893,21 @@ function createDefaultSettings() {
     theme: 'dark',
     uiAccent: 'violet',
     uiBackground: 'default',
+    /** 材质纹理（第三维，与强调色/背景基调正交）；'none' = 不铺纹理，渲染层不设 data-texture */
+    uiTexture: 'none',
+    /**
+     * 面板透明度（第五维，与纹理同为正交维度）；'opaque' = 不设 data-opacity，
+     * 界面框架保持各档原样。其余三档按 alpha 乘子把面板底色掺进 transparent。
+     */
+    uiOpacity: 'opaque',
+    /**
+     * 窗口背景（窗口级开关，与上面五维**正交**，预设一概不碰）。
+     * 'solid' = 创建普通的不透明窗口（默认，零影响）；
+     * 'acrylic' = 创建透明窗口 + 亚克力毛玻璃。
+     * ⚠️ 它是 `BrowserWindow` 的**创建参数** → 改档必须重启才生效；只在 Windows 11 22H2+
+     * 拿到系统模糊，其余平台/系统设置下会静默降级为「只看穿、不模糊」或实色。
+     */
+    uiWindowBackdrop: 'solid',
     subtitleFontFamily: 'system',
     subtitleFontSizePx: 22,
     subtitleFontWeight: 'medium',
@@ -703,6 +923,12 @@ function createDefaultSettings() {
     previewShowFileSize: true,
     previewShowDimensions: true,
     previewShowPosition: true,
+    /**
+     * 预览页「照片信息」面板显示哪些字段。
+     * 字段 id 的**唯一真相源** = `src/web/js/photo-info-fields.js`，这里只存「启用集」。
+     * 默认值取注册表的默认集，不在这里抄一份 id 列表（抄一份就会漂）。
+     */
+    infoPanelFields: PHOTO_INFO_FIELDS.DEFAULT_FIELD_IDS.slice(),
     /** 主界面浏览默认：排序 / 每页条数 / 卡片宽度 */
     browseSortBy: 'date_taken',
     browseSortOrder: 'DESC',
@@ -734,6 +960,15 @@ function createDefaultSettings() {
      * 达标即可，条数由它决定。0 表示不过滤，越大越严（可能一张都不返回）。
      */
     aiSearchMatchThreshold: MATCH_THRESHOLD_RANGE.default,
+    /**
+     * 快捷键覆盖表 `{ 动作id: 绑定串 }`。
+     *
+     * **空对象 = 全部用默认键**（不是「全部禁用」）：动作与默认键的**唯一真相源**
+     * 是 `src/renderer/shortcuts.js` 的注册表，这里只存「用户改过的那几个」。
+     * 因此新增动作、调整默认键都不需要迁移这份数据。
+     * 值为空串表示「用户显式解绑了该动作」。
+     */
+    shortcuts: {},
   };
 }
 
@@ -748,15 +983,129 @@ function searchMatchOptions() {
 }
 
 /** 供 IPC 返回，避免渲染进程持有主进程对象引用、并保证可结构化克隆 */
+/**
+ * 当前这个窗口**建窗时真正用的**那一档窗口背景（'solid' / 'acrylic'）。
+ *
+ * ⚠️ 必须与「设置里的值」（`settings.uiWindowBackdrop`）分开：窗口材质是**创建参数**，
+ * 改设置**当帧不会**改变窗口本身。渲染层若拿设置值去设 `data-window-backdrop`，就会
+ * 「窗口还是实色、body 却已经透明」→ 底色透到窗口自己的白色底板上 → 整个界面被洗白。
+ * 所以只传这个「已生效值」给渲染层，由它决定要不要给 body 加 alpha。
+ * 取值点只有 createWindow 一处；初值 'solid' = 还没有窗口时的状态。
+ */
+var windowBackdropAppliedAtLaunch = 'solid';
+
 function cloneSettingsForIpc() {
   ensureSettingsShape();
   var payload = JSON.parse(JSON.stringify(settings));
   payload.hasWebPassword = !!(settings.webPassword && String(settings.webPassword).trim());
+  /** 「已生效值」（见上方注释）。刻意**不写进 settings**（不进配置文件）——它是运行期事实，不是设置 */
+  payload.uiWindowBackdropApplied = windowBackdropAppliedAtLaunch;
   return payload;
+}
+
+/**
+ * 快捷键覆盖表的形态兜底。
+ *
+ * ⚠️ 这里**只校验形态、不校验动作 id**：动作表（`src/renderer/shortcuts.js`）
+ * 活在渲染进程，主进程不认识它，硬抄一份白名单必然漂移。
+ * 「未知动作 id 一律丢弃」由渲染进程的 `RendererShortcuts.setOverrides()` 负责，
+ * 下次用户改键落库时自然会被清掉；这份兜底只保证存进来的是
+ * 「字符串 → 字符串」且长度可控，避免被写进一个巨大的脏对象。
+ */
+function normalizeShortcutsSetting() {
+  var raw = settings.shortcuts;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    settings.shortcuts = {};
+    return;
+  }
+  var out = {};
+  var keys = Object.keys(raw);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (typeof k !== 'string' || !k || k.length > 64) continue;
+    var v = raw[k];
+    if (v == null) continue;
+    if (typeof v !== 'string') continue;
+    if (v.length > 64) continue;
+    out[k] = v;
+  }
+  settings.shortcuts = out;
+}
+
+/**
+ * 网页端「设置」页要展示的**只读**设置快照。
+ *
+ * 🔴 这里是白名单，不是黑名单：只有被明确列出的键才会出去。
+ * 网页端设置页是桌面端的只读镜像（与 `/api/info-fields` 同一条契约：
+ * 桌面端是唯一写入口），所以任何一个键泄漏到局域网都没有意义，
+ * 而「漏掉一个键」的代价只是设置页少显示一项 —— 反过来做成
+ * 「把 settings 整个发出去、再删掉敏感字段」就会在某天新增敏感字段时静默泄漏。
+ *
+ * ⚠️ 绝不包含：`webPassword`（只出 `hasWebPassword` 布尔）、任何隧道凭据、
+ * 任何本机绝对路径（目录清单网页端另有 `/api/root-folders`）。
+ */
+function buildWebSettingsSnapshot() {
+  try {
+    reloadSettingsFromDiskSilently();
+  } catch (e) {}
+  var s = settings || {};
+  var out = {
+    // 浏览与显示
+    browseSortBy: s.browseSortBy,
+    browseSortOrder: s.browseSortOrder,
+    browsePageSize: s.browsePageSize,
+    browseCardSize: s.browseCardSize,
+    browseCardLayout: s.browseCardLayout,
+    browseCardRatio: s.browseCardRatio,
+    browseThumbCrop: s.browseThumbCrop,
+    browseFolderIncludeSubfolders: s.browseFolderIncludeSubfolders,
+    videoClickBehavior: s.videoClickBehavior,
+    infoPanelFields: s.infoPanelFields,
+    subtitleFontFamily: s.subtitleFontFamily,
+    subtitleFontSizePx: s.subtitleFontSizePx,
+    subtitleFontWeight: s.subtitleFontWeight,
+    subtitleColor: s.subtitleColor,
+    // 媒体与存储
+    thumbSize: s.thumbSize,
+    thumbQuality: s.thumbQuality,
+    hlsMaxCacheBytes: s.hlsMaxCacheBytes,
+    hlsMaxCacheEntries: s.hlsMaxCacheEntries,
+    // 后台任务
+    autoScanOnStartup: s.autoScanOnStartup,
+    autoThumbBackfillOnStartup: s.autoThumbBackfillOnStartup,
+    autoHashOnStartup: s.autoHashOnStartup,
+    thumbBackfillConcurrency: s.thumbBackfillConcurrency,
+    similarThreshold: s.similarThreshold,
+    aiSearchMatchThreshold: s.aiSearchMatchThreshold,
+    // 外观与行为
+    themeStyle: s.themeStyle,
+    theme: s.theme,
+    uiAccent: s.uiAccent,
+    uiBackground: s.uiBackground,
+    uiTexture: s.uiTexture,
+    uiOpacity: s.uiOpacity,
+    uiWindowBackdrop: s.uiWindowBackdrop,
+    uiLocale: s.uiLocale,
+    launchDefaultPage: s.launchDefaultPage,
+    windowCloseBehavior: s.windowCloseBehavior,
+    // 网络与远程（只出「有没有设密码」，不出密码本身）
+    webLanEnabled: s.webLanEnabled,
+    cloudflareTunnelAutoStart: s.cloudflareTunnelAutoStart,
+    hasWebPassword: !!(s.webPassword && String(s.webPassword).trim()),
+    // 快捷键：动作名与键位都在渲染进程的注册表里，主进程只转发用户改过的覆盖表；
+    // 网页端设置页只用它来判断「桌面端有没有改过」。
+    shortcuts: s.shortcuts || {},
+  };
+  // 未设置的键（老配置里没有的）不要以 undefined 出现在 JSON 里
+  for (var k in out) {
+    if (Object.prototype.hasOwnProperty.call(out, k) && out[k] === undefined) delete out[k];
+  }
+  return out;
 }
 
 function ensureSettingsShape() {
   reconcileThemeStyleSettings();
+  normalizeShortcutsSetting();
   var sz = parseInt(settings.thumbSize, 10);
   if ([128, 192, 256, 320].indexOf(sz) < 0) settings.thumbSize = 256;
   var q = parseInt(settings.thumbQuality, 10);
@@ -820,6 +1169,12 @@ function ensureSettingsShape() {
     var pk = previewBoolKeys[pi];
     if (typeof settings[pk] !== 'boolean') settings[pk] = true;
   }
+
+  // 照片信息面板的启用字段集：未知 id 丢掉、去重、按注册表顺序重排。
+  // ⚠️ 空数组是**合法值**（用户可以把字段全关掉），必须原样保留 ——
+  //    别写成 `if (!settings.infoPanelFields.length) 回默认`，那会让「全关」变成关不掉。
+  //    非数组（含老版本 settings.json 里根本没有这个键）才回落默认集。
+  settings.infoPanelFields = PHOTO_INFO_FIELDS.normalizeFieldIds(settings.infoPanelFields);
 
   var browseSortAllowed = ['date_taken', 'date_modified', 'file_name', 'file_size', 'folder_path'];
   if (browseSortAllowed.indexOf(settings.browseSortBy) < 0) settings.browseSortBy = 'date_taken';
@@ -1174,11 +1529,43 @@ function saveSettings() {
   }
 }
 
+/**
+ * 扫描任务的去重键：同一个目录不重复排队。
+ *
+ * 只做**字符串级**归一化（斜杠统一 / 去尾部反斜杠 / 小写），刻意不用 `path.resolve`——
+ * 它会把相对路径按当前工作目录展开，反而可能把两个不同的相对目录判成同一个；
+ * 而 Windows 路径大小写不敏感，小写化是安全且必要的。DB 里存的仍是原始大小写。
+ */
+function scanRootKey(rootPath) {
+  return String(rootPath == null ? '' : rootPath)
+    .replace(/\//g, '\\')
+    .replace(/\\+$/, '')
+    .toLowerCase();
+}
+
+/**
+ * 结束一个扫描任务。
+ *
+ * 🔴 **先摘去重表、再 resolve，顺序不能反。** 被 resolve 唤醒的调用方很可能立刻再点一次扫描
+ * （或另一个文件夹的调用方紧接着入队），此时如果表里还挂着这个已经结束的任务，
+ * 新请求会合并到一个永远不会再 settle 的 Promise 上 —— 界面就永久停在「准备中…」。
+ */
+function settleScanTask(task, payload) {
+  if (task.key && scanTasksByRoot.get(task.key) === task) {
+    scanTasksByRoot.delete(task.key);
+  }
+  task.resolve(payload);
+}
+
 function clearPendingScanQueue() {
+  // 已被取出、还在等写库闸门放行的那个也要能被打断 —— 这时任务已经不在 scanQueue 里，
+  // 也还没有 worker 可以 postMessage，只能靠这个标志（由占闸门后的第一件事检查）。
+  if (currentScanTask && !currentScanTask.started) currentScanTask.cancelled = true;
   if (scanQueue.length === 0) return;
   var pending = scanQueue.splice(0, scanQueue.length);
   for (var i = 0; i < pending.length; i++) {
-    pending[i].resolve({ success: false, cancelled: true });
+    pending[i].cancelled = true;
+    settleScanTask(pending[i], { success: false, cancelled: true });
   }
 }
 
@@ -1190,6 +1577,9 @@ function getScanQueueStatus() {
           id: currentScanTask.id,
           source: currentScanTask.source,
           rootPath: currentScanTask.rootPath,
+          // 已被取出、但还没拿到写库闸门 —— 界面必须能和「正在扫描」区分开，
+          // 否则会显示成「正在扫描... 0%」这种假进度。
+          waitingGate: !currentScanTask.started,
         }
       : null,
     pendingCount: scanQueue.length,
@@ -1199,22 +1589,52 @@ function getScanQueueStatus() {
   };
 }
 
+/**
+ * 排队一个目录扫描。
+ *
+ * 🔴 **不再同步拒绝。** 过去这里遇到 `optimizeTaskRunning || dbWriteQueue.isBusy()` 就直接返回
+ * `{ success: false, error: '…请等它跑完再试' }`，把「库正忙」甩给用户自己去挑时机重试。
+ * 但扫描在 `processScanQueue` 里本来就是**排队**语义（渲染端一直等这个 Promise 到扫描结束），
+ * 所以正确做法是让扫描也进同一个写库闸门、老实排队，而不是让用户挨拒。
+ *
+ * 同一目录**合并**：已经在跑或已在排队的任务复用同一个 Promise（重复点击过去会真扫两遍）。
+ * 付这点代价换来的是「一个目录同时只有一个扫描」，比排两次更符合直觉。
+ */
 function enqueueScanTask(task) {
-  // 反方向也要堵：启动期的库迁移/索引任务正持着写锁时起扫描，扫描自己就会撞
-  // `database is locked`。闸门双向才算闸门。
-  if (optimizeTaskRunning || dbWriteQueue.isBusy()) {
-    return Promise.resolve({ success: false, error: maintenanceBusyMessage() });
-  }
-  return new Promise(function (resolve) {
-    scanQueue.push({
-      id: scanTaskIdSeq++,
-      source: task.source || 'manual',
-      rootPath: task.rootPath,
-      beforeScan: task.beforeScan || null,
-      resolve: resolve,
-    });
-    processScanQueue();
+  var key = scanRootKey(task.rootPath);
+  var existing = scanTasksByRoot.get(key);
+  if (existing) return existing.promise;
+
+  var entry = {
+    id: scanTaskIdSeq++,
+    key: key,
+    source: task.source || 'manual',
+    rootPath: task.rootPath,
+    beforeScan: task.beforeScan || null,
+    /** 拿到写库闸门、即将起 worker 时置 true；false 期间的取消只能靠 cancelled 标志 */
+    started: false,
+    cancelled: false,
+    resolve: null,
+    promise: null,
+    /**
+     * 「这次扫描**已进入写库队列**」的信号（T5）。启动期提交器（`submitStartupWriteTasks`）
+     * 靠它把「自动扫描排在修复类任务之前」变成事实而不是巧合 ——
+     * `enqueueScanTask` 到 `dbWriteQueue.run('scan')` 之间隔着一个让路 await，
+     * 提交器若在同一 tick 里接着 `run('thumbnail-fix')`，同档 FIFO 会把扫描顶到后面。
+     */
+    gate: null,
+    gateResolve: null,
+  };
+  entry.promise = new Promise(function (resolve) {
+    entry.resolve = resolve;
   });
+  entry.gate = new Promise(function (resolve) {
+    entry.gateResolve = resolve;
+  });
+  scanTasksByRoot.set(key, entry);
+  scanQueue.push(entry);
+  processScanQueue();
+  return entry.promise;
 }
 
 async function processScanQueue() {
@@ -1226,14 +1646,42 @@ async function processScanQueue() {
     var task = scanQueue.shift();
     currentScanTask = task;
     try {
-      if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('scan-start');
+      // 🔴 扫描必须占住写库闸门。
+      // `scan-worker` 在自己的连接上逐批 COMMIT，是一个**真实的写者**；它过去完全不认识
+      // 这条件列，于是启动期的 thumbnail-fix / deferred-index / FTS 会和它同时持写锁
+      // —— 队列的「串行」对扫描根本无效。整个扫描期间持队列是刻意的取舍：
+      // 拿不到 worker 内部的批次边界，租约粒度就只能取「一次扫描」。
+      // 代价是给扫描让路的是**整个扫描时长**。可接受：回填 / 重复哈希 / 失效清理本来
+      // 就都有 isFolderScanRunning() 前置判断、扫描期间主动让路，所以只是顺序变诚实了。
+      // 开机的自动扫描是 REPAIR（扫描产出的正是待修复的行，修数据正确性）；
+      // 用户手动点的是 USER —— 人在等，要能插到回填 / FTS 这些建索引的活前面。
+      var scanRun = dbWriteQueue.run(
+        'scan',
+        function () {
+          // 排队期间被取消的：不要再起 worker（任务已被 shift 出去、还没开跑时，
+          // cancel-scan 没有 worker 可以 postMessage，只能靠这个标志打断）
+          if (task.cancelled) return Promise.resolve({ cancelled: true });
+          task.started = true;
+          if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('scan-start');
+          }
+          if (typeof task.beforeScan === 'function') {
+            task.beforeScan();
+          }
+          var normalizedPath = task.rootPath.replace(/\//g, '\\');
+          return runFolderScanInWorker(normalizedPath);
+        },
+        { priority: task.source === 'auto' ? PRIORITY.REPAIR : PRIORITY.USER },
+      );
+      // 🔴 信号必须在 `run()` **之后**发：`run` 是同步入队 + 同步 pump，走到这里本次扫描
+      // 要么已 active、要么已在队首。启动期提交器 await 到它再提交修复类任务，
+      // 「自动扫描在前」就成了事实。放在 `run()` 之前会让提交器抢先把 REPAIR 任务
+      // 塞进队首（同档 FIFO），顺序又回到「谁先醒谁先跑」。
+      if (typeof task.gateResolve === 'function') {
+        task.gateResolve();
+        task.gateResolve = null;
       }
-      if (typeof task.beforeScan === 'function') {
-        task.beforeScan();
-      }
-      var normalizedPath = task.rootPath.replace(/\//g, '\\');
-      var wr = await runFolderScanInWorker(normalizedPath);
+      var wr = await scanRun;
       var resultPayload;
       if (wr && wr.error && !wr.cancelled) {
         resultPayload = { success: false, error: wr.error };
@@ -1272,13 +1720,13 @@ async function processScanQueue() {
         if (rid) invalidateCatalogCacheForRootSafe(rid);
         else invalidateCatalogCachesSafe();
       }
-      task.resolve(resultPayload);
+      settleScanTask(task, resultPayload);
     } catch (err) {
       var errPayload = { success: false, error: err && err.message ? err.message : String(err) };
       if (mainWindow && mainWindow.webContents) {
         mainWindow.webContents.send('scan-complete', task.rootPath, errPayload);
       }
-      task.resolve(errPayload);
+      settleScanTask(task, errPayload);
     }
     currentScanTask = null;
   }
@@ -1373,6 +1821,42 @@ function getEffectiveThumbBackfillConcurrency() {
 }
 
 /**
+ * 读原图的宽高（回填 `photos.width` / `photos.height`）。
+ *
+ * 为什么由补全任务承担：两阶段导入时 `scanner.js` 的 `GENERATE_THUMBNAILS_DURING_SCAN = false`
+ * 整块跳过了元数据提取，而补全任务只写缩略图与 dHash —— 于是存量库里 `width` / `height`
+ * 绝大多数是 **0 而不是 NULL**。本任务本来就要把这个文件用 sharp 打开一次
+ * （`computeDhash` 甚至是整图解码），顺手读一次文件头是**零额外磁盘 I/O**。
+ *
+ * 🔴 不补尺寸不是「少了个字段」那么轻：`_sqlBackfillPendingExpr()` 把
+ *    `width IS NULL OR width = 0` 算作待补条件，所以**只缺尺寸的行会永远留在候选集里** ——
+ *    每一轮补全都重走一遍全库，且因为要重算 dHash 而把每张图整图解码。
+ *    这正是 `database.js` 那条注释预警的「静默空转」。
+ *
+ * ⚠️ sharp 的 `metadata()` 读的是**输入图头部**，与后续 pipeline 无关，拿到的就是原图宽高。
+ *    千万不要改用 `toBuffer()` 返回的 `info.width/height` —— 那是**输出（缩略图）**的尺寸，
+ *    会把整库分辨率写错，而且不报任何错。
+ * ⚠️ 传入的必须是**还没挂 pipeline** 的实例；读完可以继续用同一实例生成缩略图，文件只打开一次。
+ * ⚠️ 任何失败（损坏文件、不支持的格式、无头的图）一律静默返回 null：绝不能影响缩略图与 dHash 主流程。
+ *
+ * @param {*} instance 已构造但未挂 pipeline 的 sharp 实例（可为 null）
+ * @returns {Promise<{width:number,height:number}|null>}
+ */
+async function readOriginalSize(instance) {
+  if (!instance) return null;
+  try {
+    var meta = await instance.metadata();
+    if (meta && meta.width > 0 && meta.height > 0) {
+      return { width: meta.width, height: meta.height };
+    }
+  } catch (e) {
+    // 读不到头部不影响缩略图。不写日志：损坏文件往往是批量导入的，会把日志刷爆。
+    void e;
+  }
+  return null;
+}
+
+/**
  * 对一批待补全记录做有限并发处理（共享队列 + N 个 worker 协程）。
  */
 async function runRowsWithThumbConcurrency(rows, yieldEvery) {
@@ -1384,31 +1868,48 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
   async function processOne(row) {
     if (thumbnailBackfill.cancelled) return;
     thumbnailBackfill.currentFile = row.file_path || '';
+    var isVideo = isVideoPath(row.file_path);
     var skipThumbnail = row.has_thumbnail === 1;
+    // 已经有原图尺寸就不必再读文件头。⚠️ 库里缺尺寸存的是 0 而不是 NULL，两个条件都要判。
+    var needSize = !isVideo && !(row.width > 0 && row.height > 0);
+    var sizeInfo = null;
     try {
       if (skipThumbnail) {
-        // 已有缩略图：跳过生成，只计算 dHash
+        // 已有缩略图：不重新生成，只补原图尺寸
         thumbnailBackfill.success++;
+        if (needSize) {
+          sizeInfo = await readOriginalSize(loadSharp()(row.file_path, { failOnError: false }));
+        }
       } else {
         var topts = getThumbOptions();
         var thumb;
-        if (isVideoPath(row.file_path)) {
+        if (isVideo) {
           thumb = await extractVideoThumbnailWithFfmpeg(row.file_path, topts);
           if (!thumb) {
             thumb = await buildVideoPlaceholderThumbnail(topts);
           }
         } else {
-          thumb = await loadSharp()(row.file_path)
+          // ⚠️ 用同一个 sharp 实例：先取原图尺寸（只读文件头、几乎零成本）再走 pipeline，
+          //    文件只打开一次。两者**顺序不能颠倒**。
+          var instance = loadSharp()(row.file_path, { failOnError: false });
+          if (needSize) sizeInfo = await readOriginalSize(instance);
+          thumb = await instance
             .rotate()
             .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
             .jpeg({ quality: topts.quality })
             .toBuffer();
         }
-        db.updatePhotoThumbnail(row.id, thumb);
+        db.updatePhotoThumbnail(row.id, thumb, { size: topts.size, format: 'jpeg' });
         thumbnailBackfill.success++;
       }
-      // 同步计算 dHash（仅图片）
-      if (!isVideoPath(row.file_path)) {
+      // 原图尺寸惰性回补：只在拿到正尺寸时写 —— 库里已有真实值时不许被覆盖成 0
+      if (sizeInfo && sizeInfo.width > 0 && sizeInfo.height > 0) {
+        db.updatePhotoDimensions(row.id, sizeInfo.width, sizeInfo.height);
+      }
+      // 同步计算 dHash（仅图片，文件系统缓存大概率还热着）
+      // ⚠️ dHash 已存在时**必须跳过**：这行之所以进候选集可能只是因为缺 width/height，
+      //    重算一遍等于白做一次整图解码（`computeDhash` 比读文件头贵几个数量级）。
+      if (!isVideo && !(row.dhash && String(row.dhash).trim())) {
         try {
           var dhash = await computeDhash(row.file_path);
           if (dhash) {
@@ -1461,7 +1962,12 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
 }
 
 async function runThumbnailBackfill(limit) {
-  if (optimizeTaskRunning || dbWriteQueue.isBusy())
+  // 🔴 判据刻意不再是 `dbWriteQueue.isBusy()`。回填 / 重复哈希现在**按批次**入队，
+  // 队列「批间空、批中满」→ 拿它当「库被长期占用」的信号会抖成「有时能启动、
+  // 有时被静默跳过」，而自动回填那条路径不会重试，跳过就等于永久漏掉。
+  // 这里只挡真正的长期占用者；队列里的短任务（thumbnail-fix / deferred-index / FTS）
+  // 不拦启动 —— 本函数的批次自然会排队等它们，串行由队列保证。
+  if (optimizeTaskRunning || duplicateHashTask.running)
     return { started: false, reason: 'maintenance' };
   const taskStart = Date.now();
   logger.log('[runThumbnailBackfill] task started, limit=', limit);
@@ -1482,8 +1988,16 @@ async function runThumbnailBackfill(limit) {
   logger.log('[runThumbnailBackfill] state initialized');
 
   try {
-    // 先确保 dhash 列和 LSH 表已创建
-    if (typeof db.ensureDhashSchema === 'function') db.ensureDhashSchema();
+    // 先确保 dhash 列和 LSH 表已创建。DDL 也要走队列：它同样写库、同样需要独占写锁，
+    // 而且一旦与启动期的迁移任务并行，就是两边互相等 timeout。
+    // 回填是**建性能索引**（INDEX）：晚做只是慢，该给修复类与用户手动操作让路
+    await dbWriteQueue.run(
+      'thumbnail-backfill',
+      function () {
+        if (typeof db.ensureDhashSchema === 'function') db.ensureDhashSchema();
+      },
+      { priority: PRIORITY.INDEX },
+    );
 
     // 让出多次事件循环，让 UI 先更新状态再开始，避免启动就卡死
     logger.log('[runThumbnailBackfill] yielding for UI update');
@@ -1509,6 +2023,11 @@ async function runThumbnailBackfill(limit) {
         break;
       }
 
+      // 交互抢占：用户正在搜图就在这里停下。**必须在入队之前** —— 进了写库队列再等，
+      // 等于占着闸门干等，会把别的任务一起堵住。等满上限会自行放行，所以用户狂搜时
+      // 回填仍以较低占空比推进，不会被饿死。
+      await interactionPreempt.awaitIdle();
+
       // 查询前先让出，让 UI 完全响应一次
       await yieldForPreviewPlaybackMs(20);
       await yieldForPreviewPlaybackMs(20);
@@ -1520,7 +2039,8 @@ async function runThumbnailBackfill(limit) {
         fetchLimit = Math.min(batchSize, left);
       }
       const queryStart = Date.now();
-      var rows = db.getPhotosMissingThumbnailsAfter(afterId, fetchLimit);
+      // const 而非 var：下面的批次要在闭包里引用它，块作用域保证每次迭代捕获到的是当轮的值
+      const rows = db.getPhotosMissingThumbnailsAfter(afterId, fetchLimit);
       const queryTime = Date.now() - queryStart;
       logger.log(
         '[runThumbnailBackfill] fetched',
@@ -1547,7 +2067,17 @@ async function runThumbnailBackfill(limit) {
 
       if (thumbnailBackfill.cancelled) break;
       const batchStart = Date.now();
-      await runRowsWithThumbConcurrency(rows, yieldEvery);
+      // 🔴 每一批都重新排队，而不是把整轮补全圈在写锁里。启动期的 thumbnail-fix /
+      // deferred-index / FTS 是无条件 run() 进队的、看不见 thumbnailBackfill.running，
+      // 过去会和这里**同时持写锁**（本函数开头那次快照检查只管启动那一刻）。
+      // 按批入队后：批间队列是空的，它们按 FIFO 插进来，天然互斥、天然让位。
+      await dbWriteQueue.run(
+        'thumbnail-backfill',
+        function () {
+          return runRowsWithThumbConcurrency(rows, yieldEvery);
+        },
+        { priority: PRIORITY.INDEX },
+      );
       logger.log(
         '[runThumbnailBackfill] processed batch of',
         rows.length,
@@ -1762,7 +2292,10 @@ function getDuplicateHashTaskProgress() {
 }
 
 async function runDuplicateHashDetection() {
-  if (optimizeTaskRunning || dbWriteQueue.isBusy())
+  // 同 runThumbnailBackfill：不用 `dbWriteQueue.isBusy()` 当判据（批次化后它会抖）。
+  // 两个长任务不并行抢磁盘 —— 回填在跑时先不启动，否则机械盘随机读写会互相拖垮，
+  // 各自的批次虽然串行，但文件读取是并发的。
+  if (optimizeTaskRunning || thumbnailBackfill.running)
     return { started: false, reason: 'maintenance' };
   if (duplicateHashTask.running) {
     return { started: false, reason: 'running' };
@@ -1790,9 +2323,15 @@ async function runDuplicateHashDetection() {
     await new Promise(function (resolve) {
       setImmediate(resolve);
     });
-    if (db && typeof db.ensureDuplicateHashSchema === 'function') {
-      db.ensureDuplicateHashSchema();
-    }
+    await dbWriteQueue.run(
+      'dup-hash',
+      function () {
+        if (db && typeof db.ensureDuplicateHashSchema === 'function') {
+          db.ensureDuplicateHashSchema();
+        }
+      },
+      { priority: PRIORITY.INDEX },
+    );
     var readPathDup = sqliteDbPath;
     if (!readPathDup) {
       throw new Error('duplicate-hash: database path unavailable');
@@ -1829,14 +2368,27 @@ async function runDuplicateHashDetection() {
     var yieldEvery = 20;
     while (true) {
       if (duplicateHashTask.cancelled) break;
+      // 交互抢占：与缩略图回填同理，在入队之前让位
+      await interactionPreempt.awaitIdle();
       await yieldForPreviewPlaybackMs(80);
       var rows = db.getHashAllPhotosAfter(afterId, batchSize);
       if (!rows || rows.length === 0) break;
       for (var sc = 0; sc < rows.length; sc += subChunkSize) {
         if (duplicateHashTask.cancelled) break;
+        // 外层一批 2000 行会切成几十个子批，只在外层查一次不够 —— 用户搜图可能正好
+        // 落在这批的中段，那时离下一个外层检查点还有很久。
+        await interactionPreempt.awaitIdle();
         await yieldForPreviewPlaybackMs(20);
-        var slice = rows.slice(sc, sc + subChunkSize);
-        await processDupHashRowsChunk(slice, yieldEvery);
+        // const 而非 var：下面要在闭包里引用它，块作用域保证每次迭代捕获到的是当轮子批
+        const slice = rows.slice(sc, sc + subChunkSize);
+        // 与缩略图回填同理：每个子批重新排队，让启动期写库任务能插进批次之间。
+        await dbWriteQueue.run(
+          'dup-hash',
+          function () {
+            return processDupHashRowsChunk(slice, yieldEvery);
+          },
+          { priority: PRIORITY.INDEX },
+        );
       }
       afterId = rows[rows.length - 1].id;
       duplicateHashBgLog(
@@ -2000,9 +2552,14 @@ function scheduleAutoDuplicateHashDetection() {
  * 批次之间队列会空出来给扫描 / 其他维护插队，不会被一个长清理长期霸占。
  */
 function runInvalidCleanupBatch(options) {
-  return dbWriteQueue.run('invalid-cleanup', function () {
-    return db.cleanupMissingFilesYielding(options);
-  });
+  // REPAIR：删的是磁盘上已不存在的记录，属**数据正确性**；虽只包单批，也不该被建索引的活压后
+  return dbWriteQueue.run(
+    'invalid-cleanup',
+    function () {
+      return db.cleanupMissingFilesYielding(options);
+    },
+    { priority: PRIORITY.REPAIR },
+  );
 }
 
 function scheduleStartupInvalidCleanup() {
@@ -2035,6 +2592,8 @@ function scheduleStartupInvalidCleanup() {
       isFolderScanRunning() ||
       thumbnailBackfill.running ||
       duplicateHashTask.running ||
+      // 用户正在搜图：这条是**抢占**（任务停下），上面的 previewPlaybackActive 是**降载**（照跑但降并发）
+      interactionPreempt.active() ||
       previewPlaybackActive
     ) {
       startupStageLog('invalid-cleanup.defer', 'busy, retry in 5000ms');
@@ -2077,21 +2636,38 @@ function scheduleStartupInvalidCleanup() {
   startupInvalidCleanupTask.timer = setTimeout(step, START_DELAY_MS);
 }
 
-/** 首屏 did-finish-load 后再跑：大 PRAGMA、孤儿行、抽样校验、分批无效文件清理 */
+/**
+ * 首屏 did-finish-load 后再跑：这里只剩「连接级 PRAGMA」与「is_favorite 列补齐」。
+ *
+ * 🔴 **启动期写库任务的顺序不再由这里决定**（T5）：缩略图标记修复 / 索引补齐 / FTS
+ * 过去各自 `setTimeout(+5s / +6s)` 点火，还要先 5s 轮询一次 `maintenanceBusy()`，
+ * 实际顺序是「触发时刻 + 排队时间」的偶然组合 —— 结果只是建**性能索引**的 FTS
+ * 常常排在修**数据正确性**的修复类之前。现在它们统一在 `submitStartupWriteTasks()`
+ * 里**同一时刻**入队，先后由 `db-write-queue` 的 `(priority, seq)` 表达。
+ *
+ * 这里留下的两类刻意不进写库队列：
+ *   ① `cache_size` / `mmap_size` —— 只作用于本连接的 PRAGMA，**不写库文件**，
+ *      进队列反而会占住一把它根本不需要的锁；
+ *   ② `is_favorite` 列 / 索引补齐 —— 它是唯一必须**早于**提交器的写库语句：
+ *      UI 第一次查 `is_favorite` 时列必须已在，而此刻（首窗后 250ms）写库队列还是空的
+ *      （提交器要等 browse-ui-ready），不存在撞锁。
+ */
 var postWindowDeferredTasksDone = false;
 function schedulePostWindowDeferredTasks() {
   if (postWindowDeferredTasksDone) return;
   postWindowDeferredTasksDone = true;
   startupStageLog('post-window-deferred.schedule');
+  // 两个 PRAGMA 合并成一次调用：过去 cache 在 +250ms、mmap 在 +2200ms，
+  // 中间那 2 秒里 mmap 没开、读被放大（`applyDeferredIoPragmas` 是 database.js 已有的合并入口）。
   setTimeout(function () {
     try {
-      if (db && typeof db.applyDeferredCachePragma === 'function') {
-        db.applyDeferredCachePragma();
-        startupStageLog('post-window-deferred.cache-pragma.done');
+      if (db && typeof db.applyDeferredIoPragmas === 'function') {
+        db.applyDeferredIoPragmas();
+        startupStageLog('post-window-deferred.io-pragmas.done');
       }
     } catch (eP) {
       logger.error(
-        '[startup] deferred-cache-pragma failed:',
+        '[startup] deferred-io-pragmas failed:',
         eP && eP.message ? eP.message : String(eP),
       );
     }
@@ -2108,26 +2684,113 @@ function schedulePostWindowDeferredTasks() {
       );
     }
   }, 250);
-  setTimeout(function () {
+}
+
+/** 自动扫描 / 补图 / 人脸等：等侧栏目录树首屏渲染完成后再启动，避免与目录 IPC 抢时序；12s 兜底仍可能触发 */
+var autoStartupTasksRan = false;
+var browseUiReadyStartupTimer = null;
+/** 启动期写库任务是否已提交；browse-ui-ready 与 12s 兜底都会调，靠它幂等 */
+var startupWriteTasksSubmitted = false;
+
+/**
+ * 延迟索引补齐 worker。7 个 `CREATE INDEX` + 13 次 `ALTER TABLE` 的**唯一定义处**是
+ * `src/workers/deferred-index-worker.js`（主线程那套同步副本已于 2026-09-29 删除，
+ * 别在主线程再加一份 —— 那等于在启动路径上拿主进程跑大表 CREATE INDEX 并长期独占写锁）。
+ *
+ * 返回的 Promise 在 **worker 退出（连接关掉）之后**才 resolve，不是消息到达时 ——
+ * 连接还开着就等于还占着库，调用方要拿它把这段时间登记进写库队列，
+ * 否则维护 worker 会在它跑到一半时点火，等满 `busy_timeout = 8000` 撞 `database is locked`。
+ */
+function runDeferredIndexWorker() {
+  if (!sqliteDbPath) return Promise.resolve();
+  return new Promise(function (resolve) {
+    var path = require('path');
+    var Worker = require('worker_threads').Worker;
+    var worker;
     try {
-      if (db && typeof db.applyDeferredMmapPragma === 'function') {
-        db.applyDeferredMmapPragma();
-        startupStageLog('post-window-deferred.mmap-pragma.done');
-      }
-    } catch (eM) {
-      logger.error(
-        '[startup] deferred-mmap-pragma failed:',
-        eM && eM.message ? eM.message : String(eM),
+      worker = new Worker(path.join(__dirname, 'workers', 'deferred-index-worker.js'), {
+        workerData: { dbPath: sqliteDbPath },
+      });
+    } catch (eSpawn) {
+      // 起不来也要 resolve：这个 Promise 不 settle 会把整条写库队列永久卡住。
+      startupStageLog(
+        'deferred-index.worker.done',
+        JSON.stringify({ failed: true, error: eSpawn && eSpawn.message }),
       );
+      resolve();
+      return;
     }
-  }, 2200);
-  setTimeout(function () {
-    scheduleStartupInvalidCleanup();
-  }, 2200);
-  setTimeout(function () {
-    if (!db || typeof db.applyDeferredThumbnailFix !== 'function') return;
-    void dbWriteQueue
-      .run('thumbnail-fix', function () {
+    var reported = null;
+    worker.on('message', function (msg) {
+      reported = msg;
+    });
+    worker.on('error', function (eIdx) {
+      reported = { failed: true, error: eIdx && eIdx.message ? eIdx.message : String(eIdx) };
+      logger.error('[startup] deferred-photo-indexes worker error:', reported.error);
+    });
+    worker.on('exit', function (code) {
+      startupStageLog('deferred-index.worker.done', JSON.stringify(reported || { exit: code }));
+      resolve();
+    });
+  });
+}
+
+/**
+ * 提交开机的自动扫描，并**等到它进入写库队列**再返回。
+ *
+ * 🔴 为什么必须等：`enqueueScanTask` 到 `dbWriteQueue.run('scan')` 之间隔着一次
+ * `yieldForPreviewPlaybackMs` 让路（`processScanQueue` 循环开头），而扫描在自己的连接上
+ * 逐批 COMMIT —— 是个真实的写者、整段独占写库闸门。提交器若在同一 tick 里接着
+ * `run('thumbnail-fix')`，那个 `seq` 更小，同档 FIFO 会把扫描顶到修复类**后面**，
+ * 「扫描产出的正是待修复的行，扫描完再修」这个顺序就没了。
+ * 等 gate 是最便宜的确定性做法：不改扫描队列结构、不引入「睡 200ms 赌一下」的延迟。
+ *
+ * @returns {Promise<boolean>} 本次是否真的有扫描要跑
+ */
+async function submitStartupAutoScan() {
+  if (!sqliteDbPath) return false;
+  if (!settings.autoScanOnStartup) return false;
+  /** 根目录列表仅走只读 Worker（lite），不在主进程同步查库 */
+  var roots;
+  try {
+    roots = await runDbReadWorkerOnly(sqliteDbPath, 'getRootFolders', { lite: true });
+  } catch (eRoots) {
+    logger.error(
+      '[auto-scan-on-startup] getRootFolders worker failed:',
+      eRoots && eRoots.message ? eRoots.message : eRoots,
+    );
+    return false;
+  }
+  if (!roots || !roots.length) return false;
+  startupStageLog('auto-startup.auto-scan.enqueue', 'roots=' + String(roots.length));
+  var gates = [];
+  for (var i = 0; i < roots.length; i++) {
+    enqueueScanTask({ rootPath: roots[i].path, source: 'auto' }).then(function (result) {
+      if (!result.success && !result.cancelled) {
+        logger.error('Auto scan failed:', result.error || 'unknown error');
+      }
+    });
+    var entry = scanTasksByRoot.get(scanRootKey(roots[i].path));
+    if (entry && entry.gate) gates.push(entry.gate);
+  }
+  await Promise.all(gates);
+  return true;
+}
+
+/**
+ * 修复类（REPAIR）→ 建索引类（INDEX）的提交。**这里的调用顺序 ≠ 执行顺序**：
+ * 三个 `run()` 在同一 tick 里入队，实际先后由 `(priority, seq)` 决定（同档才看 seq）。
+ *
+ * 目标顺序（设计文档 §5）：thumbnail-fix（修数据）→ deferred-index（修数据）→ fts-index（建索引）。
+ * 档位差让 fts 必然排在两个 REPAIR 之后，哪怕以后有人调整这里的调用顺序也不会反过来。
+ */
+function submitStartupRepairAndIndexTasks() {
+  // REPAIR：缩略图标记修复 —— 补 `has_thumbnail` / 建缺失索引，修的是**数据正确性**
+  void dbWriteQueue
+    .run(
+      'thumbnail-fix',
+      function () {
+        if (!db || typeof db.applyDeferredThumbnailFix !== 'function') return null;
         return db.applyDeferredThumbnailFix().then(function (report) {
           // 如实报告：到底建了哪几个索引、扫了多少行 / 修了多少行、花了多久。
           // 旧代码无条件打印「created thumbnail missing indexes」，每次启动都出现，
@@ -2135,118 +2798,119 @@ function schedulePostWindowDeferredTasks() {
           logger.log('[db migration] thumbnail-fix', JSON.stringify(report));
           return report;
         });
-      })
-      .catch(function (eThumb) {
-        logger.error(
-          '[startup] deferred-thumbnail-fix failed:',
-          eThumb && eThumb.message ? eThumb.message : String(eThumb),
-        );
-      });
-  }, 5000);
-  setTimeout(function prepareSearchIndex() {
-    if (isQuitting || !db) return;
-    if (maintenanceBusy()) {
-      setTimeout(prepareSearchIndex, 5000).unref();
-      return;
-    }
-    optimizeTaskRunning = true;
-    // 再入一次队列：上面的 maintenanceBusy() 只是快照，排队本身才是「不抢锁」的保证。
-    void dbWriteQueue
-      .run('fts-index', function () {
-        startupStageLog('post-window-deferred.fts-worker.start');
-        return performMaintenance('ensureFtsIndex');
-      })
-      .then(function () {
-        startupStageLog(
-          'post-window-deferred.fts-worker.' + (maintenanceResult && maintenanceResult.status),
-        );
-      });
-  }, 6000);
-}
-
-/** 自动扫描 / 补图 / 人脸等：等侧栏目录树首屏渲染完成后再启动，避免与目录 IPC 抢时序；12s 兜底仍可能触发 */
-var autoStartupTasksRan = false;
-var browseUiReadyStartupTimer = null;
-var deferredPhotoIndexesScheduled = false;
-
-function scheduleDeferredPhotoIndexesOnce(reason) {
-  if (deferredPhotoIndexesScheduled) return;
-  deferredPhotoIndexesScheduled = true;
-  var firstDelay = reason === 'browse-ui-ready' ? 8000 : 3000;
-  startupStageLog(
-    'deferred-index.schedule',
-    'reason=' + String(reason || '') + ' firstDelay=' + firstDelay,
-  );
-  setTimeout(function () {
-    if (!sqliteDbPath) return;
-    // 与缩略图标记修复 / FTS 维护排队，不并排抢同一把写锁。等 worker 退出（连接关掉）才算完。
-    void dbWriteQueue.run('deferred-index', function () {
-      return new Promise(function (resolve) {
-        var path = require('path');
-        var Worker = require('worker_threads').Worker;
-        var worker;
-        try {
-          worker = new Worker(path.join(__dirname, 'workers', 'deferred-index-worker.js'), {
-            workerData: { dbPath: sqliteDbPath },
-          });
-        } catch (eSpawn) {
-          // 起不来也要 resolve：这个 Promise 不 settle 会把整条写库队列永久卡住。
-          startupStageLog(
-            'deferred-index.worker.done',
-            JSON.stringify({ failed: true, error: eSpawn && eSpawn.message }),
-          );
-          resolve();
-          return;
-        }
-        var reported = null;
-        worker.on('message', function (msg) {
-          reported = msg;
-        });
-        worker.on('error', function (eIdx) {
-          reported = { failed: true, error: eIdx && eIdx.message ? eIdx.message : String(eIdx) };
-          logger.error('[startup] deferred-photo-indexes worker error:', reported.error);
-        });
-        worker.on('exit', function (code) {
-          startupStageLog('deferred-index.worker.done', JSON.stringify(reported || { exit: code }));
-          resolve();
-        });
-      });
+      },
+      { priority: PRIORITY.REPAIR },
+    )
+    .catch(function (eThumb) {
+      logger.error(
+        '[startup] deferred-thumbnail-fix failed:',
+        eThumb && eThumb.message ? eThumb.message : String(eThumb),
+      );
     });
-  }, firstDelay);
+
+  // REPAIR：索引补齐 —— 缺索引的行检索不到，同属数据正确性
+  void dbWriteQueue
+    .run('deferred-index', runDeferredIndexWorker, { priority: PRIORITY.REPAIR })
+    .catch(function (eIdx) {
+      logger.error(
+        '[startup] deferred-photo-indexes failed:',
+        eIdx && eIdx.message ? eIdx.message : String(eIdx),
+      );
+    });
+
+  // INDEX：文件名 FTS 索引 —— 建的是**性能索引**，推迟只影响搜索速度，
+  // 不该压住修复类与用户手动操作。刻意**不设** `exclusiveMaintenanceRunning`：
+  // FTS 是批量写，与 AI 索引共用同一条写库队列，串行由队列保证；
+  // 把它算进「独占维护」就是启动期误报 `AI_MAINTENANCE` 的根源（见 ai-index-gate.js）。
+  void dbWriteQueue
+    .run(
+      'fts-index',
+      function () {
+        startupStageLog('post-window-deferred.fts-worker.start');
+        // 🔴「优化中」只在**真正开跑**时置位。排队 ≠ 在跑：提前置会让界面谎报维护中，
+        // 还会把用户的手动维护拒之门外（`maintenanceBusy()` 含这个标志）。
+        // 清零点仍在 `performMaintenance` 的 finally —— 那里是维护的唯一出口。
+        optimizeTaskRunning = true;
+        emitBackgroundTasksChangedThrottled(true);
+        var settle = function () {
+          // 双保险：正常路径下 performMaintenance 的 finally 已经清过；
+          // 这里防「它在进自己的 try 之前就抛」导致标志永久残留
+          // （那会让 AI 索引被永远拒之门外，而且没有任何报错）。
+          optimizeTaskRunning = false;
+          emitBackgroundTasksChangedThrottled(true);
+        };
+        return performMaintenance('ensureFtsIndex').then(
+          function (value) {
+            settle();
+            return value;
+          },
+          function (error) {
+            settle();
+            throw error;
+          },
+        );
+      },
+      { priority: PRIORITY.INDEX },
+    )
+    .then(function () {
+      startupStageLog(
+        'post-window-deferred.fts-worker.' + (maintenanceResult && maintenanceResult.status),
+      );
+    })
+    .catch(function (eFts) {
+      logger.error('[startup] fts index failed:', eFts && eFts.message ? eFts.message : String(eFts));
+    });
 }
 
+/**
+ * 启动期写库任务**统一提交点**（T5）。
+ *
+ * 过去这几个任务各自 `setTimeout` 点火（+5s 缩略图标记修复 / +6s FTS / +8s 延迟索引，
+ * 且 FTS 还要先 5s 轮询一次 `maintenanceBusy()`），实际执行顺序是「触发时刻 + 排队时间」
+ * 的偶然组合。现在改成：首屏目录树就绪后**一次性**按优先级入队，
+ * 先后由 `db-write-queue` 表达 —— 见设计文档 §5。
+ *
+ * 保留的唯一延迟是调用方那 3.5s（等目录树首屏渲染完），它负责的是
+ * **别和 get-root-folders / get-folder-tree 抢只读 IO**，与排序无关。
+ *
+ * @param {string} reason 'browse-ui-ready' | 'fallback'
+ */
+function submitStartupWriteTasks(reason) {
+  if (startupWriteTasksSubmitted) return;
+  startupWriteTasksSubmitted = true;
+  startupStageLog('startup-write-tasks.submit', 'reason=' + String(reason || ''));
+  // settings 的读取收在这里：auto-scan / auto-hash / auto-thumb-backfill 三个开关都从它取
+  reloadSettingsFromDiskSilently();
+  void (async function () {
+    try {
+      await submitStartupAutoScan();
+    } catch (eScan) {
+      logger.error(
+        '[startup] auto-scan submit failed:',
+        eScan && eScan.message ? eScan.message : String(eScan),
+      );
+    }
+    // 走到这里：若本次有自动扫描，它已占住写库闸门，下面三个必然排在它后面；
+    // 没开自动扫描时它们就是队首。两种情况下顺序都由优先级表达。
+    submitStartupRepairAndIndexTasks();
+    // 失效清理：分批循环 + 自己的空闲避让（`runInvalidCleanupBatch` 走 REPAIR 档），
+    // 每批之间让出队列 —— 上面三个占着队列时它会自动接着等，不再需要「错开 2200ms」的魔数。
+    scheduleStartupInvalidCleanup();
+  })();
+}
+
+/**
+ * 自动哈希 / 自动回填。**自动扫描不在这里** —— 它由 `submitStartupWriteTasks()` 提交，
+ * 因为「扫描排在修复类之前」需要它与那几个任务同处一个提交点（见那里的注释）。
+ *
+ * ⚠️ 这两个的 `setTimeout(300 / 700ms)` 不是排序手段，是「等首屏只读查询收尾」的降载延迟；
+ * 两者内部都有 `isFolderScanRunning()` 前置判断，扫描期间会主动让路，
+ * 而扫描结束（`processScanQueue` 末尾）也会再触发一次，不会漏。
+ */
 function runAutoStartupTasksOnce() {
   if (autoStartupTasksRan) return;
   autoStartupTasksRan = true;
   startupStageLog('auto-startup.run');
-  reloadSettingsFromDiskSilently();
-  if (settings.autoScanOnStartup) {
-    startupStageLog('auto-startup.auto-scan.enabled');
-    /** 根目录列表仅走只读 Worker（lite），不在主进程同步查库（仅用模块级 sqliteDbPath，dbPath 不在此作用域） */
-    var readPathAuto = sqliteDbPath;
-    if (readPathAuto) {
-      runDbReadWorkerOnly(readPathAuto, 'getRootFolders', { lite: true })
-        .then(function (roots) {
-          if (!roots || !roots.length) return;
-          startupStageLog('auto-startup.auto-scan.enqueue', 'roots=' + String(roots.length));
-          for (var i = 0; i < roots.length; i++) {
-            enqueueScanTask({ rootPath: roots[i].path, source: 'auto' }).then(function (result) {
-              if (!result.success && !result.cancelled) {
-                logger.error('Auto scan failed:', result.error || 'unknown error');
-              }
-            });
-          }
-        })
-        .catch(function (eAuto) {
-          logger.error(
-            '[auto-scan-on-startup] getRootFolders worker failed:',
-            eAuto && eAuto.message ? eAuto.message : eAuto,
-          );
-        });
-    } else {
-      console.warn('[auto-scan-on-startup] no db path, skipped');
-    }
-  }
   if (settings.autoHashOnStartup) {
     scheduleAutoDuplicateHashDetection();
   }
@@ -2614,6 +3278,30 @@ function registerBackgroundShortcut() {
   if (!ok && isDev) console.warn('[shortcut] Ctrl+Q register failed');
 }
 
+/* ═══ 为什么主界面（窗口本身）刻意**不做**圆角 ═══════════════════════════════════════
+ *
+ * 2026-10-05 试过并放弃，别再花时间。三条路全部走死，且都是**实测打掉的**：
+ *
+ * ① CSS `body { border-radius }` —— 无效。body 没有背景时它的背景会「传播」成整个
+ *    canvas 的底（CSS Backgrounds 3 §2.11.2），圆角直接被忽略（两张截图 md5 逐字节相同）。
+ * ② 「html/body 透明 + 内层容器圆角」 —— 无效。四角变成**页面透明**，而
+ *    `backgroundMaterial: 'acrylic'` 的系统模糊是铺满整个窗口矩形的，透明处露出的是
+ *    亚克力底而不是桌面 → 出来是个「四角更淡的方窗口」。
+ * ③ 窗口区域裁剪（`win` 的 `setShape`，底层 `SetWindowRgn`）—— **圆角是画出来了，但四角仍然
+ *    不是桌面**。实测（4K / 150%，Electron 41）窗口左上角：桌面 = `rgb(248,253,255)`、
+ *    窗口内 = `rgb(224,237,251)`、而圆角那条弧带 = `rgb(207,220,233)`，是一条**均匀的
+ *    纯亚克力底**（不是渐变，所以也不是窗口阴影）—— 即 `setShape` 只裁掉了**渲染层**，
+ *    DWM 的亚克力是其在自己的合成层上铺满整个窗口矩形的，**不跟随窗口区域**。
+ *    用户对这条路的原话是「圆角还有底色，如果去不掉就恢复直角」，故整体回退。
+ *
+ * 结论：**在「窗口背景 = 亚克力」档下，四角的底色去不掉**。想要真圆角就只剩两条：
+ *   要么放弃亚克力（`transparent` 但不带 `backgroundMaterial`，四角露桌面但没有毛玻璃，
+ *   等于废掉窗口背景这一维）；要么窗口保持矩形、把圆角做到**渲染层的内容卡片**上。
+ * 两者都不是「窗口四角圆角」，所以不做。
+ *
+ * ⚠️ 回归 `scripts/theme-regression.js` 里有一条断言钉着「不许再引入 `setShape` 窗口裁剪」。
+ */
+
 function createWindow(appIcon) {
   var winOpts = {
     width: 1400,
@@ -2631,6 +3319,36 @@ function createWindow(appIcon) {
       sandbox: false,
     },
   };
+  /* 窗口背景 = 亚克力：三者必须**成套**出现，少一个都是坏观感 ——
+   *   transparent       让窗口本身没有不透明底板。缺了它，body 再透明也只是「透到窗口自己的
+   *                     底色」上（默认是白色），等于把界面洗成灰白。
+   *   backgroundColor   '#00000000'（alpha=0）。不给的话 Windows 上首帧会先闪一块纯色底。
+   *   backgroundMaterial 让系统模糊的是**桌面**而不是窗口底色 —— 这就是「毛玻璃」本体。
+   * ⚠️ 三个都是**创建参数**，运行期改不了（这就是「改这档需重启」的原因）。
+   * ⚠️ `backgroundMaterial` 只在 Windows 11 22H2+ 生效，其它平台不传（传了也是忽略）。 */
+  // 白名单里除首项（solid）以外的都是透明档。主进程这一侧对三档的处理**完全相同**
+  // （都走 transparent + acrylic 材质）——「程度」全部由渲染层 body 那层的 alpha 决定，
+  // 见 styles.css 的 `html[data-window-backdrop='...'] body` 那组。
+  var backdrop =
+    settings && UI_WINDOW_BACKDROP_ALLOWED.indexOf(settings.uiWindowBackdrop) > 0
+      ? settings.uiWindowBackdrop
+      : 'solid';
+  // 记下这个窗口**真正**用的档：渲染层靠它决定要不要给 body 加 alpha（见 windowBackdropAppliedAtLaunch）
+  windowBackdropAppliedAtLaunch = backdrop;
+  if (backdrop !== 'solid') {
+    winOpts.transparent = true;
+    winOpts.backgroundColor = '#00000000';
+    if (supportsAcrylicBackdrop()) {
+      winOpts.backgroundMaterial = 'acrylic';
+    } else {
+      logger.warn(
+        '[window] uiWindowBackdrop=acrylic 但当前系统拿不到亚克力模糊（需要 Windows 11 22H2+），' +
+          '将只做「透明」不做「模糊」：platform=%s release=%s',
+        process.platform,
+        String(os.release() || ''),
+      );
+    }
+  }
   if (appIcon && !appIcon.isEmpty()) {
     winOpts.icon = appIcon;
   }
@@ -2756,18 +3474,110 @@ app
       dbPath,
       path.join(path.dirname(dbPath), 'face-index'),
     );
+    /**
+     * 「AI 内容标签」的读取通道。与搜图索引共用同一个 `ai-search` 目录，但它是
+     * **独立的只读连接**：标签是索引库里的派生物（见 `src/ai/photo-tags.js`），
+     * 而 `getPhotoInfo()` 只连主库、跨不了库。
+     *
+     * 惰性建连接 —— 从没建过搜图索引的用户不会有任何开销（连文件都不会去 stat 第二次）。
+     */
+    semanticTags = new (require('./main/semantic-tags').SemanticTags)(
+      path.join(path.dirname(dbPath), 'ai-search'),
+    );
+    /**
+     * 启动后顺手补一次「AI 内容标签」，补完再通知渲染端重画面板。
+     *
+     * ## 为什么必须有这一步
+     *
+     * 标签只在**建索引时**才算得出来（那一刻图片向量才在手上）。所以升级前就已经索引好的
+     * 那批照片是永远没有标签的 —— 而用户装上新版本后第一件事恰恰是打开照片看标签。
+     * 补标签是纯点积（不解码图片、不载模型），本机 7374 行实测 **1.8 秒**，
+     * 代价低到可以无条件跑。
+     *
+     * ## 三条跳过条件，任一命中就不跑
+     *
+     *   ① 从没建过索引 —— 没有向量就没有标签，连索引库文件都不打开；
+     *   ② 索引任务正在跑 —— 它会顺手算标签，此时去抢索引库写锁只有坏处；
+     *   ③ 模型没装 —— worker 会以 `AI_MODEL_MISSING` 收场，静默吞掉即可。
+     *
+     * 延迟几秒是为了避开启动高峰（扫库、载缩略图都在抢磁盘）。
+     */
+    setTimeout(function () {
+      try {
+        if (!semanticSearch || !semanticTags) return;
+        if (!semanticTags.conn()) return;
+        if (semanticSearch.status().busy) return;
+        void semanticSearch
+          .run('tag')
+          .then(function (result) {
+            // 真的补到了才通知：否则每次启动都白推一次重画。
+            if (result && result.tagged > 0 && mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('ai-tags-updated');
+            }
+          })
+          .catch(function () {});
+      } catch (_) {}
+    }, 3000).unref();
+    /**
+     * 随包内置模型（`models/`）的首次播种。
+     *
+     * 安装包里带着 `resources/models`（开发态是仓库根的 `models/`）——人脸 YuNet + w600k_mbf、
+     * 搜图 SigLIP2，于是「第一次用要先点一次下载模型」在随包发行时不再必须。三件事让它能放心：
+     *   - **懒 + 只做一次**：钩在 `refresh()` 上，不占启动时间；memo 住，之后每次查状态只剩一次 `statSync`。
+     *   - **幂等**：已就绪直接返回，不重复搬几百 MB；文件一律「缺了才补、尺寸不对才换」。
+     *   - **只报不抛**：任何异常都降级回原来的「点按钮下载」，绝不把内置模型变成新的故障点。
+     */
+    var bundledModelsDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'models')
+      : path.join(__dirname, '..', 'models');
+    var bundledModelsSeed = null;
+    function ensureBundledModels() {
+      if (!bundledModelsSeed) {
+        bundledModelsSeed = Promise.resolve()
+          .then(function () {
+            return bundledModels.ensureBundledModels({
+              modelsDir: bundledModelsDir,
+              faceAiPath: faceService.aiPath,
+              searchAiPath: semanticSearch.aiPath,
+              // `ready.json` 里的 `model` 必须与 worker 认的键逐字符相同，因此这个键只有一个
+              // 来源：`src/ai/embedding.js` 的 `MODEL_KEY`。取不到（版本对不上）时播种层什么都不做。
+              modelKey: require('./ai/embedding').MODEL_KEY,
+            });
+          })
+          .then(function (report) {
+            if (bundledModels.reportSaysCopied(report))
+              logger.log('[ai] 已从随包 models/ 播种模型: ' + JSON.stringify(report));
+            return report;
+          })
+          .catch(function (error) {
+            logger.warn('[ai] 播种随包模型失败: ' + (error && error.message ? error.message : error));
+            return null;
+          });
+      }
+      return bundledModelsSeed;
+    }
+    // 与 canRun 一样，按现有约定直接挂在实例上；两个运行时（IPC 与网页 API）的入口都是 refresh()。
+    semanticSearch.beforeRefresh = ensureBundledModels;
+    faceService.beforeRefresh = ensureBundledModels;
     // 下载模型与建索引互斥：同时跑会各占一套模型、反复读 photos.db，谁都跑不快。
     // 只读查询（搜图、人物列表、人物照片）不受这两个开关影响，索引期间照常可用。
-    // 数据库维护（VACUUM / 重建缩略图标记）期间同样要拦：维护需要独占写锁，
-    // 索引 worker 一边跑一边写会把维护顶成 `database is locked`。这里返回的是**错误码**
-    // 而不是 false，界面才能说清「是数据库维护在占着」而不是笼统的「AI 任务正在运行」。
+    // 数据库维护期间同样要拦，但**只有独占整库的那两种**（VACUUM / 重建缩略图标记）：它们要
+    // 重写整库，索引 worker 一边跑一边写会把维护顶成 `database is locked`。
+    // ⚠️ 启动期的 FTS 索引刻意**不算**在这里（见 ai-index-gate.js）：它和 AI 索引走同一条
+    // 写库队列，串行由队列保证；把它算进来就是过去那个误报——开机十几秒内点「建 AI 索引」
+    // 会被回一句「数据库维护进行中」，而其实立刻就能跑。
+    // 返回的是**错误码**而不是 false，界面才能说清「是数据库维护在占着」而不是笼统的「AI 任务正在运行」。
     semanticSearch.canRun = function () {
-      if (optimizeTaskRunning) return 'AI_MAINTENANCE';
-      return !faceService.status().busy;
+      return aiIndexCanRun({
+        exclusiveMaintenance: exclusiveMaintenanceRunning,
+        peerBusy: faceService.status().busy,
+      });
     };
     faceService.canRun = function () {
-      if (optimizeTaskRunning) return 'AI_MAINTENANCE';
-      return !semanticSearch.status().busy;
+      return aiIndexCanRun({
+        exclusiveMaintenance: exclusiveMaintenanceRunning,
+        peerBusy: semanticSearch.status().busy,
+      });
     };
     // 搜图曾经另有一道闸门（人脸索引在跑时直接拒绝）。现已撤除：
     // 真正的约束是内存，而「人脸索引 + 一个搜图 worker」实测根本不崩——人脸模型才 41 MB，
@@ -2867,7 +3677,7 @@ app
         }
         if (vbuf && vbuf.length) {
           try {
-            db.updatePhotoThumbnail(photoId, vbuf);
+            db.updatePhotoThumbnail(photoId, vbuf, { size: topts.size, format: 'jpeg' });
           } catch (eUp) {}
           return new Response(vbuf, {
             headers: { 'Content-Type': 'image/jpeg' },
@@ -3133,6 +3943,18 @@ app
           getAiSearchMatchThreshold: function () {
             return settings.aiSearchMatchThreshold;
           },
+          /** 网页端「照片信息」面板照用桌面端勾好的字段集 */
+          getInfoPanelFields: function () {
+            return settings.infoPanelFields;
+          },
+          /** 网页端「AI 标签」与桌面端同源（同一个只读连接，读数一致） */
+          getPhotoAiTags: function (photoId, locale) {
+            return semanticTags ? semanticTags.tagsFor(photoId, locale) : [];
+          },
+          /** 网页端「设置」页只需要一份脱敏只读快照（见 buildWebSettingsSnapshot） */
+          getSettingsSnapshot: function () {
+            return buildWebSettingsSnapshot();
+          },
         });
         webServer.setPassword(settings.webPassword || '');
         webServer
@@ -3175,7 +3997,7 @@ app
       if (!postWindowDeferredTasksDone) {
         schedulePostWindowDeferredTasks();
       }
-      scheduleDeferredPhotoIndexesOnce('fallback');
+      submitStartupWriteTasks('fallback');
       runAutoStartupTasksOnce();
       startEmbeddedWebServer();
     }, 12000);
@@ -3196,13 +4018,19 @@ app
         clearTimeout(browseUiReadyStartupTimer);
         browseUiReadyStartupTimer = null;
       }
-      /** 首屏目录渲染后再延迟启动自动任务，避免与 get-root-folders/get-folder-tree 抢 Worker 与磁盘 IO */
+      /**
+       * 首屏目录渲染完 → 再等 3.5s 让 get-root-folders / get-folder-tree 的只读查询收尾。
+       *
+       * 🔴 这个延迟**只负责降载**（别和目录树抢 Worker 与磁盘 IO），**不负责排序**：
+       * 之前 +5s thumbnail-fix / +6s FTS / +8s 延迟索引三处各自点火，顺序靠它们相互错开；
+       * 现在改成同一次调用里按优先级一起入队（T5），谁先跑由 `db-write-queue` 决定。
+       */
       browseUiReadyStartupTimer = setTimeout(function () {
         browseUiReadyStartupTimer = null;
         startupStageLog('auto-startup.timer.fire', 'after notify-browse-ui-ready');
+        submitStartupWriteTasks('browse-ui-ready');
         runAutoStartupTasksOnce();
       }, 3500);
-      scheduleDeferredPhotoIndexesOnce('browse-ui-ready');
     });
     ipcMain.on('preview-playback-active', function (event, active) {
       previewPlaybackActive = active === true;
@@ -3471,10 +4299,16 @@ app
     ipcMain.handle('maintenance-rebuild-thumbnail-flags', function () {
       if (maintenanceBusy()) return { success: false, error: maintenanceBusyMessage() };
       optimizeTaskRunning = true;
+      // 独占：要重写整库，AI 索引写一个批次就撞锁 —— 这就是下面 performMaintenance 之外
+      // 唯一该拦 AI 索引的两处之一（另一处是 VACUUM）。
+      exclusiveMaintenanceRunning = true;
       emitBackgroundTasksChangedThrottled(true);
       setTimeout(() => {
-        void dbWriteQueue.run('maintenance-rebuild-thumbnail-flags', () =>
-          performMaintenance('rebuildThumbnailFlags'),
+        void dbWriteQueue.run(
+          'maintenance-rebuild-thumbnail-flags',
+          () => performMaintenance('rebuildThumbnailFlags'),
+          // USER：用户在设置页手动点的，人在等
+          { priority: PRIORITY.USER },
         );
       }, 0);
       return { success: true };
@@ -3512,10 +4346,15 @@ app
       const recheck = vacuumSpaceShortage();
       if (recheck) return { success: false, error: recheck };
       optimizeTaskRunning = true;
+      // 同上：VACUUM 期间不接受建 AI 索引（不是「稍慢」而是必然 database is locked）。
+      exclusiveMaintenanceRunning = true;
       emitBackgroundTasksChangedThrottled(true);
       setTimeout(() => {
-        void dbWriteQueue.run('maintenance-optimize-database', () =>
-          performMaintenance('optimizeDatabase'),
+        void dbWriteQueue.run(
+          'maintenance-optimize-database',
+          () => performMaintenance('optimizeDatabase'),
+          // USER：VACUUM 是用户确认后触发的，且不可中断，越早拿到锁越好
+          { priority: PRIORITY.USER },
         );
       }, 0);
       return { success: true };
@@ -3812,6 +4651,16 @@ app
         semantic: semanticSearch ? semanticSearch.status() : {},
         optimizing: optimizeTaskRunning,
         maintenance: maintenanceResult,
+        /**
+         * 用户交互抢占状态。`active` 为真时后台长任务正在批次边界让位；
+         * `holds` / `heldMs` 是累计让位次数与时长 —— 排查「后台为什么变慢了」的线索。
+         */
+        interaction: interactionPreempt.status(),
+        /**
+         * 写库队列的优先级快照：谁在跑、谁在等、各是什么档。
+         * 排查「为什么某个任务迟迟不开始」时，看 `waiting` 里有没有更高档的任务压着它。
+         */
+        writeQueue: dbWriteQueue.snapshot(),
       };
     });
 
@@ -3859,93 +4708,6 @@ app
         }
         await db.backupToFile(saveResult.filePath);
         return { success: true, path: saveResult.filePath };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    });
-
-    ipcMain.handle('export-root-folders-json', async function () {
-      if (!mainWindow) {
-        return { success: false, error: '窗口未就绪' };
-      }
-      try {
-        var readPathExport = sqliteDbPath || dbPath;
-        if (!readPathExport) {
-          return { success: false, error: '数据库路径不可用' };
-        }
-        var rows = await runDbReadWorkerOnly(readPathExport, 'getRootFolders', { lite: true });
-        var list = [];
-        for (var i = 0; i < rows.length; i++) {
-          if (rows[i].path) list.push(rows[i].path);
-        }
-        var payload = {
-          version: 1,
-          exportedAt: new Date().toISOString(),
-          roots: list,
-        };
-        var saveResult = await dialog.showSaveDialog(mainWindow, {
-          title: '导出目录列表',
-          defaultPath: path.join(app.getPath('documents'), 'AuroraGallery-folders.json'),
-          filters: [{ name: 'JSON', extensions: ['json'] }],
-        });
-        if (saveResult.canceled || !saveResult.filePath) {
-          return { success: false, cancelled: true };
-        }
-        fs.writeFileSync(saveResult.filePath, JSON.stringify(payload, null, 2), 'utf8');
-        return { success: true, path: saveResult.filePath, count: list.length };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    });
-
-    ipcMain.handle('import-root-folders-json', async function () {
-      if (isFolderScanRunning()) {
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
-      if (!mainWindow) {
-        return { success: false, error: '窗口未就绪' };
-      }
-      try {
-        var openResult = await dialog.showOpenDialog(mainWindow, {
-          title: '导入目录列表',
-          filters: [{ name: 'JSON', extensions: ['json'] }],
-          properties: ['openFile'],
-        });
-        if (openResult.canceled || !openResult.filePaths || !openResult.filePaths[0]) {
-          return { success: false, cancelled: true };
-        }
-        var raw = fs.readFileSync(openResult.filePaths[0], 'utf8');
-        var data = JSON.parse(raw);
-        var paths = [];
-        if (data && Array.isArray(data.roots)) {
-          paths = data.roots;
-        } else if (Array.isArray(data)) {
-          paths = data;
-        }
-        var added = 0;
-        var skippedMissing = 0;
-        for (var j = 0; j < paths.length; j++) {
-          var p = String(paths[j] || '').trim();
-          if (!p) continue;
-          var norm = p.replace(/\//g, '\\');
-          if (!fs.existsSync(norm)) {
-            skippedMissing++;
-            continue;
-          }
-          db.addRootFolder(norm);
-          added++;
-          enqueueScanTask({ rootPath: norm, source: 'import' });
-        }
-        if (added > 0) {
-          // 新增根目录会影响根列表缓存；先按全量兜底失效。
-          invalidateCatalogCacheForRootSafe(null);
-        }
-        return {
-          success: true,
-          added: added,
-          skippedMissing: skippedMissing,
-          totalInFile: paths.length,
-        };
       } catch (err) {
         return { success: false, error: err.message };
       }
@@ -4191,6 +4953,22 @@ app
       );
     });
 
+    /**
+     * 照片信息面板的「AI 内容标签」。
+     *
+     * 走的是**独立于 `get-photo-info` 的一条路**：标签存在搜图索引库里（不在 photos 表），
+     * 而 `getPhotoInfo` 只连主库。两条异步必须在渲染端**并进同一个对象再重画** ——
+     * 分头渲染会变成「谁后到谁赢」，这是本项目已经踩过并按住的坑
+     * （见 `renderer/app.js` 的 `patchInfo`）。
+     *
+     * `locale` 由调用方给：库里存的是**词表下标**，映射成哪国文字取决于界面语言。
+     * 切语言时渲染端本来就会重画，所以这里按需映射、不缓存。
+     */
+    ipcMain.handle('get-photo-ai-tags', function (event, photoId, locale) {
+      if (!semanticTags || !photoId) return [];
+      return semanticTags.tagsFor(Number(photoId), locale);
+    });
+
     ipcMain.handle('get-photo-dimensions', async function (event, photoId) {
       if (!db || !photoId) return null;
       var photo = db.getPhotoInfo(Number(photoId));
@@ -4279,7 +5057,11 @@ app
       return semanticSearch.cancel();
     });
     ipcMain.handle('ai-search-query', function (_event, query) {
-      return semanticSearch.run('search', query, searchMatchOptions());
+      // 用户正等着这个结果 —— 让后台长任务在下一个批次边界停下，把 CPU 与磁盘让出来。
+      // 只包查询，不包 install / index：那两个是长跑索引，抢占别的任务反而更慢。
+      return interactionPreempt.withPreempt(function () {
+        return semanticSearch.run('search', query, searchMatchOptions());
+      });
     });
     /**
      * 预选词打分。
@@ -4305,7 +5087,10 @@ app
         payload.lang = scope.lang ? String(scope.lang) : '';
         if (scope.limit !== undefined) payload.limit = Number(scope.limit);
       }
-      return semanticSearch.run('suggest', '', payload);
+      // 预选词打分同样是「用户在用搜图」、同样要载文本编码器 —— 一并算作交互活跃。
+      return interactionPreempt.withPreempt(function () {
+        return semanticSearch.run('suggest', '', payload);
+      });
     });
     ipcMain.handle('face-action', function (_event, operation, args) {
       if (operation === 'status') return faceService.refresh();
@@ -4333,17 +5118,6 @@ app
         source: 'rescan',
         rootPath: rootPath,
       });
-    });
-
-    // 菜单：添加文件夹
-    ipcMain.on('menu-add-folder', async function () {
-      var result = await dialog.showOpenDialog(mainWindow, {
-        properties: ['openDirectory'],
-        title: '选择照片文件夹',
-      });
-      if (!result.canceled && result.filePaths.length > 0) {
-        mainWindow.webContents.send('trigger-scan', result.filePaths[0]);
-      }
     });
 
     // 窗口控制
@@ -4506,9 +5280,14 @@ app
       return { ok: true };
     });
 
-    // 扫描完成通知
-    ipcMain.on('scan-complete', function () {});
-    ipcMain.on('trigger-scan', function () {}); // 避免未注册 warning
+    // 应用版本号（关于对话框用）。
+    // 🔴 这个通道曾经「只有消费端、没有生产端」：实现在已删除的孤儿模块
+    // `src/main/ipc-handlers.js` 里，`preload` 照发、渲染端用 `.catch(() => {})` 吞掉 rejection，
+    // 于是关于对话框一直显示字面 `%VERSION%` 且不报任何错。
+    // 机械防线见 `scripts/module-reachability-regression.js`（preload 发起的每个通道都必须有人注册）。
+    ipcMain.handle('get-app-version', function () {
+      return app.getVersion();
+    });
 
     app.on('before-quit', function (event) {
       if (optimizeTaskRunning) {
@@ -4517,6 +5296,7 @@ app
       }
       isQuitting = true;
       if (semanticSearch) semanticSearch.dispose();
+      if (semanticTags) semanticTags.close();
       if (faceService) faceService.dispose();
       if (startupInvalidCleanupTask.timer) {
         clearTimeout(startupInvalidCleanupTask.timer);

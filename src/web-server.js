@@ -21,10 +21,18 @@ function loadSharp() {
   return sharpModule;
 }
 var playbackStrategy = require('./playback-strategy');
+/** 照片信息面板的字段注册表：与渲染端、主进程共用同一份（见该文件头部说明） */
+var PhotoInfoFields = require('./web/js/photo-info-fields.js');
+
 var HlsSessionManager = require('./hls-session-manager');
 var VideoProbe = require('./video-probe');
 var runDbReadWorkerOnly = require('./db-read-runner').runDbReadWorkerOnly;
 var logger = require('./main/logger');
+/**
+ * 用户交互抢占信号：与桌面端主进程共用同一份单例（同进程内嵌网页），
+ * 于是网页端搜图同样会让后台长任务在批次边界停下让位。
+ */
+var interactionPreempt = require('./main/interaction-preempt').interactionPreempt;
 
 var RAW_EXTENSIONS = new Set(['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw']);
 
@@ -127,6 +135,30 @@ function WebServer(db, port, opts) {
   /** 与桌面同一份搜图匹配阈值：阈值在桌面端设置里调，网页端只是照用 */
   this.getAiSearchMatchThreshold =
     typeof opts.getAiSearchMatchThreshold === 'function' ? opts.getAiSearchMatchThreshold : null;
+  /** 与桌面同一份「照片信息面板显示哪些字段」：桌面设置页勾，网页端照用 */
+  this.getInfoPanelFields =
+    typeof opts.getInfoPanelFields === 'function' ? opts.getInfoPanelFields : null;
+  /**
+   * 照片的「AI 内容标签」只读通道（主进程注入 → `SemanticTags.tagsFor`）。
+   *
+   * 标签在**搜图索引库**里、不在 `photos` 表，所以不能并进 `/api/photo-info` 的 SQL，
+   * 只能单开一条 —— 与桌面端 `get-photo-ai-tags` 是同一个来源，两边读数一致。
+   */
+  this.getPhotoAiTags =
+    typeof opts.getPhotoAiTags === 'function' ? opts.getPhotoAiTags : null;
+  /**
+   * 网页端「设置」页要展示的设置快照（主进程注入，**只读**）。
+   *
+   * 网页端设置页是桌面端的**只读镜像**：每一项都注明「在桌面端修改」。
+   * 之所以不做双向写入 —— 与 `/api/info-fields` 同一条既有契约（网页端只读，
+   * 桌面端是唯一写入口），写成可写会多出一整套「谁赢了」的冲突语义，
+   * 而浏览器会话本来也拿不到桌面端那些窗口级设置。
+   *
+   * ⚠️ 注入方**必须**返回脱敏后的白名单快照：访问密码、隧道凭据这类字段
+   * 不能出现在这里。`/api/settings` 只做转发，不认得哪些字段敏感。
+   */
+  this.getSettingsSnapshot =
+    typeof opts.getSettingsSnapshot === 'function' ? opts.getSettingsSnapshot : null;
 
   // /api/login 简单限流（按 IP）
   this.loginRate = {
@@ -517,8 +549,8 @@ WebServer.prototype.handleRequest = function (req, res) {
       const threshold = this.getAiSearchMatchThreshold
         ? Number(this.getAiSearchMatchThreshold())
         : undefined;
-      this.semanticSearch
-        .run('search', query.q, { threshold })
+      interactionPreempt
+        .withPreempt(() => this.semanticSearch.run('search', query.q, { threshold }))
         .then((data) => {
           if (!res.destroyed) this.jsonResponse(res, data, 200, req);
         })
@@ -542,8 +574,17 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.handleToggleFavorite(req, res);
   } else if (pathname === '/api/download') {
     this.handleDownload(req, res, query);
+  } else if (pathname === '/api/info-fields') {
+    // 网页端「照片信息」面板照用桌面端勾好的字段集（只读，鉴权走上面的统一入口）
+    this.handleInfoFields(req, res);
+  } else if (pathname === '/api/settings') {
+    // 网页端「设置」页：桌面端设置的只读快照（写入口只有桌面端一处）
+    this.handleSettingsSnapshot(req, res);
   } else if (pathname === '/api/photo-info') {
     this.handlePhotoInfo(req, res, query);
+  } else if (pathname === '/api/photo-ai-tags') {
+    // AI 标签在搜图索引库里（跨库），单独一条只读通道，见 getPhotoAiTags
+    this.handlePhotoAiTags(req, res, query);
   } else if (pathname === '/thumb') {
     // 缩略图：/thumb/123
     this.handleThumb(res, '');
@@ -588,6 +629,26 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.serveStaticFile(
       res,
       path.join('js', 'web-theme-shared.js'),
+      'application/javascript; charset=utf-8',
+    );
+  } else if (pathname === '/js/photo-info-fields.js') {
+    // 照片信息面板的字段注册表（三端共用同一份 UMD）。
+    // ⚠️ 这条路由曾经缺失：`src/web/index.html` 一直在请求它，但路由表里没有对应
+    //    分支 → 落到最后的 404 分支，`window.PhotoInfoFields` 永远是 undefined，
+    //    网页端「照片信息」面板固定显示「照片信息模块未加载」。静态守护看不出来
+    //    （它只比对类名/引用，不认 HTTP 路由），所以单加了 `web-asset-route-regression`
+    //    把「页面引用的静态资源」与「路由表」做机械比对。
+    this.serveStaticFile(
+      res,
+      path.join('js', 'photo-info-fields.js'),
+      'application/javascript; charset=utf-8',
+    );
+  } else if (pathname === '/settings-page.css') {
+    this.serveStaticFile(res, 'css/settings-page.css', 'text/css; charset=utf-8');
+  } else if (pathname === '/js/settings-page.js') {
+    this.serveStaticFile(
+      res,
+      path.join('js', 'settings-page.js'),
       'application/javascript; charset=utf-8',
     );
   } else if (pathname.startsWith('/hls/')) {
@@ -999,7 +1060,10 @@ WebServer.prototype.handleThumb = function (res, idStr) {
           }
           if (jpeg && jpeg.length) {
             try {
-              self.db.updatePhotoThumbnail(photoId, jpeg);
+              self.db.updatePhotoThumbnail(photoId, jpeg, {
+                size: topts.size,
+                format: 'jpeg',
+              });
             } catch (eUp) {}
             res.writeHead(200, {
               'Content-Type': 'image/jpeg',
@@ -1032,7 +1096,7 @@ WebServer.prototype.handleThumb = function (res, idStr) {
             .jpeg({ quality: 75 })
             .toBuffer();
           try {
-            self.db.updatePhotoThumbnail(photoId, jpegRaw);
+            self.db.updatePhotoThumbnail(photoId, jpegRaw, { size: 400, format: 'jpeg' });
           } catch (eUp) {}
           res.writeHead(200, {
             'Content-Type': 'image/jpeg',
@@ -1065,7 +1129,7 @@ WebServer.prototype.handleThumb = function (res, idStr) {
           .jpeg({ quality: 75 })
           .toBuffer();
         try {
-          self.db.updatePhotoThumbnail(photoId, jpeg);
+          self.db.updatePhotoThumbnail(photoId, jpeg, { size: 400, format: 'jpeg' });
         } catch (eUp) {}
         res.writeHead(200, {
           'Content-Type': 'image/jpeg',
@@ -2867,8 +2931,8 @@ WebServer.prototype.handleAiSearchSuggest = function (req, res) {
     }
     if (self.getAiSearchMatchThreshold)
       payload.threshold = Number(self.getAiSearchMatchThreshold());
-    self.semanticSearch
-      .run('suggest', '', payload)
+    interactionPreempt
+      .withPreempt(() => self.semanticSearch.run('suggest', '', payload))
       .then((result) => {
         if (!res.destroyed) self.jsonResponse(res, result, 200, req);
       })
@@ -2989,6 +3053,62 @@ WebServer.prototype.handlePhotoInfo = function (req, res, query) {
   } catch (e) {
     self.jsonResponse(res, { error: 'internal error' }, 500, req);
   }
+};
+
+/**
+ * 网页端「照片信息」面板要显示哪些字段。
+ * 桌面端设置页是唯一的编辑入口，这里只读；拿不到（老版本主进程没注入回调）就回落默认集，
+ * 于是网页端不会因为拿不到设置而变成空面板。
+ */
+/**
+ * 网页端「设置」页的设置快照（只读）。
+ *
+ * 注入方负责白名单脱敏；这里拿不到注入函数时返回 `null` 而不是 500 ——
+ * 设置页应当能在「桌面端还没注入」的情况下退化为一页说明，而不是整页报错。
+ */
+WebServer.prototype.handleSettingsSnapshot = function (req, res) {
+  var snapshot = null;
+  if (typeof this.getSettingsSnapshot === 'function') {
+    try {
+      snapshot = this.getSettingsSnapshot();
+    } catch (e) {
+      snapshot = null;
+    }
+  }
+  this.jsonResponse(res, { ok: true, readOnly: true, settings: snapshot || null }, 200, req);
+};
+
+WebServer.prototype.handleInfoFields = function (req, res) {
+  var ids = null;
+  if (typeof this.getInfoPanelFields === 'function') {
+    try {
+      ids = this.getInfoPanelFields();
+    } catch (e) {
+      ids = null;
+    }
+  }
+  this.jsonResponse(res, { fields: PhotoInfoFields.normalizeFieldIds(ids) }, 200, req);
+};
+
+/**
+ * 网页端「照片信息」面板的 AI 标签（只读）。
+ *
+ * 三种情况都返回空数组 —— 从没建过索引 / 索引了但这张没标签 / 索引库此刻被索引 worker
+ * 占着写锁读不到。界面据「空数组」把这一行隐藏（既定取向：空值整行隐藏），
+ * 所以这里不必区分。参数非法也不报错，回空即可 —— 面板是只读展示，不该因搜图索引的
+ * 可用性而失败。
+ */
+WebServer.prototype.handlePhotoAiTags = function (req, res, query) {
+  var tags = [];
+  var id = Number(query && query.id);
+  if (this.getPhotoAiTags && Number.isFinite(id)) {
+    try {
+      tags = this.getPhotoAiTags(id, String((query && query.locale) || 'zh-CN')) || [];
+    } catch (e) {
+      tags = [];
+    }
+  }
+  this.jsonResponse(res, { tags: Array.isArray(tags) ? tags : [] }, 200, req);
 };
 
 module.exports = WebServer;

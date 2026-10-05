@@ -94,7 +94,6 @@
       settingsEntry = button(t('人脸识别与人物索引', 'Face recognition and indexing'), () => {
         if (embedded) options.navigate();
         else open();
-        if (settingsPanel) settingsPanel.open = true;
       });
       settingsEntry.classList.add('people-settings-entry');
       document.getElementById('settingsPage').append(settingsEntry);
@@ -189,7 +188,7 @@
         const liveChanged = previous && state.busy && previous.people !== state.people;
         lastState = state;
         // 引导只讲「这个面板能做的事」（模型 / 索引 / 增量更新），且每行最多一句：
-        // 它是「后台任务」清单里的一行，旁边是「缩略图补全」这类同样只有一行说明的任务。
+        // 它当初是「后台任务」清单里的一行，旁边是「缩略图补全」这类同样只有一行说明的任务。
         // 早先这里是「第 1/2/3 步」的编号轮播，第 3 步写的却是「查看并命名人物」——那是
         // 「人物」视图的动作，本面板既没有列表也没有命名入口，用户读完只能在本页找一个
         // 不存在的按钮。跨页的那一步改由下方的「前往人物页」按钮承载，编号一并去掉
@@ -197,7 +196,7 @@
         // 「索引跑完但零人物」这一支原先还会补一句解释，让人去核对照片里是否有清晰正脸、
         // 或到下方的「识别设置」调整参数后重建索引。那一整句已删除：它把结果归因到用户的
         // 照片质量，而零结果的常见成因在索引本身（模型没跑通、目录没扫全），这句话反而让人
-        // 先去怀疑自己的照片；且「识别设置」如今是个默认收起的 <details>，指路也指不准。
+        // 先去怀疑自己的照片；且「识别设置」当时还是个默认收起的 <details>，指路也指不准。
         // 该状态现在只留 stateLine 的计数，引导整格收起——与同清单里的其它任务行一致。
         const indexed = (state.indexed || 0) > 0;
         const peopleCount = state.people || 0;
@@ -313,8 +312,12 @@
       });
     }
     function renderSettings() {
-      settingsPanel = node('details', '', 'people-settings');
-      settingsPanel.append(node('summary', t('识别设置', 'Recognition settings')));
+      // 2026-10-05：桌面端设置页把索引配置拆成了独立面板「AI 与索引」，这一块不再受
+      // 「后台任务清单里的一行」约束。早先折叠的理由正是「展开的表单会比同清单的其它
+      // 任务行高出一个量级」——独立成面板后该理由消失，于是去掉 <details>，设置项直接
+      // 铺开（用户反馈：不要存在设置项按钮隐藏）。
+      // 仍然只在设置页模式（panel）渲染：网页端的人物弹窗不做识别设置。
+      settingsPanel = node('section', '', 'people-settings');
       // 这里**不再有任何说明文字**：早先「当前方案：<识别器名>」与一行旧记录归因放在
       // <fieldset> 外面，理由是它们在索引期间最该看得见 —— 但那两句与上方任务行的引导句
       // 讲的是同一件事（库里是什么、为什么人物页为空），同一块面板里读两遍只会把表单推远。
@@ -472,7 +475,7 @@
       );
       settingsPanel.append(settingsFields);
       loadPreferences = () => {
-        if (!settingsPanel.open || settingsLoaded) return;
+        if (settingsLoaded) return;
         const load = () => {
           if (busy) {
             pendingNavigation = load;
@@ -496,7 +499,8 @@
         };
         if (!lastState || !lastState.busy) load();
       };
-      settingsPanel.addEventListener('toggle', loadPreferences);
+      // 加载时机改由 refresh() 的状态回调负责（panel 模式下「面板可见即加载」），
+      // 不再依赖 <details> 的 toggle 事件。
       return settingsPanel;
     }
     function image(data, alt) {
@@ -789,7 +793,7 @@
           stopButton.disabled = true;
           toolbar.append(install, buildButton, stopButton);
         }
-        // 静态说明（「在本机检测并分组人脸，不上传照片…」）已删除：这一块现在是
+        // 静态说明（「在本机检测并分组人脸，不上传照片…」）已删除：这一块当时是
         // 「后台任务」清单里的一行，同清单其它行只有一行说明，这里再放一段解释
         // 只会把行撑高；动态状态由 guide（状态引导）与 stateLine 承担。
         children.push(guide, goPeopleButton, toolbar, progressBar, stateLine);
@@ -798,10 +802,10 @@
       dialog.append(...children);
       if (panel && options.manage && !options.browseOnly) {
         toolbar.insertAdjacentElement('afterend', renderSettings());
-        // 「识别设置」不自动展开：设置页里这一块现在是「后台任务」清单里的一行，
-        // 展开的表单会让它比同清单的其它任务行高出一个量级，视觉上不像同一类东西。
-        // 折叠态仍有可见的 <summary>识别设置</summary>，点开即用；偏好数据照样由
-        // 下方的 toggle 监听按需拉取（loadPreferences 在展开时才发请求）。
+        // 设置项直接铺开（2026-10-05 起这一块是独立面板「AI 与索引」的一节）：
+        // 早先折在 <summary>识别设置</summary> 里，是因为它挤在「后台任务」清单中，
+        // 展开的表单会比同清单其它行高出一个量级；独立成面板后该约束不再存在。
+        // 偏好数据由 refresh() 的状态回调按需拉取（loadPreferences 只在未加载时发请求）。
       }
       if (embedded) dialog.hidden = false;
       else dialog.showModal();
@@ -839,10 +843,7 @@
         groups();
       },
       showSettings() {
-        if (settingsPanel) {
-          settingsPanel.open = true;
-          settingsPanel.scrollIntoView({ block: 'nearest' });
-        }
+        if (settingsPanel) settingsPanel.scrollIntoView({ block: 'nearest' });
       },
       show() {
         if (!dialog.childElementCount) {

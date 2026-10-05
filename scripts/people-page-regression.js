@@ -154,21 +154,35 @@ async function run() {
       assert.equal(panel.find('Refresh people'), undefined);      // 零人物（下面 status 里没有 people 字段）：引导整格收起，不再输出解释。
       // 原先这里显示的是「索引已完成，但没有检测到可分组的人脸。请确认照片中有清晰的正脸，
       // 或到下方「识别设置」调整参数后重建索引。」——它把结果归因到用户照片质量，而
-      // 「下方识别设置」如今是个默认收起的 <details>，指路指不准，整句已删。
+      // 「下方识别设置」当时还是个默认收起的 <details>，指路指不准，整句已删。
+      // （那个折叠后来也一并取消了，见下方断言。）
       const guide = panel.children.find((item) => item.className === 'people-guide');
       assert.ok(guide, '设置面板保留引导节点');
       assert.equal(guide.textContent, '', '零人物时引导不再输出解释');
       assert.equal(guide.hidden, true, '零人物时引导整格收起（空文案不得留成空色条）');
-      const settingsDetails = panel.all().find((item) => item.tag === 'details');
-      // 默认收起：设置页里这一块如今是「后台任务」清单里的一行，展开的识别设置
-      // 会让它比同清单其它任务行高出一个量级。折叠态仍要有可见的入口。
-      assert.ok(!settingsDetails.open, '识别设置默认收起（true 才算展开）');
-      assert.equal(settingsDetails.children[0].tag, 'summary', '折叠态要有 summary 入口');
-      // 真实浏览器里点开 <summary> 会先把 details.open 置为 true 再派发 toggle；
-      // 模拟环境得自己补这一步，否则 loadPreferences 会被 open 检查挡住。
-      settingsDetails.open = true;
-      settingsDetails.listeners.toggle();
-      await settle();
+      // 2026-10-05：识别设置独立成「AI 与索引」面板的一节，折叠理由（展开的表单比
+      // 「后台任务」清单其它行高一个量级）随之消失，用户明确要求「不要存在设置项按钮
+      // 隐藏」→ 折叠入口不得复活。下面三条一起看：既没有 <details>/<summary>，
+      // 也要确认设置块本身还在（别把整块删掉来让断言通过）。
+      assert.equal(
+        panel.all().find((item) => item.tag === 'details'),
+        undefined,
+        '识别设置不得再折叠成 <details>（设置项要直接铺开）',
+      );
+      assert.equal(
+        panel.all().find((item) => item.tag === 'summary'),
+        undefined,
+        '不得再有 summary 折叠入口',
+      );
+      assert.ok(
+        panel
+          .all()
+          .find((item) => item.tag === 'section' && item.className === 'people-settings'),
+        '识别设置块保留（只是不再折叠）',
+      );
+      // 铺开态下不能再依赖「用户展开」这个动作来加载：加载时机现由 refresh() 的状态
+      // 回调负责（panel 模式下面板可见即加载）。这里刻意不做任何交互，直接读值 ——
+      // 若忘了改触发点，下面的 groupingSelect / 阈值断言会在默认值上失败。
       // 归组方式：曾经是「标准 / 严格」两档预设，后来是「视觉聚类 / 按文件夹」，
       // 现在还多了「按目录分域聚类」—— 目录只当边界，域内照旧比对特征（见 docs/people-groups.md）。
       const groupingSelect = panel.all().find((item) => item.tag === 'select');
@@ -488,7 +502,7 @@ async function run() {
       staleEmpty.hide();
     }
     // 静态守护：空引导必须真的不显示。.people-guide 自带 padding / 背景色 / 左边框，
-    // 只把文案清空而不收起，会在「后台任务」清单里留一条没有文字的空色条。
+    // 只把文案清空而不收起，会在设置页里留一条没有文字的空色条。
     const peopleCss = fs.readFileSync(path.join(__dirname, '../src/web/css/people.css'), 'utf8');
     assert.ok(
       /\.people-guide\[hidden\]\s*\{[^}]*display:\s*none/.test(peopleCss),
@@ -502,7 +516,7 @@ async function run() {
       'people.css 里不得再留 .people-scheme / .people-stale-note 规则',
     );
     // 反面：被删掉的那句解释不得复活（它把零结果归因到用户照片质量，指路的
-    // 「下方识别设置」如今还是个默认收起的 <details>）。
+    // 「下方识别设置」当时还是个默认收起的 <details>）。
     const peopleJs = fs.readFileSync(path.join(__dirname, '../src/web/js/people.js'), 'utf8');
     assert.equal(
       /没有检测到可分组的人脸|no groupable faces/.test(peopleJs),
@@ -512,6 +526,23 @@ async function run() {
     assert.ok(
       !/people-scheme|people-stale-note/.test(peopleJs),
       'people.js 不得再渲染「当前方案」/「旧记录归因」行（识别设置里只留控件）',
+    );
+    // 静态守护：「归组方式」下拉不得与数值输入框共用固定宽度。它的选项是**整句文案**
+    // （中文最长「按目录分域聚类（目录内比对特征）」16 字，英文 59 字符），早先与
+    // 阈值 / 文件夹层级两个数值框挤在同一条 `width: 96px` 里 —— 实测最长选项中文只
+    // 显示 4/16 字、英文 9/59 字符（英文渲染成「Visual clu▾」），不报错、不进日志，
+    // 只有逐字比对才看得出来。数值框该窄、下拉该按内容自适应，两者必须拆开写。
+    // （`min-width` 不算数：断言特意用 `(?:^|[;\s])width:` 把 `min-width` 排除在外，
+    // 下拉与数值框的 min-width 保持一致是为了排版不参差。）
+    const selectRule = peopleCss.match(/\.people-settings\s+select[^{}]*\{[^}]*\}/);
+    assert.ok(selectRule, 'people.css 必须有独立的 `.people-settings select` 规则');
+    assert.ok(
+      /(?:^|[;\s])width:\s*auto/.test(selectRule[0]),
+      '「归组方式」下拉必须按内容自适应（width: auto），否则整句选项被静默截断',
+    );
+    assert.ok(
+      !/(?:^|[;\s])width:\s*96px/.test(selectRule[0]),
+      '「归组方式」下拉不得退回 96px 固定宽度（选项最长中文 16 字 / 英文 59 字符）',
     );
     // PASS 放在最后：早先它打在这一段之前，后面还有语义搜索与上面的静态守护，
     // 一旦那些检查失败，日志里已经躺着一行 PASS，只看日志的人会被骗过去。

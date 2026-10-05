@@ -1,0 +1,451 @@
+/* 网页端「设置」页。
+ *
+ * 定位：与桌面端设置页**同一套信息架构**（7 面板、同序同名同图标），但网页端是
+ * LAN 客户端，权限与桌面端不同 —— 凡是「桌面端独有」的项在这里只读展示，
+ * 凡是「本来就存在浏览器本地」的项（主题 / 每页数量 / 网格比例）在这里可改。
+ *
+ * ⚠️ 颜色一律走 gallery-design.css 的令牌，不写死色值 —— 深浅两套主题自动跟随，
+ *    与桌面端「同名选择器互相覆盖」的坑无关（本文件是网页端独有，最后加载）。
+ * ⚠️ 本文件的**每一个类名都必须有引用**（JS 字符串字面量或 HTML class），
+ *    否则 css-reference-regression 会判死规则。
+ */
+
+.web-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 13000;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg, #121618);
+  color: var(--text-primary, var(--text, #eef1f2));
+  font-family: var(--font-sans);
+}
+/* 覆盖层靠 hidden 属性开关：display:flex 会盖掉 [hidden] 的默认 display:none */
+.web-settings[hidden] {
+  display: none;
+}
+
+.web-settings-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 顶栏的「设置」入口：与旁边那排顶栏下拉同高（32px），移动端也不隐藏
+   —— 移动端底栏那颗「设置」开的是「筛选与排序」抽屉，这里是通往设置页的唯一入口。 */
+.header-settings-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: 8px;
+  background: var(--bg-card, transparent);
+  color: var(--text-primary, var(--text));
+  cursor: pointer;
+}
+.header-settings-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.header-settings-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 「筛选与排序」抽屉底部的跳转入口 */
+.sheet-settings-link {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: 9px;
+  background: var(--bg-card, transparent);
+  color: var(--text-primary, var(--text));
+  font-family: inherit;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+.sheet-settings-link:hover {
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- 顶栏 */
+.web-settings-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--design-line, var(--border));
+  background: var(--bg-secondary, var(--bg));
+}
+.web-settings-bar-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.web-settings-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+.web-settings-subtitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.web-settings-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: 9px;
+  background: var(--bg-card, transparent);
+  color: var(--text-primary, var(--text));
+  cursor: pointer;
+}
+.web-settings-close:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.web-settings-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 只读说明条：网页端设置页最重要的「免责声明」，不能省 */
+.web-settings-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 18px 0;
+  padding: 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: var(--design-radius);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.web-settings-banner-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.web-settings-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.web-settings-banner-text b {
+  color: var(--text-primary, var(--text));
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ 主体两栏 */
+.web-settings-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 0;
+  padding: 14px 18px 20px;
+}
+
+.web-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: start;
+  padding: 6px;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: var(--design-radius);
+  background: var(--bg-card);
+}
+.web-settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  /* 🔴 显式 border-box：面板行会带 1px 边框，缺了它选中态会比未选中宽 2px 并左右抖 */
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.web-settings-nav-item:hover {
+  background: var(--bg-hover);
+}
+.web-settings-nav-item.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--text-primary, var(--text));
+  font-weight: 600;
+}
+.web-settings-nav-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  font-size: 14px;
+  text-align: center;
+}
+.web-settings-nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-settings-panels {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+/* -------------------------------------------------------------- 面板 */
+.web-settings-panel {
+  display: none;
+  gap: 14px;
+  flex-direction: column;
+}
+.web-settings-panel.active {
+  display: flex;
+}
+.web-settings-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.web-settings-panel-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.web-settings-panel-desc {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+.web-settings-group {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: var(--design-radius);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.web-settings-group-title {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--design-line, var(--border));
+  background: var(--bg-secondary, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+/* 统一 14px 节奏：面板里任何相邻块之间不再各写各的间距 */
+.web-settings-group > * + * {
+  border-top: 1px solid var(--design-line, var(--border));
+}
+
+/* ------------------------------------------------------------- 设置行 */
+.web-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 14px;
+}
+.web-settings-row:hover {
+  background: var(--bg-hover);
+}
+.web-settings-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.web-settings-row-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 550;
+}
+.web-settings-row-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.web-settings-row-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* 行内「只读」小标签：说明这一项要回桌面端改 */
+.web-settings-readonly-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+/* 只读取值：刻意**不用 disabled 控件**——灰掉的下拉框看起来像坏了 */
+.web-settings-value {
+  max-width: 260px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  text-align: right;
+  word-break: break-word;
+}
+.web-settings-value.is-on {
+  color: var(--accent);
+  font-weight: 600;
+}
+.web-settings-value.is-off {
+  color: var(--text-muted);
+}
+
+.web-settings-select {
+  min-width: 132px;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--design-line, var(--border));
+  border-radius: 8px;
+  background: var(--bg-secondary, var(--bg-card));
+  color: var(--text-primary, var(--text));
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.web-settings-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* --------------------------------------------------------- 键位表格 */
+.web-settings-keys {
+  display: flex;
+  flex-direction: column;
+}
+.web-settings-key-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.web-settings-key-row + .web-settings-key-row {
+  border-top: 1px solid var(--design-line, var(--border));
+}
+.web-settings-key-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.web-settings-key-cap {
+  flex: 0 0 auto;
+  min-width: 74px;
+  padding: 3px 8px;
+  border: 1px solid var(--design-line, var(--border));
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--bg-secondary, var(--bg-card));
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-primary, var(--text));
+  text-align: center;
+}
+
+/* --------------------------------------------------------- 收尾提示 */
+.web-settings-note {
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.web-settings-empty {
+  padding: 16px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------- 窄屏 */
+/* 移动端：左侧栏改成横向滚动的胶囊条，面板占满宽度 */
+@media (max-width: 720px) {
+  .web-settings-banner {
+    margin: 10px 12px 0;
+  }
+  .web-settings-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .web-settings-nav {
+    flex-direction: row;
+    gap: 6px;
+    width: 100%;
+    padding: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .web-settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .web-settings-nav-item {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .web-settings-nav-label {
+    overflow: visible;
+  }
+  .web-settings-panels {
+    flex: 1 1 auto;
+    padding-right: 0;
+  }
+  .web-settings-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .web-settings-row-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .web-settings-value {
+    max-width: none;
+    text-align: left;
+  }
+  .web-settings-select {
+    width: 100%;
+  }
+}

@@ -88,12 +88,6 @@ contextBridge.exposeInMainWorld('photoAPI', {
   backupDatabase: function () {
     return ipcRenderer.invoke('backup-database');
   },
-  exportRootFoldersJson: function () {
-    return ipcRenderer.invoke('export-root-folders-json');
-  },
-  importRootFoldersJson: function () {
-    return ipcRenderer.invoke('import-root-folders-json');
-  },
   getBackgroundTasks: function () {
     return ipcRenderer.invoke('get-background-tasks');
   },
@@ -122,6 +116,23 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   getPhotoDimensions: function (photoId) {
     return ipcRenderer.invoke('get-photo-dimensions', photoId);
+  },
+  /**
+   * 「AI 内容标签」。独立于 getPhotoInfo 的一条路 —— 标签在搜图索引库里而不是 photos 表，
+   * 所以渲染端要把它与 getPhotoInfo / getPhotoDimensions 的两次结果**并进同一个对象**
+   * 再重画（见 app.js 的 patchInfo），不能各画各的。
+   */
+  getPhotoAiTags: function (photoId, locale) {
+    return ipcRenderer.invoke('get-photo-ai-tags', photoId, locale);
+  },
+  /**
+   * 主进程**补写** AI 标签（启动期回填）并真的补到了才会推这个通道 —— 没有新标签时不推。
+   * 标签不在 `photos` 表里、也没有别的推送路径，所以不接这个通知就只能等用户手动切图。
+   */
+  onAiTagsUpdated: function (callback) {
+    ipcRenderer.on('ai-tags-updated', function () {
+      callback();
+    });
   },
   getRootFolders: function (options) {
     return ipcRenderer.invoke('get-root-folders', options);
@@ -186,11 +197,6 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   rescanFolder: function (rootPath) {
     return ipcRenderer.invoke('rescan-folder', rootPath);
-  },
-  onTriggerScan: function (callback) {
-    ipcRenderer.on('trigger-scan', function (event, folderPath) {
-      callback(folderPath);
-    });
   },
   onScanStart: function (callback) {
     ipcRenderer.on('scan-start', function () {
@@ -274,11 +280,6 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   toggleDevTools: function () {
     ipcRenderer.send('toggle-devtools');
-  },
-  onWebServerUrl: function (callback) {
-    ipcRenderer.on('web-server-url', function (event, url) {
-      callback(url);
-    });
   },
   onShowCloseChooser: function (callback) {
     ipcRenderer.on('show-close-chooser', function () {

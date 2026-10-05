@@ -10,6 +10,10 @@ module.exports = [
       'tmp-*.js',
       '**/*.min.js',
       'src/renderer/vendor/**',
+      // `.workbuddy/` 是工具工作区（记忆、契约、artifacts/ 下的临时调试脚本），不是产品代码。
+      // 里面的临时脚本会污染 `npx eslint .`，让发版前的这道闸门常年为红 → 整体忽略。
+      // ⚠️ 基线判据是 `npx eslint src scripts`（0 error / 6 warning），本项只为让 `npx eslint .` 也能当闸门用。
+      '.workbuddy/**',
     ],
   },
   js.configs.recommended,

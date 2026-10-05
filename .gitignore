@@ -40,3 +40,7 @@ Desktop.ini
 # cloudflared（npm run download-cloudflared，打包时由 afterPack 复制到 resources/bin）
 /bin/cloudflared
 /bin/cloudflared.exe
+
+# 随包内置模型（npm run bundle-models，打包时由 afterPack 复制到 resources/models）
+# 体积数百 MB，且 InsightFace 预训练权重仅限非商业研究用途，不进版本库。
+/models/

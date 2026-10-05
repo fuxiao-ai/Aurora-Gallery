@@ -138,14 +138,14 @@
     onBackgroundTasksChanged: function (handler) {
       return on('onBackgroundTasksChanged', handler);
     },
-    onTriggerScan: function (handler) {
-      return on('onTriggerScan', handler);
-    },
     onScanStart: function (handler) {
       return on('onScanStart', handler);
     },
     onScanComplete: function (handler) {
       return on('onScanComplete', handler);
+    },
+    onAiTagsUpdated: function (handler) {
+      return on('onAiTagsUpdated', handler);
     },
     getThumbnailBackfillProgress: function () {
       return call('getThumbnailBackfillProgress');
@@ -179,12 +179,6 @@
     },
     maintenanceCancelDuplicateHashDetection: function () {
       return call('maintenanceCancelDuplicateHashDetection');
-    },
-    exportRootFoldersJson: function () {
-      return call('exportRootFoldersJson');
-    },
-    importRootFoldersJson: function () {
-      return call('importRootFoldersJson');
     },
     tunnelGetStatus: function () {
       return call('tunnelGetStatus');

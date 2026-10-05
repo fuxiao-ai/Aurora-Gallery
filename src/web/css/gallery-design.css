@@ -176,6 +176,113 @@ html .sidebar {
   font-variant-numeric: tabular-nums;
 }
 
+/* 目录树
+   ----------------------------------------------------------------------------
+   **桌面端与网页端共用这一份**（本文件两端都加载）—— 树的外观只有这一个来源，
+   `src/renderer/styles.css` 与 `src/web/index.html` 里都不得再出现 `.tree-*` 规则。
+
+   缩进口径：**每级 14px，且只由行内的 `padding-left` 决定**（容器 padding 为 0）。
+     · 父行：`12 + 14d`，行内自带 18px 箭头槽 + 8px 行 gap → 名字落在 +26
+     · 叶子行：`12 + 14d + 26`（没有箭头槽，补满整个槽宽 + 行 gap）
+       → 这样同级「父行」与「叶子行」的 `.name` 左缘才对得齐
+     · 层导线：画在该行箭头槽的中心 `12 + 14d + 9`
+   这四个数由两端的树模块各自算出（`sidebar-tree.js` / `web/js/app.js` 的
+   `TREE_INDENT_BASE` / `_STEP` / `_TOGGLE_SLOT` / `_ROW_GAP`），**改一处必须同步另一处**。
+
+   展开/收起契约（两端一致）：
+     关闭 = 容器**没有** `.expanded`；打开 = `.expanded` + 行内 `display:block`
+     （容器行内 display 与类名是双写，两条路径都不会互相打脸）
+     箭头 = toggle 的 `.is-expanded`（与容器的 `.expanded` 同步翻转）
+     动画 = 打开瞬间加 `.is-opening`，约 200ms 后由调用方摘掉 */
+.tree-toggle {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 5px;
+  transition:
+    color var(--dur-fast, 0.18s) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+    background var(--dur-fast, 0.18s) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+  user-select: none;
+}
+/* 箭头用 CSS 画：原先靠 `▶/▼` 两个字形切换，8px 字号下各平台字形差异大、基线也对不齐，
+   而且切换是硬跳。改成同一个方块的旋转，展开/收起有补间。 */
+.tree-toggle::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur-med, 0.26s) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+.tree-toggle.is-expanded::before {
+  transform: rotate(45deg);
+}
+.tree-toggle:hover {
+  color: var(--accent);
+  background: var(--accent-dim, rgba(127, 127, 127, 0.12));
+}
+
+.tree-root {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+}
+/* 第一个照片库之前补一条分隔线：上面几行（所有照片 / 收藏 / 所有目录）是「视图入口」，
+   下面的 .tree-root 才是真实目录树，不给线就只能靠行距猜。 */
+.folder-item + .tree-root {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+/* 根目录行（= 一个照片库）略作强调，和「所有照片 / 收藏 / 所有目录」区分开 */
+.tree-root > .folder-item.tree-parent > .name {
+  font-weight: 600;
+}
+
+.tree-children {
+  position: relative;
+  /* 缩进全部交给行内 padding-left，容器不再叠加 */
+  padding-left: 0;
+  overflow: hidden;
+}
+/* 关闭态的兜底：容器没有 `.expanded` 就不显示。两端都是「类名 + 行内 display」双写，
+   行内 display 优先级更高，所以这里只兜住暂时没写行内 display 的容器
+   （例如网页端首屏子目录还没拉回来的那一小段）。 */
+.tree-children:not(.expanded) {
+  display: none;
+}
+/* 层级导线：画在父行箭头槽的中心，`--tree-guide-x` 由两端的树模块按层深写入。
+   没有它时，深色毛玻璃背景上「谁是谁的子目录」只能靠数缩进猜。 */
+.tree-children::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: var(--tree-guide-x, 21px);
+  width: 1px;
+  background: color-mix(in srgb, var(--text-muted) 42%, transparent);
+  pointer-events: none;
+}
+.tree-children.is-opening {
+  animation: treeChildrenOpen 0.18s var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+@keyframes treeChildrenOpen {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 html .toolbar {
   background: var(--bg);
   border-bottom-color: var(--design-line);
@@ -253,84 +360,22 @@ html .empty-state {
   color: var(--text-secondary);
   line-height: 1.9;
 }
-.welcome-mark {
-  display: grid;
-  place-items: center;
-  width: 76px;
-  height: 76px;
-  margin-bottom: 28px;
-  border-radius: 23px;
-  background: var(--accent-dim);
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-  color: var(--accent);
-  transform: rotate(-6deg);
-}
-.welcome-mark svg {
-  width: 34px;
-  height: 34px;
-  transform: rotate(6deg);
-}
-.welcome-features {
-  width: min(740px, 100%);
-  gap: 0;
-  margin-top: 44px;
-  border-top: 1px solid var(--design-line);
-  padding-top: 24px;
-}
-html .feature-card,
-html .feature-card:hover {
-  text-align: left;
-  padding: 16px 24px;
-  border: 0;
-  border-radius: 0;
-  background: none;
-  box-shadow: none;
-  transform: none;
-}
-.feature-card .feature-icon {
-  filter: none;
-  margin-bottom: 12px;
-}
-.feature-icon svg {
-  width: 22px;
-  height: 22px;
-}
-.feature-card .feature-title {
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-.feature-card .feature-desc {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.7;
-}
+/* 🔴 `.welcome-mark` / `.welcome-features` / `.feature-card` 一组规则已删除（2026-10-05）。
+   它们服务的是**渲染端**那张静态欢迎页 —— `html .feature-card, html .feature-card:hover`
+   这种写法本身就是「覆盖渲染端 styles.css 同名卡片」的补丁。而 web 端从来没有任何页面或
+   脚本引用过这些类名，是 css-reference-regression 里靠渲染端的引用「掩护」才没报红的死规则。
+   渲染端欢迎页换成独立首页（#homePage）后，这批跨端覆盖彻底失去理由，故一并清理。 */
 
-.btn,
-.settings-page .btn,
-select.sort-select,
-select.ui-select,
-.header select,
-.topbar select {
+/* `.btn` 族与下拉框的取值**不在这里** —— 它们唯一来源是
+   `src/renderer/styles.css` 的「按钮基础族」「统一下拉框」两节。
+   本文件在桌面端晚于 styles.css 加载，早先在这里覆写同特异性的规则
+   （圆角 8px、去掉投影、hover 不做位移、主按钮由渐变改纯色、顶栏下拉圆角），
+   会让「读 styles.css 得到的结论」和真实渲染是两套值，已全部并回 styles.css。
+   下面只留 web 端独有的顶栏下拉基准（web 不加载 styles.css，也不用 .btn 族）。 */
+.header select {
   border-radius: 8px;
   box-shadow: none;
   font-family: var(--font-sans);
-}
-.btn:hover,
-.settings-page .btn:hover {
-  transform: none;
-}
-.btn-primary,
-.settings-page .btn-primary {
-  background: color-mix(in srgb, var(--accent) 40%, #101820);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: none;
-}
-.btn-primary:hover,
-.settings-page .btn-primary:hover {
-  background: color-mix(in srgb, var(--accent) 36%, #101820);
-  color: #fff;
-  box-shadow: none;
 }
 html .setting-item,
 html .settings-task-group,
@@ -389,12 +434,6 @@ html .setting-item:hover {
   .photo-grid {
     padding: 22px 26px;
   }
-  .welcome-features {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .feature-card + .feature-card {
-    border-left: 1px solid var(--design-line);
-  }
 }
 @media (max-width: 768px) {
   .header-title::before {
@@ -414,12 +453,6 @@ html .setting-item:hover {
   html .empty-state {
     padding: 24px 12px;
   }
-  .welcome-features {
-    margin-top: 24px;
-  }
-  html .feature-card {
-    padding: 14px 12px;
-  }
   .mobile-bottom-nav {
     background: var(--bg-secondary, var(--bg-sidebar));
     border-top: 1px solid var(--design-line);
@@ -438,7 +471,202 @@ html .setting-item:hover {
   .grid,
   .empty-state,
   .photo-card,
+  .tree-children.is-opening,
   .aurora-blob {
     animation: none !important;
   }
+}
+
+/* ============================================================================
+ * 材质纹理（第三维 data-texture）—— 贴到**可见面**上
+ * ============================================================================
+ * 🔴 为什么贴在这里：本文件是两端共用的**收尾层**，`html .sidebar` / `html .toolbar` /
+ *    `.content-area` 把面板拍成了不透明实色 —— 于是打在面板**背后**的装饰层一律看不见
+ *    （2026-10-05 实测：全屏 `body::after` 装饰层在 11 种背景基调下露出面积都是 0.01%，
+ *    把层染成纯红也一个红点都看不到）。纹理必须成为**面自己的一层背景**。
+ *
+ * 🔴 为什么三个声明都必须 `!important` —— 这是**实测逼出来的**，不是图省事。
+ *    本规则的选择器最高只到 `html .sidebar`/`.content-area`（0,1,1 / 0,1,0），而项目里
+ *    另有几条会把 `background-image` 一起重置成 none 的规则（`background` **简写**），
+ *    实测**明暗两档都会坏，只是坏的面不同**（2026-10-05 反向验证：把 `!important` 去掉
+ *    后重跑探针，两档都红）：
+ *
+ *      ① 浅色档 —— `.content-area`(55%) / `.sidebar`(15%) / `.toolbar`(5%) 三面全丢
+ *         html[data-theme='light'] .content-area { background: color-mix(...) }   ← (0,2,1) 比我们高
+ *         html[data-theme='light'] .toolbar     { background: color-mix(...) }   ← (0,2,1)
+ *         html[data-theme='light'] .sidebar     { background: color-mix(...) }   ← (0,2,1)
+ *         症状：命中测试覆盖率 100% → **25%**。
+ *      ② 深色档 —— `.sidebar`(15%) 丢
+ *         theme-polish.css 的 html .sidebar { background: var(--surface-soft) }  ← 同是 (0,1,1)，
+ *         但 theme-polish.css **加载在本文件之后** → 同特异性下后者胜。
+ *      ③ 深色档 + 墨色底 —— body 丢，且拿到的是**别人的图**
+ *         html[data-theme='dark'][data-bg='ink'] body { background: <5 层极光渐变> }  ← (0,3,1)
+ *         这一条最阴：body 的 `background-image` 变成 5 层渐变，**看起来「有背景图」**，
+ *         于是「非 none 就算铺到」的粗口径会把它记成已覆盖、覆盖率虚报成 85%（真值 78%）。
+ *
+ *    ⚠️ 这三条都**不是 grep 源码能查出来的**：要判定谁赢必须跨 8 张样式表算层叠特异性，
+ *    只有运行期算得准。而属性、磁盘、以及「某个元素的计算 backgroundImage 非 none」
+ *    三条断言在出 bug 时**全部照绿**。守住这件事的是 theme-switch-probe 的命中测试。
+ *
+ *    想靠「写一条更具体的选择器」赢是不可能的：两端必须用同一个选择器（网页端不设
+ *    data-texture 属性，属性型选择器在网页端恒不匹配），所以任何不依赖文件顺序的写法
+ *    都只能到 (0,2,1)，与 ① 平级 → 还得靠顺序，而本文件后面还压着 6 张样式表。
+ *    `!important` 是唯一同时满足「不分主题档、不分加载顺序、不分平台」的写法，也正是
+ *    这里的语义：**纹理是最后叠上去的一层装饰，必须压过主题算出来的底色**。
+ *    ⚠️ 代价：这 7 个面上不得再出现别的 `background-image` 用途（会一并被压掉）。
+ *    目前没有 —— 全项目唯一的另一处 `background-image` 在 semantic-search.css 的
+ *    `.search-skeleton` 上，不在这 7 个面里。
+ *
+ * 🔴 只加 `background-image`（+ 它的平铺参数），**不碰 `background`（简写）也不碰
+ *    `background-color`** —— 各面原有的底色 / 边框 / 阴影全部保留，纹理是叠在它们之上的
+ *    额外一层。写成简写会把 `var(--bg)` 之类的底色一起冲掉。
+ *
+ * 面上的元素集合 = 实测出来的「视觉背景面」（视口网格命中测试，按覆盖面积）：
+ *    .content-area 56% ｜ .topbar 8% ｜ .titlebar 4% ｜ .browse-footer 4% ｜ .toolbar 4%
+ *    另有约 20%（`.empty-state` 一圈等）由 body 画布兜底，所以 body 也挂上。
+ *    新增主要面板时请一并加进来，否则那一块会「没有纹理」，而其余部分是有的（很显眼）。
+ *
+ * ⚠️ 关闭态靠 `--bg-texture` 的兜底值 `none`（下面的 `:root`），**不是**靠 :not([data-texture])：
+ *    网页端根本不设 data-texture 属性（它由 JS 直接写变量），写属性闸门会把网页端彻底关死。
+ * ⚠️ 两端唯一的真相源：桌面端 `html[data-texture='x']` 块 → 变量（styles.css）；
+ *    网页端 `TEXTURE_TOKENS` → root.style（web-theme-shared.js）。theme-regression §9c 比对两者等价。
+ * ⚠️ 守护：theme-regression §9d（静态：这 7 个面 + !important + 只碰 background-image）；
+ *    theme-switch-probe「材质纹理实测」（运行期：命中测试量覆盖率，浅/深两档都要够）。
+ */
+:root {
+  --bg-texture: none;
+  --texture-size: auto;
+}
+body,
+html .sidebar,
+html .toolbar,
+html .topbar,
+.titlebar,
+.browse-footer,
+.content-area {
+  background-image: var(--bg-texture, none) !important;
+  background-repeat: repeat !important;
+  background-size: var(--texture-size, auto) !important;
+}
+
+/* ═══ 面板透明度（第五维 data-opacity）══════════════════════════════════════════
+ *
+ * 语义：把「界面框架」那几张面的**底色**按 --ui-alpha 掺进 transparent，透出 body 的
+ *      渐变底与 `.aurora-bg` 极光层。**只动背景色，不动照片**——`.photo-card` 与
+ *      `.photo-card img` 一概不在此列（照片是主体，通透了就没法看图了）。
+ *
+ * 与前三/四维的关系：**正交**。body 里那层 `.aurora-bg` 是唯一的「底」，
+ * 面板透出来的就是它 → 「纯黑 + 通透」「暖调 + 轻微」都能叠。
+ *
+ * 🔴 `opaque` 档**不设属性**（与 data-bg 的 `default` / data-texture 的 `none` 同惯例），
+ *    所以下面每条规则都带 `html[data-opacity]` 闸门 —— 没设属性的默认外观**逐字节不变**。
+ *    不要图省事写成「无条件生效 + --ui-alpha 默认 100%」：那会让默认档也走一遍
+ *    `color-mix`，舍入误差会把「默认档零变化」这条护栏变成一条永远抖动的断言。
+ *
+ * 🔴 必须写 `background-color` 而不是 `background` 简写：简写会把上面刚铺好的
+ *    `--bg-texture`（background-image）连 `background-repeat/size` 一起重置成初始值，
+ *    表现为「一开透明度，纹理就没了」。
+ *
+ * 🔴 `!important` 不能省：`.content-area` / `.browse-footer` / `.sidebar` 的浅色档底色
+ *    是 `html[data-theme='light'] .x { background: color-mix(...) }`（同为 0,2,1 特异性的
+ *    **简写**规则），另有 `theme-polish.css` 里更晚加载的同名规则 —— 靠文件顺序赢不了。
+ *
+ * 两端共用：本文件在 styles.css 之后加载，且两端的面类名一致（`.topbar` / `.toolbar` /
+ * `.content-area` / `.browse-footer` / `.sidebar`）；网页端由 JS 把 `--ui-alpha` 写进
+ * `root.style`（它就设在 html 上，与这里的 `html[data-opacity='x']` 块等价）。
+ * ⚠️ 新增主要面板时**两处都要加**（这里 + 上面那条 --bg-texture 的），漏了会出现
+ *    「一块板不透、其余都透」的割裂观感。
+ */
+:root {
+  /* 面板底色的 alpha 乘子：100% = 各档原样。opaque 档不设属性 → 本值不参与计算 */
+  --ui-alpha: 100%;
+}
+html[data-opacity='slight'] {
+  --ui-alpha: 82%;
+}
+html[data-opacity='medium'] {
+  --ui-alpha: 64%;
+}
+html[data-opacity='clear'] {
+  --ui-alpha: 46%;
+}
+/* 玻璃组：标题栏 / 顶栏 / 工具栏 / 侧栏（原底色都是 --glass，本身已是半透明 rgba，
+   这里是在它自己的 alpha 上再乘一次，所以「墨色」这类原本 alpha 就高的档会透得少一些） */
+html[data-opacity] .titlebar,
+html[data-opacity] .topbar,
+html[data-opacity] .toolbar,
+html[data-opacity] .sidebar {
+  background-color: color-mix(in srgb, var(--glass) var(--ui-alpha), transparent) !important;
+}
+/* 底色组：内容区 / 分页条 / 设置页 / 首页（原底色是 --bg）
+   ⚠️ `.home-page` 是 2026-10-05 补进来的：它和 `.settings-page` 同族（都是
+      「一页」而不是内容区里的分支）。上一轮漏了它，后果是**在首页上**只有它一块
+      大面不透 —— 此时 `#contentArea` / `#sidebar` 都 display:none，页面上看得见的
+      面只剩 .app-rail / .titlebar / .topbar / .home-page，前三个都在清单里会变透，
+      于是「一块板不透、其余都透」的割裂全落在首页自己身上。
+      ⚠️ 网页端没有 `.home-page` 节点（首页是桌面端专有页），规则留着无害 ——
+      与下面 `.app-rail` 那条同样处理。
+      ⚠️ 只写 `background-color`：`.home-page` 自己有一层装饰用的 `background-image`
+      （环境光径向渐变），用 `background` 简写会把它一起重置掉。 */
+html[data-opacity] .content-area,
+html[data-opacity] .browse-footer,
+html[data-opacity] .home-page,
+html[data-opacity] .settings-page {
+  background-color: color-mix(in srgb, var(--bg) var(--ui-alpha), transparent) !important;
+}
+/* 图标栏（原底色 --bg-secondary）。桌面端专有，网页端无此节点 —— 规则留着无害 */
+html[data-opacity] .app-rail {
+  background-color: color-mix(in srgb, var(--bg-secondary) var(--ui-alpha), transparent) !important;
+}
+
+/* ═══ 窗口背景 = 亚克力（data-window-backdrop）═════════════════════════════════
+ *
+ * 与上面那节的**分工**：`data-opacity` 管「面板透多少」，`data-window-backdrop` 管
+ * 「窗口本身透不透」。两者叠加，且**都必须成立**才能真的看见桌面：
+ *   窗口参数（主进程建窗时决定，运行期改不了）→ body 的底 → .aurora-bg 极光 → 面板。
+ *   中间任何一层不透明，桌面就被挡死在那层。
+ *
+ * 🔴 所以亚克力档**必须自己再挂一遍面板半透明**（闸门换成 data-window-backdrop）：
+ *    「窗口背景=亚克力 + 面板透明度=不透明」是合法组合，此时**没有** data-opacity 属性，
+ *    若只靠上面那组规则，面板全是实色 → 整个窗口被盖满 → 亚克力**半点看不见**
+ *    （这正是 2026-10-05「加了透明度却看不出效果」那次的同一个坑，别再踩第二次）。
+ *
+ * ⚠️ 网页端永远不会有这个属性（浏览器里没有窗口可透），规则留着无害。
+ */
+/* 🔴 透明档给 `--ui-alpha` 装了一个 **62% 的透明度上限**：不装的话，「亚克力 + 不透明」
+   会落成 100% → 面板全实色 → 效果归零。⚠️ `clear` 档（46%）比这个上限**更透**，
+   要用一条更高特异性的规则保下来；`slight`(82%) 与 `medium`(64%) 都比上限更实，
+   一并封顶到 62%（medium 只差 2 个点，不值得为它单开一条规则）。
+   ⚠️ 闸门写「属性存在」而**不是**某个具体档位值：`solid` 档是 `removeAttribute`，
+   所以 `html[data-window-backdrop]` 天然只命中透明档 —— 2026-10-05 把这一维从单档
+   `acrylic` 扩成三档时正是靠这个写法免去逐档列举（当时写的是 `='acrylic'`）。
+   三档的**程度差异全在 styles.css 的 body 那层**，面板这一侧三档完全一致。
+   ⚠️ 顺序要求：这两条必须写在上面三个 data-opacity 档块**之后** ——
+   `html[data-window-backdrop]` 与 `html[data-opacity='slight']` 特异性同为 (0,1,1)，
+   同分时靠源码顺序决胜。 */
+html[data-window-backdrop] {
+  --ui-alpha: 62%;
+}
+html[data-window-backdrop][data-opacity='clear'] {
+  --ui-alpha: 46%;
+}
+/* 玻璃组（标题栏 / 顶栏 / 工具栏 / 侧栏）：与上面 data-opacity 那组逐字相同，只换闸门 */
+html[data-window-backdrop] .titlebar,
+html[data-window-backdrop] .topbar,
+html[data-window-backdrop] .toolbar,
+html[data-window-backdrop] .sidebar {
+  background-color: color-mix(in srgb, var(--glass) var(--ui-alpha), transparent) !important;
+}
+/* 底色组（内容区 / 分页条 / 设置页 / 首页）。⚠️ `.home-page` 与上面那组同步补入 ——
+   两条规则必须成对，只补一条就会出现「开透明度有效、开亚克力无效」（反之亦然），
+   因为「窗口背景=亚克力 + 面板透明度=不透明」是合法组合，此时没有 data-opacity 属性。 */
+html[data-window-backdrop] .content-area,
+html[data-window-backdrop] .browse-footer,
+html[data-window-backdrop] .home-page,
+html[data-window-backdrop] .settings-page {
+  background-color: color-mix(in srgb, var(--bg) var(--ui-alpha), transparent) !important;
+}
+/* 图标栏（原底色 --bg-secondary） */
+html[data-window-backdrop] .app-rail {
+  background-color: color-mix(in srgb, var(--bg-secondary) var(--ui-alpha), transparent) !important;
 }

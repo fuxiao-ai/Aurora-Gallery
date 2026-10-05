@@ -246,6 +246,23 @@ function readSource(relative) {
   return fs.readFileSync(path.join(__dirname, '..', relative), 'utf8');
 }
 
+/** 项目内多处静态守护沿用的剥注释写法：断言不该被注释里的示例代码带跑。 */
+function stripComments(src) {
+  return src
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+/** 取一个顶层函数的函数体（到下一个顶层函数定义之前），只看这一个函数的接线。 */
+function sliceFunctionBody(src, signature) {
+  const at = src.indexOf(signature);
+  if (at < 0) return '';
+  const rest = src.slice(at + signature.length);
+  const next = rest.search(/\n(?:async )?function [A-Za-z_$]/);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
 /**
  * 接线契约：模块里的规则要被真正用起来，界面也得认得新错误码。
  * 这些是「读源码」级别的断言，只兜底接线，规则本身由上面的行为断言覆盖。
@@ -267,10 +284,13 @@ function testWiringContracts() {
     /vacuumSpaceShortage\(\)[\s\S]{0,200}?dialog\.showMessageBox/,
     '优化数据库前必须先做磁盘预检，再做确认弹窗',
   );
+  // T4b 起「维护期间给 AI_MAINTENANCE」的判据搬进了 `src/main/ai-index-gate.js`（剥出来才能
+  // 被行为断言真跑，main.js 一 require 就要 electron）。这里只兜接线，分支语义交给
+  // `ai-index-gate-regression.js` —— 特别是「启动期 FTS 不得拦 AI 索引」那条。
   assert.equal(
-    (mainSource.match(/return 'AI_MAINTENANCE';/g) || []).length,
+    (mainSource.match(/aiIndexCanRun\(/g) || []).length,
     2,
-    '两套 AI 服务的 canRun 都要在数据库维护期间给出 AI_MAINTENANCE',
+    '两套 AI 服务的 canRun 都必须接线到 ai-index-gate 的判据（漏掉一个 = 那套索引没有闸门）',
   );
   // 桌面端的错误文案映射：新错误码要能翻成一句人话，否则用户只会看到裸错误码。
   for (const file of [
@@ -296,19 +316,71 @@ function testDbWriteWiringContracts() {
     'maintenanceBusy() 必须把启动期写库任务算进忙碌，否则维护仍会等满 8s 撞 database is locked',
   );
   for (const name of ['thumbnail-fix', 'deferred-index', 'fts-index']) {
+    // ⚠️ `\s*` 是必要的：T3 给这些调用点加了 `{ priority: … }` 第三参后，`.run(` 与任务名
+    // 之间会换行。断言守的是「真的排进队」这件事，不该顺带规定写成几行。
     assert.match(
       mainSource,
-      new RegExp("\\.run\\('" + name + "'"),
+      new RegExp("\\.run\\(\\s*'" + name + "'"),
       '启动任务 ' + name + ' 必须真的排进队，而不是自己 setTimeout 点火',
     );
   }
-  // 反方向：这三个都是会写库的重活，起跑前要查同一个闸门。
-  for (const anchor of [
-    /function enqueueScanTask\(task\) \{[\s\S]{0,300}?dbWriteQueue\.isBusy\(\)/,
-    /async function runThumbnailBackfill\(limit\) \{\s*if \(optimizeTaskRunning \|\| dbWriteQueue\.isBusy\(\)\)/,
-    /async function runDuplicateHashDetection\(\) \{\s*if \(optimizeTaskRunning \|\| dbWriteQueue\.isBusy\(\)\)/,
-  ])
-    assert.match(mainSource, anchor, '重活的准入也要查启动期写库任务（闸门要双向）');
+  // 反方向：会写库的重活起跑前也要过闸门。但**两个长任务换了一种过法** ——
+  // 缩略图回填 / 重复哈希现在按批次反复入队（串行由队列给出，不再靠起跑前的一次快照），
+  // 所以它们的准入判据刻意**不再**用 dbWriteQueue.isBusy()：批次化后那个信号
+  // 「批间空、批中满」，拿它当「库被长期占用」会抖成「有时能启动、有时被静默跳过」，
+  // 而自动路径不重试，跳过就等于永久漏掉。它们改为只挡**另一个长任务**（不并行抢磁盘），
+  // 串行由「每一批都重新入队」保证（下面逐条断言）。
+  const mainCode = stripComments(mainSource);
+  // 扫描（T2）：准入从「同步拒绝」改成「进同一个队列排队」。
+  // 旧写法是 `if (optimizeTaskRunning || dbWriteQueue.isBusy()) return { success:false, ... }`
+  // —— 拿一个「批间空、批中满」的信号当门槛，用户会不会被拒成了碰运气。
+  // 这条守着「不得退回同步拒绝」；扫描确实占住闸门由下面那条正方向断言兜。
+  const enqueueScanBody = sliceFunctionBody(mainCode, 'function enqueueScanTask(task) {');
+  assert.ok(enqueueScanBody.length > 0, '找不到 enqueueScanTask —— 函数签名变了，请同步本回归');
+  assert.equal(
+    /dbWriteQueue\.isBusy\(\)/.test(enqueueScanBody),
+    false,
+    '扫描不得再用 dbWriteQueue.isBusy() 同步拒绝（批次化后它会抖）；应改为排队',
+  );
+  // 正方向：扫描 worker 是逐批 COMMIT 的**真实写者**，必须占住同一把闸门，
+  // 否则启动期的 thumbnail-fix / deferred-index / FTS 会和它同时持写锁 —— 队列的串行对它无效。
+  const scanQueueBody = sliceFunctionBody(mainCode, 'async function processScanQueue() {');
+  assert.ok(scanQueueBody.length > 0, '找不到 processScanQueue —— 函数签名变了，请同步本回归');
+  assert.match(
+    scanQueueBody,
+    /dbWriteQueue\s*\.run\(\s*'scan'/,
+    '扫描必须占住写库闸门（它是逐批 COMMIT 的真实写者），否则队列的「串行」对它无效',
+  );
+  assert.match(
+    scanQueueBody,
+    /settleScanTask\(task,/,
+    '扫描的每个出口都要走 settleScanTask（先摘去重表再 resolve），否则会留下永久占位的死任务',
+  );
+  for (const [signature, peer, queueName] of [
+    ['async function runThumbnailBackfill(limit) {', 'duplicateHashTask\\.running', 'thumbnail-backfill'],
+    ['async function runDuplicateHashDetection() {', 'thumbnailBackfill\\.running', 'dup-hash'],
+  ]) {
+    const body = sliceFunctionBody(mainCode, signature);
+    assert.ok(body.length > 0, '找不到 ' + signature + ' —— 函数签名变了，请同步本回归');
+    const gateEnd = body.indexOf("reason: 'maintenance'");
+    const gate = gateEnd > 0 ? body.slice(0, gateEnd) : body;
+    assert.match(
+      gate,
+      new RegExp(peer),
+      signature + ' 的准入必须挡住另一个长任务（两个长任务不并行抢磁盘）',
+    );
+    assert.equal(
+      /dbWriteQueue\.isBusy\(\)/.test(gate),
+      false,
+      signature + ' 的准入判据不能用 dbWriteQueue.isBusy() —— 批次化后它会抖，任务会被静默跳过',
+    );
+    assert.match(
+      body,
+      // `\s*`：T3 加了 `{ priority: … }` 第三参后 `.run(` 与任务名之间会换行
+      new RegExp("\\.run\\(\\s*'" + queueName + "'"),
+      '长任务 ' + queueName + ' 必须把每一批都包进写库队列，否则又会整轮持锁',
+    );
+  }
   assert.match(
     mainSource,
     /function maintenanceBusyMessage\(\)[\s\S]{0,400}?dbWriteBusyLabel\(\)/,
@@ -319,7 +391,7 @@ function testDbWriteWiringContracts() {
     assert.match(
       mainSource,
       new RegExp(
-        "dbWriteQueue\\.run\\('[^']+', \\(\\) =>\\s*performMaintenance\\('" + operation + "'",
+        "dbWriteQueue\\s*\\.run\\(\\s*'[^']+',\\s*\\(\\) =>\\s*performMaintenance\\('" + operation + "'",
       ),
       '手动维护 ' + operation + ' 也要排队，否则仍有抢锁窗口',
     );
@@ -397,7 +469,7 @@ function testInvalidCleanupWiring() {
 
   assert.match(
     mainSource,
-    /function runInvalidCleanupBatch\(options\) \{\s*return dbWriteQueue\.run\('invalid-cleanup', function \(\) \{\s*return db\.cleanupMissingFilesYielding\(options\);/,
+    /function runInvalidCleanupBatch\(options\) \{[\s\S]{0,400}?dbWriteQueue\s*\.run\(\s*'invalid-cleanup',\s*function \(\) \{\s*return db\.cleanupMissingFilesYielding\(options\);/,
     '清理批次必须包在写库队列里跑，不能直接调',
   );
   // 有牙齿的一条：全项目只许留一个「真正调用」它的地方（就是上面那个助手）。

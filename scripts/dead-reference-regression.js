@@ -104,11 +104,18 @@ const BROWSER_GLOBALS = new Set([
   'Image',
   'Event',
   'CustomEvent',
+  'PointerEvent',
+  'KeyboardEvent',
+  'MouseEvent',
+  'TouchEvent',
   'HTMLElement',
   'Blob',
   'File',
   'FileReader',
   'Hls',
+  // vendor 脚本提供的全局（本守护的扫描会跳过 vendor/ 目录，因此看不到它的赋值）：
+  // `src/renderer/vendor/qrcode.js`（qrcode-generator）经 `src/renderer/qr-code.js` 读取。
+  'qrcode',
   'URL',
   'URLSearchParams',
   'electronAPI', // preload 暴露的 IPC 桥

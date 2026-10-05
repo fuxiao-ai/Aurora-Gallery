@@ -1540,16 +1540,25 @@ function testRailOrder() {
   const html = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
   const start = html.indexOf('<nav class="app-rail');
   const rail = html.slice(start, html.indexOf('</nav>', start));
+  // ⚠️ 先剥 HTML 注释：注释里正常会引用类名/属性名（2026-10-05 加「首页」时，解释
+  // 「为什么它要带 data-tab="home"」的那段注释把该字面量也写进了 rail 片段，
+  // 于是序列多出一项、计数断言跟着歪）。结构计数不能拿原文当判据。
+  const code = rail.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
   const tabs = [];
   const re = /data-tab="([^"]+)"/g;
   let m;
-  while ((m = re.exec(rail))) tabs.push(m[1]);
+  while ((m = re.exec(code))) tabs.push(m[1]);
+  // 2026-10-05：导轨第 7 项 = 「首页」（`#topbarHomeBtn`）—— 它是页面跳转不是浏览视图，
+  // 但**必须**带 `data-tab="home"`，否则会落进 `syncNavigationRail` 的 `|| 'settings'`
+  // 兜底、在设置页被一起点亮。它排在**最上**（理由见 navigation-regression 那条序列断言：
+  // `.rail-settings` 的 `margin-top:auto` 会独吞剩余空间，放别处会悬在半空的空白上）。
+  // 三份断言（navigation-regression / 这里 / layout-regression）必须逐位一致。
   assert.deepEqual(
     tabs,
-    ['folders', 'dates', 'search', 'people', 'duplicates'],
+    ['home', 'folders', 'dates', 'search', 'people', 'duplicates'],
     '导轨项 data-tab 序列 / 数量必须精确匹配（顺序被改错也要能抓到）',
   );
-  assert.equal((rail.match(/class="rail-item/g) || []).length, 6, '导轨共 6 个 rail-item');
+  assert.equal((code.match(/class="rail-item/g) || []).length, 7, '导轨共 7 个 rail-item');
 }
 
 // ===========================================================================

@@ -2,6 +2,7 @@
 
 const Database = require('better-sqlite3');
 const { MODEL_KEY, DIMENSIONS, pack, score, dot } = require('./embedding');
+const { serializeTags, parseTags } = require('./photo-tags');
 
 /**
  * 匹配阈值的默认值，口径是**基线差**：`sim(查询, 照片) − sim(泛化文本, 照片)`。
@@ -32,12 +33,24 @@ class IndexStore {
     this.index.exec(`CREATE TABLE IF NOT EXISTS embeddings (
       photo_id INTEGER PRIMARY KEY, model TEXT NOT NULL, file_path TEXT NOT NULL,
       file_size INTEGER NOT NULL, date_modified TEXT NOT NULL, vector BLOB NOT NULL,
-      generic_sim REAL
+      generic_sim REAL, tags TEXT, tags_key TEXT
     )`);
-    // 老索引没有 generic_sim 列：补上（新增列落在末尾，与上面的建表顺序一致）。
+    // 老索引没有后面几列：逐列补上（新增列落在末尾，与上面的建表顺序一致）。
     // 历史行留 NULL，检索时按需补算并写回 —— 不需要重建索引（百万库重建一次是数天）。
     try {
       this.index.exec('ALTER TABLE embeddings ADD COLUMN generic_sim REAL');
+    } catch (_) {}
+    /**
+     * `tags` 是**词表下标数组**的 JSON（如 `[148,136]` = 丝袜 / 制服），不是字符串 ——
+     * 下标与语言一一对应（见 `photo-tags.js`），所以换界面语言不需要重算标签。
+     * `tags_key` 是词表指纹：换了词表（增删词）旧标签就作废，而 `batch()` 看不见词表变化，
+     * 只能靠这个指纹判定「该重算」。
+     */
+    try {
+      this.index.exec('ALTER TABLE embeddings ADD COLUMN tags TEXT');
+    } catch (_) {}
+    try {
+      this.index.exec('ALTER TABLE embeddings ADD COLUMN tags_key TEXT');
     } catch (_) {}
     try {
       this.source = new Database(sourcePath, { readonly: true, fileMustExist: true });
@@ -64,15 +77,89 @@ class IndexStore {
   }
 
   /**
+   * 🔴 **`tags` 绝不能加进上面 `batch()` 的谓词。**
+   *
+   * 那条谓词的语义是「这行的**向量**需要重新编码」，命中的行会被送去做一次
+   * `encoder.image()`（SigLIP2 视觉塔前向 + 图片解码）。而「缺标签」是**另一回事** ——
+   * 向量早就算好了，补标签只需读出来做点积，不需要碰磁盘上那张图。
+   *
+   * 把 `tags IS NULL` 混进去的后果不是报错而是**静默巨量浪费**：老索引里那 7374 行
+   * 全都会因为缺标签被重新编码一遍（几分钟到十几分钟的白工），而且这个代价
+   * 只有真跑一次才看得出来 —— 静态检查全绿。所以补标签必须走下面的
+   * `batchPendingTags()`，两条路分开。
+   */
+  /**
+   * 🟢 补标签的候选：**已经有向量、但标签缺失或词表指纹过期**的行。
+   *
+   * 一次查询同时把 `vector` / `generic_sim` 带回来。**不要拆成「先查 id 再逐个取向量」**：
+   * 那样两个查询各有各的窗口，调用方稍不注意就会把 A 批的 id 配上 B 批的向量，
+   * 而标签算错是静默的（没有报错，只是标错了图）。
+   *
+   * `limit` 同时约束内存：一条向量 3072 字节，限 200 就只有约 600 KB。
+   */
+  batchPendingTags(afterId, limit, tagsKey) {
+    return this.index
+      .prepare(
+        `SELECT photo_id, vector, generic_sim FROM embeddings
+       WHERE photo_id > ? AND (tags IS NULL OR tags_key IS NULL OR tags_key != ?)
+       ORDER BY photo_id LIMIT ?`,
+      )
+      .all(afterId, tagsKey, limit);
+  }
+
+  /** 待补标签的**总数**。只做 COUNT，不读 BLOB。 */
+  pendingTagsCount(tagsKey) {
+    const row = this.index
+      .prepare(
+        `SELECT COUNT(*) AS n FROM embeddings
+       WHERE tags IS NULL OR tags_key IS NULL OR tags_key != ?`,
+      )
+      .get(tagsKey);
+    return row ? row.n : 0;
+  }
+
+  /**
+   * 批量写回标签。**事务包住**：补标签一次几千行，逐条自动提交会让索引库的
+   * WAL 反复 fsync。失败整批丢（与 flushBaseline 同策）：下次补标签会重来。
+   */
+  setTags(entries) {
+    if (!entries || !entries.length) return 0;
+    const write = this.index.prepare(
+      'UPDATE embeddings SET tags = ?, tags_key = ? WHERE photo_id = ?',
+    );
+    let written = 0;
+    try {
+      this.index.transaction(() => {
+        for (const entry of entries) {
+          written += write.run(serializeTags(entry.indexes), entry.key, entry.photoId).changes;
+        }
+      })();
+    } catch (_) {
+      return 0;
+    }
+    return written;
+  }
+
+  /** 单张照片的标签下标（`[]` = 算过但没有；NULL 与脏值同样降级成 `[]`）。 */
+  tagsFor(photoId) {
+    const row = this.index.prepare('SELECT tags FROM embeddings WHERE photo_id = ?').get(photoId);
+    return parseTags(row && row.tags);
+  }
+
+  /**
    * `genericSim` 在建索引时顺手算好（worker 已经拿得到向量），这样新索引一落库就带基线，
    * 不会再触发一次补算。
+   *
+   * `tags` 形如 `{indexes, key}`，**索引流程里当场算好**：worker 此刻手里既有刚编码出的
+   * 图片向量、又有词表向量，算标签是纯点积，边际成本≈0。**不传就等于「这张还没算过」**
+   * ——`batchPendingTags()` 之后会把它捞出来补，所以漏传不会丢数据，只会延后。
    */
-  put(photo, vector, genericSim) {
+  put(photo, vector, genericSim, tags) {
     this.index
       .prepare(
         `INSERT OR REPLACE INTO embeddings
-       (photo_id, model, file_path, file_size, date_modified, vector, generic_sim)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (photo_id, model, file_path, file_size, date_modified, vector, generic_sim, tags, tags_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         photo.id,
@@ -82,6 +169,8 @@ class IndexStore {
         photo.date_modified,
         pack(vector),
         Number.isFinite(genericSim) ? genericSim : null,
+        tags && Array.isArray(tags.indexes) ? serializeTags(tags.indexes) : null,
+        tags && tags.key ? String(tags.key) : null,
       );
   }
 

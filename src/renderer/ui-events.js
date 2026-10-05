@@ -108,8 +108,10 @@
     options = options || {};
     var previewBindings = Array.isArray(options.previewBindings) ? options.previewBindings : [];
     var onPersistPreviewDisplay = options.onPersistPreviewDisplay;
+    var onPersistInfoPanelFields = options.onPersistInfoPanelFields;
     var onPersistWindowClose = options.onPersistWindowClose;
     var onPersistGeneralSettings = options.onPersistGeneralSettings;
+    var onThemePresetExpand = options.onThemePresetExpand;
     var onPersistUiLocale = options.onPersistUiLocale;
     var onToggleTunnelEnabled = options.onToggleTunnelEnabled;
     var onToggleWebServerEnabled = options.onToggleWebServerEnabled;
@@ -133,6 +135,17 @@
           void onPersistPreviewDisplay();
         }
       }
+      // 「照片信息」面板的字段勾选框：既没有 id 也不是上面那张绑定表里的成员，
+      // 靠 data-info-field 认领（字段清单由注册表生成，不可能逐个写死 id）。
+      if (
+        el &&
+        el.tagName === 'INPUT' &&
+        el.type === 'checkbox' &&
+        el.getAttribute('data-info-field') &&
+        typeof onPersistInfoPanelFields === 'function'
+      ) {
+        void onPersistInfoPanelFields();
+      }
       if (sid === 'settingWindowClose' && typeof onPersistWindowClose === 'function') {
         void onPersistWindowClose();
       }
@@ -146,6 +159,11 @@
           sid === 'settingSimilarThreshold' ||
           sid === 'settingLaunchDefaultPage' ||
           sid === 'settingThemeStyle' ||
+          sid === 'settingUiAccent' ||
+          sid === 'settingUiBackground' ||
+          sid === 'settingUiTexture' ||
+          sid === 'settingUiOpacity' ||
+          sid === 'settingUiWindowBackdrop' ||
           sid === 'settingSubtitleFontFamily' ||
           sid === 'settingSubtitleFontSize' ||
           sid === 'settingSubtitleFontWeight' ||
@@ -153,6 +171,19 @@
           sid === 'settingThumbBackfillConcurrency') &&
         typeof onPersistGeneralSettings === 'function'
       ) {
+        // 🔴 选「界面风格」预设时，必须**先把预设展开进强调色 / 背景两个控件**再保存。
+        // 否则 getAppearanceControlValue() 会拿两维的「上一套残留值」与预设比对，判不相等后
+        // 退回「以控件为准」→ 三元组与保存前逐位相同 → 变更检测当场吞掉整次操作
+        // （症状：切换界面风格毫无反应，且两个下拉各自停在不同的值上）。
+        if (sid === 'settingThemeStyle' && typeof onThemePresetExpand === 'function') {
+          onThemePresetExpand(el && el.value);
+          // 「自定义组合」（空串）没有可展开的预设 —— 把光标直接送到强调色控件。
+          // 否则这一项就是「选了毫无反应」，用户会以为它坏了。
+          if (el && !el.value) {
+            var ac = document.getElementById('settingUiAccent');
+            if (ac && typeof ac.focus === 'function') ac.focus();
+          }
+        }
         void onPersistGeneralSettings();
       }
       if (sid === 'settingTunnelEnabled' && typeof onToggleTunnelEnabled === 'function') {
@@ -194,6 +225,15 @@
       });
     }
 
+    /** 下拉版：选中即提交（底栏右侧那三个控件都是这个形态）。 */
+    function bindSelectChange(id, handler) {
+      var el = document.getElementById(id);
+      if (!el || typeof handler !== 'function') return;
+      el.addEventListener('change', function () {
+        handler(el.value);
+      });
+    }
+
     document.querySelectorAll('.dropdown-item[data-menu-action]').forEach(function (el) {
       el.addEventListener('click', function () {
         var action = el.getAttribute('data-menu-action');
@@ -204,15 +244,18 @@
     });
 
     bindClick('topbarSettingsBtn', options.onOpenSettingsPage);
+    // 「首页」按钮与设置按钮同族（都是「页面」跳转，不是视图切换）：
+    // 所以它不带 .nav-tab —— 那样会被 bindNavTabs 当成视图走 onShowTabContent。
+    bindClick('topbarHomeBtn', options.onOpenHomePage);
     bindClick('taskPanelToggleBtn', options.onToggleTaskPanelCollapse);
     bindClick('pauseResumeScanBtn', options.onPauseResumeScan);
     bindClick('cancelScanBtn', options.onCancelScan);
     bindClick('taskCancelThumbBtn', options.onCancelThumbnailBackfill);
     bindClick('taskCancelDupHashBtn', options.onCancelDuplicateHashDetection);
-    bindClick('cardSizeDecBtn', options.onCardSizeDec);
-    bindClick('cardSizeIncBtn', options.onCardSizeInc);
-    bindClick('pageSizeDecBtn', options.onPageSizeDec);
-    bindClick('pageSizeIncBtn', options.onPageSizeInc);
+    // 底栏右侧那三个控件都是下拉，走 change：选中即提交（与设置页那三份同语义）。
+    bindSelectChange('browseGridStyleSelect', options.onBrowseGridStyleChange);
+    bindSelectChange('browsePageSizeSelect', options.onBrowsePageSizeChange);
+    bindSelectChange('browseCardSizeSelect', options.onBrowseCardSizeChange);
     bindClick('thumbSettingsApplyBtn', options.onApplyThumbSettings);
     bindClick('thumbBackfillStartBtn', options.onStartThumbnailBackfill);
     bindClick('thumbBackfillCancelBtn', options.onCancelThumbnailBackfill);
@@ -248,8 +291,16 @@
     bindClick('closeChoiceCancelBtn', function () {
       if (typeof options.onSubmitCloseChoice === 'function') options.onSubmitCloseChoice('cancel');
     });
-    bindClick('settingsExportFoldersBtn', options.onExportRootFoldersList);
-    bindClick('settingsImportFoldersBtn', options.onImportRootFoldersList);
+    // 照片信息面板字段：三个批量动作都直接改勾选框再走同一条持久化路径
+    bindClick('settingsInfoFieldsSelectAllBtn', function () {
+      if (typeof options.onSetAllInfoPanelFieldsChecked === 'function')
+        options.onSetAllInfoPanelFieldsChecked(true);
+    });
+    bindClick('settingsInfoFieldsClearAllBtn', function () {
+      if (typeof options.onSetAllInfoPanelFieldsChecked === 'function')
+        options.onSetAllInfoPanelFieldsChecked(false);
+    });
+    bindClick('settingsInfoFieldsResetBtn', options.onResetInfoPanelFieldsToDefault);
     bindClick('tunnelLogCopyBtn', options.onCopyTunnelLog);
 
     var settingsBack = document.querySelector('.settings-back');
@@ -363,6 +414,7 @@
     var onCancelCloseChoice = options.onCancelCloseChoice;
     var onThumbSettingChange = options.onThumbSettingChange;
     var onQuickThemeChange = options.onQuickThemeChange;
+    var onThemePresetExpand = options.onThemePresetExpand;
     var onTopbarLocaleChange = options.onTopbarLocaleChange;
     var onWebPasswordFocus = options.onWebPasswordFocus;
 
@@ -387,6 +439,10 @@
     var quickThemeStyle = document.getElementById('quickThemeStyle');
     if (quickThemeStyle && typeof onQuickThemeChange === 'function') {
       quickThemeStyle.addEventListener('change', function () {
+        // 同 bindSettingsDelegates：先把预设展开进两维控件，预设才真的会被采纳
+        if (typeof onThemePresetExpand === 'function') {
+          onThemePresetExpand(quickThemeStyle.value);
+        }
         void onQuickThemeChange();
       });
     }
@@ -877,102 +933,147 @@
     var onPreviewOpenExternal = options.onPreviewOpenExternal;
     var onPreviewFindSimilar = options.onPreviewFindSimilar;
     var onToggleChromeCollapsed = options.onToggleChromeCollapsed;
+    var onHandleAddFolder = options.onHandleAddFolder;
+    var onToggleDevTools = options.onToggleDevTools;
+    var onOpenHomePage = options.onOpenHomePage;
+
+    // 键位判定统一交给注册表（`src/renderer/shortcuts.js`）。这里**只保留「动作 → 做什么」**，
+    // 不再出现任何 `e.key === '...'` 字面量 —— 否则设置页改了键、这里不生效，
+    // 就会出现「设置里写着 Ctrl+Shift+P，按下去没反应」这种最难查的漂移。
+    function shortcuts() {
+      return global.RendererShortcuts || null;
+    }
+
+    function toggleFullscreen() {
+      var d = document;
+      if (d.fullscreenElement) {
+        if (d.exitFullscreen) d.exitFullscreen();
+      } else if (d.documentElement && d.documentElement.requestFullscreen) {
+        d.documentElement.requestFullscreen();
+      }
+    }
+
+    function runPreviewAction(action, e, state) {
+      switch (action) {
+        case 'preview.close':
+          if (typeof onClosePreview === 'function') onClosePreview();
+          return true;
+        case 'preview.prev':
+          if (typeof onNavigatePreview === 'function') onNavigatePreview(-1);
+          return true;
+        case 'preview.next':
+          if (typeof onNavigatePreview === 'function') onNavigatePreview(1);
+          return true;
+        case 'preview.first':
+          if (
+            state.previewPhotos &&
+            state.previewPhotos.length &&
+            typeof onOpenPreview === 'function'
+          ) {
+            e.preventDefault();
+            onOpenPreview(0);
+          }
+          return true;
+        case 'preview.last':
+          if (
+            state.previewPhotos &&
+            state.previewPhotos.length &&
+            typeof onOpenPreview === 'function'
+          ) {
+            e.preventDefault();
+            onOpenPreview(state.previewPhotos.length - 1);
+          }
+          return true;
+        case 'preview.slideshow':
+          if (typeof onToggleSlideshow === 'function') {
+            e.preventDefault();
+            onToggleSlideshow();
+          }
+          return true;
+        case 'preview.trash':
+          if (typeof onPreviewMoveToTrash === 'function') {
+            e.preventDefault();
+            onPreviewMoveToTrash();
+          }
+          return true;
+        case 'preview.favorite':
+          if (typeof onPreviewToggleFavorite === 'function') {
+            e.preventDefault();
+            onPreviewToggleFavorite();
+          }
+          return true;
+        case 'preview.rotate':
+          if (typeof onCyclePreviewRotate === 'function') {
+            e.preventDefault();
+            onCyclePreviewRotate();
+          }
+          return true;
+        case 'preview.zoomIn':
+          if (typeof onApplyZoom === 'function') onApplyZoom(0.25);
+          return true;
+        case 'preview.zoomOut':
+          if (typeof onApplyZoom === 'function') onApplyZoom(-0.25);
+          return true;
+        case 'preview.zoomReset':
+          if (typeof onResetZoom === 'function') onResetZoom();
+          return true;
+        case 'preview.findSimilar':
+          if (typeof onPreviewFindSimilar === 'function') {
+            e.preventDefault();
+            onPreviewFindSimilar();
+          }
+          return true;
+        case 'preview.openExternal':
+          if (typeof onPreviewOpenExternal === 'function') {
+            e.preventDefault();
+            onPreviewOpenExternal();
+          }
+          return true;
+        default:
+          return false;
+      }
+    }
 
     document.addEventListener('keydown', function (e) {
       var state = typeof getState === 'function' ? getState() : null;
       if (!state || !dom.previewOverlay) return;
+      var sr = shortcuts();
+      if (!sr) return;
 
       if (dom.previewOverlay.classList.contains('active')) {
-        if (e.key === 'Escape' && typeof onClosePreview === 'function') onClosePreview();
-        if (e.key === 'ArrowLeft' && typeof onNavigatePreview === 'function') onNavigatePreview(-1);
-        if (e.key === 'ArrowRight' && typeof onNavigatePreview === 'function') onNavigatePreview(1);
-        if (e.key === 'Delete' && typeof onPreviewMoveToTrash === 'function') {
-          e.preventDefault();
-          onPreviewMoveToTrash();
-        }
-        if (
-          (e.key === 'f' || e.key === 'F') &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          !e.altKey &&
-          typeof onPreviewToggleFavorite === 'function'
-        ) {
-          e.preventDefault();
-          onPreviewToggleFavorite();
-        }
-        if (
-          (e.key === 's' || e.key === 'S') &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          !e.altKey &&
-          typeof onPreviewFindSimilar === 'function'
-        ) {
-          e.preventDefault();
-          onPreviewFindSimilar();
-        }
-        if (e.key === ' ' && typeof onToggleSlideshow === 'function') {
-          e.preventDefault();
-          onToggleSlideshow();
-        }
-        if (e.key === '0' && typeof onResetZoom === 'function') onResetZoom();
-        if ((e.key === '+' || e.key === '=') && typeof onApplyZoom === 'function')
-          onApplyZoom(0.25);
-        if ((e.key === '-' || e.key === '_') && typeof onApplyZoom === 'function')
-          onApplyZoom(-0.25);
-        if (e.key === 'Home') {
-          e.preventDefault();
-          if (
-            state.previewPhotos &&
-            state.previewPhotos.length &&
-            typeof onOpenPreview === 'function'
-          )
-            onOpenPreview(0);
-        }
-        if (e.key === 'End') {
-          e.preventDefault();
-          if (
-            state.previewPhotos &&
-            state.previewPhotos.length &&
-            typeof onOpenPreview === 'function'
-          )
-            onOpenPreview(state.previewPhotos.length - 1);
-        }
-        if (
-          (e.key === 'r' || e.key === 'R') &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          !e.altKey &&
-          typeof onCyclePreviewRotate === 'function'
-        ) {
-          e.preventDefault();
-          onCyclePreviewRotate();
-        }
-        if (
-          (e.key === 'o' || e.key === 'O') &&
-          !e.ctrlKey &&
-          !e.metaKey &&
-          !e.altKey &&
-          typeof onPreviewOpenExternal === 'function'
-        ) {
-          e.preventDefault();
-          onPreviewOpenExternal();
-        }
+        runPreviewAction(sr.actionFor(e, 'preview'), e, state);
         return;
       }
 
       if (typeof isKeyEventFromTypingField === 'function' && isKeyEventFromTypingField(e.target))
         return;
       if (state.isMobile) return;
-      var primaryMod = e.ctrlKey || e.metaKey;
-      if (
-        (e.key === 'b' || e.key === 'B') &&
-        primaryMod &&
-        !e.shiftKey &&
-        !e.altKey &&
-        typeof onToggleChromeCollapsed === 'function'
-      ) {
+
+      // 回首页：与 rail 上那枚 #topbarHomeBtn 调**同一个** openHomePage（见下方 bindClick），
+      // 唯一真相源。动作表里没有 handler 字段，所以「动作 → 做什么」只能在这里接一次。
+      if (sr.matches('nav.home', e)) {
         e.preventDefault();
-        onToggleChromeCollapsed();
+        if (typeof onOpenHomePage === 'function') onOpenHomePage();
+        return;
+      }
+      if (sr.matches('global.compactChrome', e)) {
+        e.preventDefault();
+        if (typeof onToggleChromeCollapsed === 'function') onToggleChromeCollapsed();
+        return;
+      }
+      if (sr.matches('global.addFolder', e)) {
+        e.preventDefault();
+        if (typeof onHandleAddFolder === 'function') onHandleAddFolder();
+        return;
+      }
+      if (sr.matches('global.fullscreen', e)) {
+        e.preventDefault();
+        toggleFullscreen();
+        return;
+      }
+      if (sr.matches('global.devtools', e)) {
+        e.preventDefault();
+        if (typeof onToggleDevTools === 'function') onToggleDevTools();
       }
     });
   }
@@ -1152,23 +1253,55 @@
     var onSyncFullscreenButton = options.onSyncFullscreenButton;
     var onUpdatePreviewImageLayoutBounds = options.onUpdatePreviewImageLayoutBounds;
     var fsUiHideTimer = null;
+    var fsUiArmRaf = 0;
+    // 指针当前是否压在浮层控件本体上（按钮 / 切换 / 缩放百分比）。
+    // 为真时**不收起** —— 否则控件会在光标底下消失，缩放提示框和
+    // 「先移到按钮上再点」这条最自然的操作路径都拿不到。
+    var fsUiPointerOverControls = false;
 
     function setFullscreenUiVisible(visible) {
       if (!dom.previewOverlay || !dom.previewOverlay.classList) return;
       dom.previewOverlay.classList.toggle('fs-ui-visible', !!visible);
     }
 
+    function isPreviewFullscreen() {
+      return !!(
+        dom.previewOverlay &&
+        dom.previewOverlay.classList &&
+        dom.previewOverlay.classList.contains('active') &&
+        dom.previewOverlay.classList.contains('is-fullscreen')
+      );
+    }
+
     function scheduleFullscreenUiHide(delayMs) {
       if (fsUiHideTimer) clearTimeout(fsUiHideTimer);
       fsUiHideTimer = setTimeout(function () {
-        if (!dom.previewOverlay || !dom.previewOverlay.classList) return;
-        if (
-          dom.previewOverlay.classList.contains('active') &&
-          dom.previewOverlay.classList.contains('is-fullscreen')
-        ) {
-          setFullscreenUiVisible(false);
+        fsUiHideTimer = null;
+        if (!isPreviewFullscreen()) return;
+        if (fsUiPointerOverControls) {
+          // 指针还停在控件上，隔一会儿再问一次（不是死循环的「永不收起」：
+          // 只要指针移开图像区，下一次 mousemove 就会把标记清掉）。
+          scheduleFullscreenUiHide(400);
+          return;
         }
+        setFullscreenUiVisible(false);
       }, delayMs || 1400);
+    }
+
+    function revealFullscreenUiOnMove(target) {
+      fsUiPointerOverControls = !!(
+        target &&
+        target.closest &&
+        target.closest(
+          '.preview-slideshow-controls, .preview-window-controls, .preview-nav, .preview-zoom-box',
+        )
+      );
+      if (fsUiArmRaf) return;
+      fsUiArmRaf = requestAnimationFrame(function () {
+        fsUiArmRaf = 0;
+        setFullscreenUiVisible(true);
+        scheduleFullscreenUiHide(1100);
+      });
     }
 
     if (dom.slideshowIntervalSelect) {
@@ -1213,20 +1346,16 @@
     }
 
     if (dom.previewOverlay) {
+      // 全屏下四组浮层控件统一由 fs-ui-visible 派生（CSS 见 styles.css「全屏浮层控件显隐」）：
+      // 鼠标在**预览层任意位置**移动都唤出（不再只认上下 12% 边缘区 —— 左右切换按钮在
+      // 屏幕正中间，边缘判据下平时根本唤不出来，等于点不到），静止约 1.1s 后一起淡出。
       dom.previewOverlay.addEventListener('mousemove', function (e) {
         if (!dom.previewOverlay.classList.contains('is-fullscreen')) return;
-        var rect = dom.previewOverlay.getBoundingClientRect();
-        var y = e.clientY - rect.top;
-        var h = rect.height;
-        var edgeZone = Math.max(56, Math.min(120, Math.round(h * 0.12)));
-        var shouldShow = y <= edgeZone || y >= h - edgeZone;
-        if (shouldShow) {
-          setFullscreenUiVisible(true);
-          scheduleFullscreenUiHide(1100);
-        }
+        revealFullscreenUiOnMove(e.target);
       });
       dom.previewOverlay.addEventListener('mouseleave', function () {
         if (!dom.previewOverlay.classList.contains('is-fullscreen')) return;
+        fsUiPointerOverControls = false;
         scheduleFullscreenUiHide(180);
       });
     }
@@ -1239,6 +1368,9 @@
       );
       if (dom.previewOverlay && dom.previewOverlay.classList) {
         dom.previewOverlay.classList.toggle('is-fullscreen', isPreviewFs);
+        // 进出全屏时指针位置是「上一次交互的残留」（例如刚点完「全屏」按钮，
+        // 光标还压在工具条上），必须重置，否则那一次悬停会把工具条永久钉住。
+        fsUiPointerOverControls = false;
         if (isPreviewFs) {
           setFullscreenUiVisible(true);
           scheduleFullscreenUiHide(1200);

@@ -1,6 +1,6 @@
 {
   "name": "aurora-gallery",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Aurora Gallery（拂晓图库）— 支持百万张照片的本地相册",
   "main": "src/main.js",
   "scripts": {
@@ -11,6 +11,7 @@
     "smoke:db": "electron scripts/db-smoke.js",
     "version-check": "node scripts/version-check.js",
     "download-face-models": "node scripts/download-face-models.js",
+    "bundle-models": "node scripts/bundle-models.js",
     "download-cloudflared": "node scripts/download-cloudflared.js",
     "format": "prettier -w .",
     "pack": "electron-builder --dir",

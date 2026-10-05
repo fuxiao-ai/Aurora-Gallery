@@ -546,8 +546,446 @@ async function testWeb() {
   console.log('[sidebar-tree-regression] web PASS');
 }
 
+// ---------------------------------------------------------------------------
+// 根行「两条渲染路径必须逐字符一致」（1980 行那个 bug 的守护）
+//
+// 背景（2026-10-04）：`sidebar-tree.js` 有两个产根行的函数 —— `renderFolderTree`（同步，
+// 小库）与 `renderFolderTreeProgressive`（分根分帧，大库）。本轮改箭头时只改了前者，
+// 于是**大库上真正生效的那条**留下两个毛病：
+//   ① toggle 里还写着 `▼` 字形 → 与新的 CSS chevron 叠成「左侧两个图标」；
+//   ② toggle 没有 `is-expanded` → 箭头方向与子层展开态相反。
+// 教训：**同一个渲染结果有两条路径时，改一条必须改另一条**；只在砂盒里跑其中一条会漏。
+// 所以这里直接对拍两条路径的产物，而不是只 grep 一句源码。
+// ---------------------------------------------------------------------------
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+function loadTreeModule() {
+  const doc = {
+    documentElement: makeEl(),
+    body: makeEl(),
+    getElementById: () => makeEl(),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => makeEl(),
+    addEventListener() {},
+  };
+  const win = {
+    document: doc,
+    innerWidth: 1400,
+    addEventListener() {},
+    removeEventListener() {},
+    requestAnimationFrame: (cb) => cb(),
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  };
+  const ctx = {
+    window: win,
+    document: doc,
+    requestAnimationFrame: (cb) => cb(),
+    setTimeout: () => 0,
+    clearTimeout() {},
+    setInterval: () => 0,
+    clearInterval() {},
+    console,
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(
+    fs.readFileSync(path.join(ROOT, 'src/renderer/sidebar-tree.js'), 'utf8'),
+    ctx,
+    { filename: 'renderer/sidebar-tree.js' },
+  );
+  return win.RendererSidebarTree;
+}
+
+/** 用 gate 捕获渲染产物，返回**最后一个** chunk（渐进渲染是逐根累加的） */
+function renderVia(api, fnName, options) {
+  const chunks = [];
+  const gate = {
+    render(h) {
+      chunks.push(h);
+      return true;
+    },
+  };
+  return Promise.resolve(api[fnName](Object.assign({}, options, { gate }))).then(
+    () => chunks[chunks.length - 1] || '',
+  );
+}
+
+// 注意锚 `data-root-id`：子层父行的 class 同样是 `folder-item tree-parent`，只按类匹配会把
+// 子层父行一起算进来（实测 3 个根被数成 4 行）。根行独有 `data-root-id`。
+const TREE_ROOT_ROW_RE = /<div class="folder-item tree-parent[^"]*" data-root-id="[\s\S]*?<\/div>/g;
+// 根层的子容器独有 `id="treeChildren-<rootId>"`；子层的 `.tree-children` 由 renderTreeNodes 产出
+// （两条路径共用同一个函数，天然一致），所以这里只对拍根层。
+const TREE_CHILDREN_RE = /<div class="tree-children[^"]*" id="treeChildren-\d+"[^>]*>/g;
+
+async function testRootRowParity() {
+  const api = loadTreeModule();
+
+  // --- 0. 静态：箭头只能来自 styles.css 的 ::before chevron，源码里不得再有字形 ---
+  const treeSrc = stripComments(
+    fs.readFileSync(path.join(ROOT, 'src/renderer/sidebar-tree.js'), 'utf8'),
+  );
+  const glyphs = treeSrc.match(/[▶▼►▸▾]/g) || [];
+  assert.equal(
+    glyphs.length,
+    0,
+    `sidebar-tree.js 不得再输出箭头字形（发现 ${JSON.stringify(glyphs)}）——` +
+      ' 箭头由 styles.css 的 .tree-toggle::before 画，写字形会与它叠成「两个图标」',
+  );
+
+  const state = {
+    currentTab: 'folders',
+    currentView: 'all',
+    currentPath: '',
+    currentDate: '',
+    searchQuery: '',
+    rootFolders: [
+      { id: 1, name: 'COS', path: 'K:\\COS', photo_count: 912252 },
+      { id: 2, name: 'T', path: 'G:\\T', photo_count: 312362 },
+      { id: 3, name: '空盘', path: 'X:\\Empty', photo_count: 0 },
+    ],
+  };
+  const prefetchedByRootId = {
+    1: [
+      { folder_path: 'K:\\COS\\2024-云南行', photo_count: 300 },
+      { folder_path: 'K:\\COS\\2024-云南行\\大理', photo_count: 120 },
+      { folder_path: 'K:\\COS\\2024-云南行\\大理\\洱海', photo_count: 60 },
+      { folder_path: 'K:\\COS\\视频素材', photo_count: 10 },
+    ],
+    2: [{ folder_path: 'G:\\T\\扫描件', photo_count: 5 }],
+    3: [],
+  };
+
+  const options = { state, prefetchedByRootId };
+  const syncHtml = await renderVia(api, 'renderFolderTree', options);
+  const progHtml = await renderVia(api, 'renderFolderTreeProgressive', options);
+
+  // --- 1. 夹具自证：确实渲染出了 3 个根行（2 有子目录 + 1 空根） ---
+  const syncRows = syncHtml.match(TREE_ROOT_ROW_RE) || [];
+  const progRows = progHtml.match(TREE_ROOT_ROW_RE) || [];
+  assert.equal(syncRows.length, 3, '夹具自证：renderFolderTree 应产出 3 个根行');
+  assert.equal(progRows.length, 3, '夹具自证：renderFolderTreeProgressive 应产出 3 个根行');
+
+  // --- 2. 两条路径的根行必须逐字符相同 ---
+  for (let i = 0; i < syncRows.length; i++) {
+    assert.equal(
+      progRows[i],
+      syncRows[i],
+      `第 ${i + 1} 个根行的标记两条路径必须逐字符相同 ——` +
+        ' 不一致就是「只改了一条路径」（本轮我就是在渐进路径上漏了 is-expanded 与字形）',
+    );
+  }
+  assert.deepEqual(
+    progHtml.match(TREE_CHILDREN_RE) || [],
+    syncHtml.match(TREE_CHILDREN_RE) || [],
+    '根层 .tree-children 的类与内联 style 两条路径必须一致',
+  );
+
+  // --- 3. 每个根行只应有一个 toggle 槽 + 一个目录图标，且 toggle 里没有文本 ---
+  const childrenTags = syncHtml.match(TREE_CHILDREN_RE) || [];
+  for (let i = 0; i < syncRows.length; i++) {
+    const row = syncRows[i];
+    assert.equal(
+      (row.match(/class="tree-toggle/g) || []).length,
+      1,
+      `第 ${i + 1} 个根行只应有一个 toggle 槽`,
+    );
+    assert.equal(
+      (row.match(/<span class="icon">/g) || []).length,
+      1,
+      `第 ${i + 1} 个根行只应有一个目录图标（用户报的就是「左侧两个图标」）`,
+    );
+    // 用户报的症状：toggle 里既有字形又有 CSS chevron
+    assert.equal(
+      /tree-toggle[^>]*>[^<]/.test(row),
+      false,
+      `第 ${i + 1} 个根行的 toggle 里不得有文本内容（会与 CSS chevron 叠成两个箭头）`,
+    );
+  }
+
+  // --- 4. toggle 的 is-expanded 必须与子层 expanded 一致（方向不能反） ---
+  for (let i = 0; i < syncRows.length; i++) {
+    const toggleExpanded = syncRows[i].includes('tree-toggle is-expanded');
+    const childrenExpanded = /class="tree-children expanded"/.test(childrenTags[i] || '');
+    assert.equal(
+      toggleExpanded,
+      childrenExpanded,
+      `第 ${i + 1} 个根：toggle 的 is-expanded 必须与 .tree-children 的 expanded 一致`,
+    );
+  }
+
+  // --- 5. 有子目录 → 展开箭头；无子目录 → 隐藏的空槽 ---
+  assert.equal(syncRows[0].includes('is-expanded'), true, 'COS 有子目录，应为展开态');
+  assert.equal(syncRows[1].includes('is-expanded'), true, 'T 有子目录，应为展开态');
+  assert.equal(syncRows[2].includes('is-expanded'), false, '空盘无子目录，不应有 is-expanded');
+  assert.ok(
+    syncRows[2].includes('visibility:hidden') && syncRows[2].includes('aria-hidden="true"'),
+    '无子目录的根：toggle 用隐藏空槽占位（保持 .name 对齐）',
+  );
+
+  console.log('[sidebar-tree-regression] 根行双路径一致 PASS');
+}
+
+// ---------------------------------------------------------------------------
+// 「两端同口径」（2026-10-04）
+//
+// 背景：网页端原本是一套**完全独立**的目录树 —— 缩进 `16 + 16d`、箭头是 `▶/▼` 字形、
+// 展开态靠 `.collapsed` 类；桌面端是 `12 + 14d`、CSS chevron、`expanded` + 行内 display。
+// 两边看起来都在「画目录树」，但口径、类名、状态语义三处都不一样。
+// 现在统一为：样式唯一来源 `src/web/css/gallery-design.css`（两端都加载），
+// 状态契约也是同一套（关闭 = 无 `.expanded`；开关时类名 + 行内 display 双写）。
+//
+// 这个守护钉住四件事：
+//   ① 树样式只有一个来源（styles.css / web/index.html 里不得再有树规则）；
+//   ② 两端的缩进常量逐字段相等；
+//   ③ 网页端不再出现箭头字形与 `.collapsed`；
+//   ④ 网页端**真实渲染产物**的缩进 = 桌面端公式算出来的数（父行 / 叶子 / 导线），
+//      且开关 toggle 真的会翻转容器与箭头状态。
+// ---------------------------------------------------------------------------
+function readIndentConsts(src, label) {
+  const pick = (name) => {
+    const m = new RegExp(name + '\\s*=\\s*(\\d+)').exec(src);
+    assert.ok(m, `${label} 里找不到 ${name}`);
+    return Number(m[1]);
+  };
+  return {
+    base: pick('TREE_INDENT_BASE'),
+    step: pick('TREE_INDENT_STEP'),
+    slot: pick('TREE_TOGGLE_SLOT'),
+    gap: pick('TREE_ROW_GAP'),
+  };
+}
+
+function makeClassList() {
+  const set = new Set();
+  return {
+    add: (...names) => names.forEach((n) => set.add(n)),
+    remove: (...names) => names.forEach((n) => set.delete(n)),
+    contains: (n) => set.has(n),
+    toggle: (n, on) => (on ? set.add(n) : set.delete(n)),
+  };
+}
+
+// 行内缩进与路径（父行与叶子行的属性顺序相同，可直接按文档序抓）
+const TREE_NODE_ROW_RE =
+  /<div class="folder-item[^"]*" style="padding-left:(\d+)px;" data-folder-path="([^"]+)"/g;
+
+function testWebParity() {
+  const sharedCss = fs.readFileSync(path.join(ROOT, 'src/web/css/gallery-design.css'), 'utf8');
+  const desktopCss = stripComments(fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8'));
+  const webHtml = stripComments(fs.readFileSync(path.join(ROOT, 'src/web/index.html'), 'utf8'));
+
+  // --- 1. 样式唯一来源 ---
+  for (const rule of [
+    '.tree-toggle::before',
+    '.tree-toggle.is-expanded::before',
+    '.tree-children::before',
+    '.tree-children:not(.expanded)',
+    '.tree-root > .folder-item.tree-parent > .name',
+  ]) {
+    assert.ok(
+      sharedCss.includes(rule),
+      `共用的 gallery-design.css 里缺少树规则 ${rule} —— 树外观的唯一来源就是它`,
+    );
+  }
+  // 只查「声明块」，别误伤 `.tree-root > .tree-parent:hover .sidebar-root-rescan`
+  // 这类桌面端独有件的选择器（`.tree-root` 后面跟的是 ` >` 而不是 `,` / `{`）。
+  const declRe = /\.tree-(toggle|children|root)\s*[,{]/;
+  assert.equal(
+    declRe.test(desktopCss),
+    false,
+    'styles.css 不得再声明树规则（唯一来源已迁到 gallery-design.css）',
+  );
+  assert.equal(
+    declRe.test(webHtml),
+    false,
+    'web/index.html 不得再声明树规则（唯一来源已迁到 gallery-design.css）',
+  );
+
+  // --- 2. 两端缩进常量逐字段相等 ---
+  const desktopConsts = readIndentConsts(
+    fs.readFileSync(path.join(ROOT, 'src/renderer/sidebar-tree.js'), 'utf8'),
+    'sidebar-tree.js',
+  );
+  const webSrc = fs.readFileSync(path.join(ROOT, 'src/web/js/app.js'), 'utf8');
+  const webConsts = readIndentConsts(webSrc, 'web/js/app.js');
+  assert.deepEqual(
+    webConsts,
+    desktopConsts,
+    '网页端与桌面端的缩进常量必须逐字段相同（改一处必须同步另一处）',
+  );
+
+  // --- 3. 网页端不得再有箭头字形与 collapsed 态 ---
+  const webGlyphs = stripComments(webSrc).match(/[▶▼►▸▾]/g) || [];
+  assert.equal(
+    webGlyphs.length,
+    0,
+    `web/js/app.js 不得再输出箭头字形（发现 ${JSON.stringify(webGlyphs)}）—— 箭头由共用样式表的 ::before 画`,
+  );
+  assert.equal(
+    /tree-children collapsed/.test(webSrc),
+    false,
+    '网页端子层容器不得再用 `.collapsed` 类（统一为「无 `.expanded` 即关闭」）',
+  );
+  assert.equal(
+    /['"]collapsed['"]/.test(stripComments(webSrc)),
+    false,
+    '网页端不得再读写 `.collapsed`（含 classList.contains/add/remove）',
+  );
+
+  // --- 4. 真实渲染产物：缩进 / 导线 / toggle 槽 ---
+  const web = loadWeb();
+  web.ctx.apiGet = () => Promise.resolve([]); // 别让 renderRootFoldersSidebarHtml 的去尾 loadAllFolderTrees 碰网络
+  const ctx = web.ctx;
+  const nodes = [
+    {
+      name: '2024-云南行',
+      fullPath: 'K:\\COS\\2024-云南行',
+      photoCount: 300,
+      children: [
+        {
+          name: '大理',
+          fullPath: 'K:\\COS\\2024-云南行\\大理',
+          photoCount: 120,
+          children: [
+            { name: '洱海', fullPath: 'K:\\COS\\2024-云南行\\大理\\洱海', photoCount: 60, children: [] },
+          ],
+        },
+        { name: '古城', fullPath: 'K:\\COS\\2024-云南行\\古城', photoCount: 0, children: [] },
+      ],
+    },
+    { name: '视频素材', fullPath: 'K:\\COS\\视频素材', photoCount: 10, children: [] },
+  ];
+  const html = ctx.renderTreeNodes(nodes, 1);
+
+  const rowRe = new RegExp(TREE_NODE_ROW_RE.source, 'g');
+  // ⚠️ escapeAttr 会把 `\` 换成 `/`（网页端 URL/属性统一用正斜杠），所以 HTML 里的路径
+  // 与夹具里的 Windows 路径不同形 —— 比较前统一归一化。
+  const normKey = (p) => String(p).replace(/\\/g, '/');
+  const padByPath = {};
+  const rowByPath = {};
+  let m;
+  while ((m = rowRe.exec(html))) {
+    padByPath[normKey(m[2])] = Number(m[1]);
+    const rowStart = m.index;
+    rowByPath[normKey(m[2])] = html.slice(rowStart, html.indexOf('</div>', rowStart));
+  }
+  assert.equal(
+    Object.keys(padByPath).length,
+    5,
+    `夹具自证：应渲染出 5 个目录行，实际 ${Object.keys(padByPath).length}`,
+  );
+
+  const expectPad = (depth, isLeaf) =>
+    isLeaf
+      ? webConsts.base + depth * webConsts.step + webConsts.slot + webConsts.gap
+      : webConsts.base + depth * webConsts.step;
+  const cases = [
+    ['K:\\COS\\2024-云南行', 1, false],
+    ['K:\\COS\\2024-云南行\\大理', 2, false],
+    ['K:\\COS\\2024-云南行\\大理\\洱海', 3, true],
+    ['K:\\COS\\2024-云南行\\古城', 2, true],
+    ['K:\\COS\\视频素材', 1, true],
+  ];
+  for (const [p, depth, isLeaf] of cases) {
+    const want = expectPad(depth, isLeaf);
+    assert.equal(
+      padByPath[normKey(p)],
+      want,
+      `${p}（${isLeaf ? '叶子' : '父行'} depth=${depth}）缩进应为 ${want}px，实际 ${padByPath[normKey(p)]}px`,
+    );
+  }
+  // 同级父子名字必须对齐：父行缩进 + 箭头槽 + 行 gap === 叶子缩进
+  assert.equal(
+    padByPath[normKey('K:\\COS\\视频素材')],
+    padByPath[normKey('K:\\COS\\2024-云南行')] + webConsts.slot + webConsts.gap,
+    '同级的叶子行与父行 `.name` 左缘必须对齐（叶子补满箭头槽 + 行 gap）',
+  );
+
+  // 导线画在父行箭头槽中心
+  assert.ok(
+    html.includes('--tree-guide-x:' + (webConsts.base + webConsts.step + 9) + 'px;'),
+    '第一层子层的导线 x 应为 12 + 14 + 9 = 35px',
+  );
+  assert.ok(
+    html.includes('--tree-guide-x:' + (webConsts.base + 2 * webConsts.step + 9) + 'px;'),
+    '第二层子层的导线 x 应为 12 + 28 + 9 = 49px',
+  );
+
+  // toggle：父行恰好 1 个空槽，叶子行完全没有（靠缩进对齐，不再放隐藏的假箭头）
+  // ⚠️ 数 `class="tree-toggle`，不能数 `tree-toggle` —— `data-tree-toggle="node"` 也含这个子串
+  const parentRow = rowByPath[normKey('K:\\COS\\2024-云南行')];
+  const leafRow = rowByPath[normKey('K:\\COS\\视频素材')];
+  assert.equal(
+    (parentRow.match(/class="tree-toggle/g) || []).length,
+    1,
+    '父行应恰好 1 个 toggle 槽',
+  );
+  assert.equal(
+    /<span class="tree-toggle"[^>]*><\/span>/.test(parentRow),
+    true,
+    'toggle 必须是空元素（写字形会与 CSS chevron 叠成两个箭头）',
+  );
+  assert.equal(
+    (leafRow.match(/class="tree-toggle/g) || []).length,
+    0,
+    '叶子行不应有 toggle 槽',
+  );
+
+  // --- 5. 根行（renderRootFoldersSidebarHtml）与桌面端同标记 ---
+  ctx.state._rootFolders = [{ id: 1, name: 'COS', path: 'K:\\COS', photo_count: 912252 }];
+  ctx.state.currentView = 'all';
+  ctx.renderRootFoldersSidebarHtml();
+  const sidebarHtml = String(web.sidebarContent.innerHTML || '');
+  const rootRows = sidebarHtml.match(/<div class="folder-item tree-parent[^"]*" data-root-id="\d+"/g) || [];
+  assert.equal(rootRows.length, 1, '夹具自证：应产出 1 个根行');
+  assert.ok(
+    /<span class="tree-toggle"[^>]*data-tree-toggle="root"[^>]*><\/span>/.test(sidebarHtml),
+    '根行 toggle 必须是空槽（与桌面端一致）',
+  );
+  assert.equal(
+    (sidebarHtml.match(/[▶▼►▸▾]/g) || []).length,
+    0,
+    '根行不得带箭头字形',
+  );
+  assert.ok(
+    /<div class="tree-children" style="display:none;--tree-guide-x:21px;" id="treeChildren-1"><\/div>/.test(
+      sidebarHtml,
+    ),
+    '根子容器初始必须是关闭态（无 expanded + display:none + 导线 21px）',
+  );
+
+  // --- 6. 开关契约：类名 + 行内 display 双写，箭头跟随 ---
+  const children = { style: {}, classList: makeClassList(), offsetWidth: 0 };
+  const toggle = { classList: makeClassList(), style: {} };
+  ctx.setTreeChildrenOpen(children, toggle, true, false);
+  assert.equal(children.style.display, 'block', '展开：容器 display 应变 block');
+  assert.equal(children.classList.contains('expanded'), true, '展开：容器应带 expanded');
+  assert.equal(toggle.classList.contains('is-expanded'), true, '展开：箭头应翻成展开态');
+  ctx.setTreeChildrenOpen(children, toggle, false, false);
+  assert.equal(children.style.display, 'none', '收起：容器 display 应变 none');
+  assert.equal(children.classList.contains('expanded'), false, '收起：容器应摘掉 expanded');
+  assert.equal(toggle.classList.contains('is-expanded'), false, '收起：箭头应回到收起态');
+
+  // toggleTreeNode 必须按行内 display 判断（与桌面端同一判据）
+  const fakeNode = { querySelector: (sel) => (String(sel).includes('tree-children') ? children : null) };
+  const fakeToggle = { classList: makeClassList(), closest: () => fakeNode, style: {} };
+  ctx.toggleTreeNode(fakeToggle, { stopPropagation() {} });
+  assert.equal(children.style.display, 'block', '收起态点 toggle 应展开');
+  assert.equal(fakeToggle.classList.contains('is-expanded'), true, '展开后箭头应为展开态');
+  ctx.toggleTreeNode(fakeToggle, { stopPropagation() {} });
+  assert.equal(children.style.display, 'none', '再点应收起');
+  assert.equal(fakeToggle.classList.contains('is-expanded'), false, '收起后箭头应回收起态');
+
+  console.log('[sidebar-tree-regression] 两端同口径 PASS');
+}
+
 async function main() {
   testDesktop();
+  await testRootRowParity();
+  testWebParity();
   await testWeb();
   console.log('[sidebar-tree-regression] PASS');
 }

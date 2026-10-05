@@ -72,6 +72,13 @@
     var showing = false; // 视图壳是否还挂着（与 state.currentView 解耦）
     var timer = null;
     var busy = false;
+    /**
+     * 外部带进来的待搜词（见下面导出的 `search()`）。
+     *
+     * 为什么需要暂存：`enter()` 会刻意清空 `state.aiSearchQuery`（换视图不该延续上一个词），
+     * 所以「带词进来」不能在 `enter()` 之前设值 —— 只能先存这里，由 `enter()` 末尾消费。
+     */
+    var pendingQuery = '';
     var queued = null;
     var lastState = null;
     var indexing = false;
@@ -642,6 +649,11 @@
       // 每页数量跟着随机跳页一起收：结果集固定只有一页（`previewTotalPages = 1`），
       // 档位改了不会让结果变多也不会变少，留着只会让人以为点了没反应。
       if (dom.pageSizeControl) dom.pageSizeControl.style.display = 'none';
+      // 「网格与比例」同样收掉，但原因不同：`uniform ↔ masonry` 是渲染时写进卡片 DOM 的
+      // （grid 上的 `data-use-media-ratio` / `grid--masonry`），这两页没有「按当前结果重画」的入口，
+      // 留着就会出现「选了没反应」。卡片尺寸档位只改 CSS 变量，所以它留。
+      // 收的是外层 field（连标签一起），见 ui-navigation.js 的 setBrowseGridControlsVisible。
+      if (dom.browseGridStyleControl) dom.browseGridStyleControl.style.display = 'none';
       if (dom.aiSearchSubmit) dom.aiSearchSubmit.disabled = false;
     }
 
@@ -1172,6 +1184,13 @@
         setStatus('');
         searchIdleState();
         focusSearch();
+        // 带词进来的（照片信息面板的 AI 标签点了）在这里补搜 —— 必须等上面那几行初始化
+        // 跑完，否则会被 `searchIdleState()` 盖成引导页。
+        if (pendingQuery) {
+          var queued = pendingQuery;
+          pendingQuery = '';
+          void startSearch(queued);
+        }
       } else {
         state.aiPeopleLabel = '';
         peopleQuery = '';
@@ -1203,6 +1222,7 @@
       if (dom.sortSelect) dom.sortSelect.style.display = '';
       if (dom.randomPageBtn) dom.randomPageBtn.style.display = '';
       if (dom.pageSizeControl) dom.pageSizeControl.style.display = '';
+      if (dom.browseGridStyleControl) dom.browseGridStyleControl.style.display = '';
       if (dom.aiViewStatus) dom.aiViewStatus.hidden = true;
       if (dom.aiPeopleStatus) dom.aiPeopleStatus.hidden = true;
       if (dom.aiPeopleLive) dom.aiPeopleLive.hidden = true;
@@ -1261,6 +1281,24 @@
       startPolling: startPolling,
       stopPolling: stopPolling,
       refreshStatus: refreshStatus,
+      /**
+       * 带词搜图（照片信息面板的 AI 标签 → 搜图页）。
+       *
+       * 两种入口都只调这一次就正确：
+       *   - 已在搜图页 → 直接搜；
+       *   - 不在搜图页 → 词暂存给下一次 `enter()` 消费（调用方随后 `showTabContent('search')`）。
+       * 反过来（先切页再调）会失败：`enter()` 在切页时已经把 `state.aiSearchQuery` 清空了，
+       * 但那时 `search()` 还没被调用，没有东西可消费 —— 结果是停在引导页。
+       */
+      search: function (query) {
+        var q = String(query || '').trim();
+        if (!q) return Promise.resolve();
+        if (!isSearch()) {
+          pendingQuery = q;
+          return Promise.resolve();
+        }
+        return startSearch(q);
+      },
     };
   }
 

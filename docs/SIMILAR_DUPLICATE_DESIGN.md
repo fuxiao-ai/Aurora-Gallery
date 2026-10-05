@@ -4,6 +4,8 @@
 >
 > **设计核心原则**：缩略图生成时同步计算 dHash，复用磁盘 IO；后台任务零阻塞前端；渐进式结果；仅支持图片（视频暂不考虑）。
 
+> ⚠️ **历史文档（2026-10-05 注记）**：本文是落地前的设计方案，其中若干路径**已不存在** —— `src/main/thumbnail-backfill.js`、`src/main/dhash-backfill.js`、`src/main/duplicate-detection.js`、`src/main/ipc-handlers.js` 属 `src/main/*.js` 孤儿链（从未被运行时 `require`），已于 2026-10-05 整链删除（`src/main/` 现仅保留入口可达的 14 个模块，由 `scripts/module-reachability-regression.js` 守护）。**这些能力当前都在 `src/main.js` 里**：缩略图补全 + 同步 dHash 在 `runRowsWithThumbConcurrency`（`processOne` 内，同一 sharp 实例先读文件头再走 resize pipeline）、重复哈希检测在 `duplicateHashTask` 一族、IPC 各通道由 `main.js` 直接 `ipcMain.handle` 注册。本文的**设计推理仍然有效**；但下方的文件清单与勾选项是**当时的计划**，不是当前的落点 —— 照着改文件不会有任何效果。见 `CHANGELOG.md` 2026-10-05 的 Changed / Fixed 两条。
+
 ---
 
 ## 1. 目标与约束
@@ -194,7 +196,7 @@ module.exports = { computeDhash, getDhashBuckets, hammingDistance, hammingDistan
 
 ### 5.1 现有缩略图生成流程
 
-`src/main/thumbnail-backfill.js` 的 `processOne(row)`：
+`src/main/thumbnail-backfill.js` 的 `processOne(row)`（⚠️ 该文件已于 2026-10-05 删除，此逻辑现在 `src/main.js#runRowsWithThumbConcurrency` 里）：
 1. 用 `sharp(file_path)` 读取原图 → `rotate()` → `resize(256)` → `jpeg()` → `toBuffer()`
 2. 每 15 张 `commitMiniBatch()` 写入 `photos.thumbnail`
 
@@ -480,7 +482,7 @@ getDhashBackfillPhotoCount()           // 存量待补充数量
 - [ ] `database.js`：`ensureDhashSchema`、`updatePhotoDhash`
 
 ### Step 2：缩略图同步 dHash（核心）
-- [ ] 修改 `thumbnail-backfill.js`：
+- [ ] 修改 `thumbnail-backfill.js`（⚠️ 2026-10-05 起是 `src/main.js#runRowsWithThumbConcurrency`，且 `commitMiniBatch` 的写法已被「按批进 `dbWriteQueue`」取代）：
   - `getPhotosMissingThumbnailsAfter` 增加 `file_size, date_modified`
   - `processOne` 缩略图生成后同步调用 `computeDhash`
   - `commitMiniBatch` 同时写入 `thumbnail` + `dhash`

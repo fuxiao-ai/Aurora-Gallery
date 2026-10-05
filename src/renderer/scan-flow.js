@@ -223,8 +223,15 @@
     var scanning = !!scan.active;
     var queueWaiting = (queue.pendingCount || 0) > 0;
     var queueBusy = !!queue.processing;
+    // 已被取出、但还在等写库闸门放行：既不是「空闲」也不是「正在扫」，
+    // 主进程把它单列出来就是为了让界面别再显示「正在扫描... 0%」这种假进度。
+    var waitingGate = !!(queue.current && queue.current.waitingGate);
+    var scanQueued = !scanning && (waitingGate || queueWaiting || queueBusy);
 
     state.isScanning = scanning;
+    // 单独一个标志：state.isScanning 的语义必须保持严格的「worker 正在跑」
+    // （handlePauseResumeScan 拿它当开关），但「排队等闸门」也要让实时刷新别提前停。
+    state.isScanQueued = scanQueued;
     state.isScanPaused = prog.status === 'paused';
 
     var showScanBlock =
@@ -376,15 +383,24 @@
           dom.progressText.textContent = '正在枚举文件... 已发现 ' + formatNumber(cur) + ' 个';
         else if (prog.status === 'error')
           dom.progressText.textContent = '扫描失败：' + (prog.error || '未知错误');
+        else if (scanQueued)
+          // 已排队但还没真正开扫。过去这里会走最后那条分支、显示「正在扫描... 0%」，
+          // 是个一眼假的进度；现在按「等闸门 / 等前序任务」分别说清楚。
+          dom.progressText.textContent = waitingGate
+            ? '排队中，正在等前面的后台任务结束...'
+            : '排队中，前面还有 ' + formatNumber(queue.pendingCount || 0) + ' 个任务';
         else dom.progressText.textContent = pct >= 100 ? '扫描完成' : '正在扫描... ' + pct + '%';
       }
       var pauseBtn = document.getElementById('pauseResumeScanBtn');
       var cancelBtn = document.getElementById('cancelScanBtn');
       if (pauseBtn) {
+        // 暂停只对真在跑的那个有意义；排队的任务没有「暂停」这个概念
         pauseBtn.style.display = scanning ? '' : 'none';
         pauseBtn.textContent = state.isScanPaused ? '▶ 继续' : '⏸ 暂停';
       }
-      if (cancelBtn) cancelBtn.style.display = scanning ? '' : 'none';
+      // 取消在**排队期间也要给**：T2 起扫描可能长时间等在写库闸门后面，
+      // 这时不给入口等于用户只能干等（主进程侧 clear-scan-queue 已能撤掉排队的任务）。
+      if (cancelBtn) cancelBtn.style.display = scanning || scanQueued ? '' : 'none';
     }
 
     if (showThumb) {

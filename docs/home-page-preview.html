@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>启动页（Home）视觉预览 — 拂晓图库</title>
+<style>
+/* ══ 以下 token 逐字抄自 src/renderer/styles.css，保证预览与真实观感一致 ══
+ *  深色 = :root（midnight_classic: dark + violet + default）
+ *  浅色 = [data-theme='light']（lavender 系: light + violet + default）
+ *  预览页刻意不引入极光层与主题预设表，只验证排版与层次。
+ */
+:root {
+  --bg: #0a0a18; --bg-primary: #0a0a18; --bg-secondary: #0c0c22; --bg-card: #13132e;
+  --bg-hover: #1c1c40; --bg-active: #2a2a58;
+  --text-primary: #eaeaff; --text-secondary: #b0b0d0; --text-muted: #5c5c88;
+  --accent: #7b8cff; --accent-hover: #9aa8ff;
+  --accent-2: #b388ff; /* 装饰层用（徽标渐变 / 段头菱块 / 左上副光），与 styles.css 同名 */
+  --accent-dim: rgba(123, 140, 255, 0.1); --accent-glow: rgba(123, 140, 255, 0.4);
+  --border: #1a1a3c;
+  --radius: 12px;
+  --glass: rgba(16, 16, 40, 0.66); --glass-border: rgba(123, 140, 255, 0.16);
+  --btn-primary-text: #f8faff;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.18s;
+}
+[data-theme='light'] {
+  --bg: #f0f2fa; --bg-primary: #f0f2fa; --bg-secondary: #e6e9f4; --bg-card: #ffffff;
+  --bg-hover: #e0e4f2; --bg-active: #d0d6ea;
+  --text-primary: #1a1d2e; --text-secondary: #4a5070; --text-muted: #7a8199;
+  --accent: #5568ff; --accent-hover: #6b7cff;
+  --accent-2: #6b7cff; /* 浅色档副色与主色同族（styles.css 同值） */
+  --accent-dim: rgba(85, 104, 255, 0.12); --accent-glow: rgba(85, 104, 255, 0.35);
+  --border: #d8deef; --glass: rgba(255, 255, 255, 0.9);
+  --glass-border: rgba(85, 104, 255, 0.16);
+  --btn-primary-text: #f7fbff;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 22px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 预览页自身的控制条（不属于 Home 页设计） ── */
+.preview-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 16px; padding: 10px 14px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  font-size: 13px; color: var(--text-secondary);
+}
+.preview-bar b { color: var(--text-primary); font-weight: 600; }
+.preview-bar .spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button {
+  font: inherit; font-size: 13px; padding: 6px 14px; border: 0; cursor: pointer;
+  background: transparent; color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed='true'] { background: var(--accent); color: var(--btn-primary-text); }
+
+/* ── 应用外框（模拟真实窗口） ── */
+.app {
+  display: flex; min-height: 660px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.app-rail {
+  flex: 0 0 56px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 14px 0; background: var(--glass);
+  border-right: 1px solid var(--glass-border);
+}
+.rail-btn {
+  width: 36px; height: 34px; display: flex; align-items: center; justify-content: center;
+  border-radius: 9px; color: var(--text-muted); cursor: default;
+}
+.rail-btn svg { width: 17px; height: 17px; }
+
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 18px; border-bottom: 1px solid var(--border);
+  background: var(--glass);
+}
+.nav-arrow {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: 7px; color: var(--text-muted); opacity: 0.45;
+}
+.nav-arrow svg { width: 15px; height: 15px; }
+.topbar-hint { font-size: 13px; color: var(--text-muted); }
+.topbar .spacer { flex: 1; }
+.chip-active {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 8px;
+  background: var(--accent-dim); color: var(--accent);
+  font-size: 13px; font-weight: 600;
+}
+.btn-ghost {
+  font: inherit; font-size: 13px; padding: 6px 13px; cursor: pointer;
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 8px;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.btn-ghost:hover { background: var(--bg-hover); border-color: var(--accent-dim); color: var(--text-primary); }
+
+/* ══ 装饰层（2026-10-05「美化启动页」）═══════════════════════════════════════
+ * 下面 ①–⑧ 与 src/renderer/styles.css 的「首页（Home）」段一一对应，编号同源。
+ * 🔴 全部静态：不加 :hover、不加 cursor、不加动效（真实工程里由 home-page-regression
+ *    §6 机械兜底：Home 段内 cursor:pointer 与 :hover 各只允许 1 处，属于 .home-chip）。
+ * 🔴 光晕一律走元素自己的背景层，不放定位伪元素 —— 伪元素画在行内内容之上会蒙住文字。
+ * ⚠️ 预览若与真实样式不一致，就是一份会骗人的文档；改真实样式时请连坐改这里。
+ */
+
+.home-page {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 26px 30px 32px;
+  /* ① 环境光：右上暖光 + 左上冷光 + 底部收束光 */
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(760px 460px at 88% -16%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 72%),
+    radial-gradient(620px 380px at -6% -10%, color-mix(in srgb, var(--accent-2, var(--accent)) 12%, transparent) 0%, transparent 70%),
+    radial-gradient(900px 300px at 50% 106%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 70%);
+}
+
+/* ── 页头 ── */
+.home-head { display: flex; align-items: flex-start; gap: 12px; }
+/* ② 品牌徽标：纯装饰（真实工程里是 aria-hidden、无文案 ⇒ 不占 i18n 词条）。
+   底是 accent 渐变 ⇒ 白线在深浅两档都成立，与主题无关。 */
+.home-brand {
+  flex: 0 0 30px; width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px; color: #fff;
+  background-image: linear-gradient(145deg, var(--accent), var(--accent-2, var(--accent)));
+  box-shadow: 0 4px 12px -5px var(--accent-glow),
+              inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent);
+}
+.home-brand svg { display: block; width: 17px; height: 17px; }
+.home-title { font-size: 21px; font-weight: 600; letter-spacing: -0.015em; }
+.home-sub { font-size: 13px; color: var(--text-secondary); margin-top: 6px; }
+
+/* ── 主行动 ── */
+.home-cta { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+.btn-primary {
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  padding: 10px 20px; border: 0; border-radius: 9px;
+  background-color: var(--accent); color: var(--btn-primary-text);
+  /* ⑧ 主按钮浮起来（走 box-shadow，不碰背景/文字 ⇒ 不影响白字对比度） */
+  box-shadow: 0 6px 18px -8px var(--accent-glow);
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+.btn-primary:hover { background-color: var(--accent-hover); }
+.cta-hint { font-size: 13px; color: var(--text-muted); }
+
+/* ── 分段标题（细线） ── */
+.sec-head { display: flex; align-items: center; gap: 12px; margin: 26px 0 13px; }
+.sec-head span { font-size: 13px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+/* ③ 段头前的强调色小菱块（真实工程用伪元素实现，免得为符号再进 i18n 表）
+   ⚠️ 必须排除 .sec-note —— 它也是 .sec-head 里的 <span>，不排除就会多出一颗点在右侧说明上 */
+.sec-head span:not(.sec-note)::before {
+  content: ''; display: inline-block;
+  width: 6px; height: 6px; margin-right: 8px;
+  border-radius: 2px; vertical-align: 1px;
+  background-image: linear-gradient(140deg, var(--accent), var(--accent-2, var(--accent)));
+}
+/* ④ 细线由强调色向透明渐隐（原先是纯 var(--border) 平线） */
+.sec-head i {
+  flex: 1; height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 42%, var(--border)), transparent);
+}
+.sec-note { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+
+/* ── 能力卡：介绍与入口合体 ──
+ * 🔴 卡本身是「介绍容器」，不是入口 —— 刻意不给 cursor:pointer、不给 hover 抬升。
+ *    只有卡内的 chip 才是入口。这是 §4.0 契约的直接体现：
+ *    「看起来能点」就必须「真的能点」，容器不冒充按钮。
+ */
+.feature-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.feature {
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 16px 16px 15px;
+  border: 1px solid var(--border); border-radius: 12px;
+  position: relative; /* 给 ⑥ 的左侧竖条做定位锚点 */
+  /* ⑤ 右上角一层极淡的强调色晕（走背景层 ⇒ 永远在文字之下） */
+  background-color: var(--bg-card);
+  background-image: radial-gradient(180px 120px at 100% 0%, color-mix(in srgb, var(--accent) 11%, transparent) 0%, transparent 72%);
+  box-shadow: 0 1px 3px #0000000f;
+}
+/* ⑥ 左侧强调色竖条：宽 3px 落在 16px 内边距里，压不到文字。
+   ⚠️ position:absolute 不能省 —— .feature 是 flex 容器，不脱离文档流它会变成 flex item。 */
+.feature::before {
+  content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
+  border-radius: 0 3px 3px 0; opacity: 0.85;
+  background-image: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 18%, transparent));
+}
+.feature-head { display: flex; gap: 11px; }
+/* ⑦ 图标底座：20px 线稿裸放太单薄，给一块强调色淡板托住（30px 仍矮于两行文案 ⇒ 卡高不变） */
+.feature-icon {
+  flex: 0 0 30px; width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px; color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.feature-icon svg { width: 18px; height: 18px; }
+.feature-title { font-size: 14px; font-weight: 600; }
+.feature-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.55; margin-top: 4px; }
+
+/* 卡内入口 chips：整卡唯一可点的东西，原生 button ⇒ 键鼠天然双可达 */
+.feature-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.link-chip {
+  font: inherit; font-size: 12.5px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 10px; border-radius: 7px;
+  /* ⑧ 描边往强调色偏 28% —— 常态就透出「这是个按钮」 */
+  background: var(--bg-hover); border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.link-chip:hover { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.link-chip::after { content: '›'; font-size: 13px; opacity: 0.65; margin-left: -1px; }
+
+/* ── 键盘可达：焦点环（真实落地同样要求，不能只在鼠标下可用） ── */
+.link-chip:focus-visible,
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── 入口核对反馈条（预览件专用，不属于 Home 页设计） ── */
+.goto-toast {
+  position: fixed; right: 22px; bottom: 22px; z-index: 50;
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 15px; max-width: 420px;
+  background: var(--bg-card); border: 1px solid var(--accent-dim);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.26);
+  font-size: 13px; color: var(--text-primary);
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+}
+.goto-toast.show { opacity: 1; transform: translateY(0); }
+.goto-toast .k {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 3px 7px; border-radius: 5px;
+  background: var(--accent-dim); color: var(--accent);
+}
+.goto-toast .arrow { flex: 0 0 auto; color: var(--text-muted); }
+.goto-toast b { font-weight: 600; }
+
+.footnote {
+  margin-top: 20px; padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim); border-radius: 0 8px 8px 0;
+  font-size: 13px; line-height: 1.65; color: var(--text-secondary);
+}
+.footnote b { color: var(--text-primary); }
+.footnote code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="preview-bar">
+  <b>启动页（Home）视觉预览</b>
+  <span>4 张能力卡：介绍 + 卡内入口 · 全页只跳转，不执行任何动作</span>
+  <span class="spacer"></span>
+  <span>主题</span>
+  <span class="seg" id="segTheme">
+    <button type="button" data-theme="dark" aria-pressed="false">深色</button>
+    <button type="button" data-theme="light" aria-pressed="true">浅色</button>
+  </span>
+</div>
+
+<div class="app">
+  <nav class="app-rail">
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l8-6 8 6v9H4z"/></svg></div>
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h5l2 3h11v10H3z"/></svg></div>
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg></div>
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></div>
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M6 19c0-3 2.7-5 6-5s6 2 6 5"/></svg></div>
+    <div class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+  </nav>
+
+  <div class="app-main">
+    <div class="topbar">
+      <div class="nav-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></div>
+      <div class="nav-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></div>
+      <span class="topbar-hint">首页</span>
+      <span class="spacer"></span>
+      <span class="chip-active">首页</span>
+      <button type="button" class="btn-ghost" data-kind="页面" data-goto="设置页">设置</button>
+    </div>
+
+    <div class="home-page">
+      <div class="home-head">
+        <!-- ② 品牌徽标：纯装饰（真实工程里 aria-hidden + 无文案 ⇒ 不占 i18n 词条） -->
+        <span class="home-brand" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 17.6h16"/><path d="M7.6 17.6a4.4 4.4 0 0 1 8.8 0"/><path d="M12 5.4v2.2"/><path d="M5.3 8.3l1.6 1.6"/><path d="M18.7 8.3l-1.6 1.6"/></svg>
+        </span>
+        <div style="flex:1;min-width:0">
+          <div class="home-title">拂晓图库</div>
+          <div class="home-sub">照片都放在自己电脑里：原图不动、不上传，打开就能看。</div>
+        </div>
+      </div>
+
+      <div class="home-cta">
+        <button type="button" class="btn-primary" data-kind="面板" data-goto="设置 · 媒体库">＋ 添加目录</button>
+        <span class="cta-hint">会打开设置页，在那儿添加和管理目录</span>
+      </div>
+
+      <div class="sec-head"><span>能做什么</span><i></i><span class="sec-note">卡片是介绍，点里面的按钮直接去</span></div>
+
+      <div class="feature-row">
+        <!-- 1 浏览 -->
+        <div class="feature">
+          <div class="feature-head">
+            <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h5l2 3h11v10H3z"/></svg></div>
+            <div>
+              <div class="feature-title">照片再多也找得到</div>
+              <div class="feature-desc">按文件夹翻、按日期翻，几万张也一目了然。</div>
+            </div>
+          </div>
+          <div class="feature-links">
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有照片">所有照片</button>
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有目录">所有目录</button>
+            <button type="button" class="link-chip" data-kind="标签页" data-goto="日期">日期</button>
+          </div>
+        </div>
+
+        <!-- 2 检索 -->
+        <div class="feature">
+          <div class="feature-head">
+            <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></div>
+            <div>
+              <div class="feature-title">一句话找到那张照片</div>
+              <div class="feature-desc">说一句「海边的日落」就能找到；照片里的人会自动归类。</div>
+            </div>
+          </div>
+          <div class="feature-links">
+            <button type="button" class="link-chip" data-kind="标签页" data-goto="搜图">搜图</button>
+            <button type="button" class="link-chip" data-kind="标签页" data-goto="人物">人物</button>
+          </div>
+        </div>
+
+        <!-- 3 大库 -->
+        <div class="feature">
+          <div class="feature-head">
+            <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3.5-5 3.5z"/></svg></div>
+            <div>
+              <div class="feature-title">再多也不卡</div>
+              <div class="feature-desc">上百万张照片照样流畅，视频点开就看，字幕自动加载。</div>
+            </div>
+          </div>
+          <div class="feature-links">
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有照片（筛选：仅视频）">只看视频</button>
+          </div>
+        </div>
+
+        <!-- 4 个性化 -->
+        <div class="feature">
+          <div class="feature-head">
+            <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 2.4 14.6 0 17-2.4-2.4-2.4-14.6 0-17z"/></svg></div>
+            <div>
+              <div class="feature-title">换个样子，多台设备看</div>
+              <div class="feature-desc">主题配色、快捷键都能改成顺手的；手机扫个码，家人一起看。</div>
+            </div>
+          </div>
+          <div class="feature-links">
+            <button type="button" class="link-chip" data-kind="面板" data-goto="设置 · 网络访问">网络访问</button>
+            <button type="button" class="link-chip" data-kind="面板" data-goto="设置 · 外观与主题">外观与主题</button>
+            <button type="button" class="link-chip" data-kind="面板" data-goto="设置 · 快捷键">快捷键</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="footnote">
+        <b>预览说明</b>：本页只用于确认排版、跳转目标与两档主题下的观感，<b>不是实现代码</b>。
+        点任意按钮可看到它落到哪里；<code>Tab</code> 切换焦点、<code>Enter</code> 触发。<br />
+        <b>文案规范</b>：面向客户、口语化，每条说明 ≤30 字（超一行会把同行卡片一起撑高）；
+        不出现「索引 / 转码 / 数据库 / 阈值」等技术词；<b>说明里提到的能力都必须在卡内的按钮里够得着</b>。
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="goto-toast" id="gotoToast">
+  <span class="k">入口</span>
+  <span class="arrow">→</span>
+  <b>—</b>
+</div>
+
+<script>
+(function () {
+  /* 主题切换（预览件专用） */
+  var segTheme = document.getElementById('segTheme');
+  segTheme.addEventListener('click', function (e) {
+    var btn = e.target.closest('button');
+    if (!btn) return;
+    document.documentElement.dataset.theme = btn.dataset.theme;
+    segTheme.querySelectorAll('button').forEach(function (b) {
+      b.setAttribute('aria-pressed', b.dataset.theme === btn.dataset.theme ? 'true' : 'false');
+    });
+  });
+
+  /* 首页入口核对：鼠标点击 与 键盘 Enter/Space 走同一条路 ——
+     这也是落地时必须遵守的契约（两个通道调同一个动作函数），预览件提前把它显式化。 */
+  var toast = document.getElementById('gotoToast');
+  var toastKind = toast.querySelector('.k');
+  var toastTarget = toast.querySelector('b');
+  var toastTimer = null;
+
+  function showGoto(el) {
+    var target = el.getAttribute('data-goto');
+    if (!target) return;
+    toastKind.textContent = el.getAttribute('data-kind') || '入口';
+    toastTarget.textContent = target;
+    toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 2600);
+  }
+
+  var scope = document.querySelector('.app-main');
+  scope.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-goto]');
+    if (el) showGoto(el);
+  });
+  scope.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    var el = e.target.closest('[data-goto]');
+    if (!el) return;
+    e.preventDefault();
+    showGoto(el);
+  });
+})();
+</script>
+</body>
+</html>

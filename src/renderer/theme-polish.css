@@ -124,9 +124,10 @@ html .settings-page .setting-item:hover {
   color: var(--text-secondary);
   margin-top: 5px;
 }
-/* 这两个 AI 面板现在只作为「后台任务」清单里的一行出现（搜图索引 / 人物索引），
-   段落因此按同一张清单里的 .setting-desc 取值（12px / 1.65 / 5px），
-   而不是早先独立面板时的正文规格——否则一行说明 13px、隔壁行 12px，同一屏里两套字阶。 */
+/* 这两个 AI 面板（搜图 / 人物）里的 `<p>` 是组件自己渲染的状态行 / 错误行，
+   按 12px 次级色处理：它们夹在设置项之间，用正文规格会跟下面的参数标签抢注意力。
+   2026-10-05 这两块从「后台任务」清单独立成「AI 与索引」面板，规格不变 ——
+   这里定的是「状态行」这一级的字号，与它挂在哪个面板无关。 */
 .settings-page :is(.ai-settings-panel, #peopleSettingsPanel) > p {
   font-size: 12px;
   line-height: 1.65;
@@ -145,10 +146,9 @@ html .settings-page .setting-item:hover {
   border-top: 1px solid var(--surface-line);
   padding-top: 12px;
 }
-.settings-page .people-settings summary {
-  font-size: 14px;
-  font-weight: 600;
-}
+/* 这里曾有 `.settings-page .people-settings summary` 一条 —— 设置项已不再折叠成
+   <details>（独立成「AI 与索引」面板，见 CONTRACTS.md），summary 节点不存在，
+   规则一并删掉，免得成为「加回折叠」的邀请。 */
 .settings-page .people-settings fieldset > p {
   color: var(--text-secondary);
   line-height: 1.7;
@@ -164,26 +164,11 @@ html .settings-page .setting-item:hover {
   height: 16px;
 }
 
-/* Shared AI controls use the same palette as the native settings controls. */
-.ai-button {
-  min-height: 36px;
-  padding: 8px 13px;
-  border-radius: 9px;
-  border-color: var(--surface-line);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease;
-}
-.ai-button:hover:not(:disabled) {
-  background: var(--control-hover);
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--surface-line));
-}
-.ai-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
+/* `.ai-button` 的取值不在这里 —— 唯一来源是 `src/web/css/semantic-search.css` 的
+   「基础控件」一节。本文件原本也声明了一份同特异性的 `.ai-button`（min-height /
+   padding / 圆角 / 描边 / 底色 / hover / disabled），因为加载更晚而把那一份全盖掉，
+   结果两处都「看起来是权威」。已并回 semantic-search.css，这里只保留下面
+   `prefers-reduced-motion` 里对过渡的关闭。 */
 .ai-dialog {
   border-radius: 18px;
   border-color: var(--surface-line);

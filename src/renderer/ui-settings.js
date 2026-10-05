@@ -33,14 +33,19 @@
     // 不再靠 scrollIntoView 做长滚动定位；顺序错位只会让高亮与显示内容对不上。
     // navigation-regression 会解析两边做逐位比对，改这里必须同步改 HTML 顺序。
     //
-    // 2026-09-28 第二轮：搜图 / 人物这两个类目并入「后台任务」（索引本来就是一类长跑
-    // 任务，与补缩略图 / 查重同一张清单）；它们的模型与识别参数随挂载点一起搬过去，
-    // 面板数由 8 减到 6。老用户 localStorage 里的旧 id 由 app.js 的别名表归一。
+    // 2026-09-28 第二轮：搜图 / 人物这两个类目曾并入「后台任务」（索引本来就是一类长跑
+    // 任务，与补缩略图 / 查重同一张清单），面板数由 8 减到 6。
+    //
+    // 2026-10-05 第三轮：它们又拆出来成为独立的「AI 与索引」面板（面板数回到 8），
+    // 原因是并进任务清单的代价 —— 识别设置 / 匹配设置只能在清单行里折叠成一个
+    // <details>，用户明确反馈「不要存在设置项按钮隐藏」。任务清单现在只放纯任务。
+    // 三轮之间的旧 id（settingsSectionSearch / People / Semantic / Ai）都由 app.js
+    // 的别名表归一，老用户 localStorage 里的落点不会失效。
     //
     // 图标一律用**彩色 emoji**（\u{1Fxxx}，必要时补 VS16），不要用 ✦ ☺ ⟳ 这类文本符号：
     // 它们在 Windows 上走 Segoe UI Symbol，会被渲染成单色灰字，一排里混进去就是断层
     // （后台任务曾用 ⟳ 被渲染成空心圆，已换成 🛠️；搜图 / 人物那两项当时用的 ✦ / ☺
-    // 也是同理，后来随面板一起并走了）。
+    // 也是同理，后来随独立面板一起换成了彩色 emoji）。
     // 改图标只影响观感，不参与回归断言；但换回文本符号请先看一眼 Windows 下的实际渲染。
     var navItems = [
       {
@@ -53,7 +58,13 @@
         id: 'settingsSectionBrowse',
         icon: '\u{1F39E}\uFE0F',
         key: 'settings.nav.browse',
-        zh: '浏览与播放',
+        zh: '浏览与显示',
+      },
+      {
+        id: 'settingsSectionShortcuts',
+        icon: '\u2328\uFE0F',
+        key: 'settings.nav.shortcuts',
+        zh: '快捷键',
       },
       {
         id: 'settingsSectionStorage',
@@ -68,16 +79,22 @@
         zh: '后台任务',
       },
       {
-        id: 'settingsSectionApp',
-        icon: '\u2699\uFE0F',
-        key: 'settings.nav.app',
-        zh: '应用',
+        id: 'settingsSectionAiIndex',
+        icon: '\u{1F9E0}',
+        key: 'settings.nav.ai',
+        zh: 'AI 与索引',
+      },
+      {
+        id: 'settingsSectionAppearance',
+        icon: '\u{1F3A8}',
+        key: 'settings.nav.appearance',
+        zh: '外观与行为',
       },
       {
         id: 'settingsSectionNetwork',
         icon: '\u{1F310}',
         key: 'settings.nav.network',
-        zh: '网络',
+        zh: '网络与远程',
       },
     ];
     var html = '';
