@@ -23,6 +23,9 @@ Thumbs.db
 Desktop.ini
 .vscode/
 
+# Claude Code 本地权限白名单（本机私有，非项目共享配置）
+.claude/settings.local.json
+
 # Electron
 *.asar
 
