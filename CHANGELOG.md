@@ -6,6 +6,24 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 ## [Unreleased]
 
+### Added
+
+- **拍摄参数（EXIF）回填**（2026-10-06）：真库 166 万行里 `camera_make` 非空的**一条都没有** —— 不是「没有带 EXIF 的照片」，而是**两段链路都不产**：扫描期元数据提取整块被 `GENERATE_THUMBNAILS_DURING_SCAN = false` 跳过，而缩略图补全虽然把每个文件都用 **sharp 打开过**，却只读尺寸与 dHash。现在补全任务在**同一次** `sharp.metadata()` 里顺手解析（零额外磁盘 I/O），解析器收敛到唯一来源 `src/main/exif-meta.js`（扫描侧与补全侧各 `require` 一份，都不许直接碰 `exif-reader`）。守护 `exif-backfill-regression`。
+  - 拍摄时间落**独立列 `exif_date_taken`** —— 与时间线用的 `date_taken` 是两列、**刻意不同值**：面板上同时出现两条「拍摄时间」正是本意（前者是文件落盘时间）。合并成一列就没有「拍摄时间」可看了。
+  - 一并修掉旧解析代码里三处**被 `catch` 吞掉**的取错：① 只翻 `exif.Photo`，而 `Make`/`Model` 在 IFD0（`Image`）、GPS 在 `GPSInfo` ⇒ 品牌 / 型号 / 定位**永远**取空；② `DateTimeOriginal` 被 `exif-reader` 转成 `Date` 后又 `String()` 拼成 `Wed Oct 06 2026 … GMT+0800 (…)` 落库；③ GPS 是 `[度, 分, 秒]` 数组，**绑不进 SQLite**（抛错后整段 EXIF 一起丢）。
+  - 面板字段同步扩到 **58 个拍摄参数列**，其中只有 **31 列**允许注册成面板字段（`panel: true`），其余 27 列**只入库**。不是「少注册几个」，而是每打开一张照片就多传一次界面用不上的 IPC 载荷；更要紧的是 `ShutterSpeedValue` 与 `ExposureTime` 这类「同一件事两个读数」很容易被顺手注册上线。
+  - `exif_mtime` 被**随时可调**的只读谓词引用 ⇒ 必须在 `db.init()` 里**同步**加列；等任务开跑才迁移 = 老库启动后第一次点开就 `no such column`。🔴 「已检查」与「有没有值」是两件事，判据必须与候选谓词同源（`database.js#photoNeedsExif()`），**禁用 `camera_make IS NULL`** —— 否则截图 / 网图 / PNG 每轮被取出来、读完文件头、写回一堆 null，任务**永不收敛**。
+
+- **启动后自动建 AI 索引（语义 / 人脸）**（2026-10-06）：新增 `autoSemanticIndexOnStartup` / `autoFaceIndexOnStartup` 两个开关（默认关，住在设置页「AI 与索引」面板），把这两个**没有终点**的任务也纳入「启动后自动执行」。
+  - 它们刻意排在 `autoHashOnStartup` / `autoThumbBackfillOnStartup` **之后** —— 启动后会长时间占着 AI 索引槽位，让前面那些「有终点」的任务先落地。
+  - 走 `run('index')` 而**不是** `start('index')`：后者是**发射后不管**（`void run(...)`），拿不到结束与失败，而这两条恰恰是排查时唯一想看的东西。
+
+- **设置页「重新扫描全部」**（2026-10-06）：媒体库面板头部新增一枚按钮（与「添加目录」并排），一次点击 = 一整批根目录一次性排上、等全部跑完才回；忙碌期间重复点击不重复入队。新增 IPC `rescan-all-folders`。守护 `settings-rescan-all-regression`。
+  - 🔴 **根目录列表只由主进程读库决定**，渲染端**不得**把自己那份可能过时的 `state.rootFolders` 当参数塞进去 —— 扫描刚在库里登记了新根、渲染端这一拍还没同步到时它是空的，结果就是「点了没反应」。按钮也**不按目录数置灰**：空库由主进程回 `error: 'empty'`，拿缓存当闸门只会造出「明明有目录却是灰的」。
+  - 网页端**不加**（它的设置页只是桌面端的只读镜像，扫描动作一律留在桌面端）。
+
+- **首帧可观测性：渲染层启动阶段上报**（2026-10-06）：新增单向通道 `notify-startup-stage`，渲染层上报 4 个启动阶段（`init.enter` / `settings.done` / `rootFolders.done` / `landing.done`）喂进 `startup-performance.json`；主进程侧**白名单**校验 —— 渲染层能送任意字符串，白名单外一律丢弃。
+
 ### Changed
 
 - **网页端设置页精简为 2 面板**（2026-10-06）：原先它是桌面端 8 面板的只读镜像，其中 6 个面板（媒体库 / 快捷键 / 媒体与存储 / 后台任务 / AI 与索引 / 网络与远程）以及其余面板里的「桌面端」取值行，对网页端**既改不了、也不影响自己怎么显示**，已整块删除。留下的 6 个控件全部落在浏览器本地偏好上 —— 每页显示、网格与比例、卡片尺寸、界面风格、强调色、背景基调。
@@ -19,6 +37,52 @@ Release versions match the root [`package.json`](package.json) `version` field.
   - **`getFolderTree` 加覆盖索引 `(root_id, folder_path, date_taken)`**：原先 `GROUP BY folder_path` 免排序但不 covering，每行都要回表取 `date_taken` 给 MIN/MAX —— 真库单根（912,222 行）**>4 分钟未返回**；45,000 行夹具上 113.8 → 5.8 ms。
   - **`getPhotos({rootId})` 加索引 `(root_id, date_taken)`**：默认排序键是 `date_taken`，而已有的 `idx_photos_root_date_mod` 建在 `date_modified` 上，优化器只能退到 `idx_photos_root` 再做临时排序（真库实测 **70,594 ms**）；同夹具上 112.2 → 1.5 ms。
   - 两条大表 `CREATE INDEX` **只走 `deferred-index-worker`**（首窗后经写库队列串行），不进启动路径；二者都没有把工程里其余 14 条查询的执行计划带偏（夹具逐条对照）。守护 `read-latency-regression`（新增）+ `worker-pool-regression`（扩）。
+
+- **扫描写路径补齐「文件变了」分支**（2026-10-06）：`getInsertStmt()` 是 `INSERT OR IGNORE`，同路径已存在时 `changes === 0`，本次扫描读到的 `file_size` / `date_modified`（以及缩略图与元数据）**全被丢弃** ⇒ 库里那一行永远停在旧值 ⇒ 下一轮扫描**仍然**判定它「已变更」，**候选集永不收敛**（全工程过去**没有任何** `UPDATE photos SET file_size / date_modified`）。后果不只是白跑：**就地替换过的照片永远保留旧缩略图与旧指纹**，查重会报出早已不存在的重复对 —— 与 `width = 0` 那起是同一类 bug（那次是孤儿模块里的回填从未被加载，这次是写路径本身缺失）。守护 `scan-incremental-update-regression`（54 项）。
+  - 新增 `database.js#getUpdateFileFactsStmt()`，并在**同一条语句里**把 dHash 与查重指纹两组派生列置空 —— 「过期」只在这一个点判定，后台任务的候选谓词保持简单。
+  - `is_favorite` **绝不被碰**（用户数据，与文件内容无关）；`addRootFolder()` **禁用 `lastInsertRowid`**（被 IGNORE 时不归零 ⇒ 每行撞 FK ⇒ 扫描静默跳过全部）。
+  - 两条语句的列顺序**唯一来源** = `SCAN_WRITE_COLUMNS`（23 列），回归用 Statement 的 `.source` 读回**真实 SQL** 做机械比对，而不是相信注释。判据重点是「紧接着再扫一遍，该文件必须被判为未变更而跳过」—— 只断言「值落库」的话，「把 size 写进 date_modified」这类串列仍然全绿。
+
+- **扫描收尾不再被看门狗误判卡死**（2026-10-06）：用户报「自动扫描失败：扫描线程无响应（超过 123 秒），已终止」，而扫描**没死**，它只是正在读盘 —— `scan-worker` 是单线程，同步 SQL / `fs` 期间连 300 ms 一次的 progress 心跳都发不出去，主进程侧「120 秒收不到任何消息 ⇒ `terminate()`」的看门狗于是把一次健康扫描判死。真库（单根 912,222 行）实测收尾两段：`.all()` 物化整根 + 逐行比对的清理 **71.1 s**、三档统计聚合 **185.5 s**，叠起来远超 120 秒。守护 `scan-tail-watchdog-regression`。
+  - 收尾两段改为**按批 + `await` 让出**（`SCAN_TAIL_BATCH_ROWS`），**不许再出现 `.all()` 一次性物化整根**；调用端必须 `await` —— 漏掉 await 的后果是静默的：清理永不生效、目录统计永远是旧值，不报错也没有日志。单根三档统计各自命中覆盖索引 / 部分索引（计划塌回回表**不会算错任何一个数**，数值断言抓不住，只能断言执行计划）。
+  - 🔴 判据从「退出码」改为 **`!scanWorkerDoneReceived`**，且判定必须**延后 500 ms**（`exit` 与 `message` 的顺序无保证；worker 可以**以 0 退出却没发 `done`**）。
+
+- **一次读盘出三样：缩略图 / dHash / 查重指纹**（2026-10-06）：补全与查重在准入上**互斥**（两者永远串行），读的又是同一个文件的同一份字节 —— 过去补全 `sharp` 解码一遍、查重那边再逐字节读一遍。`main.js#processOne` 改成「一次 `readFile` 的 Buffer 同时喂 `sharp` 与 `crypto`」（上限 64 MB，超大 / 未知退回两次读盘）。更早一步，dHash 也已从「再解码一遍」改成从已打开的管线 clone 出去：真机 40 张 **53.9 → 22.5 ms（省 58%）**，这部分是纯白干的 CPU + 读盘。守护 `perceptual-hash-share-regression`。
+  - 🔴 这条优化的**唯一合法性前提是逐位相同**：dHash 不是「差不多的指纹」，而是相似聚类里阈值比较的**被减数**，位差会直接把阈值边缘的配对翻面（本机真实库 198 万行；40/40 实测相同）。**顺序是承重墙** —— dHash 历来**不旋转**，一旦取 dHash 的语句被挪到 `.rotate()` 之后，**带 EXIF 方向信息的照片会全部换一套位**，不报错、不写日志，只是相似照片的判定从此不一样了（无方向的图 `.rotate()` 是空操作，所以「换个布局看看，没事啊」测不出来）。
+  - 连带两条静默失效：候选 SELECT 少了 `file_hash` ⇒ 每行都判成「缺指纹」⇒ 对全库候选反复重算 SHA；前置的 `ensureDuplicateHashSchema()` 掉了 ⇒ 老库上取批那一刻 `no such column`，回填当场挂。四条**同生共死**（候选 SELECT 带 `file_hash` / 前置 ensure 两套列 / 读盘紧挨 sharp 之前 / `hashed > 0` 清分组缓存）。
+
+- **缩略图补全的进度口径重做**（2026-10-06）：那条进度条的主语早就不是「缩略图」了 —— 它是一次读盘出多样的混合任务（缺缩略图补缩略图、缺 dHash 补 dHash、缺尺寸补尺寸、缺拍摄参数补 EXIF，候选谓词 `_sqlBackfillPendingExpr()` 就是这四支的并集）。走过两段弯路，两次都被真实库推翻：分母曾用**滚动累加**的「本轮已取出多少行」（`total - done` 恒等于当前批次剩余 ≤ 100 ⇒ 百分比在 0 ↔ 100% 之间锯齿）；改用「还缺几张缩略图」后更糟 —— 候选集约 156 万行里真正缺图的只有 **339,913**，而补全按 id **倒序**走（最新入库优先），缺图的几乎**全压在低位老照片**上，`id 1,900,000~1,999,999` 只有 **10 行**缺 ⇒ 头部 2 万行里缺图的是 **0 行**，分子恒 0、进度条在 **0%** 上趴了十几分钟（用户报上来的是「一直显示 0」）。守护 `thumb-backfill-progress-regression`。
+  - 现在：**分子 = 本轮已处理的行数**、**分母 = 候选集规模（抽样估计值，界面标「约」）**，与任务真正的工作量对齐；另有预览图（`thumbs` / `thumbTotal`）+ 实补细项（`sized` / `dhashed` / `hashed` / `exifFilled`）让「不只是在做预览图」在界面上看得见，配三态 `pendingPhase` 与 ETA。🔴 **禁用「缺缩略图数」当分母**。
+  - 失败记账**两列各管一路**：`thumb_fail_mtime` = 解码失败、`header_fail_mtime` = 文件头失败，共用 `_sqlFailMarkerRetryableExpr()`；`readHeaderMeta` **不抛** ⇒ 只能认 `headerTried`；解码失败**禁连累**尺寸 / EXIF。
+
+- **后台任务方向统一为主键倒序**（2026-10-05 起）：缩略图补全 / 查重 / 失效清理 / 语义 / 人脸五处统一「最新入库优先」，游标是**排他上界**（起手取域内最大 id + 1，续接本批最后一行）。🔴 **只改查询不改调用端 = `id < 0` 恒空**：任务「秒完成」却一行没补，而且不报任何错。失效清理过去更糟 —— 只有「无游标」那一支是 DESC、带游标那支却是 `id > ? ORDER BY id ASC`，**同一个任务两种方向混用**，第二批还会与第一批重叠几百行。守护 `maintenance-guard-regression` / `semantic-regression` / `photo-tags-regression`。
+  - **人脸先解耦再倒序**：`faces.id` 是插入顺序 = 扫描顺序（父表 `scans` 带 `ON DELETE CASCADE` ⇒ 重扫一张照片就删掉重插、拿新的高位 id），而聚类结果依赖**节点下标**（初始标签 `labels[i] = i`、平票靠 `heap.nodes[]` 顺序决胜、每轮先做 Fisher-Yates、`representatives()` 的数组顺序还决定抽哪 16 个成员与 `put()` 的平票归属）⇒ 读顺序还挂在 `faces.id` 上的话，**重扫任意一张照片就会把它挪到节点序末尾、同内容重跑给出不同分组**。顺序唯一来源改为 `face-store.js#FACE_ORDER = 'ORDER BY f.photo_id, f.id'`（由内容决定），并走 `idx_faces_photo` 快约 **2.4×**。守护 `face-order-regression`。
+  - ⚠️ **改方向只对下次启动生效**；判定「任务在产出还是在空转」要按 `aurora-task-progress-probe` 的路子查实时计数增量，别从 `startup-performance.json` 反推。
+
+- **统计条 `getStats()` 记忆化**（2026-10-06）：顶栏统计是 8 条子查询 + faces 两条，每条都是「沿某条索引把 165 万条目走一遍」—— `COUNT(DISTINCT folder_path)` 一条 **4,488 ms**、视频体积 1,875 ms（还要回表 26,609 行），整条首次 **8,616 ms**、热 949 ms。**没有一条是「算错」，全是「沿索引全走一遍」** —— 这个量级付一次可以，而它的调用点有 11+ 处（启动 / 扫描收尾 / 回收站 / 维护 / 手动清理…）。新增 `src/stats-agg-cache.js`，桌面端与读池 worker 共用同一份，读池复位时同步失效。
+
+- **搜图页分页在大结果集上走索引序**（2026-10-06）：`searchPhotos()` 在「无额外筛选 + 命中数 ≥ 100000 + `idx_photos_date` 真的存在」时才给 `ORDER BY date_taken DESC` 加 `INDEXED BY`。⚠️ `INDEXED BY` 指向不存在的索引是**直接抛 `no query solution`**、不是变慢，所以仍要过一遍存在性判据；而 `hasIndex()` **必须带 TTL** —— 读池 worker 是长活进程，永久缓存会把「还没有」记死，索引建好了也永远用不上。
+  - 已知副作用（可接受）：这条路本来就没有稳定并列序（另一条路有 `applyNaturalNameTieSort` 把并列拉成确定序，这里没有），标定时核对过 —— **只有含并列的词首行 id 会变**。
+
+- **底栏「随机」按钮去掉扩散环**（2026-10-06）：它动的是 `box-shadow`，而 `box-shadow` 的插值**无法被提升为合成动画**（实测加 `will-change: opacity,transform` 或 `transform: translateZ(0)` **零效果**）⇒ 只能每帧回主线程重算样式 + 重绘。隔离库 / 60 张卡 / 1000 ms 稳态实测：基线 Paint **122 次·27.75 ms** + StyleRecalc **61 次·11.15 ms 全部来自这一条**（只停呼吸层则读数几乎不变：122 次·26.15 ms），停掉后两项**双双归零**（6 轮零方差）；「从首页 / 设置页进入照片流」动作窗口的 Paint 耗时 64.15 → **18.9 ms（−71%）**。用户反馈的「点首页返回卡顿」正是它叠在网格恢复那 25 ms 上、把一帧顶过预算。呼吸光晕保留，`reduced-motion` 豁免两端各一份。
+
+- **「没有缩略图」的占位统一，瀑布流不再塌陷**（2026-10-06）：同一个「没图」在两端各有两条入口（构建期 `has_thumbnail = 0` / 运行期缩略图 404），合起来是**四张脸**（桌面端构建期是大号扩展名 + 把文件名重复一遍、桌面端 404 是另一个图标 + 报错、网页端 404 是 ⚠️ emoji）。现在四条路共用一份图形（中性底 + 图片字形 + 一行小字），判据是**两端真代码产出的标记逐字相等** —— 谁偷偷只改一端立刻红。
+  - 原比例瀑布流是 `columns` 布局，卡片**没有** CSS 死高度：有图时高度来自 `<img>` 的内在尺寸，没图时占位块自身没有基准尺寸（它是 `height: 100%` 的空盒子）⇒ 卡片塌成一条比文字还矮的横杠、整列跟着错位。四条路都挂 `photo-card--square-placeholder`；**「统一高度」那档刻意不挂** —— 那边由 `.grid:not([data-use-media-ratio='1']) .photo-card` 给了死比例、完全正常，于是这个缺陷**只在瀑布流上现身**，很容易被「换个布局看看，没事啊」带过去。网页端的判据必须 `card.closest('.grid--masonry')`，且构建期分流用 `hasUsableThumbnail()`（缺字段按「有」处理）。
+
+- **工程侧**（2026-10-06）：新增 5 个模块 —— `src/main/deferred-indexes.js`（运行期索引 DDL 的唯一真相源，部分索引的 `WHERE` 是拼接出来的，worker 与回归**同一份字符串** —— SQLite 的部分索引匹配是**逐字**的，差一个字符就静默失效）、`src/main/exif-meta.js`、`src/main/file-hash.js`、`src/photos-total-cache.js`、`src/stats-agg-cache.js`；新增 9 个守护脚本（`read-latency` / `face-order` / `exif-backfill` / `perceptual-hash-share` / `thumb-backfill-progress` / `scan-incremental-update` / `scan-tail-watchdog` / `thumb-dup-admission-parity` / `settings-rescan-all`，全部登记进 `run-regressions.js`，全量 54 脚本），另有 6 份既有守护同步扩面（`browse-grid-style` / `photo-metadata-backfill` / `face` / `maintenance-guard` / `sidebar-tree` / `photo-info-fields`）。
+
+### Fixed
+
+- **「点下去什么都没发生」**（2026-10-06，用户报「补齐缩略图点击之后不开始」）：两个长后台任务（缩略图补全 / 重复比对）各自有「IPC 入口」与「任务内部」两道准入检查，它们是**各写一份**的，于是漂移了 —— `start-thumbnail-backfill` 漏了 `duplicateHashTask.running`，而 `runThumbnailBackfill()` 内部**多一条**；反过来也一样。两个 handler 都是「立即返回、任务在后台异步跑」，返回值只挂了 `.catch` ⇒ 内部早退时 **IPC 已返回 `{ success: true }`，任务却什么都没做**：前端不弹任何提示，刷新后显示「未运行」；而拒绝日志用 `logger.log`（info），生产档级别是 `warn` ⇒ **连一行现场都没有**。**这是静默失效，不是性能问题。** 守护 `thumb-dup-admission-parity-regression` + `maintenance-guard-regression`。
+  - 判据收敛为**唯一一份**（`thumbnailBackfillBlockReason()` / `duplicateHashBlockReason()`，IPC 入口与任务内部共用），**不许再把判据内联回 handler**（内联就是下一次漂移的起点），拒绝日志提到 **warn** 级。
+
+- **扫描期侧栏文件夹树被抹成空白**（2026-10-06，用户报「扫描中文件夹树消失 / 点重新扫描后消失」）：`startScanLiveRefresh` 扫描期每 3 s 调一次 `loadRootFolders(true, true)`（`skipTree` 分支刻意不重绘整棵树、只补侧栏数字），而该分支里曾有一句 `if (gate.isAlive() && skipTree) gate.render('')`。本意是「设置页侧栏隐藏、顺手清掉内容」，但 `gate.isAlive()` 自身已蕴含 `state.currentTab === 'folders'` ⇒ 这句**只在侧栏正显示时**才会执行，在设置页恒为 no-op —— 于是它清空的恰恰是用户正在看的那棵树，而该分支 return 之前不会重绘，整棵树一直空到扫描结束。守护 `sidebar-tree-regression` §12。
+
+- **维护任务让路分支每 5 秒吃光首帧打点额度**（2026-10-06）：缩略图补全在跑时，让路分支每 5 秒走到一次，过去每次都打一条 stage，而 `startup-metrics` 的 stage 数组**上限 400 条** —— 两分钟内就能把首屏与扫描结局全挤掉（本仓**只打日志 = 没有现场**，生产档只到 `warn`，这份 JSON 就是唯一现场；上次故障现场正是这么丢的）。改为**只在第一条计数**，同族的 `auto-dup-hash.defer` 早已这么修过。
+
+- **「随机」按钮在单页时的假可点击性**（2026-10-06）：`#randomPageBtn` **不在 `.pagination` 里**，它是 `.pagination` 的兄弟节点，所以 `renderPagination()` 里那句 `dom.pagination.style.display = 'none'` **收不起它** —— 只要「总页数 ≤ 1 就早退」写在 `randomPageBtn.disabled` 赋值**之前**，单页时就会留下一个「看着能点、点了没反应」的按钮（`goToRandomPage()` 对 `tp <= 1` 是静默 `return`，连提示都没有）。按钮本身很显眼（实心强调色 + 图标），假可点击性比不突出更糟 ⇒ 禁用必须在早退**之前**。
+
+- **两条守护自身的假红 / 假绿**（2026-10-06）：① `interaction-preempt-regression` 原本拿 `duplicateHashTask.running` 当「避让条件开头」的锚点，而那个条件已被**刻意移除**（避让发生在入队之前 ⇒ `PRIORITY.REPAIR` 被架空）⇒ 这条断言在替一个不存在的条件「作证」；改为限定在函数体内、以语义稳定且不动的 `isFolderScanRunning()` 起头，避免整份源码跑正则变成「测了另一个函数」。② `maintenance-regression` 里「索引只许定义在 worker 里」的检查**必须带词边界**：`idx_photos_root_date` 是 `idx_photos_root_date_mod` 的**前缀**，而后者由 `database.js#createCoreSchema` 建 ⇒ 裸 `includes` 会在 `database.js` 里命中那一行、报出**假红**；而假红更危险 —— 它会被人用「把名字改长一点」绕过，而不是把索引搬回 worker。
 
 ### Planned
 
