@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-13T04:40:39.594Z",
+  "generatedAt": "2026-10-05T14:44:44.743Z",
   "electron": "41.5.0",
   "node": "24.15.0",
   "platform": "win32",
@@ -8,72 +8,72 @@
     {
       "rows": 100000,
       "name": "date",
-      "elapsedMs": 77,
-      "maxEventLoopDelayMs": 12,
-      "peakProcessRssMb": 79
+      "elapsedMs": 78,
+      "maxEventLoopDelayMs": 7,
+      "peakProcessRssMb": 122
     },
     {
       "rows": 100000,
       "name": "firstPage",
-      "elapsedMs": 33,
+      "elapsedMs": 21,
       "maxEventLoopDelayMs": 6,
-      "peakProcessRssMb": 84
+      "peakProcessRssMb": 127
     },
     {
       "rows": 100000,
       "name": "deepPage",
-      "elapsedMs": 6,
-      "maxEventLoopDelayMs": 6,
-      "peakProcessRssMb": 84
+      "elapsedMs": 5,
+      "maxEventLoopDelayMs": 5,
+      "peakProcessRssMb": 127
     },
     {
       "rows": 100000,
       "name": "childCovers",
-      "elapsedMs": 17,
+      "elapsedMs": 16,
       "maxEventLoopDelayMs": 6,
-      "peakProcessRssMb": 85
+      "peakProcessRssMb": 127
     },
     {
       "rows": 100000,
       "name": "vacuum",
-      "elapsedMs": 280,
-      "maxEventLoopDelayMs": 12,
-      "peakProcessRssMb": 126
+      "elapsedMs": 284,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 168
     },
     {
       "rows": 1000000,
       "name": "date",
-      "elapsedMs": 159,
-      "maxEventLoopDelayMs": 8,
-      "peakProcessRssMb": 92
+      "elapsedMs": 144,
+      "maxEventLoopDelayMs": 11,
+      "peakProcessRssMb": 137
     },
     {
       "rows": 1000000,
       "name": "firstPage",
-      "elapsedMs": 59,
-      "maxEventLoopDelayMs": 9,
-      "peakProcessRssMb": 92
+      "elapsedMs": 54,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 137
     },
     {
       "rows": 1000000,
       "name": "deepPage",
       "elapsedMs": 114,
       "maxEventLoopDelayMs": 6,
-      "peakProcessRssMb": 92
+      "peakProcessRssMb": 137
     },
     {
       "rows": 1000000,
       "name": "childCovers",
-      "elapsedMs": 326,
-      "maxEventLoopDelayMs": 11,
-      "peakProcessRssMb": 94
+      "elapsedMs": 282,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 140
     },
     {
       "rows": 1000000,
       "name": "vacuum",
-      "elapsedMs": 2840,
-      "maxEventLoopDelayMs": 12,
-      "peakProcessRssMb": 129
+      "elapsedMs": 3029,
+      "maxEventLoopDelayMs": 7,
+      "peakProcessRssMb": 175
     },
     {
       "rows": 1000000,
@@ -84,9 +84,9 @@
       "afterPlan": [
         "SEARCH photos USING COVERING INDEX idx_photos_folder_nocase (folder_path>? AND folder_path<?)"
       ],
-      "elapsedMs": 110,
-      "maxEventLoopDelayMs": 10,
-      "peakProcessRssMb": 95
+      "elapsedMs": 91,
+      "maxEventLoopDelayMs": 6,
+      "peakProcessRssMb": 141
     }
   ]
 }

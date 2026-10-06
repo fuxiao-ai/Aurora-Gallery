@@ -226,14 +226,37 @@
               'Index stopped; completed results retained. Build / update to continue.',
             );
           else if (indexed && peopleCount > 0)
-            text = t(
-              '索引已就绪，已分组 ' +
-                peopleCount +
-                ' 位人物。导入新照片后，点「建立 / 更新人脸索引」做增量更新。',
-              'Index ready with ' +
-                peopleCount +
-                ' people. After importing photos, build / update to index the new ones.',
-            );
+            // 索引跑完**不等于**人物划分是最终结果：收尾的全局聚类（Chinese Whispers）在
+            // 人脸数超过 `AUTO_REGROUP_LIMIT` 时会被跳过，此时落库的分组只是索引期间
+            // 「边扫边并入最像的一组」的增量近似 —— 顺序相关、也看不到全局结构（同一份真库：
+            // 增量要拧到 0.16 才有 0.880 的 F1，而全局聚类 0.20 就是 0.879，碎片数 23 vs 12）。
+            // 大库上这不是偶发：本机 81,043 张脸**每次**都会跳过。不提示的话用户会把这批
+            // 近似分组当成最终结果，而且他不会知道下面有个按钮能把结果修正过来。
+            //
+            // 🔴 判据必须是 `=== false`，不能用 `!state.clustered`：`null` 表示「未知」
+            //    （本轮还没跑完、或进程重启后无从得知），那时不该弹这句。
+            // ⚠️ 已知局限：这个标志只在内存里，**重启后不再显示**（`clustered` 不是持久状态）。
+            //    彻底的做法是持久化「分组是用哪套参数算出来的」，从而在每次打开人物页时判断
+            //    「当前分组与当前设置是否一致」——那要处理换阈值/换归组方式后的过期语义，
+            //    属独立一轮，本轮没做。
+            text =
+              state.clustered === false
+                ? t(
+                    '索引已完成，已分组 ' +
+                      peopleCount +
+                      ' 位人物。但本次没有重跑全局聚类（人脸数超过自动聚类的规模上限），当前分组是索引期间边扫边并的近似结果 —— 同一个人可能被拆成几组。点下面的「按当前设置重新归组」会用已存的特征重算一次（不重跑模型），得到与阈值一致的最终划分。',
+                    'Index complete, grouped into ' +
+                      peopleCount +
+                      ' people. The global clustering pass did not run this time (the face count is above the automatic-clustering size limit), so the current grouping is the approximate result of incremental merging during the scan — one person may be split across groups. Use “Regroup with current settings” below to recompute from the stored features (no model re-run) and get the final partition for your threshold.',
+                  )
+                : t(
+                    '索引已就绪，已分组 ' +
+                      peopleCount +
+                      ' 位人物。导入新照片后，点「建立 / 更新人脸索引」做增量更新。',
+                    'Index ready with ' +
+                      peopleCount +
+                      ' people. After importing photos, build / update to index the new ones.',
+                  );
           else if (staleScans > 0)
             // 走在 `indexed` 之前：这份状态的**常见成因**就是「上一代识别器建的索引」，
             // 若落到下面那支（`indexed` 为真时输出空串）引导会整格收起，用户什么都看不到。

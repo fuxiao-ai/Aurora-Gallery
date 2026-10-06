@@ -263,7 +263,7 @@ async function commitMiniBatch() {
 
 ### 5.5 查询字段扩展
 
-`getPhotosMissingThumbnailsAfter` 需要增加 `file_size` 和 `date_modified`，用于 dHash 的哈希复活：
+`getPhotosMissingThumbnailsAfter`（⚠️ 2026-10-05 已更名为 `getPhotosMissingThumbnailsBefore`，候选顺序同时改成**主键倒序**）需要增加 `file_size` 和 `date_modified`，用于 dHash 的哈希复活：
 
 ```sql
 SELECT id, file_path, file_size, date_modified
@@ -483,7 +483,7 @@ getDhashBackfillPhotoCount()           // 存量待补充数量
 
 ### Step 2：缩略图同步 dHash（核心）
 - [ ] 修改 `thumbnail-backfill.js`（⚠️ 2026-10-05 起是 `src/main.js#runRowsWithThumbConcurrency`，且 `commitMiniBatch` 的写法已被「按批进 `dbWriteQueue`」取代）：
-  - `getPhotosMissingThumbnailsAfter` 增加 `file_size, date_modified`
+  - `getPhotosMissingThumbnailsAfter`（现名 `getPhotosMissingThumbnailsBefore`）增加 `file_size, date_modified`
   - `processOne` 缩略图生成后同步调用 `computeDhash`
   - `commitMiniBatch` 同时写入 `thumbnail` + `dhash`
   - dHash 失败不影响缩略图

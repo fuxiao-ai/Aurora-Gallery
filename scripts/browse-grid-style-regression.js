@@ -575,7 +575,7 @@ async function run() {
     assert.equal(btn.disabled, false, '多页时「随机」必须可用 —— 反面：别把禁用写死');
   }
 
-  // ── 「随机」的闪动光晕（2026-10-05）──────────────────────────────────────────
+  // ── 「随机」的闪动光晕（2026-10-05；2026-10-06 去掉扩散环）──────────────────
   // 这一节钉的是**动效骨架**而不是像素。每一类断言都对应一个「静态全绿、线上失效」的坑：
   //   ① 动画若挂在按钮本体上 → 动画来源层压过普通声明，hover / :active / :disabled
   //      那三条 `box-shadow` 会**静默失效**（computed 值还看着挺合理，review 抓不到）；
@@ -583,10 +583,21 @@ async function run() {
   //   ③ 少了 `position: relative` → 伪元素挂到别的定位祖先上（桌面端这个按钮**不在** `.pagination`
   //      里，`.pagination button` 那族什么都给不到它）；
   //   ④ `:disabled` 不停掉 → 一个正在闪、却点不动的按钮（假可点击性，与上面那条同一契约）；
-  //   ⑤ reduced-motion 块里不豁免 → 本机实测就是 `reduce`，这套光晕**一次都看不见**，等于白做。
+  //   ⑤ reduced-motion 块里不豁免 → 本机实测就是 `reduce`，这套光晕**一次都看不见**，等于白做；
+  //   ⑥ 🔴 **扩散环必须不存在**（2026-10-06 新增，钉的是一次真实事故）：
+  //      它动的是 `box-shadow`，而 `box-shadow` 的插值**无法被提升为合成动画** ——
+  //      实测给它加 `will-change: opacity,transform` 或 `transform: translateZ(0)` 都**零效果**
+  //      ⇒ 只能每帧回主线程重算样式 + 重绘。隔离库 / 60 张卡 / 1000ms 稳态实测：
+  //      基线 Paint 122 次·27.75ms + StyleRecalc 61 次·11.15ms，**全部来自这一条**
+  //      （只停呼吸层则读数一点不变：122 次·26.15ms）；停掉扩散环后两项**双双归零**（6 轮零方差），
+  //      而「从首页/设置页进入照片流」动作窗口的 Paint 耗时从 64.15ms 掉到 18.9ms（−71%）。
+  //      用户反馈的「点首页返回卡顿」正是它叠在网格恢复那 25ms 上、把一帧顶过预算。
+  //      ⇒ 谁把它加回来（桌面端或网页端任一侧），这一节必须红。
+  //      ⚠️ 描述删除时**不要把关键帧名原样写进注释**：`cssRuleBody` 不剥注释，
+  //         下面「不许存在」的两条断言是直接对原文做正则的，注释会把自己喂饱（假绿）。
   const glowShared = cssRuleBody(
     cssSource,
-    '\\.browse-footer-actions \\.pagination-random::before,\\s*\\.browse-footer-actions \\.pagination-random::after',
+    '\\.browse-footer-actions \\.pagination-random::before',
   );
   for (const prop of [
     'position:\\s*absolute',
@@ -597,11 +608,22 @@ async function run() {
     assert.match(
       glowShared,
       new RegExp(prop),
-      '两层光晕的共享声明里缺 `' +
+      '呼吸光晕的声明里缺 `' +
         prop +
         '` —— 尤其 pointer-events 一缺就是「看着能点、点不动」',
     );
   }
+  assert.match(
+    glowShared,
+    /opacity:\s*0\.\d+/,
+    '呼吸层必须留**静态兜底**不透明度：动画被 reduced-motion 压掉后 fill-mode 默认 none 会回落到它，' +
+      '不给值就回落成 1 = 最亮峰值（「关掉动画反而比开着更刺眼」，实测过）',
+  );
+  assert.match(
+    glowShared,
+    /animation:\s*randomBtnGlowBreathe\b/,
+    '呼吸层的动画要写在这一条规则里（拆到别处就等于不生效）',
+  );
   const randomBtnRule = cssRuleBody(cssSource, '\\.browse-footer-actions \\.pagination-random');
   assert.match(
     randomBtnRule,
@@ -612,49 +634,57 @@ async function run() {
     !/animation\s*:/.test(randomBtnRule),
     '动画绝不能挂在按钮本体上：动画来源层压过普通声明，会静默吃掉 hover / :active / :disabled 三条 box-shadow',
   );
-  // 关键帧既要**定义**，也要真的被引用（「定义了没人用」= 静默失效，光晕根本不会动）。
-  for (const name of ['randomBtnGlowBreathe', 'randomBtnGlowPing']) {
-    for (const [label, source] of [
-      ['桌面端', cssSource],
-      ['网页端', webHtmlSource],
-    ]) {
-      assert.match(source, new RegExp('@keyframes ' + name + '\\b'), label + '要有关键帧 ' + name);
-      assert.match(
-        source,
-        new RegExp('animation:\\s*' + name + '\\b'),
-        label + '的 ' + name + ' 必须被真的引用（只定义不引用 = 光晕不会动）',
-      );
-    }
+  // 呼吸关键帧既要**定义**，也要真的被引用（「定义了没人用」= 静默失效，光晕根本不会动）；
+  // 同时钉死扩散环的**缺席**（⑥）。
+  for (const [label, source] of [
+    ['桌面端', cssSource],
+    ['网页端', webHtmlSource],
+  ]) {
+    assert.match(
+      source,
+      /@keyframes randomBtnGlowBreathe\b/,
+      label + '要有关键帧 randomBtnGlowBreathe',
+    );
+    assert.match(
+      source,
+      /animation:\s*randomBtnGlowBreathe\b/,
+      label + '的 randomBtnGlowBreathe 必须被真的引用（只定义不引用 = 光晕不会动）',
+    );
+    assert.ok(
+      !/@keyframes\s+randomBtnGlowPing\b/.test(source),
+      label +
+        ' 不得定义扩散环关键帧 randomBtnGlowPing：它动 box-shadow，无法被提升为合成动画，' +
+        '实测每秒 122 次重绘 / 27.75ms 全部来自它（停掉后归零）。要动效就换可合成属性，别加回来。',
+    );
+    assert.ok(
+      !/animation:\s*randomBtnGlowPing\b/.test(source),
+      label + ' 不得引用 randomBtnGlowPing（同一条理由；留着没人用也一样是隐患）',
+    );
   }
   assert.match(
     cssRuleBody(
       cssSource,
-      '\\.browse-footer-actions \\.pagination-random:disabled::before,\\s*\\.browse-footer-actions \\.pagination-random:disabled::after',
+      '\\.browse-footer-actions \\.pagination-random:disabled::before',
     ),
     /display:\s*none/,
-    '禁用态要**整个摘掉**光晕（压暗不行：还在闪就仍然是「这里能点」的暗示）',
+    '禁用态要**整个摘掉**呼吸光晕（压暗不行：还在闪就仍然是「这里能点」的暗示）',
   );
   // reduced-motion：两端各留一份豁免，且与桌面端逐条对应。
-  for (const [label, source, before, after] of [
-    [
-      '桌面端',
-      cssSource,
-      '\\.browse-footer-actions \\.pagination-random::before',
-      '\\.browse-footer-actions \\.pagination-random::after',
-    ],
-    ['网页端', webHtmlSource, '#randomPageBtn::before', '#randomPageBtn::after'],
+  for (const [label, source, sel] of [
+    ['桌面端', cssSource, '\\.browse-footer-actions \\.pagination-random::before'],
+    ['网页端', webHtmlSource, '#randomPageBtn::before'],
   ]) {
     const block = mediaBlock(source, '@media (prefers-reduced-motion: reduce)');
     assert.match(
       block,
-      new RegExp(before),
+      new RegExp(sel),
       label +
-        ' 的 reduced-motion 块里要豁免光晕（本机实测 reduce，不豁免这套动效一次都看不见）',
+        ' 的 reduced-motion 块里要豁免呼吸光晕（本机实测 reduce，不豁免这套动效一次都看不见）',
     );
     // 🔴 下面两条必须取**这条豁免规则自己的**声明体，不能拿整个 `@media` 块去 match：
     //    同一个块里还有加载圈那条 `animation-iteration-count: infinite !important`，
     //    拿整块匹配会**永远为真** —— 牙齿测试实测过（把豁免的 iteration-count 删掉照样全绿）。
-    const decl = cssRuleBody(block, before + ',\\s*' + after);
+    const decl = cssRuleBody(block, sel);
     assert.match(
       decl,
       /animation-duration:\s*2\.6s\s*!important/,
@@ -668,7 +698,7 @@ async function run() {
   }
   // 网页端特有的两点：按钮是**药丸形**（继承 `.pagination button` 的 `border-radius: 999px`），
   // 圆角只能靠 inherit（写死会在药丸两端露出方角光晕）；且那份基础样式没有 `position`。
-  const webGlowShared = cssRuleBody(webHtmlSource, '#randomPageBtn::before,\\s*#randomPageBtn::after');
+  const webGlowShared = cssRuleBody(webHtmlSource, "#randomPageBtn::before");
   assert.match(webGlowShared, /pointer-events:\s*none/, '网页端伪元素同样要 pointer-events: none');
   assert.match(webGlowShared, /border-radius:\s*inherit/, '网页端药丸形按钮的圆角只能靠 inherit');
   const webRandomBtnRule = cssRuleBody(webHtmlSource, '#randomPageBtn');
@@ -771,6 +801,387 @@ async function run() {
       label +
         ' 的禁用态要显式 `background-image: none` —— 那句 `box-shadow: none` 管不到表面光晕 A，' +
         '漏了禁用按钮上还浮着一层发光（假可点击性）',
+    );
+  }
+
+  // ── 原比例瀑布流里「没有缩略图」时占位必须是正方形（2026-10-05）──────────────
+  // 🔴 为什么单独守：瀑布流是 `columns` 布局，卡片**没有** CSS 给死的高度。有缩略图时高度来自
+  //    `<img>` 的 width/height 内在尺寸（`markLoaded` 还照 naturalWidth 补写一次 aspect-ratio），
+  //    没有缩略图时占位块自身没有基准尺寸（它是 `height: 100%` 的空盒子）⇒ 卡片塌成一条
+  //    比文字还矮的横杠、整列跟着错位。
+  //    而「统一高度」那档因为 `.grid:not([data-use-media-ratio='1']) .photo-card` 给了死比例，
+  //    **完全正常** —— 于是这个缺陷只在瀑布流上现身，很容易被「换个布局看看，没事啊」带过去。
+  //    塌陷有两条互相独立的路径，都得钉：
+  //      ① 构建期就知道没有缩略图（`has_thumbnail` 为假）→ `buildSinglePhotoCardHtml`；
+  //      ② 构建期有、跑起来才 404（缩略图文件被删/损坏）→ 只有真实 error 事件驱动得到。
+  //    第一条喂真函数看真 HTML，第二条用 error 事件打真的 `bindGridImageProgress`。
+  const SQUARE_PLACEHOLDER_CLASS = 'photo-card--square-placeholder';
+
+  /** 从整段网格 HTML 里取出某张卡片附近的片段（按 data-photo-id 定位，容忍属性顺序变化）。 */
+  function cardWindow(html, id) {
+    const i = html.indexOf('data-photo-id="' + id + '"');
+    assert.ok(i >= 0, '夹具自证：HTML 里应能找到 data-photo-id=' + id + ' 那张卡片');
+    return html.slice(Math.max(0, i - 160), i + 160);
+  }
+
+  /** 喂真实的 `renderPhotoGrid`，返回渲染出的 HTML 与挂在容器上的读数。 */
+  function renderOnePhoto(photo, useMediaRatio) {
+    const el = { innerHTML: '', dataset: {}, querySelectorAll: () => [] };
+    gridUI.renderPhotoGrid({
+      dom: { photoGrid: el },
+      photos: [photo],
+      useMediaRatio,
+      mediaFilter: 'all',
+      escapeHtml: (s) => String(s),
+      escapeAttr: (s) => String(s),
+      truncate: (s) => String(s),
+      formatDateTime: () => '',
+      formatNumber: (n) => String(n),
+      normalizePath: (p) => p,
+      subfolderSummaries: [],
+      onApplyCardSize() {},
+    });
+    return el;
+  }
+
+  /**
+   * 驱动真实的 `bindGridImageProgress` 走它自己那条失败分支 —— 靠 `img.complete` +
+   * `naturalWidth` 触发，不手抄 `markFailed` 的语句（抄一遍就测不到它）。
+   * `inserted` 接住它 `insertBefore` 进来的兜底占位节点，好让本回归能直接比对这个节点
+   * 与网页端同一条路径产出的节点（「统一占位图」的跨端对账就靠它）。
+   */
+  function driveThumbEvent(opts) {
+    const classes = new Set();
+    let removed = false;
+    let inserted = null;
+    const card = {
+      classList: {
+        add: (c) => classes.add(c),
+        contains: (c) => classes.has(c),
+      },
+      querySelector: () => null,
+      insertBefore: (node) => {
+        inserted = node;
+      },
+      firstChild: null,
+      style: {},
+    };
+    const img = {
+      dataset: {},
+      classList: { add() {}, remove() {} },
+      closest: () => card,
+      remove() {
+        removed = true;
+      },
+      addEventListener() {},
+      complete: true,
+      naturalWidth: opts.naturalWidth,
+      naturalHeight: opts.naturalHeight,
+    };
+    gridUI.bindGridImageProgress({
+      dataset: { useMediaRatio: opts.masonry ? '1' : '0' },
+      querySelectorAll: () => [img],
+    });
+    return { classes, removed, card, inserted };
+  }
+
+  {
+    const noThumb = {
+      id: 7717,
+      file_name: 'no-thumb.NEF',
+      file_type: 'NEF',
+      has_thumbnail: 0,
+      date_taken: '2026-01-01 00:00:00',
+    };
+    const masonry = renderOnePhoto(noThumb, true);
+    assert.equal(masonry.dataset.useMediaRatio, '1', '夹具自证：这一跑确实是原比例瀑布流');
+    // 夹具自证要盯着真正的标记，不能盯着类名 —— `photo-card--square-placeholder` 里也含
+    // "placeholder" 这个词，用 `/placeholder/` 去验「走的是占位分支」会**因为被断言的东西
+    // 本身而恒真**（牙齿测试实测：把兜底类删掉，这条自证反而先红，说明它验的是别的东西）。
+    assert.ok(
+      !/class="loading grid-thumb"/.test(masonry.innerHTML),
+      '夹具自证：这张卡片确实没有 <img class="loading grid-thumb">（走的是占位分支）',
+    );
+    assert.match(
+      masonry.innerHTML,
+      /<div class="placeholder[ "]/,
+      '夹具自证：占位块本身要真的渲染出来',
+    );
+    assert.match(
+      cardWindow(masonry.innerHTML, 7717),
+      new RegExp(SQUARE_PLACEHOLDER_CLASS),
+      '瀑布流 + 没有缩略图 → 卡片必须是正方形占位（占位块没有内在尺寸，不给比例就塌成一条）',
+    );
+
+    // 反面一：有缩略图时高度来自图片自身，别把这条兜底乱扣上去。
+    const withThumb = renderOnePhoto(Object.assign({}, noThumb, { has_thumbnail: 1 }), true);
+    assert.ok(
+      !new RegExp(SQUARE_PLACEHOLDER_CLASS).test(cardWindow(withThumb.innerHTML, 7717)),
+      '有缩略图的卡片不该被扣上正方形占位类（那会把用户的原比例图裁成方的）',
+    );
+    // 反面二：统一高度那档由 CSS 给死比例，同样不需要这个类。
+    const uniform = renderOnePhoto(noThumb, false);
+    assert.equal(uniform.dataset.useMediaRatio, '0', '夹具自证：这一跑是统一高度');
+    assert.ok(
+      !new RegExp(SQUARE_PLACEHOLDER_CLASS).test(cardWindow(uniform.innerHTML, 7717)),
+      '统一高度那档由 .grid:not([data-use-media-ratio="1"]) 给死比例，不该再挂这个类',
+    );
+  }
+
+  {
+    // ② 运行期路径：缩略图文件缺失（驱动函数见上面的 `driveThumbEvent`）。
+    const failedMasonry = driveThumbEvent({ masonry: true, naturalWidth: 0, naturalHeight: 0 });
+    assert.equal(failedMasonry.removed, true, '夹具自证：确实走了「加载失败」那条路（图被摘掉）');
+    assert.ok(
+      failedMasonry.classes.has(SQUARE_PLACEHOLDER_CLASS),
+      '瀑布流里缩略图 404 时卡片必须退回正方形占位 —— 图一摘就没了唯一的定高依据',
+    );
+
+    const failedUniform = driveThumbEvent({ masonry: false, naturalWidth: 0, naturalHeight: 0 });
+    assert.equal(failedUniform.removed, true, '夹具自证：统一高度这跑同样走了失败路径');
+    assert.ok(
+      !failedUniform.classes.has(SQUARE_PLACEHOLDER_CLASS),
+      '统一高度那档有 CSS 死比例，失败时不需要这个类',
+    );
+
+    // 正向对照：图加载成功时高度来自图片本身，正方形兜底与它互斥（两者都不该同时发生）。
+    const loaded = driveThumbEvent({ masonry: true, naturalWidth: 1600, naturalHeight: 1200 });
+    assert.equal(loaded.removed, false, '夹具自证：这一跑走的是加载成功那条路');
+    assert.equal(
+      loaded.card.style.aspectRatio,
+      '1600 / 1200',
+      '加载成功时瀑布流卡片的高度来自图片内在尺寸 —— 正方形兜底正是补这条的缺席',
+    );
+    assert.ok(
+      !loaded.classes.has(SQUARE_PLACEHOLDER_CLASS),
+      '加载成功不该被扣上正方形占位类',
+    );
+  }
+
+  // 这条类只是「换个形状」，形状本身写在 CSS 里，所以两端都要求那条规则真的在。
+  for (const [label, source] of [
+    ['桌面端 styles.css', cssSource],
+    ['网页端 index.html', webHtmlSource],
+  ]) {
+    assert.match(
+      cssRuleBody(source, '\\.grid\\.grid--masonry \\.' + SQUARE_PLACEHOLDER_CLASS),
+      /aspect-ratio:\s*1\s*\/\s*1/,
+      label + ' 要有 `.grid.grid--masonry .' + SQUARE_PLACEHOLDER_CLASS + '{ aspect-ratio: 1 / 1 }`',
+    );
+  }
+  // 网页端也有两条路：构建期没有缩略图（`has_thumbnail = 0`）现在直接出占位图，不再去请求那个
+  // 必然 404 的 `/thumb`；但「构建期有、跑起来文件没了」仍只有 markFailed 抓得到，所以那条
+  // 更要钉住：漏了它网页端就只剩塌陷。
+  assert.match(
+    extractFunction(read('src/web/js/app.js'), 'bindGridImageProgress'),
+    new RegExp("classList\\.add\\('" + SQUARE_PLACEHOLDER_CLASS + "'\\)"),
+    '网页端 bindGridImageProgress 的失败分支也要挂正方形占位类',
+  );
+  assert.match(
+    extractFunction(read('src/web/js/app.js'), 'bindGridImageProgress'),
+    /closest\(['"]\.grid--masonry['"]\)/,
+    '网页端的判断必须用 closest —— `.grid--masonry` 是 #photoGrid 的**子节点**，挂在 root 上那层没有这个类',
+  );
+
+  // ── 「没有缩略图」的统一占位图（2026-10-05）────────────────────────────────────
+  // 🔴 为什么单独守：同一个「没图」在两端各有两条入口（构建期 `has_thumbnail = 0` / 运行期
+  //    缩略图 404），合起来是四张脸。以前桌面端构建期是「大号扩展名 + 文件名」纯文本（文件名
+  //    还和卡片底部的 `.photo-info` 重复一遍），桌面端 404 是另一个图标 + 报错，网页端 404 是
+  //    ⚠️ emoji —— 用户看到的是「同一件事长得不一样」。现在要求：**四条路共用一份图形**
+  //    （中性底 + 图片字形 + 一行小字），所以这里的判据就是「两端**真代码**产出的标记逐字
+  //    相等」—— 谁偷偷只改一端，这条立刻红。
+  const MEDIA_PLACEHOLDER_CLASS = 'placeholder--media';
+
+  /** 从一段卡片 HTML 里抠出占位块本身（块内没有嵌套 div，第一个 `</div>` 就是它的结尾）。 */
+  function placeholderBlock(html) {
+    const start = html.indexOf('<div class="placeholder ' + MEDIA_PLACEHOLDER_CLASS + '">');
+    assert.ok(start >= 0, '夹具自证：这段 HTML 里应能抠到统一占位块');
+    return html.slice(start, html.indexOf('</div>', start) + 6);
+  }
+
+  /** 网页端卡片不带 `data-photo-id`（它靠 onclick 下标定位），只能按类名找第一张。 */
+  function webCardWindow(html) {
+    const i = html.indexOf('<div class="photo-card');
+    assert.ok(i >= 0, '夹具自证：网页端 HTML 里应有照片卡片');
+    return html.slice(i, i + 220);
+  }
+
+  /**
+   * 把 web app.js 里**占位图那段真代码**（常量 + 生成函数 + 谓词 + 兜底函数）连同真的
+   * `renderPhotoGrid` 一起放进 vm 跑。邻居们只替身化 `renderPhotoGrid` 真正用到的那几个，
+   * 免得替身本身成了被测对象。
+   */
+  function loadWebCardBuilder() {
+    const src = read('src/web/js/app.js');
+    const from = src.indexOf('var MEDIA_PLACEHOLDER_GLYPH');
+    const to = src.indexOf('function bindGridImageProgress');
+    assert.ok(
+      from >= 0 && to > from,
+      'src/web/js/app.js 里「占位图那段」的边界变了 —— 它应当从 `var MEDIA_PLACEHOLDER_GLYPH` ' +
+        '一直排到 `function bindGridImageProgress`',
+    );
+    const el = { innerHTML: '' };
+    const sandbox = {
+      document: { createElement: () => ({ className: '', innerHTML: '' }) },
+      state: {
+        currentView: 'photos',
+        currentSubfolderCovers: [],
+        mediaFilter: 'all',
+        cardAspectMode: 'masonry',
+      },
+      $: () => el,
+      escapeHtml: (s) => String(s),
+      escapeAttr: (s) => String(s),
+      formatNumber: (n) => String(n),
+      formatDateTime: () => '',
+      folderDisplayBasename: (p) => String(p).split(/[\\/]/).pop(),
+      isWebVideoFileType: () => false,
+      normalizeCardAspectMode: (v) => (v === 'masonry' ? 'masonry' : 'square'),
+      getUniformAspectCss: () => '1 / 1',
+      getMediaAspectRatioDims: (p) =>
+        p && p.width && p.height
+          ? { w: p.width, h: p.height, ratio: p.width + ' / ' + p.height }
+          : null,
+      bindGridImageProgress: () => {},
+      applyCardSize: () => {},
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(src.slice(from, to) + '\n' + extractFunction(src, 'renderPhotoGrid'), sandbox, {
+      filename: 'web-render-photo-grid.js',
+    });
+    return { sandbox, el };
+  }
+
+  /** 喂真的网页端 `renderPhotoGrid` 渲一张卡片，返回 HTML。 */
+  function renderWebCard(photo, aspectMode) {
+    const { sandbox, el } = loadWebCardBuilder();
+    sandbox.state.cardAspectMode = aspectMode;
+    el.innerHTML = '';
+    sandbox.renderPhotoGrid([photo]);
+    return el.innerHTML;
+  }
+
+  {
+    const web = loadWebCardBuilder().sandbox;
+
+    // ── ① 跨端对账：同一个「没有缩略图」的占位块，两端真代码必须产出逐字相同的标记 ──
+    const noThumb = {
+      id: 8811,
+      file_name: 'no-thumb.NEF',
+      file_type: 'NEF',
+      has_thumbnail: 0,
+      date_taken: '',
+    };
+    const desktopBlock = placeholderBlock(renderOnePhoto(noThumb, true).innerHTML);
+    assert.equal(
+      desktopBlock,
+      web.mediaPlaceholderHtml('NEF'),
+      '桌面端与网页端「没有缩略图」的占位块必须逐字相同 —— 这就是「统一占位图」的本体：' +
+        '一端改了图形或类名而另一端没跟，用户就会在同一套界面里看到两种占位',
+    );
+    assert.match(desktopBlock, /class="placeholder-icon"/, '占位块里要有图片字形（用户要的「图像形式」）');
+    assert.ok(
+      !/<img/.test(desktopBlock),
+      '占位块不能依赖任何要加载的东西（图像形式指的是矢量字形）—— 加载失败的那张卡片可没有图可加载',
+    );
+
+    // ── ② 运行期那条路：两端兜底节点同样逐字相同 ──
+    const failed = driveThumbEvent({ masonry: true, naturalWidth: 0, naturalHeight: 0 });
+    assert.ok(failed.inserted, '夹具自证：失败分支确实插入了兜底占位节点');
+    assert.equal(
+      failed.inserted.className,
+      'placeholder ' + MEDIA_PLACEHOLDER_CLASS,
+      '兜底占位与构建期占位要同类名（`.placeholder-fallback` 已废 —— 别再长出第三种形态）',
+    );
+    const webFallback = web.createGridFallbackPlaceholder({
+      classList: { contains: () => false },
+    });
+    assert.equal(
+      failed.inserted.innerHTML,
+      webFallback.innerHTML,
+      '「缩略图加载失败」那条兜底路径两端也必须逐字相同',
+    );
+
+    // ── ③ 网页端的「有没有缩略图」判据 ──
+    assert.equal(web.hasUsableThumbnail({ has_thumbnail: 0 }), false, '明确写着 0 才算「没有缩略图」');
+    assert.equal(web.hasUsableThumbnail({ has_thumbnail: '0' }), false, '字符串 "0" 也算');
+    assert.equal(web.hasUsableThumbnail({ has_thumbnail: 1 }), true, '有缩略图');
+    assert.equal(
+      web.hasUsableThumbnail({}),
+      true,
+      '🔴 字段**缺失**要按「有」处理 —— 个别接口不带 has_thumbnail（人脸页等），' +
+        '把它当成「没有」会让有图的卡片整片退化成占位图',
+    );
+
+    // ── ④ 网页端卡片构建：四条路都走真 `renderPhotoGrid` 看真 HTML ──
+    const webMasonry = renderWebCard(noThumb, 'masonry');
+    assert.ok(/class="grid grid--masonry"/.test(webMasonry), '夹具自证：这一跑确实是瀑布流');
+    assert.match(
+      webCardWindow(webMasonry),
+      new RegExp(SQUARE_PLACEHOLDER_CLASS),
+      '网页端瀑布流 + 没有缩略图 → 同样按正方形占位（不然卡片塌成一条）',
+    );
+    assert.match(
+      webMasonry,
+      /<div class="placeholder placeholder--media">/,
+      '网页端也要渲染统一占位图',
+    );
+    assert.ok(
+      !/class="loading grid-thumb"/.test(webMasonry),
+      '🔴 明知没有缩略图就别再请求 `/thumb` —— 那是必然 404，白跑一趟还占连接',
+    );
+
+    const webUniform = renderWebCard(noThumb, 'square');
+    assert.ok(!/grid--masonry/.test(webUniform), '夹具自证：这一跑是统一高度');
+    assert.match(webUniform, /placeholder--media/, '统一高度那档没有缩略图同样出占位图');
+    assert.ok(
+      !new RegExp(SQUARE_PLACEHOLDER_CLASS).test(webCardWindow(webUniform)),
+      '统一高度那档由 CSS 给死比例，不该挂正方形占位类',
+    );
+
+    const webWithThumb = renderWebCard(
+      Object.assign({}, noThumb, { has_thumbnail: 1, width: 1600, height: 1067 }),
+      'masonry',
+    );
+    assert.match(webWithThumb, /class="loading grid-thumb"/, '有缩略图时必须照旧渲染 <img>');
+    assert.ok(!/placeholder--media/.test(webWithThumb), '有缩略图不该再出占位图');
+
+    const webMissing = renderWebCard(
+      Object.assign({}, noThumb, { has_thumbnail: undefined }),
+      'masonry',
+    );
+    assert.match(
+      webMissing,
+      /class="loading grid-thumb"/,
+      '🔴 `has_thumbnail` 缺失时仍按「有」处理 —— 不能把老接口的卡片擅自改成占位图',
+    );
+  }
+
+  // ── ⑤ 两端都得有这套样式（形状写在 CSS 里，标记一致还不够）──
+  for (const [label, source] of [
+    ['桌面端 styles.css', cssSource],
+    ['网页端 index.html', webHtmlSource],
+  ]) {
+    const base = cssRuleBody(source, '\\.photo-card \\.placeholder');
+    assert.match(base, /width:\s*100%/, label + ' 的占位块要有基准宽度（不然瀑布流里没有尺寸）');
+    assert.match(base, /height:\s*100%/, label + ' 的占位块要有基准高度');
+    assert.match(
+      cssRuleBody(source, '\\.photo-card \\.placeholder\\.placeholder--media'),
+      /radial-gradient/,
+      label + ' 的统一占位底（强调色晕影）不能少 —— 两端观感必须一致',
+    );
+    const icon = cssRuleBody(source, '\\.placeholder-icon');
+    assert.match(icon, /width:\s*min\(/, label + ' 的占位字形要跟着卡片缩放');
+    assert.match(
+      icon,
+      /aspect-ratio:\s*1\s*\/\s*1/,
+      label + ' 的占位字形要按 1:1 —— 不然窄卡片上会被压扁',
+    );
+    assert.match(
+      cssRuleBody(source, '\\.placeholder-icon rect,\\s*\\.placeholder-icon polyline'),
+      /stroke-width:\s*1\.5/,
+      label +
+        ' 的描边粗细要由 CSS 给（图形内联的原因就是这条：`<use>` 里 symbol 自带的 stroke-width 盖不掉）',
     );
   }
 

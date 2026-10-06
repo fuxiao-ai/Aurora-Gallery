@@ -90,6 +90,34 @@ function terminate() {
   for (const slot of old) retire(slot, error);
 }
 
+/**
+ * 让池里**所有活着的** worker 清掉自己的只读缓存（目前只有 `getPhotos` 的 total 记忆化，
+ * 见 `src/photos-total-cache.js`）。
+ *
+ * 调用时机：**改过 photos 行数的动作之后**（扫描收尾 / 移入回收站 / 删除记录 / 移除目录 /
+ * 失效记录清理 / 收藏切换）。缓存本身有 5 s TTL 兜底，所以这里漏掉一处不会错到天上去，
+ * 只是那一路会多陈旧最多 5 s。
+ *
+ * 三条刻意的性质：
+ *   - **同步、不返回 Promise**：这是「告诉它一声」，没有回执，调用方不该为它 await
+ *     （await 会把一个纯通知变成前台操作的一个等待点）。
+ *   - **没起过的槽位直接跳过**：`slot.worker === null` 表示这个槽还没跑过任何查询，
+ *     进程里也就没有缓存可清；等它将来第一次 `run()` 时缓存本来就是空的。
+ *   - **在途查询不会让清空失效**：worker 是单线程 —— 排在前面的查询先跑完、响应先发回，
+ *     然后才轮到这条复位消息 ⇒ 那条查询写下的缓存条目**一定在它之后**被清掉。
+ *     所以这里**不需要**版本号 / 代际（也就少了一份「可能忘」的清单）。
+ */
+function invalidateReadCaches() {
+  for (const slot of workers) {
+    if (!slot.worker || slot.retiring) continue;
+    try {
+      slot.worker.postMessage({ op: '__cache_reset' });
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
 function run(dbPath, op, options, control = {}) {
   return new Promise((resolve, reject) => {
     if (control.signal && control.signal.aborted) {
@@ -134,4 +162,4 @@ function run(dbPath, op, options, control = {}) {
   });
 }
 
-module.exports = { run, terminate };
+module.exports = { run, terminate, invalidateReadCaches };

@@ -90,6 +90,9 @@
     rescanFolder: function (rootPath) {
       return call('rescanFolder', rootPath);
     },
+    rescanAllFolders: function () {
+      return call('rescanAllFolders');
+    },
     removeFolder: function (rootPath) {
       return call('removeFolder', rootPath);
     },
@@ -236,6 +239,10 @@
     },
     notifyBrowseUiReady: function () {
       return invoke('notifyBrowseUiReady');
+    },
+    /** 启动阶段上报（只记指标）：名字白名单 = 主进程 `RENDERER_STARTUP_STAGES` */
+    notifyStartupStage: function (stage) {
+      return invoke('notifyStartupStage', stage);
     },
     notifyPreviewPlaybackActive: function (active) {
       return invoke('notifyPreviewPlaybackActive', active === true);

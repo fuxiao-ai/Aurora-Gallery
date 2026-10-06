@@ -1,5 +1,38 @@
 (function (global) {
-  /** 预计剩余时间文案：仅天、小时、分（不足 1 分钟按 1 分钟计） */
+  /**
+   * 取词条。优先走 i18n，**取不到才回落到兜底中文**。
+   *
+   * ⚠️ 必须判 `s !== key`：i18n.js 的 `t()` 在词条缺失时返回 **key 本身**
+   * （`if (v == null) return key;`），直接 return 会让界面显示 `task.thumbCount`
+   * 这种字符串 —— 比露中文更难排查。
+   */
+  function tui(key, zhFallback) {
+    var I = global.I18n;
+    if (I && typeof I.t === 'function') {
+      var s = I.t(key);
+      if (s != null && s !== key) return s;
+    }
+    return zhFallback;
+  }
+
+  /** 词条 + `{name}` 占位符替换。 */
+  function tuiFmt(key, map, zhFallback) {
+    var s = tui(key, zhFallback);
+    if (!map) return s;
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) {
+        s = s.split('{' + k + '}').join(String(map[k]));
+      }
+    }
+    return s;
+  }
+
+  /**
+   * 预计剩余时间文案：仅天、小时、分（不足 1 分钟按 1 分钟计）。
+   *
+   * 四个面板（扫描 / 缩略图补全 / 无效清理 / 查重）共用这一处 —— 所以这里的
+   * 双语化一次就让四条路径都跟上；改它等于改四个面板的观感。
+   */
   function formatEtaLine(sec) {
     if (sec == null || sec === '') return '';
     var n = Number(sec);
@@ -11,11 +44,11 @@
     var h = Math.floor(rem / 60);
     var mi = rem % 60;
     var parts = [];
-    if (d > 0) parts.push(d + ' 天');
-    if (h > 0) parts.push(h + ' 小时');
-    if (mi > 0) parts.push(mi + ' 分');
-    if (parts.length === 0) parts.push('1 分');
-    return '预计剩余约 ' + parts.join(' ');
+    if (d > 0) parts.push(tuiFmt('task.etaDays', { n: d }, d + ' 天'));
+    if (h > 0) parts.push(tuiFmt('task.etaHours', { n: h }, h + ' 小时'));
+    if (mi > 0) parts.push(tuiFmt('task.etaMinutes', { n: mi }, mi + ' 分'));
+    if (parts.length === 0) parts.push(tuiFmt('task.etaMinutes', { n: 1 }, '1 分'));
+    return tuiFmt('task.etaPrefix', { parts: parts.join(' ') }, '预计剩余约 ' + parts.join(' '));
   }
 
   function doScanFolder(options) {
@@ -404,16 +437,110 @@
     }
 
     if (showThumb) {
-      var tpct = thumbs.total > 0 ? Math.round((thumbs.done / thumbs.total) * 100) : 0;
       var tfill = document.getElementById('thumbProgressFill');
       var tcount = document.getElementById('thumbProgressCount');
+      var tdetail = document.getElementById('thumbProgressDetail');
       var tfile = document.getElementById('thumbProgressFile');
-      if (tfill) tfill.style.width = tpct + '%';
-      if (tcount)
-        tcount.textContent = formatNumber(thumbs.done) + ' / ' + formatNumber(thumbs.total);
-      if (tfile) tfile.textContent = thumbs.currentFile || '';
       var tEta = document.getElementById('thumbProgressEta');
-      if (tEta) tEta.textContent = formatEtaLine(thumbs.etaSeconds);
+      // 🔴 主口径 = 「已处理行数 / 候选集规模」，**不是**预览图张数。
+      //    补全按 id 倒序走（最新入库优先），而缺缩略图的行几乎全压在**低位老照片**上
+      //    （本机真实库：id 1,900,000~1,999,999 只有 10 行缺，1,600,000~1,899,999 才是那 33.9 万）
+      //    ⇒ 从 MAX(id) 往下走的头 2 万行里，缺预览图的是 **0** 行。
+      //    曾经拿预览图当分子 / 分母，于是进度条在 0% 上趴了十几分钟一动不动，
+      //    用户看到的是「任务卡住了」。现在分子是「已处理行数」，与任务真正的工作量对齐。
+      //    三态：'counting' = 分母还在估（抽样，约 1 秒）；'failed' = 估失败；'ready' = 可画百分比。
+      var tDenom = thumbs.total; // 候选集规模的**估计值**（约数）
+      var tReady = thumbs.phase === 'ready' && tDenom > 0;
+      if (tReady) {
+        if (tfill) tfill.style.width = Math.min(100, Math.max(0, thumbs.pct || 0)) + '%';
+        if (tcount)
+          tcount.textContent = tuiFmt(
+            'task.thumbCount',
+            {
+              done: formatNumber(thumbs.done),
+              total: formatNumber(tDenom),
+              pct: thumbs.pct || 0,
+            },
+            formatNumber(thumbs.done) +
+              ' / 约 ' +
+              formatNumber(tDenom) +
+              '（' +
+              (thumbs.pct || 0) +
+              '%）',
+          );
+        if (tEta) tEta.textContent = formatEtaLine(thumbs.etaSeconds);
+      } else {
+        if (tfill) tfill.style.width = '0%';
+        if (tcount) {
+          tcount.textContent = tuiFmt(
+            thumbs.phase === 'counting' ? 'task.thumbCountCounting' : 'task.thumbCountNoTotal',
+            { done: formatNumber(thumbs.done) },
+            '已处理 ' +
+              formatNumber(thumbs.done) +
+              ' 张' +
+              (thumbs.phase === 'counting'
+                ? '，正在估计待补数量…'
+                : '（待补总数估计失败，暂不显示百分比与剩余时间）'),
+          );
+        }
+        if (tEta) tEta.textContent = '';
+      }
+      // 副行：让「不只是在做预览图」看得见 —— 否则用户只会看到一个 0。
+      // ⚠️ `thumbTotal` 是**实时剩余**（2026-10-06 改，原来是任务起始快照）⇒ `预览图 N`
+      //    与 `还缺 M` 同一时点、`N + M ≈ 起跑线`，单调下降。
+      // ⚠️ 判据仍是 `> 0`：0 既可能是「还没统计出来」也可能是「真的都补齐了」，
+      //    两种情况都**不写**这一段（比显示「还缺 0」与统计态混淆要好）。
+      if (tdetail) {
+        var detailParts = [
+          tuiFmt(
+            'task.thumbDetailThumbs',
+            { n: formatNumber(thumbs.thumbs) },
+            '预览图 ' + formatNumber(thumbs.thumbs),
+          ),
+        ];
+        if (thumbs.thumbTotal > 0)
+          detailParts.push(
+            tuiFmt(
+              'task.thumbDetailPending',
+              { n: formatNumber(thumbs.thumbTotal) },
+              '待补 ' + formatNumber(thumbs.thumbTotal),
+            ),
+          );
+        if (thumbs.exifFilled > 0)
+          detailParts.push(
+            tuiFmt(
+              'task.thumbDetailExif',
+              { n: formatNumber(thumbs.exifFilled) },
+              '拍摄信息 +' + formatNumber(thumbs.exifFilled),
+            ),
+          );
+        if (thumbs.dhashed > 0)
+          detailParts.push(
+            tuiFmt(
+              'task.thumbDetailDhash',
+              { n: formatNumber(thumbs.dhashed) },
+              '视觉指纹 +' + formatNumber(thumbs.dhashed),
+            ),
+          );
+        if (thumbs.hashed > 0)
+          detailParts.push(
+            tuiFmt(
+              'task.thumbDetailHash',
+              { n: formatNumber(thumbs.hashed) },
+              '查重指纹 +' + formatNumber(thumbs.hashed),
+            ),
+          );
+        if (thumbs.failed > 0)
+          detailParts.push(
+            tuiFmt(
+              'task.thumbDetailFailed',
+              { n: formatNumber(thumbs.failed) },
+              '失败 ' + formatNumber(thumbs.failed),
+            ),
+          );
+        tdetail.textContent = detailParts.join(' · ');
+      }
+      if (tfile) tfile.textContent = thumbs.currentFile || '';
     }
 
     if (showInvalidCleanup) {

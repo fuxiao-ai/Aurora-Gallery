@@ -52,6 +52,8 @@ function check(name, ok, detail) {
 }
 
 const PhotoInfoFields = require(path.join(ROOT, REGISTRY_REL));
+// 拍摄参数的列清单（`panel: true` 的那批 = 允许注册到面板的字段）
+const EXIF_META = require(path.join(ROOT, 'src/main/exif-meta.js'));
 
 // ---------------------------------------------------- 1. 注册表自身结构
 
@@ -59,7 +61,21 @@ const FIELDS = PhotoInfoFields.FIELDS;
 const FIELD_IDS = PhotoInfoFields.FIELD_IDS;
 const GROUP_IDS = PhotoInfoFields.GROUPS.map((g) => g.id);
 
-check('注册表至少 20 个字段（这一轮是 27 个，删字段要同步改断言）', FIELDS.length >= 20, String(FIELDS.length));
+check(
+  '注册表至少 20 个字段（2026-10-06 起是 49 个；删字段要同步改断言）',
+  FIELDS.length >= 20,
+  String(FIELDS.length),
+);
+check(
+  '🔴 拍摄参数共 58 列，其中 31 列可见（原有 10 + 本轮 21），27 列只入库不显示',
+  EXIF_META.EXIF_METADATA_COLUMNS.length === 58 &&
+    EXIF_META.EXIF_PANEL_KEYS.length === 31 &&
+    EXIF_META.EXIF_METADATA_COLUMNS.length - EXIF_META.EXIF_PANEL_KEYS.length === 27,
+  'columns=' +
+    EXIF_META.EXIF_METADATA_COLUMNS.length +
+    ' panel=' +
+    EXIF_META.EXIF_PANEL_KEYS.length,
+);
 check(
   '字段 id 唯一',
   new Set(FIELD_IDS).size === FIELD_IDS.length,
@@ -158,6 +174,9 @@ const FULL_INFO = {
   file_size: 5 * 1024 * 1024,
   date_taken: '2024-01-02T03:04:05',
   date_modified: '2024-01-03T04:05:06',
+  // 🔴 独立一列，与 date_taken 刻意不同值：面板上同时出现两条「拍摄时间」正是本意
+  //    （上面那条实际是文件落盘时间）。两者若被合并成一列，这里就分不出来了。
+  exif_date_taken: '2011-03-03T00:00:00',
   is_favorite: 1,
   has_thumbnail: 1,
   file_hash: 'a'.repeat(64),
@@ -171,6 +190,30 @@ const FULL_INFO = {
   shutter_speed: '1/250',
   gps_latitude: 31.230416,
   gps_longitude: 121.473701,
+  // ---- 2026-10-06 扩的 21 项 ----
+  // 🔴 每一条都必须给**非空值**：面板对空值走「整行隐藏」，漏一个就会让下面
+  //    「全选 + 全字段有值时，每一条都出现在面板里」那条断言少一行 —— 而那不是 bug，是夹具的问题。
+  orientation: 6,
+  exposure_bias: -0.7,
+  exposure_program: 3,
+  exposure_mode: 1,
+  metering_mode: 5,
+  light_source: 1,
+  flash: 0,
+  white_balance: 1,
+  scene_capture_type: 2,
+  max_aperture: 2.8,
+  focal_length_35mm: 35,
+  sub_sec_time: '12',
+  lens_spec: '24-70mm f/2.8',
+  lens_make: 'SONY',
+  body_serial: 'SN1234567',
+  lens_serial: 'LS7654321',
+  software: 'Adobe Lightroom 13.2',
+  color_space: 1,
+  image_datetime: '2024-01-02T03:04:05',
+  user_comment: '测试注释',
+  gps_altitude: 12.5,
   // AI 标签来自搜图索引库（跨库），由主进程只读通道注入 —— 不在 getPhotoInfo() 的 SQL 里
   ai_tags: ['丝袜', '制服'],
 };
@@ -299,6 +342,38 @@ check(
   })
     .map((f) => f.id + '→' + f.column)
     .join(','),
+);
+
+// 🔴 反向边界：58 个拍摄参数列里只有 31 列该进面板，剩下 27 列**只入库**。
+//    它们出现在 SQL 里不算「错」，但每打开一张照片就要多传一次界面用不上的 IPC 载荷 ——
+//    更要紧的是：一旦它们在 SQL 里，下一个人很容易顺手注册成面板字段，
+//    于是「同一件事两个读数」（`ShutterSpeedValue` 与 `ExposureTime`）就上了线。
+const exifOnlyCols = EXIF_META.EXIF_METADATA_COLUMNS.filter(
+  (col) => !EXIF_META.EXIF_PANEL_KEYS.some((k) => EXIF_META.EXIF_FIELD_COLUMNS[k] === col),
+);
+check(
+  '夹具自证：确实有 27 个只入库不显示的拍摄参数列',
+  exifOnlyCols.length === 27,
+  String(exifOnlyCols.length),
+);
+const leakedCols = exifOnlyCols.filter((c) => new RegExp('\\b' + c + '\\b').test(sql));
+check(
+  '🔴 只入库的 27 列不得出现在 getPhotoInfo 的 SQL 里（面板一个字节都用不上）',
+  leakedCols.length === 0,
+  leakedCols.join(','),
+);
+const fieldCols = new Set();
+for (const f of FIELDS) {
+  if (!f.column) continue;
+  (Array.isArray(f.column) ? f.column : [f.column]).forEach((c) => fieldCols.add(c));
+}
+const notRegistered = EXIF_META.EXIF_PANEL_KEYS.map((k) => EXIF_META.EXIF_FIELD_COLUMNS[k]).filter(
+  (c) => !fieldCols.has(c),
+);
+check(
+  '🔴 注册表里 panel:true 的每个拍摄参数列都真的注册成了面板字段（漏一个 = 采了也永远看不到）',
+  notRegistered.length === 0,
+  notRegistered.join(','),
 );
 // 没有 `column` 的字段 = 读数不走 `getPhotoInfo()`。目前只有两个，且各有明确理由：
 // `position` 来自预览页运行时状态；`ai_tags` 来自**搜图索引库**（跨库，主进程另开只读通道）。

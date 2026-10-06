@@ -102,6 +102,12 @@ class SemanticSearch {
               processed: 0,
               failed: 0,
               skipped: 0,
+              // 人脸索引的收尾「全局聚类」可能被 `AUTO_REGROUP_LIMIT` **跳过**（大库上必然
+              // 发生），此时人物划分只是索引期间的增量近似。这个标志是「跳过」唯一的对外通道，
+              // 界面靠它解释「为什么分组不是最终结果」。`null` = 未知（本轮还没跑完/没跑过），
+              // 与 `false`（跑了、跳过了）区分开 —— 否则上一轮的 `false` 会在新任务开始后
+              // 继续挂在状态里，界面一直显示一句过时的提示。
+              clustered: null,
             }),
       };
     // 索引 worker 正在跑：把只读请求托给它自己执行——它已经载好编码器与库连接，另起一个
@@ -233,6 +239,11 @@ class SemanticSearch {
           reject(new Error(this.state.error));
         } else {
           const result = outcome.result;
+          // ⚠️ 这份白名单决定了 worker 的返回值里**哪些字段能进入 `status()`**。漏一个
+          //    就等于「后端做了、界面永远看不到」——`clustered` 曾经就是这样被丢掉的：
+          //    `face-worker` 在超过 `AUTO_REGROUP_LIMIT` 时明确返回 `clustered:false`，
+          //    但白名单里没有它，于是「本次索引没做全局聚类」这件事对界面完全不可见。
+          //    新增可上报字段时，**先确认它在这里**。
           for (const key of [
             'ready',
             'indexed',
@@ -241,6 +252,7 @@ class SemanticSearch {
             'skipped',
             'faces',
             'people',
+            'clustered',
           ])
             if (result[key] !== undefined) this.state[key] = result[key];
           this.state.phase = preserveProgress ? previousPhase : 'complete';

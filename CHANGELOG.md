@@ -6,6 +6,20 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 ## [Unreleased]
 
+### Changed
+
+- **网页端设置页精简为 2 面板**（2026-10-06）：原先它是桌面端 8 面板的只读镜像，其中 6 个面板（媒体库 / 快捷键 / 媒体与存储 / 后台任务 / AI 与索引 / 网络与远程）以及其余面板里的「桌面端」取值行，对网页端**既改不了、也不影响自己怎么显示**，已整块删除。留下的 6 个控件全部落在浏览器本地偏好上 —— 每页显示、网格与比例、卡片尺寸、界面风格、强调色、背景基调。
+  - 面板 id / 名称仍必须 ∈ 桌面端 8 面板且**相对顺序一致**（`web-asset-route-regression` 第 ③ 组判据由「两端逐位相同」同步改为「子集 + 顺序单调」）；面板数 8 → 2。
+  - `/api/settings`（`buildWebSettingsSnapshot`）与 `/api/root-folders` 只读快照**接口保留**，网页端不再消费（已是零 fetch）。
+  - `settings-page.css` 同批清掉 4 组死样式（`readonly-tag` / `value` 族 / `keys` 族 / `empty`），避免 `css-reference-regression` 报孤儿；`sw.js` 缓存 v44 → v45。
+
+- **前台读的三条慢 SQL 与读池配置**（2026-10-06）：审计发现用户列的 6 类前台操作（导航标签 / 文件树 / 图片列表 / 搜图 / 搜图预选词 / 人脸列表）**全部走读池 worker**，主进程不执行同步聚合，实测点查 p99 = 0.12 ms —— 慢的是 SQL 自己。本次改四件事，全部有执行计划/命中率证据（`docs/foreground-operation-latency-audit.md` §8）：
+  - **读池 worker 补连接级 PRAGMA**：只读连接过去用 SQLite 默认（缓存 2 MB、mmap 关闭），现在与主进程同源（128 MB / 1 GB）。数值唯一真相源是 `src/database.js` 的 `DB_CACHE_SIZE_KB` / `DB_MMAP_SIZE_BYTES`，worker 里不许再出现字面量。
+  - **`getPhotos` 的 `total` 加记忆化**（新模块 `src/photos-total-cache.js`）：`COUNT(*)` 占该查询 42.3 ms 里的 38.2 ms，而它只随行数变化、翻页根本不变。缓存**键 = 生成的 WHERE 子句 + 绑定参数原样**（不按字段名手搓键 ⇒ 以后加筛选项自动带上），TTL 5 s 是**最坏陈旧度上界**，另有 7 处「改了行数」的动作会显式复位。缓存住在读池 worker 进程里 ⇒ 桌面端与网页端共用同一份。
+  - **`getFolderTree` 加覆盖索引 `(root_id, folder_path, date_taken)`**：原先 `GROUP BY folder_path` 免排序但不 covering，每行都要回表取 `date_taken` 给 MIN/MAX —— 真库单根（912,222 行）**>4 分钟未返回**；45,000 行夹具上 113.8 → 5.8 ms。
+  - **`getPhotos({rootId})` 加索引 `(root_id, date_taken)`**：默认排序键是 `date_taken`，而已有的 `idx_photos_root_date_mod` 建在 `date_modified` 上，优化器只能退到 `idx_photos_root` 再做临时排序（真库实测 **70,594 ms**）；同夹具上 112.2 → 1.5 ms。
+  - 两条大表 `CREATE INDEX` **只走 `deferred-index-worker`**（首窗后经写库队列串行），不进启动路径；二者都没有把工程里其余 14 条查询的执行计划带偏（夹具逐条对照）。守护 `read-latency-regression`（新增）+ `worker-pool-regression`（扩）。
+
 ### Planned
 
 按「最小更新」原则排期，详见 [`docs/RELEASE_PLAN.md`](docs/RELEASE_PLAN.md)；与 Lap 的功能对比见 [`docs/lap-comparison.md`](docs/lap-comparison.md)。

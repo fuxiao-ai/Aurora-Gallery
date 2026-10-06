@@ -5,6 +5,42 @@
   var GRID_DOM_CHUNK_THRESHOLD = 72;
   var GRID_DOM_CHUNK_SIZE = 48;
 
+  /**
+   * 「没有缩略图」的统一占位图（2026-10-05）。
+   *
+   * 同一件事有两条入口：① 构建期就知道没有（`has_thumbnail` 为假）；② 构建期有、缩略图
+   * 文件后来丢了（`markFailed` 里的 404）。以前两条各画各的 —— 前者是「大号扩展名 + 文件
+   * 名」的纯文本（文件名还和卡片底部的 `.photo-info` 重复一遍），后者是另一个图标加一句
+   * 报错；网页端更早还有第三副面孔（⚠️ emoji）。
+   *
+   * 现在两条共用**同一份图形**：中性底 + 一点强调色晕影 + 居中的图片字形 + 一行小字
+   * （没有缩略图时是扩展名，加载失败时是错误文案）。
+   *
+   * 图形**内联**而不是 `<use href="#icon-image">`：网页端没有那个 symbol，两端要长得一模
+   * 一样就得各自带全路径；而且内联才让描边粗细归 CSS 管 —— `<use>` 的 shadow tree 里
+   * symbol 自带的 `stroke-width` 会盖掉宿主继承下来的值，放大到 56px 会粗得发憨。
+   */
+  var MEDIA_PLACEHOLDER_GLYPH =
+    '<svg class="placeholder-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" focusable="false" aria-hidden="true">' +
+    '<rect x="3" y="3" width="18" height="18" rx="2.5" ry="2.5"/>' +
+    '<circle cx="8.6" cy="8.6" r="1.5"/>' +
+    '<polyline points="21 15 16 10 5 21"/>' +
+    '</svg>';
+
+  /** 占位图的「内芯」（图形 + 说明）。字符串版与 DOM 版共用，别各写一份。 */
+  function mediaPlaceholderInnerHtml(caption) {
+    return (
+      MEDIA_PLACEHOLDER_GLYPH +
+      (caption ? '<span class="placeholder-caption">' + caption + '</span>' : '')
+    );
+  }
+
+  function mediaPlaceholderHtml(caption) {
+    return (
+      '<div class="placeholder placeholder--media">' + mediaPlaceholderInnerHtml(caption) + '</div>'
+    );
+  }
+
   // ===== photo-grid-ui.js =====
   function generatePageNumbers(current, total) {
     if (total <= 7) {
@@ -211,8 +247,17 @@
     var favIcon = photo.is_favorite ? '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star-filled"/></svg>' : '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star"/></svg>';
     var cardStyle = 'animation-delay:' + delay + 'ms;';
     if (ratio && !useMediaRatio) cardStyle += 'aspect-ratio:' + ratio + ';';
+    // 原比例瀑布流里卡片是「按内容定高」的：有缩略图时靠 <img> 的内在尺寸撑开，
+    // 没有缩略图时占位块是纯文本、自身没有任何内在尺寸 —— 卡片会塌成一条比文字还矮的
+    // 横杠（列高再被 `columns` 继承，整列看着像空了）。所以这种卡片按正方形占位。
+    // 「统一高度」那档不用管：那边由 `.grid:not([data-use-media-ratio='1']) .photo-card`
+    // 统一给死 --photo-card-ratio，占位块 height:100% 自然铺满。
+    var cardClass = 'photo-card';
+    if (!thumbUrl && useMediaRatio) cardClass += ' photo-card--square-placeholder';
     var html =
-      '<div class="photo-card" data-photo-id="' +
+      '<div class="' +
+      cardClass +
+      '" data-photo-id="' +
       photo.id +
       '" data-preview-index="' +
       i +
@@ -237,12 +282,9 @@
         escapeHtml(photo.file_name) +
         '" loading="lazy" class="loading grid-thumb"' + imgWH + ' />';
     } else {
-      html +=
-        '<div class="placeholder"><div class="ext">' +
-        (photo.file_type || '?') +
-        '</div><div>' +
-        escapeHtml(truncate(photo.file_name, 20)) +
-        '</div></div>';
+      // 统一占位图（见 MEDIA_PLACEHOLDER_GLYPH）：以前的「扩展名 + 文件名」纯文本去掉了
+      // —— 文件名在卡片底部的 `.photo-info` 里本来就有一份。
+      html += mediaPlaceholderHtml(escapeHtml(photo.file_type || '?'));
     }
     html +=
       '<div class="photo-info"><div class="photo-name">' +
@@ -267,9 +309,8 @@
         '<span class="folder-cover-placeholder-msg">\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</span>';
       return placeholder;
     }
-    placeholder.className = 'placeholder placeholder-fallback';
-    placeholder.innerHTML =
-      '<svg class="placeholder-icon" aria-hidden="true"><use href="#icon-image"/></svg><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
+    placeholder.className = 'placeholder placeholder--media';
+    placeholder.innerHTML = mediaPlaceholderInnerHtml('\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25');
     return placeholder;
   }
 
@@ -304,6 +345,12 @@
           img.classList.remove('loading');
           if (!card) return;
           card.classList.add('thumb-failed');
+          // 缩略图「文件本身缺失/损坏」时走的是这条路（`has_thumbnail` 还是 1，图 404）。
+          // 图一摘掉，瀑布流卡片就失去了唯一的定高依据（见 markLoaded 里那句 aspectRatio），
+          // 同样退回正方形占位，否则塌成一条。
+          if (root && root.dataset && root.dataset.useMediaRatio === '1') {
+            card.classList.add('photo-card--square-placeholder');
+          }
           try {
             img.remove();
           } catch (e) {}

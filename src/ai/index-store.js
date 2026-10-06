@@ -63,17 +63,51 @@ class IndexStore {
     }
   }
 
-  batch(after) {
+  /**
+   * 待建索引的候选批次：**主键倒序（最新入库优先）**。
+   *
+   * 🔴 方向是刻意倒序的（2026-10-05，与缩略图补全 / 查重指纹 / 失效清理同一条策略）：
+   *    用户导入新照片之后立刻就想「搜得到」，而倒序让刚加入的那批先编码；
+   *    若用户中途停掉索引（百万库上很常见），留在后面的只是**最老**那批，而不是他刚导入的。
+   *    `beforeId` 是**排他上界**，调用方取「本批最后一行的 id」续接（倒序下那是**最小** id）。
+   */
+  batch(before) {
     return this.source
       .prepare(
         `SELECT p.id, p.file_path, p.file_name, p.file_type, p.file_size,
       COALESCE(p.date_modified, '') AS date_modified, p.thumbnail
       FROM photos p LEFT JOIN semantic.embeddings e ON e.photo_id = p.id
-      WHERE p.id > ? AND (e.photo_id IS NULL OR e.model != ? OR e.file_path != p.file_path
+      WHERE p.id < ? AND (e.photo_id IS NULL OR e.model != ? OR e.file_path != p.file_path
         OR e.file_size != p.file_size OR e.date_modified != COALESCE(p.date_modified, ''))
-      ORDER BY p.id LIMIT 16`,
+      ORDER BY p.id DESC LIMIT 16`,
       )
-      .all(after, MODEL_KEY);
+      .all(before, MODEL_KEY);
+  }
+
+  /**
+   * 倒序游标的起始值：`MAX(id) + 1`。
+   *
+   * 🔴 少了它，`batch(0)` 在倒序下等价于 `id < 0` —— **恒空**，索引任务会「秒完成」却一张不建，
+   *    而且不报任何错（正是本仓最怕的静默失效）。`id` 是 rowid 别名，MAX 是一次索引定位。
+   */
+  maxPhotoId() {
+    const row = this.source.prepare('SELECT MAX(id) AS hi FROM photos').get();
+    const hi = row && row.hi != null ? Number(row.hi) : 0;
+    return Number.isFinite(hi) && hi > 0 ? hi : 0;
+  }
+
+  /**
+   * 补标签游标的起始值：`MAX(photo_id) + 1`。
+   *
+   * ⚠️ **不能借用上面的 `maxPhotoId()`**：补标签游走在 `embeddings.photo_id` 这个域上，
+   * 而 `batch()` 游走在 `photos.id` 上。两者通常同域，但**照片被删而 embedding 行还在**时，
+   * `MAX(embeddings.photo_id)` 可能大于 `MAX(photos.id)` —— 借用会让那些行落在游标之外，
+   * 每一轮都被跳过（永远补不上标签，且没有任何报错）。
+   */
+  maxEmbeddingPhotoId() {
+    const row = this.index.prepare('SELECT MAX(photo_id) AS hi FROM embeddings').get();
+    const hi = row && row.hi != null ? Number(row.hi) : 0;
+    return Number.isFinite(hi) && hi > 0 ? hi : 0;
   }
 
   /**
@@ -96,15 +130,18 @@ class IndexStore {
    * 而标签算错是静默的（没有报错，只是标错了图）。
    *
    * `limit` 同时约束内存：一条向量 3072 字节，限 200 就只有约 600 KB。
+   *
+   * 顺序与 `batch()` 一致为**主键倒序**（词表换了、整表指纹过期的那一轮，新入库的也该先补上标签）；
+   * `beforeId` 是这个方向的**排他上界**，调用方用「本批最后一行的 photo_id」续接。
    */
-  batchPendingTags(afterId, limit, tagsKey) {
+  batchPendingTags(beforeId, limit, tagsKey) {
     return this.index
       .prepare(
         `SELECT photo_id, vector, generic_sim FROM embeddings
-       WHERE photo_id > ? AND (tags IS NULL OR tags_key IS NULL OR tags_key != ?)
-       ORDER BY photo_id LIMIT ?`,
+       WHERE photo_id < ? AND (tags IS NULL OR tags_key IS NULL OR tags_key != ?)
+       ORDER BY photo_id DESC LIMIT ?`,
       )
-      .all(afterId, tagsKey, limit);
+      .all(beforeId, tagsKey, limit);
   }
 
   /** 待补标签的**总数**。只做 COUNT，不读 BLOB。 */

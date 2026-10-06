@@ -49,18 +49,35 @@ async function run() {
     assert.equal(score(cat, pack(cat)), 1);
     assert.equal(score(cat, pack(lake)), 0);
     store = new IndexStore(sourcePath, path.join(directory, 'index.sqlite'));
-    assert.equal(store.batch(0).length, 4);
+    // 🔴 候选顺序是**主键倒序**（最新入库优先，2026-10-05 起）。游标是**排他上界**，
+    //    起点必须写成 `maxPhotoId() + 1`；写成 0 就等价于 `id < 0` —— 恒空，
+    //    索引任务会「秒完成」却一张不建，而且不报任何错（本仓最怕的静默失效）。
+    assert.equal(
+      store.batch(0).length,
+      0,
+      '倒序游标下 batch(0) 必须为空（这根弦就是「写 0 = 静默零索引」）',
+    );
+    assert.deepEqual(
+      store.batch(store.maxPhotoId() + 1).map((p) => p.id),
+      [4, 3, 2, 1],
+      '候选按 id 倒序返回（新导入的先编码）',
+    );
+    assert.equal(store.batch(store.maxPhotoId() + 1).length, 4);
     store.put(photo(1), cat);
     store.put(photo(2), lake);
     store.put(photo(3), cat);
     store.put(photo(4), cat);
     assert.equal(store.count(), 4);
-    assert.equal(store.batch(0).length, 0, 'unchanged photos are not re-encoded');
+    assert.equal(
+      store.batch(store.maxPhotoId() + 1).length,
+      0,
+      'unchanged photos are not re-encoded',
+    );
     source.prepare('UPDATE photos SET file_size = 200 WHERE id = 3').run();
     source.prepare('DELETE FROM photos WHERE id = 4').run();
     assert.equal(store.count(), 2, 'stale and deleted photos excluded');
     assert.deepEqual(
-      store.batch(0).map((p) => p.id),
+      store.batch(store.maxPhotoId() + 1).map((p) => p.id),
       [3],
     );
     // ---- 检索改为阈值制：不再是「取相似度最高的 60 条」，而是「取所有达到阈值的」----

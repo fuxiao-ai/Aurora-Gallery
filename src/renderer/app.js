@@ -324,10 +324,13 @@ var dom = {
   homePage: $('#homePage'),
   contentArea: $('#contentArea'),
   settingsAddBtn: $('#settingsAddBtn'),
+  settingsRescanAllBtn: $('#settingsRescanAllBtn'),
   settingsFolderList: $('#settingsFolderList'),
   settingAutoScan: $('#settingAutoScan'),
   settingAutoThumbBackfillOnStartup: $('#settingAutoThumbBackfillOnStartup'),
   settingAutoHashOnStartup: $('#settingAutoHashOnStartup'),
+  settingAutoSemanticIndexOnStartup: $('#settingAutoSemanticIndexOnStartup'),
+  settingAutoFaceIndexOnStartup: $('#settingAutoFaceIndexOnStartup'),
   settingLaunchDefaultPage: $('#settingLaunchDefaultPage'),
   settingTunnelEnabled: $('#settingTunnelEnabled'),
   thumbBackfillStatus: $('#thumbBackfillStatus'),
@@ -450,6 +453,10 @@ async function cycleUiThemePreset() {
     if (dom.settingAutoThumbBackfillOnStartup)
       dom.settingAutoThumbBackfillOnStartup.checked = !!r.autoThumbBackfillOnStartup;
     if (dom.settingAutoHashOnStartup) dom.settingAutoHashOnStartup.checked = !!r.autoHashOnStartup;
+    if (dom.settingAutoSemanticIndexOnStartup)
+      dom.settingAutoSemanticIndexOnStartup.checked = !!r.autoSemanticIndexOnStartup;
+    if (dom.settingAutoFaceIndexOnStartup)
+      dom.settingAutoFaceIndexOnStartup.checked = !!r.autoFaceIndexOnStartup;
   } catch (e) {
     appAlert('切换界面风格失败：' + (e && e.message ? e.message : String(e)));
   }
@@ -1566,23 +1573,49 @@ function applyStartupLandingPage() {
   showTabContent('folders');
 }
 
+/**
+ * 启动阶段上报 —— 只喂 `startup-performance.json`（主进程白名单见 `RENDERER_STARTUP_STAGES`）。
+ * 这段链路在补它之前**一个标记都没有**：主进程侧只有 `window.did-finish-load`，
+ * 渲染层只有末端的 `first-grid-paint`，中间 52 秒是黑盒（本机 122 万张库实测
+ * 7.3s → 59.0s），「首屏到底在等谁」无法从数据回答。见 CONTRACTS §启动首帧。
+ * 🔴 刻意吞掉异常：指标链路无论如何不该影响启动。
+ */
+function reportStartupStage(stage) {
+  try {
+    if (api && typeof api.invoke === 'function') api.invoke('notifyStartupStage', stage);
+  } catch (eStage) {
+    void eStage;
+  }
+}
+
 async function init() {
   try {
     var dgs = localStorage.getItem('dateGroupsSortOrder');
     if (dgs === 'asc' || dgs === 'desc') state.dateGroupsSortOrder = dgs;
   } catch (eDgs) {}
+  reportStartupStage('init.enter');
   await applyInitialSettingsSnapshot();
-  // 侧栏宽度必须在首屏前落位。本机大库上 loadRootFolders 要十几秒，排在它后面会让
-  // 「已保存宽度生效」和「可拖动」都晚十几秒才发生 —— 期间侧栏停在 CSS 默认 260px，
-  // 且用户去拖那根分隔条毫无反应。它只依赖静态 DOM（#sidebarResizer / #sidebar /
-  // .main-layout > .app-rail）与 localStorage，与 loadRootFolders 的产物无关，故安全前移。
+  reportStartupStage('settings.done');
+  // 侧栏宽度必须在首屏前落位。它只依赖静态 DOM（#sidebarResizer / #sidebar /
+  // .main-layout > .app-rail）与 localStorage，与 loadRootFolders 的产物无关，故提前到这里：
+  // 排在 loadRootFolders 之后会让「已保存宽度生效」和「可拖动」一起变晚，
+  // 期间侧栏停在 CSS 默认 260px，而用户去拖那根分隔条毫无反应。
   if (sidebarResizer && typeof sidebarResizer.initSidebarResizer === 'function')
     sidebarResizer.initSidebarResizer();
+  // 🔴 bindEvents() 必须排在 `await loadRootFolders` **之前**。
+  //    它绑的全是静态 DOM（顶栏 / 窗口控件 / rail / 设置页委托 / 事件委托），
+  //    与 root_folders 的产物无关，前移本身是安全的；而排在后面有一个实际后果：
+  //    那段时间（本机实测 load 完是 +7.3s，之后还要等一批只能靠 worker 的只读查询）
+  //    界面**完全点不动** —— 可 applyStartupLandingPage 的早退判据明确假设
+  //    「用户在等待期间点进设置 / 搜图 / 人物 / 重复是完全正常的操作」（见它上面的注释）。
+  //    容错逻辑只有在事件先绑好的前提下才有意义，绑晚了它就是空的。
+  bindEvents();
   // 先根目录 lite + 侧栏补全；全库统计 getStats 延后一帧，避免与首屏网格抢同一段主进程 DB 时间
   await loadRootFolders(true, true);
-  bindEvents();
+  reportStartupStage('rootFolders.done');
   await yieldToPaint();
   applyStartupLandingPage();
+  reportStartupStage('landing.done');
   // 启动过程中的中间态（落点判定、位置快照恢复）不该进历史 —— 落地完成后以当前位置
   // 重建栈，用户第一次点「后退」才有明确去处，而不是退回「启动时的默认落点」。
   // 之后 scheduleBrowseReload 的异步链还会再记一次同一位置，被 pushEntry 去重挡掉。
@@ -1729,6 +1762,9 @@ function bindEvents() {
   });
 
   dom.settingsAddBtn.addEventListener('click', handleAddFolder);
+  if (dom.settingsRescanAllBtn) {
+    dom.settingsRescanAllBtn.addEventListener('click', handleSettingsRescanAll);
+  }
 
   uiEvents.bindSettingsDelegates({
     onPersistWindowClose: function () {
@@ -3038,26 +3074,36 @@ async function loadRootFolders(silentRefresh, skipSidebarTree) {
         liteList = [];
       }
       if (liteList.length > 0) {
-        state.rootFolders = liteList;
-        // 管理页目录表已不展示数量/体积，无需再拉 photos 聚合；返回相册后由侧栏 loadRootFolders 补全
-        state.rootFoldersStatsPending = state.currentTab === 'settings' ? false : true;
-        if (state.currentTab === 'settings') {
+        var onSettingsPage = state.currentTab === 'settings';
+        // 🔴 这里**绝对不许**清空侧栏。原先这里有一句 `if (gate.isAlive() && skipTree) gate.render('')`，
+        //    想表达的是「设置页侧栏隐藏，顺手把侧栏内容清掉」，但两处判断都反了：
+        //      ① gate.isAlive() 本身已经蕴含 state.currentTab === 'folders'（见 createSidebarRequestGate），
+        //         所以这句能真正执行时，侧栏必然是**正在显示**的那一个；在设置页恒为 no-op。
+        //      ② 设置页用的是另一个节点（#settingsSidebar），本来也没有要清的东西。
+        //    后果：扫描期 loadRootFolders(true, true) 每 3s 被 startScanLiveRefresh 调一次，
+        //    而本分支 return 之前不会重绘 —— 于是「点重新扫描 / 添加目录开始扫描后切到『文件』页」
+        //    整棵树被抹成空白，一直空到扫描结束（2026-10-05 用户报「扫描中文件夹树消失」）。
+        // lite 行的 photo_count / folder_count / video_count 恒为 null，只够喂「设置页目录表」；
+        // 侧栏树要的是带统计的聚合行（下面 fetchRootFoldersSafe 的 force 拉取就是干这个的），
+        // 拿 lite 覆盖进去只会让树上的数字在聚合返回前短暂变 0，所以非设置页不写回。
+        if (onSettingsPage || !Array.isArray(state.rootFolders) || state.rootFolders.length === 0) {
+          // 管理页目录表已不展示数量/体积，无需再拉 photos 聚合；返回相册后由侧栏 loadRootFolders 补全
+          state.rootFolders = liteList;
+        }
+        state.rootFoldersStatsPending = !onSettingsPage;
+        if (onSettingsPage) {
           await renderSettingsFolderList({ skipFetch: true });
+          return;
         }
-        if (gate.isAlive() && skipTree) {
-          gate.render('');
-        }
-        if (state.currentTab !== 'settings') {
-          fetchRootFoldersSafe({ force: true })
-            .then(function () {
-              scheduleBrowseReload(function () {
-                if (isFolderSidebarTab(state.currentTab)) {
-                  patchSidebarFolderTreeCountsFromState();
-                }
-              });
-            })
-            .catch(function () {});
-        }
+        fetchRootFoldersSafe({ force: true })
+          .then(function () {
+            scheduleBrowseReload(function () {
+              if (isFolderSidebarTab(state.currentTab)) {
+                patchSidebarFolderTreeCountsFromState();
+              }
+            });
+          })
+          .catch(function () {});
         return;
       }
     }
@@ -3918,6 +3964,9 @@ async function renderSettingsFolderList(options) {
 
 function renderSettingsFolderListFromRows(folders) {
   state._settingsFolderListFp = fingerprintSettingsFolderRows(folders);
+  // 顺带校正「重新扫描全部」的忙碌态文案与置灰（切语言后 [data-i18n] 会被统一重画，
+  // 这里把忙碌态再盖回去；本函数在扫描期间每 3s 都会被实时刷新调到）。
+  syncSettingsRescanAllBtn();
   return settingsUi.renderSettingsFolderListFromRows(folders, {
     onRescan: handleSettingsRescan,
     onRemove: handleSettingsRemove,
@@ -3973,6 +4022,139 @@ async function handleSettingsRescan(rootPath) {
     }
     tickBackgroundTasksOnce();
   });
+  tickBackgroundTasksOnce();
+}
+
+/**
+ * 「重新扫描全部」按钮的忙碌态。
+ *
+ * 🔴 只按 `state.rescanAllBusy` 置灰，**不按目录数置灰**：判断「有没有目录」的事实只在库里，
+ * 渲染端手里只有 `state.rootFolders` 这份可能过时的缓存。拿它当闸门就会造出
+ * 「明明有目录、按钮却是灰的」这类假死（扫描刚登记了新根、这一拍还没同步到时它正是空的）。
+ * 空库交给主进程回答（点下去回来 `error: 'empty'`），按钮因此永远可点。
+ */
+function syncSettingsRescanAllBtn() {
+  var btn = dom.settingsRescanAllBtn;
+  if (!btn) return;
+  var busy = state.rescanAllBusy === true;
+  btn.disabled = busy;
+  btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+  // 忙碌态文案与常态不同。i18n 只在切语言时统一重画 [data-i18n]，这里在开始/结束各设一次；
+  // 万一扫描中途切了语言，结束那一次会把文案校正回来。
+  btn.textContent = busy
+    ? tUi('settings.rescanAllBusy', '正在重新扫描…')
+    : tUi('settings.rescanAll', '重新扫描全部');
+}
+
+/**
+ * 设置页「重新扫描全部」：一条命令重扫**所有**根目录。
+ *
+ * 与 `handleSettingsRescan` 同一套语义（只更新有变动的文件；本次未扫到的记录标记为失效并在
+ * 界面隐藏，不物理删除），区别只在「谁来枚举根目录」—— 这里交给主进程读库，
+ * 不传渲染端的 `state.rootFolders`（同上：可能过时的缓存）。
+ *
+ * 主进程把 N 个任务一次性排上，队列内部仍是**串行**（一次只扫一个目录、整段独占写库闸门），
+ * 用户能在全局任务条上看到「扫描队列 · 还有 N 项等待」。点「停止」走 cancelScan，
+ * 主进程的 `clearPendingScanQueue()` 会把还没开始的目录一并结算成 cancelled ⇒ 整批一起停。
+ */
+async function handleSettingsRescanAll() {
+  if (state.rescanAllBusy) return;
+  if (!(api && api.has('rescanAllFolders'))) return;
+  if (
+    !(await appConfirm(
+      tUi(
+        'settings.rescanAllConfirm',
+        '将依次重新遍历全部根目录，仅更新有变动的文件。\n' +
+          '未变化记录会保留；本次未扫描到的记录会标记为失效并在界面隐藏（不会立刻删除）。\n\n' +
+          '逐个目录串行执行，点「停止」会连同还没开始的目录一起取消。\n\n' +
+          '确定继续？',
+      ),
+      tUi('settings.rescanAll', '重新扫描全部'),
+    ))
+  ) {
+    return;
+  }
+
+  state.rescanAllBusy = true;
+  state.isScanning = true;
+  state.isScanPaused = false;
+  syncSettingsRescanAllBtn();
+  if (dom.scanProgress) dom.scanProgress.style.display = 'block';
+  startScanLiveRefresh();
+  var cancelBtn = document.getElementById('cancelScanBtn');
+  var pauseResumeBtn = document.getElementById('pauseResumeScanBtn');
+  if (cancelBtn) {
+    cancelBtn.style.display = '';
+    cancelBtn.textContent = '⏹ 停止';
+    cancelBtn.disabled = false;
+  }
+  if (pauseResumeBtn) {
+    pauseResumeBtn.style.display = '';
+    pauseResumeBtn.disabled = false;
+    pauseResumeBtn.textContent = '⏸ 暂停';
+  }
+  updateProgress(0, 1, tUi('settings.rescanAllPreparing', '正在准备重新扫描全部目录...'));
+  tickBackgroundTasksOnce();
+
+  var result;
+  try {
+    result = await api.rescanAllFolders();
+  } catch (err) {
+    result = { success: false, error: (err && err.message) || String(err) };
+  }
+
+  state.rescanAllBusy = false;
+  state.isScanning = false;
+  state.isScanPaused = false;
+  stopScanLiveRefresh();
+  syncSettingsRescanAllBtn();
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  if (pauseResumeBtn) pauseResumeBtn.style.display = 'none';
+
+  if (result && result.success) {
+    // 整批跑完了（或中途被停）：无论如何都要把列表与统计拉一次，已扫过的目录不能白扫。
+    markBrowseDataStale({ settingsPageDirty: true });
+    await loadStats();
+    await loadRootFolders(state.rootFolders.length > 0, true);
+    await renderSettingsFolderList();
+    var total = Number(result.total) || 0;
+    var stopped = Number(result.cancelled) || 0;
+    var failed = Number(result.failed) || 0;
+    var cleaned = Number(result.cleanupDeleted) || 0;
+    if (stopped > 0) {
+      updateProgress(1, 1, '已停止：' + stopped + ' 个目录未扫描完成');
+    } else if (cleaned > 0) {
+      updateProgress(1, 1, '重扫完成（' + total + ' 个目录），已标记失效记录 ' + cleaned + ' 条');
+    } else {
+      updateProgress(1, 1, '重扫完成，共 ' + total + ' 个目录');
+    }
+    if (failed > 0) {
+      appAlert(
+        tUiFmt(
+          'settings.rescanAllPartialFail',
+          {
+            failed: failed,
+            total: total,
+            error: result.error || tUi('settings.common.unknownError', '未知错误'),
+          },
+          failed + '/' + total + ' 个目录重新扫描失败：' + (result.error || '未知错误'),
+        ),
+      );
+    }
+  } else {
+    var code = result && result.error;
+    if (code === 'empty') {
+      appAlert(tUi('settings.rescanAllEmpty', '还没有添加任何目录，先在「添加目录」里选一个吧。'));
+    } else {
+      appAlert(
+        tUiFmt(
+          'settings.rescanAllFail',
+          { error: code || tUi('settings.common.unknownError', '未知错误') },
+          '重新扫描失败: ' + (code || '未知错误'),
+        ),
+      );
+    }
+  }
   tickBackgroundTasksOnce();
 }
 
@@ -4116,9 +4298,21 @@ function setBrowseAppliedSnapshotFromObject(s) {
   };
 }
 
+/**
+ * 缩略图补全并发度的**渲染层**归一化。
+ *
+ * ⚠️ 这里的兜底值（4）与上界（8）必须与主进程**同值**：
+ * `src/main.js#THUMB_BACKFILL_CONCURRENCY_DEFAULT / _MAX`。
+ * 渲染层是独立进程、拿不到那边的常量，所以这一份只能手写 —— 改主进程那两个常量时
+ * **必须一起改这里**，否则「配置文件坏掉 / 字段缺失」时两边会给出不同的默认值，
+ * 症状是设置页显示的数与实际生效的数不一致，且不报错。
+ *
+ * 🔴 为什么默认从 3 提到 4：见 `src/main.js#createDefaultSettings()` 里那张两轮实测表
+ * （冷读拐 4、热读拐 8、12/16 无增益）。
+ */
 function normalizeThumbBackfillConcurrency(v) {
   var c = parseInt(v, 10);
-  if (isNaN(c) || c < 1) c = 3;
+  if (isNaN(c) || c < 1) c = 4;
   if (c > 8) c = 8;
   return c;
 }
@@ -4532,6 +4726,10 @@ function syncLiveSettingsWidgetsFromObject(s) {
   if (autoThumbEl) autoThumbEl.checked = !!s.autoThumbBackfillOnStartup;
   var autoHashEl = document.getElementById('settingAutoHashOnStartup');
   if (autoHashEl) autoHashEl.checked = !!s.autoHashOnStartup;
+  var autoSemanticEl = document.getElementById('settingAutoSemanticIndexOnStartup');
+  if (autoSemanticEl) autoSemanticEl.checked = !!s.autoSemanticIndexOnStartup;
+  var autoFaceEl = document.getElementById('settingAutoFaceIndexOnStartup');
+  if (autoFaceEl) autoFaceEl.checked = !!s.autoFaceIndexOnStartup;
   var stEl = document.getElementById('settingSimilarThreshold');
   if (stEl) stEl.value = String(Math.max(0, Math.min(64, parseInt(s.similarThreshold, 10) || 12)));
   var launchDefaultEl = document.getElementById('settingLaunchDefaultPage');
@@ -4657,57 +4855,117 @@ async function refreshThumbnailBackfillStatus() {
     var canExport = (p.failedPathsExportable | 0) > 0;
     if (dom.thumbBackfillExportFailedBtn) dom.thumbBackfillExportFailedBtn.disabled = !canExport;
     if (p.running) {
-      var pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+      // 🔴 三态：分母「还没估出来」与「估计失败」**都不许**画百分比 ——
+      //    `p.total` 为 null 时算成 0% 就是把「不知道」说成「没进展」。
+      //    分母语义 = **候选集规模**（候选谓词命中的行数）的**抽样估计值**，所以文案带「约」。
+      //    ⚠️ 它**不是**「还缺几张缩略图」。补全按 id 倒序走，而缺缩略图的行几乎全在低位老照片上
+      //    ⇒ 拿缺缩略图当分母，任务头几万行里分子恒 0，界面会一直显示 0%（用户就是这么报上来的）。
+      //    预览图只作副项出现在文案里。
       var eta = '';
       var es = p.etaSeconds;
-      if (es != null && isFinite(es) && es > 0 && typeof scanFlow.formatEtaLine === 'function') {
+      if (
+        p.phase === 'ready' &&
+        es != null &&
+        isFinite(es) &&
+        es > 0 &&
+        typeof scanFlow.formatEtaLine === 'function'
+      ) {
         var line = scanFlow.formatEtaLine(es);
         if (line) eta = tUi('settings.task.thumbEtaPrefix', '，') + line;
       }
-      if (dom.thumbBackfillStatus)
-        dom.thumbBackfillStatus.textContent = tUiFmt(
+      var thumbMsg;
+      if (p.phase === 'ready' && p.total > 0) {
+        thumbMsg = tUiFmt(
           'settings.task.thumbProgressRunning',
           {
             done: p.done,
             total: p.total,
-            pct: pct,
-            success: p.success,
+            pct: p.pct || 0,
+            thumbs: p.thumbs || 0,
+            exifFilled: p.exifFilled || 0,
             failed: p.failed,
             eta: eta,
           },
-          '补全中 ' +
+          '补全中：已处理 ' +
             p.done +
-            '/' +
+            ' / 约 ' +
             p.total +
             '（' +
-            pct +
-            '%），成功 ' +
-            p.success +
-            '，失败 ' +
+            (p.pct || 0) +
+            '%），预览图 ' +
+            (p.thumbs || 0) +
+            ' 张，拍摄信息 ' +
+            (p.exifFilled || 0) +
+            ' 张，失败 ' +
             p.failed +
             eta,
         );
+      } else if (p.phase === 'counting') {
+        thumbMsg = tUiFmt(
+          'settings.task.thumbProgressCounting',
+          { done: p.done },
+          '补全中：已处理 ' + p.done + ' 张，正在估计待补数量…',
+        );
+      } else {
+        thumbMsg = tUiFmt(
+          'settings.task.thumbProgressNoTotal',
+          { done: p.done },
+          '补全中：已处理 ' +
+            p.done +
+            ' 张（待补总数估计失败，暂不显示百分比与剩余时间）',
+        );
+      }
+      if (dom.thumbBackfillStatus) dom.thumbBackfillStatus.textContent = thumbMsg;
       if (dom.thumbBackfillStartBtn) dom.thumbBackfillStartBtn.disabled = true;
       if (dom.thumbBackfillCancelBtn) dom.thumbBackfillCancelBtn.style.display = '';
       if (!state.thumbBackfillPolling) {
         state.thumbBackfillPolling = setInterval(refreshThumbnailBackfillStatus, 800);
       }
     } else {
-      if (p.total > 0 || p.done > 0 || p.success > 0 || p.failed > 0) {
+      if (p.total > 0 || p.done > 0 || p.processed > 0 || p.failed > 0) {
         var doneText = p.cancelled
           ? tUi('settings.task.thumbStopped', '已停止')
           : tUi('settings.task.thumbCompleted', '已完成');
+        // 完成态同样是**缩略图口径**。分母可能拿不到（统计失败 / 任务只跑了很短一段就被取消）
+        // ⇒ 那时只说「补了多少张」，绝不编一个分母出来（`共 null` 这种文案就是静默的假数据）。
         if (dom.thumbBackfillStatus)
-          dom.thumbBackfillStatus.textContent = tUiFmt(
-            'settings.task.thumbProgressDone',
-            {
-              doneLabel: doneText,
-              total: p.total,
-              success: p.success,
-              failed: p.failed,
-            },
-            doneText + '：共 ' + p.total + '，成功 ' + p.success + '，失败 ' + p.failed,
-          );
+          dom.thumbBackfillStatus.textContent =
+            p.total > 0
+              ? tUiFmt(
+                  'settings.task.thumbProgressDone',
+                  {
+                    doneLabel: doneText,
+                    total: p.total,
+                    done: p.done,
+                    thumbs: p.thumbs || 0,
+                    failed: p.failed,
+                  },
+                  doneText +
+                    '：已处理 ' +
+                    p.done +
+                    ' 张（共约 ' +
+                    p.total +
+                    '），预览图 ' +
+                    (p.thumbs || 0) +
+                    ' 张，失败 ' +
+                    p.failed,
+                )
+              : tUiFmt(
+                  'settings.task.thumbProgressDoneNoTotal',
+                  {
+                    doneLabel: doneText,
+                    done: p.done,
+                    thumbs: p.thumbs || 0,
+                    failed: p.failed,
+                  },
+                  doneText +
+                    '：已处理 ' +
+                    p.done +
+                    ' 张，预览图 ' +
+                    (p.thumbs || 0) +
+                    ' 张，失败 ' +
+                    p.failed,
+                );
       } else {
         if (dom.thumbBackfillStatus)
           dom.thumbBackfillStatus.textContent = tUi(

@@ -154,12 +154,25 @@ function panelTitlesFromDesktop() {
 const webTitles = panelTitlesFromWebSettings();
 const desktopTitles = panelTitlesFromDesktop();
 check('解析到桌面端 8 个面板名', desktopTitles.length === 8, `实际 ${desktopTitles.length} 个`);
-check('解析到网页端 8 个面板名', webTitles.length === 8, `实际 ${webTitles.length} 个`);
+check('解析到网页端 2 个面板名', webTitles.length === 2, `实际 ${webTitles.length} 个`);
+// 2026-10-06 用户要求：网页端设置页「只保留浏览界面相关的、只影响网页显示的部分」。
+// 那 6 个桌面端只读镜像面板（媒体库 / 快捷键 / 媒体与存储 / 后台任务 / AI 与索引 /
+// 网络与远程）已整块删除，只剩「浏览与显示」「外观与行为」—— 于是判据从
+// 「两端逐位相同」改成下面两条，合起来**比原先更严**：
+//   ① 名字必须能在桌面端那份清单里找到（网页端不许自造面板名、也不许抄错字）；
+//   ② 相对顺序必须与桌面端一致（桌面端是 媒体库 → 浏览与显示 → … → 外观与行为 → 网络与远程，
+//      网页端不能把外观排到浏览前面）。
+// 只断言「网页端 ⊆ 桌面端」会漏掉①（抄错一个字就是自造）；只断言长度会漏掉②。
+const webIdx = webTitles.map((t) => desktopTitles.indexOf(t));
 check(
-  '网页端设置页的面板顺序与名称和桌面端逐位一致',
-  webTitles.length === desktopTitles.length &&
-    webTitles.every((t, i) => t === desktopTitles[i]),
-  `网页端 [${webTitles.join(' / ')}] vs 桌面端 [${desktopTitles.join(' / ')}]`,
+  '网页端每个面板名都能在桌面端 8 面板里找到（不许自造 / 抄错）',
+  webIdx.every((i) => i >= 0),
+  `网页端 [${webTitles.join(' / ')}] / 桌面端 [${desktopTitles.join(' / ')}]`,
+);
+check(
+  '网页端面板的相对顺序与桌面端一致',
+  webIdx.every((v, i) => i === 0 || v > webIdx[i - 1]),
+  `网页端面板在桌面端清单里的下标 [${webIdx.join(' ')}] —— 乱序说明有人重排了其中一边`,
 );
 
 // -------------------------------------- ④ 只读快照不得含敏感键
@@ -275,7 +288,7 @@ const panelsAt = webSettingsSrc.indexOf('var PANELS = [');
 const panelsEnd = panelsAt < 0 ? -1 : webSettingsSrc.indexOf('\n  ];', panelsAt);
 const panelsBody = panelsAt < 0 || panelsEnd < 0 ? '' : webSettingsSrc.slice(panelsAt, panelsEnd);
 const webPanelIds = [...panelsBody.matchAll(/id:\s*'([^']+)'/g)].map((m) => m[1]);
-check('能解析到网页端 8 个面板 id', webPanelIds.length === 8, `实际 ${webPanelIds.length} 个`);
+check('能解析到网页端 2 个面板 id', webPanelIds.length === 2, `实际 ${webPanelIds.length} 个`);
 
 // 判据只针对「取元信息」，不含遍历用的 `PANELS[i]`：
 // panelMeta 内部自己有一个 `PANELS[0]` 兜底（id 对不上时给第一项），那是允许的，

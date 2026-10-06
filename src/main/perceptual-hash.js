@@ -9,6 +9,25 @@
 const sharp = require('sharp');
 
 /**
+ * 把 9×8 的灰度原始像素转成 dHash hex。
+ *
+ * 🔴 这是**唯一**的哈希核心：`computeDhash` 与 `computeDhashFromPipeline` 必须走同一份，
+ * 否则「共用解码」那条路算出来的位会与旧值不同 —— dHash 是相似聚类的**输入**，
+ * 一位之差就能把阈值边缘的配对翻面。
+ */
+function hashFromRaw(raw) {
+  var hash = 0n;
+  for (var row = 0; row < 8; row++) {
+    for (var col = 0; col < 8; col++) {
+      if (raw[row * 9 + col] > raw[row * 9 + col + 1]) {
+        hash |= 1n << BigInt(row * 8 + col);
+      }
+    }
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/**
  * 计算单张图片的 dHash
  * @param {string|Buffer} input 文件路径或 Buffer
  * @returns {Promise<string|null>} 16 位 hex 字符串，失败时返回 null
@@ -21,15 +40,39 @@ async function computeDhash(input) {
       .raw()
       .toBuffer();
 
-    var hash = 0n;
-    for (var row = 0; row < 8; row++) {
-      for (var col = 0; col < 8; col++) {
-        if (raw[row * 9 + col] > raw[row * 9 + col + 1]) {
-          hash |= 1n << BigInt(row * 8 + col);
-        }
-      }
-    }
-    return hash.toString(16).padStart(16, '0');
+    return hashFromRaw(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 从**已经打开的 sharp 管线**算 dHash，省掉「再开一次文件 + 再解一遍整图」。
+ *
+ * 调用场景：`main.js#processOne` 里同一个文件既要生成缩略图、又要算 dHash。
+ * 旧写法是 `sharp(path)` 出缩略图、再 `computeDhash(path)` —— 实测同一张图被
+ * **完整解码两遍**，占单张总耗时的一半以上（真机 40 张实测 53.9ms → 22.5ms，省 58%）。
+ *
+ * 🔴 两条硬约束：
+ * 1. 传进来的必须是**还没上过 `.rotate()`** 的实例。旧路径不旋转，dHash 必须保持不旋转，
+ *    否则带 EXIF 方向的照片会算出另一套位。`.rotate()` 只给缩略图用，两者不可互换。
+ * 2. 本函数内部 `clone()`，不动调用方那条管线（`sharp` 的算子本身也会 clone，
+ *    这里显式写出来是为了让「不消费调用方实例」成为可读的契约）。
+ *
+ * @param {*} pipeline 已构造的 sharp 实例（未消费）
+ * @returns {Promise<string|null>} 与 `computeDhash(同一文件)` **逐位相同**，失败为 null
+ */
+async function computeDhashFromPipeline(pipeline) {
+  if (!pipeline) return null;
+  try {
+    var raw = await pipeline
+      .clone()
+      .greyscale()
+      .resize(9, 8, { fit: 'fill' })
+      .raw()
+      .toBuffer();
+
+    return hashFromRaw(raw);
   } catch (e) {
     return null;
   }
@@ -95,6 +138,7 @@ function hammingDistanceEarlyExit(hex1, hex2, maxDistance) {
 
 module.exports = {
   computeDhash: computeDhash,
+  computeDhashFromPipeline: computeDhashFromPipeline,
   getDhashBuckets: getDhashBuckets,
   hammingDistance: hammingDistance,
   hammingDistanceEarlyExit: hammingDistanceEarlyExit,

@@ -2846,6 +2846,49 @@ function folderDisplayBasename(folderPath) {
   return parts[parts.length - 1] || String(folderPath);
 }
 
+/**
+ * 「没有缩略图」的统一占位图（与桌面端 `src/renderer/ui-grid.js` 逐字同源，2026-10-05）。
+ *
+ * 同一件事有两条入口：① 构建期就知道没有（`has_thumbnail` 为 0）；② 构建期有、缩略图文件
+ * 后来丢了（`/thumb` 404 → `markFailed`）。以前网页端两条都落在那句「缩略图加载失败」上，
+ * 连「本来就没有缩略图的视频」也被说成加载失败；桌面端构建期又是另一副面孔（大号扩展名）。
+ *
+ * 现在两条共用同一份图形：中性底 + 一点强调色晕影 + 居中的图片字形 + 一行小字。
+ * 图形**内联**：两端要长得一模一样就得各自带全路径（网页端没有 `#icon-image` symbol），
+ * 而且内联才让描边粗细归 CSS 管（`<use>` 里 symbol 自带的 `stroke-width` 会盖掉宿主的）。
+ */
+var MEDIA_PLACEHOLDER_GLYPH =
+  '<svg class="placeholder-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" focusable="false" aria-hidden="true">' +
+  '<rect x="3" y="3" width="18" height="18" rx="2.5" ry="2.5"/>' +
+  '<circle cx="8.6" cy="8.6" r="1.5"/>' +
+  '<polyline points="21 15 16 10 5 21"/>' +
+  '</svg>';
+
+/** 占位图的「内芯」（图形 + 说明）。字符串版与 DOM 版共用，别各写一份。 */
+function mediaPlaceholderInnerHtml(caption) {
+  return (
+    MEDIA_PLACEHOLDER_GLYPH +
+    (caption ? '<span class="placeholder-caption">' + caption + '</span>' : '')
+  );
+}
+
+function mediaPlaceholderHtml(caption) {
+  return (
+    '<div class="placeholder placeholder--media">' + mediaPlaceholderInnerHtml(caption) + '</div>'
+  );
+}
+
+/**
+ * 有没有可用的缩略图。
+ * ⚠️ 字段**缺失**时（个别接口不带 `has_thumbnail`）按「有」处理，维持旧的「先按 <img> 渲染、
+ * 失败再兜底」行为；只有明确写着 0 才在构建期就走占位图 —— 免得把有缩略图的卡片误判成没有。
+ */
+function hasUsableThumbnail(photo) {
+  if (!photo) return false;
+  var v = photo.has_thumbnail;
+  return !(v === 0 || v === '0' || v === false);
+}
+
 function createGridFallbackPlaceholder(card) {
   if (!card) return null;
   var isFolder = card.classList.contains('folder-card');
@@ -2859,9 +2902,8 @@ function createGridFallbackPlaceholder(card) {
       '<span class="folder-cover-placeholder-msg">\u5C01\u9762\u52A0\u8F7D\u5931\u8D25</span>';
     return ph;
   }
-  ph.className = 'placeholder placeholder-fallback';
-  ph.innerHTML =
-    '<div class="ext">\u26A0\uFE0F</div><div>\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25</div>';
+  ph.className = 'placeholder placeholder--media';
+  ph.innerHTML = mediaPlaceholderInnerHtml('\u7F29\u7565\u56FE\u52A0\u8F7D\u5931\u8D25');
   return ph;
 }
 
@@ -2888,6 +2930,13 @@ function bindGridImageProgress(root) {
         img.classList.remove('loading');
         if (!card) return;
         card.classList.add('thumb-failed');
+        // 原比例瀑布流里卡片靠 <img> 的内在尺寸定高，缩略图文件缺失（`/thumb` 404）时图一摘
+        // 就没了定高依据，卡片会塌成一条比文字还矮的横杠 —— 退回正方形占位兜底。
+        // 判断用 closest 而不是 root：`.grid--masonry` 是 `#photoGrid` 的子节点（由
+        // `renderPhotoGrid` 写进去的），挂在 root 上那层并没有这个类。
+        if (card.closest && card.closest('.grid--masonry')) {
+          card.classList.add('photo-card--square-placeholder');
+        }
         try {
           img.remove();
         } catch (e) {}
@@ -3243,11 +3292,23 @@ function renderPhotoGrid(photos) {
     var delay = Math.min(i * 30, 600);
     var cardStyle = 'animation-delay:' + delay + 'ms;';
     if (ratio && !isMasonryAspect) cardStyle += 'aspect-ratio:' + ratio + ';';
-    html += '<div class="photo-card" style="' + cardStyle + '" onclick="startPreview(' + i + ')">';
+    var noThumb = !hasUsableThumbnail(photo);
+    html +=
+      '<div class="photo-card' +
+      (noThumb && isMasonryAspect ? ' photo-card--square-placeholder' : '') +
+      '" style="' +
+      cardStyle +
+      '" onclick="startPreview(' +
+      i +
+      ')">';
     if (isVideo) {
       html += '<span class="media-type-badge media-type-badge-video">\u89C6\u9891</span>';
     }
-    {
+    if (noThumb) {
+      // 本来就没有缩略图 —— 别再去请求 /thumb（那是必然 404，白跑一趟还占连接），
+      // 直接上统一占位图（与桌面端构建期那条路径同一套标记）。
+      html += mediaPlaceholderHtml(escapeHtml(photo.file_type || '?'));
+    } else {
       var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
       html +=
         '<div class="thumb-blur-placeholder" aria-hidden="true" style="background-image:url(/thumb/' +

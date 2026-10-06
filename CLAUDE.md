@@ -39,7 +39,7 @@ npm run download-cloudflared # Fetch cloudflared binary for packaging/tunneling
 npm run bundle-models       # Build bundled AI models into models/ (face + search) for packaging
 ```
 
-**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 41 scripts) in the Electron runtime; `npm run smoke:db` runs just the database smoke. `npm run lint` must stay at **0 errors** before shipping — see `AGENTS.md` for the per-directory breakdown.
+**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 50 scripts) in the Electron runtime; `npm run smoke:db` runs just the database smoke. `npm run lint` must stay at **0 errors** before shipping — see `AGENTS.md` for the per-directory breakdown.
 
 ## High-Level Architecture
 

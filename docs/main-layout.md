@@ -33,9 +33,47 @@
 守护：`page-size-control-regression` 覆盖收档 / 换档落库重查 / 写失败回滚 / 设置页改完读数同步与静态接线（事件绑定、dom 映射、`onApplyPageSize` 每个应用点都传、档位表四处同源）；`browse-grid-style-regression` 覆盖取值域往返、两处下拉逐位一致、落库 + 重画不重查、失败回滚，以及**「高度与「随机」/ 分页按钮同源」**（含夹具自证：必须取到那条独立规则而不是共享选择器列表里的同名一项，并断言设置页没被顺手撑高）。
 
 
+### 「没有缩略图」的占位：统一图形
+
+没有可用的缩略图时，卡片里是一块**统一占位图**：中性底 + 一点强调色晕影 + 居中的图片字形 + 一行小字（没有缩略图时是扩展名，加载失败时是「缩略图加载失败」）。四条路共用同一份标记 `<div class="placeholder placeholder--media">`，只差那行小字：
+
+| 路径 | 位置 | 触发条件 |
+| --- | --- | --- |
+| 构建期 | `ui-grid.js#buildSinglePhotoCardHtml` | `has_thumbnail` 为假，压根不渲染 `<img>` |
+| 运行期 | `ui-grid.js#markFailed`（读 `root.dataset.useMediaRatio`） | 缩略图文件被删/损坏，`<img>` 报 error |
+| 构建期（网页端） | `web/js/app.js#renderPhotoGrid`（`!hasUsableThumbnail(photo)`） | 同上；网页端据此**不再发那次必然 404 的 `/thumb` 请求** |
+| 运行期（网页端） | `web/js/app.js#markFailed`（读 `card.closest('.grid--masonry')`） | 同上 |
+
+字形是**内联** SVG（常量 `MEDIA_PLACEHOLDER_GLYPH`，桌面端与网页端各持一份、逐字相同），刻意不用 `<use href="#icon-image">`：`<use>` 的 shadow tree 里 symbol 自带的 `stroke-width` 会盖掉宿主继承下来的值，放大到 56px 时描边粗得发憨且改不动；网页端也没有那个 symbol。颜色走 `currentColor`，浅色/深色主题自动跟随。
+
+构建期那块**不再显示文件名** —— 卡片底部的 `.photo-info` 本来就有一份，以前是同一行字在一张卡片上出现两遍。
+
+### 为什么还要「正方形占位」
+
+「网格与比例」选**原比例瀑布流**时，卡片的高度**只能由内容决定**（`columns` 布局，没有任何 CSS 给它死高度）：
+
+- 有缩略图 → 高度来自 `<img>` 的宽度/高度（先是标签上的 `width`/`height`，加载完成后 `markLoaded` 再照 `naturalWidth/naturalHeight` 补写一次 `aspect-ratio`）；
+- **没有缩略图 → 占位块自身没有内在尺寸**（它是 `height: 100%` 的空盒子），卡片于是塌成一条横杠（旧版纯文本占位实测：列宽 291px 时，正常卡片 291px、塌陷后 46px）。「没缩略图但 `has_thumbnail` 还是 1、跑起来 404」是同一个下场 —— 图被 `markFailed` 摘掉，唯一的定高依据就没了。
+
+所以这四条路都给卡片挂上 `photo-card--square-placeholder`，由 `.grid.grid--masonry .photo-card--square-placeholder { aspect-ratio: 1 / 1 }` 按正方形占位。占了位就不塌 —— 换成图形后内容高度约 80px，**不给比例仍然不是正方形**，所以这个类还必须有。
+
+三点容易踩的：
+
+1. **「统一高度」那一档不需要这个类** —— `.grid:not([data-use-media-ratio='1']) .photo-card` 已经给死 `--photo-card-ratio`，占位块 `height: 100%` 自动铺满，本来就正常。所以这个缺陷只在瀑布流上现身，「换个布局看看，没事啊」会把它带过去。
+2. 网页端的判断必须用 `closest('.grid--masonry')`：`.grid--masonry` 是 `#photoGrid` 的**子节点**（由 `renderPhotoGrid` 写进去的），挂在 root 上那层并没有这个类 —— 照抄桌面端的 `root.dataset` 写法会静默不生效。
+3. 网页端 `hasUsableThumbnail()` 对**字段缺失**必须按「有」处理（人脸页等接口不带 `has_thumbnail`）—— 写成 `!!photo.has_thumbnail` 会让有图的卡片整片退化成占位图。
+
+占位块的样式两端同构（桌面端 `src/renderer/styles.css`、网页端 `src/web/index.html` 内联样式）：`.photo-card .placeholder` 给基准尺寸，`.placeholder--media` 给晕影底，`.placeholder-icon` 给字形（`min(56px, 38%)` + `1:1`），`.placeholder-caption` 给小字。改一端就要改另一端 —— 守护会把两端的字形标记逐字对账。
+
+改动 `src/web/index.html` / `src/web/js/app.js` 后要顺手把 `sw.js` 的 `CACHE_NAME` +1（cache-first，否则已装过 PWA 的设备看不到新版本）。
+
+守护：`browse-grid-style-regression` 末节。全部是**行为**验证 —— 桌面端喂真 `renderPhotoGrid` 看真 HTML、与网页端真 `mediaPlaceholderHtml()` 的产出**逐字比对**，运行期用真实 `img.complete + naturalWidth` 打真的 `bindGridImageProgress`（不手抄 `markFailed` 的语句），网页端四条路（瀑布流/统一高度 × 有无缩略图 + 字段缺失）跑真 `renderPhotoGrid`，外加两端 CSS 规则。
+
+> ⚠️ 写这类探针时注意：**离屏宿主（`left: -4000px`）里带 `loading="lazy"` 的 `<img>` 不会发起请求**，既不 load 也不 error —— 「缩略图 404」那个场景会静默不失败，看着像产品没问题。要验失败路径，宿主必须放进视口。
+
 ### 设置页的信息架构契约
 
-设置页是**两栏 6 面板**：左栏 `#settingsSidebar` 是类目导航，右栏同一时刻只显示一个 `[data-settings-panel]` 面板（CSS 靠 `.is-active` 切换显隐，切换时把 `#settingsPage` 滚回顶部）。`ui-settings.js` 里 `navItems` 的顺序**必须与 `index.html` 中面板的 DOM 顺序逐位一致**——顺序错位的症状是「点左栏某一项、右栏显示的却是另一项」。navigation-regression 会把两边解析出来做逐位比对（解析而非硬编码期望值，增减面板不会假红），并校验每个面板都带 `data-settings-panel`。
+设置页是**两栏 8 面板**：左栏 `#settingsSidebar` 是类目导航，右栏同一时刻只显示一个 `[data-settings-panel]` 面板（CSS 靠 `.is-active` 切换显隐，切换时把 `#settingsPage` 滚回顶部）。`ui-settings.js` 里 `navItems` 的顺序**必须与 `index.html` 中面板的 DOM 顺序逐位一致**——顺序错位的症状是「点左栏某一项、右栏显示的却是另一项」。navigation-regression 会把两边解析出来做逐位比对（解析而非硬编码期望值，增减面板不会假红），并校验每个面板都带 `data-settings-panel`。
 
 8 个面板按语义归类，不再按内容类型平铺：
 
@@ -50,11 +88,15 @@
 
 后四块原本挤在同一个 `settingsSectionMedia` 里（字幕属播放、缩略图与 HLS 属存储、三个任务属后台），一个区块横跨三个语义，现已拆开归位。
 
+**「媒体库」面板头部是「添加目录」+「重新扫描全部」两枚面板级动作**（`#settingsAddBtn` / `#settingsRescanAllBtn`，都在 `.settings-header-actions` 里）。目录行内原本每行各有一枚「重新扫描」（`#settingsFolderList` 的 `fm-actions`），那些**保持不动**——面板级这枚做的是「一次把所有根目录都排上」，解决的是「目录多了要一个一个点」以及「新增目录后不知道有没有生效」。两枚按钮上下叠：`.settings-header-actions` 本身是 `flex-direction: column; align-items: flex-end`（快捷键面板也用它，只有一枚按钮时看不出方向），右缘与面板内容区齐平，实测无横向溢出。
+
+「重新扫描全部」的箭头是**单向**的：渲染端只发一条 `rescan-all-folders`，**不传任何目录列表**。根目录由主进程走只读 Worker 读库拿到（`runDbReadWorkerOnly(…, 'getRootFolders', {lite:true})`），因为渲染端手里的 `state.rootFolders` 是一份可能过时的缓存——扫描刚在库里登记了新根、渲染端这一拍还没同步到时它是空的，结果就是「点了没反应」。同理按钮**不按目录数置灰**（置灰只看 `state.rescanAllBusy`），空库由主进程回答 `error: 'empty'`。N 个任务一次性入队，队列内部仍**串行**（`processScanQueue` 逐个取、各自整段独占写库闸门），所以任务条上会看到「扫描队列 · 还有 N 项等待」；「停止」走 `cancel-scan` → `clearPendingScanQueue()`，把还没开始的目录一并结算成 `cancelled`，整批一起停。守护 `settings-rescan-all-regression`（含 9 发牙齿测试）。
+
 **「后台任务」是「让机器干活」的归口处，但只放纯任务。** 长跑任务原先散在三处：「应用 → 通用设置」放着一排「启动时自动…」开关，「后台任务」放三个立即执行按钮，「搜图 / 人物」各有自己的建立 / 更新索引。同一个意图（把活干完）要在三个面板里翻，所以三处收进后台任务：三个启动开关与「视觉相似阈值」（本质是查重参数，跟「重复照片比对」是一件事的两半）进「自动执行」小节；两个 AI 索引整块搬去「AI 与索引」（见下条）。
 
 **搜图 / 人物两个索引块住在「AI 与索引」（`settingsSectionAiIndex`），且设置项一律直接铺开。** 这两块经历过一整轮反复：各自成一个类目 → 2026-09-28 并进「后台任务」当两行 → 2026-10-05 又拆出来独立成面板。并进清单行的代价是**识别设置 / 匹配设置只能折叠成一个 `<details>`**（不折的话，展开的表单会比同清单其它任务行高出一个量级），而用户明确反馈「不要存在设置项按钮隐藏」——折叠是**为「塞进一行」做的妥协**，不是这类参数本身的属性，所以整块搬进独立面板后折叠一并取消：`people.js` 出 `section.people-settings`、`semantic-search.js` 出 `section.ai-tune`，加载时机从 `<details>` 的 `toggle` 事件改为 `refresh()` 的状态回调（面板可见即加载）。⚠️ 折叠消失会顺带带走一条可见线索：原先 `<summary>匹配设置</summary>` 是阈值输入框**唯一**的可见名字，故补了「匹配阈值」标签（`.ai-tune-label`）。守护 `navigation-regression`（面板顺序与挂载点归属）+ `people-page-regression`（无 `details`、无 `summary`、设置块仍在，且不做任何交互就能读到真值）。
 
-同样地，「自动执行」里的**三个启动开关 + 视觉相似阈值**是从「应用 → 通用设置」搬来的（`autoThumbBackfillOnStartup` 也补上了 dHash：它现在是「缩略图 + 视觉指纹」一件事）。
+同样地，「自动执行」里的**三个启动开关 + 视觉相似阈值**是从「应用 → 通用设置」搬来的（`autoThumbBackfillOnStartup` 也补上了 dHash：它现在是「缩略图 + 视觉指纹」一件事）。三个开关**一行一项**铺开：`.settings-toggle-col` = `flex: 1 1 100%; min-width: 0`（原先 `flex: 1` + `min-width: 240px` 会在宽面板上自己挤成两项一行，2026-10-05 用户要求改回一行一项；该类只有这三处在用）。末尾那个「相似照片判定」是 `.settings-browse-field`，保持自然宽度、不参与这项。
 
 **但没有加「开机自动建 AI 索引」开关**（搬进来的是入口，不是自动化）：首次索引是整库级、数天级，搜图 worker 常驻内存约 900MB，与「补缩略图」这种可预期增量不是一个量级；而且 `canRun` 让两套 AI 索引彼此互斥、也与数据库维护互斥，真让它随开机跑，「优化数据库」按钮就会随机变灰。要做也得先补「扫描全部完成」的钩子，再加一个「暂停自动任务」的总闸。
 
@@ -76,7 +118,7 @@
 
 **网络独立成一类，不与「应用」合并。** 它管的是「别人怎么访问我的相册」（局域网地址 / 访问密码 / 公网隧道），与「应用」里的界面语言、启动页、关闭行为不是一回事；之前被并进「应用与网络」，用户找局域网地址要在一堆偏好设置里翻。拆开后 `settings.nav.app` / `settings.section.app` 只叫「应用」，网络另有 `settings.nav.network` / `settings.section.network`。
 
-**`settingsSection*` id 只挂在这 6 个面板容器上**：面板内部的子块（AI 的两个挂载点、网络里的三个分节）不再带该前缀，否则 navigation-regression 的正则会把它们也当成类目。
+**`settingsSection*` id 只挂在这 8 个面板容器上**：面板内部的子块（AI 的两个挂载点、网络里的三个分节）不再带该前缀，否则 navigation-regression 的正则会把它们也当成类目。
 
 **面板内不重复标题**：AI 子面板自带的 `.ai-header` 是「整页 / 弹窗」模式的主标题，embedded 挂载时**不再渲染**（`people.js` / `semantic-search.js` 的挂载分支跳过它，CSS 另有一道 `display:none` 兜底），命名只由类目标题承担。留着会出现「搜图 > 本地 AI / 多语言搜图」这种同义重复，并且字号层级倒挂——`people.css` 为人物整页模式定的 `.people-page .ai-header h2 { font-size: 20px }` 特异性高于 `theme-polish.css` 给设置页的 16px，导致子标题比类目标题还大。
 

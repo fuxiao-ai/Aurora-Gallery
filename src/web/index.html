@@ -772,6 +772,65 @@
       .grid.grid--masonry .photo-card img {
         height: auto;
       }
+      /* 原比例瀑布流里卡片高度只能由「内容」决定：有缩略图时是 <img> 的内在尺寸；没有缩略图
+         时占位块自己必须有基准尺寸，否则卡片塌成一条横杠。构建期没有缩略图
+         （`has_thumbnail = 0`）与运行期缩略图 404 都会挂上这个类。 */
+      .grid.grid--masonry .photo-card--square-placeholder {
+        aspect-ratio: 1 / 1;
+      }
+      /* 「没有缩略图」的统一占位图 —— 与桌面端 `src/renderer/styles.css` 同构，两端观感必须
+         一致；改这里请一起改那边（守护 `browse-grid-style-regression` 会比对两边的字形标记）。 */
+      .photo-card .placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: var(--bg-hover);
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+      .photo-card .placeholder.placeholder--media {
+        background:
+          radial-gradient(
+            ellipse 72% 56% at 50% 42%,
+            color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+            transparent 70%
+          ),
+          var(--bg-hover);
+      }
+      .placeholder-icon {
+        width: min(56px, 38%);
+        height: auto;
+        aspect-ratio: 1 / 1;
+        flex-shrink: 0;
+        color: var(--text-muted);
+        opacity: 0.34;
+        pointer-events: none;
+      }
+      .placeholder-icon rect,
+      .placeholder-icon polyline {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .placeholder-icon circle {
+        fill: currentColor;
+      }
+      .placeholder-caption {
+        max-width: 88%;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        opacity: 0.85;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .grid.grid--masonry .photo-card:hover {
         transform: translateY(-4px) scale(1.012);
         z-index: 2;
@@ -1056,9 +1115,6 @@
         color: color-mix(in srgb, #eaf5ff 72%, var(--text-primary));
         background: color-mix(in srgb, var(--bg-card) 78%, #4a8fd4);
         border-color: color-mix(in srgb, var(--glass-border) 70%, #6da9df);
-      }
-      .photo-card .placeholder.placeholder-fallback {
-        gap: 6px;
       }
 
       @media (hover: none) {
@@ -1389,29 +1445,26 @@
       #randomPageBtn:disabled {
         background-image: none;
       }
-      /* 闪动光晕 —— 与桌面端 `.browse-footer-actions .pagination-random::before/::after`
+      /* 闪动光晕 —— 与桌面端 `.browse-footer-actions .pagination-random::before`
          同一套配方、同一组关键帧名（两端要能一眼对上）。取舍与坑见桌面端那段长注释，这里只记网页端特有的两条：
          🔴 伪元素同样要 `pointer-events: none`（否则覆盖在按钮内容上，点击落不到按钮）；
          🔴 网页端按钮是**药丸形**（继承 `.pagination button` 的 `border-radius: 999px`），
-            所以这里必须写 `border-radius: inherit`，写死 10px 会在圆角处露出方角光晕。 */
-      #randomPageBtn::before,
-      #randomPageBtn::after {
+            所以这里必须写 `border-radius: inherit`，写死 10px 会在圆角处露出方角光晕。
+         🔴🔴 桌面端 2026-10-06 已把**扩散环 `::after`**（`box-shadow` 动画）删除 ——
+            它是本应用唯一一个「常驻每帧重绘」的源（稳态实测 Paint 122 次/27.75ms 每秒，
+            停掉后归零；`will-change` / `translateZ(0)` 提升均零效果）。
+            两端必须同进同退，**不要只把网页端加回去**，否则桌面端的性能结论当场作废。 */
+      #randomPageBtn::before {
         content: '';
         position: absolute;
         inset: 0;
         border-radius: inherit;
         pointer-events: none;
-      }
-      #randomPageBtn::before {
         /* 静态兜底：动画被 reduced-motion 压掉后 fill-mode 默认 none 会回落到这里，
            不给值就是回落成 1（最亮峰值）。理由详见桌面端那段注释。 */
         opacity: 0.35;
         box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 62%, transparent);
         animation: randomBtnGlowBreathe 2.6s ease-in-out infinite;
-      }
-      #randomPageBtn::after {
-        box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-        animation: randomBtnGlowPing 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
       }
       @keyframes randomBtnGlowBreathe {
         0%,
@@ -1422,17 +1475,7 @@
           opacity: 0.86;
         }
       }
-      @keyframes randomBtnGlowPing {
-        0% {
-          box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 58%, transparent);
-        }
-        62%,
-        100% {
-          box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
-        }
-      }
-      #randomPageBtn:disabled::before,
-      #randomPageBtn:disabled::after {
+      #randomPageBtn:disabled::before {
         display: none;
       }
       .page-numbers {
@@ -2614,11 +2657,11 @@
           animation-iteration-count: 1 !important;
           transition-duration: 0.01ms !important;
         }
-        /* 豁免「随机」的闪动光晕（与桌面端 styles.css 尾部那对孪生规则逐条对应）。
+        /* 豁免「随机」的闪动光晕（与桌面端 styles.css 尾部那条孪生规则逐条对应）。
            本机 Windows 实测就是 `reduce`，不豁免等于这套光晕一次都看不见。
-           它是重点功能的可辨识信号，且是 2.6s 低频呼吸而非高频闪烁。 */
-        #randomPageBtn::before,
-        #randomPageBtn::after {
+           它是重点功能的可辨识信号，且是 2.6s 低频呼吸而非高频闪烁。
+           （扩散环 `::after` 已于 2026-10-06 因常驻每帧重绘在两端同时删除。） */
+        #randomPageBtn::before {
           animation-duration: 2.6s !important;
           animation-iteration-count: infinite !important;
         }

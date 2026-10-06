@@ -5,8 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const Database = require('better-sqlite3');
+const acorn = require('acorn');
 const { FaceStore, chineseWhispers, K_NEIGHBORS } = require('../src/ai/face-store');
 const { FaceService } = require('../src/main/face-service');
+const { SemanticSearch } = require('../src/main/semantic-search');
+const cluster = require('../src/ai/face-cluster');
+const faceModel = require('../src/ai/face-model');
 const {
   TEMPLATE,
   VERSION,
@@ -194,7 +198,14 @@ async function run() {
     // 索引进度用的轻量计数：scanned / faces / people 三个数字要跟同一批数据对得上，
     // 人物页的实时条就是靠它显示「已扫描 N 张 · 检出 M 张脸 · K 人」。
     assert.deepEqual(store.counts(), { scanned: 4, faces: 3, people: 2 });
-    assert.equal(store.batch(0)[0].id, 5, 'no-face photos are also incrementally skipped');
+    // 扫描方向是**主键倒序**（最新入库优先）。游标是排他上界：
+    // 起手给 0 会让 `p.id < 0` 恒空 —— 任务「秒完成」却一张没扫。起点必须是 maxPhotoId()+1。
+    assert.equal(store.batch(0).length, 0, '倒序游标下 0 不是合法起点（`p.id < 0` 恒空）');
+    assert.equal(
+      store.batch(store.maxPhotoId() + 1)[0].id,
+      30,
+      '倒序扫描：下一张待扫的是**最大** id；已扫过的 1..4（含零检出的 4）不重复出现',
+    );
     const groups = store.groups().items;
     const first = groups[0].id,
       second = groups[1].id;
@@ -946,6 +957,163 @@ async function run() {
       ),
       'put() 里那条 margin 规则不得复活（它是同一人被拆开的主因）',
     );
+
+    // ------------------------------------------------------------------
+    // 热点：`similarity` 必须是普通索引循环，且与朴素累加**逐位相同**。
+    //
+    // 归组链路唯一的内层热点就是它：`chineseWhispers` 建图要算 n²/2 次点积，
+    // `put()` 的 `groupScore` 还要为每个已存在的组各算至多 16 次。它原先写成
+    // `a.reduce((sum, v, i) => sum + v * b[i], 0)` —— 每对都新建一个回调闭包、
+    // 再走一遍迭代器协议，而这里只是 512 个乘加。同一台机器实测：
+    //   **5394ns/对 → 438ns/对（12.9×）**；外推本机真库（81,043 张脸）是
+    //   **296 分钟 → 23 分钟**。
+    // 也就是说改之前，「手动点一次『按当前设置重新归组』」在百万级图库上实际不可用
+    // （收尾的自动聚类又因 AUTO_REGROUP_LIMIT 直接跳过）。这不是微优化，所以要钉死。
+    // ------------------------------------------------------------------
+    {
+      const clusterSrc = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'ai', 'face-cluster.js'),
+        'utf8',
+      );
+      // 🔴 按 **AST 节点区间**取函数体，不能整文件剥注释后再搜：那段文档注释里
+      //    **故意**引用了旧的 `a.reduce(...)` 写法（用来解释为什么不能回去），
+      //    整文件正则会把它算进去 ⇒ 假红。
+      const clusterAst = acorn.parse(clusterSrc, { ecmaVersion: 'latest', sourceType: 'script' });
+      const node = clusterAst.body.find(
+        (item) => item.type === 'FunctionDeclaration' && item.id && item.id.name === 'similarity',
+      );
+      assert.ok(node, 'face-cluster.js 里必须还有顶层 similarity()');
+      const body = clusterSrc.slice(node.body.start, node.body.end);
+      assert.ok(
+        /\.reduce\s*\(/.test(clusterSrc) && !/\.reduce\s*\(/.test(body),
+        'similarity 的函数体里不得出现 reduce —— 那个写法实测慢 12.9 倍' +
+          '（本条同时自证：整文件里那个名字还在，是注释引用的，按节点取体才判得准）',
+      );
+      assert.ok(
+        /\bfor\s*\(/.test(body) && /\+=\s*[A-Za-z_$]/.test(body),
+        'similarity 必须是逐个索引累加的普通循环',
+      );
+      assert.equal(
+        faceModel.similarity,
+        cluster.similarity,
+        'face-model 必须 re-export 同一份 similarity（不许出现第二份实现）',
+      );
+      // 行为面：与「朴素左到右累加」逐位相同。这条同时是「不许改成多累加器展开
+      // （s0/s1/s2/s3）」的检测器 —— 展开会改变浮点舍入，512 维上几乎必然至少有一对不等。
+      // ⚠️ 这不是理论洁癖：归组阈值是对着 `K:\COS\<编号>` 标准答案标定的，位等价是前提。
+      const naive = (a, b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
+      let state = 20261005 >>> 0;
+      const rand = () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+      const make = () => {
+        const values = new Float32Array(VECTOR_DIM);
+        for (let i = 0; i < VECTOR_DIM; i++) values[i] = rand() * 2 - 1;
+        return normalize(values);
+      };
+      let compared = 0;
+      let firstMismatch = -1;
+      for (let t = 0; t < 200 && firstMismatch < 0; t++) {
+        const a = make();
+        const b = make();
+        if (cluster.similarity(a, b) !== naive(a, b)) firstMismatch = t;
+        compared++;
+      }
+      assert.equal(
+        firstMismatch,
+        -1,
+        'similarity 与朴素 reduce 逐位相同（第 ' + firstMismatch + ' 对起不等）',
+      );
+      assert.ok(compared === 200, '行为面必须真的算过 200 对，实际 ' + compared);
+    }
+
+    // ------------------------------------------------------------------
+    // 收尾聚类的可见性：`clustered` 必须三处齐活 —— worker 产出 → 服务白名单 → 界面消费。
+    //
+    // 大库上收尾的全局聚类**必然**被 `AUTO_REGROUP_LIMIT` 跳过（本机 81,043 张脸），
+    // 跳过之后落库的分组只是增量近似。`face-worker` 本来就返回了 `clustered:false`，
+    // 但 `semantic-search.js` 的结果白名单里没有这个键 ⇒ 它被静默丢掉，界面永远不知道
+    // 「这次没跑全局聚类」。这正是「后端做了、界面看不到」，也是这条契约存在的理由。
+    // ------------------------------------------------------------------
+    {
+      /** 剥注释再断言（acorn 收集注释区间）。本节的注释里**故意**引用了这些名字，
+       *  不剥的话「名字出现过」就会被误当成「契约还在」—— 项目元规则：断言不许读注释。 */
+      const strip = (relative) => {
+        const src = fs.readFileSync(path.join(__dirname, '..', relative), 'utf8');
+        const ranges = [];
+        acorn.parse(src, {
+          ecmaVersion: 'latest',
+          sourceType: 'script',
+          onComment: (block, text, start, end) => ranges.push([start, end]),
+        });
+        let out = '';
+        let cursor = 0;
+        for (const [start, end] of ranges) {
+          out += src.slice(cursor, start) + ' '.repeat(end - start);
+          cursor = end;
+        }
+        return out + src.slice(cursor);
+      };
+      const searchSrc = strip('src/main/semantic-search.js');
+      const workerSrcStripped = strip('src/workers/face-worker.js');
+      const peopleSrc = strip('src/web/js/people.js');
+
+      assert.match(
+        searchSrc,
+        /for \(const key of \[[^\]]*'clustered'/,
+        '🔴 semantic-search.js 的结果白名单必须含 clustered —— 漏它 = 后端判定了「跳过」，' +
+          '界面永远看不到',
+      );
+      assert.match(
+        searchSrc,
+        /clustered: null/,
+        '🔴 开新任务时必须把 clustered 重置为 null：否则上一轮的 false 会挂在新任务的状态里，' +
+          '界面在任务刚开始时就显示一句过时的「本次没做全局聚类」',
+      );
+      assert.match(
+        workerSrcStripped,
+        /clustered: true/,
+        '🔴 手动重跑归组（regroup）必须返回 clustered:true —— 它是对「收尾被跳过」的补偿，' +
+          '不返回的话用户点完按钮提示仍然挂着，读起来就是「操作没生效」',
+      );
+      assert.match(
+        peopleSrc,
+        /state\.clustered === false/,
+        '🔴 界面必须用 `=== false` 判据消费这个标志',
+      );
+      assert.ok(
+        !/!\s*state\.clustered/.test(peopleSrc),
+        '🔴 不许写成 `!state.clustered`：`null`（未知 / 本轮还没跑完）会被当成「跳过了」，' +
+          '于是每次都要提示一遍 —— 提示太多等于没有提示',
+      );
+
+      // 行为面：开一个新任务真的会把上一轮的值清掉。reset 发生在 `spawn()` 之前，
+      // 所以故意用一个起不来的 worker 就能测到这一段 —— 不必依赖模型、更不必真跑索引。
+      const probe = new SemanticSearch('unused.db', 'unused-ai', {
+        workerFile: 'definitely-not-a-real-worker.js',
+        operations: ['status'],
+        // 起不来是**预期**的：这里只借 `run()` 在 spawn 之前那段同步的状态重置。
+        // 给个 label 让随之而来的那行 warning 自己说清是谁（否则会被读成「语义搜索真的挂了」）。
+        label: 'clustered-reset probe (face-regression)',
+      });
+      probe.state.clustered = false; // 假装上一轮索引跳过了全局聚类
+      const settled = probe.run('status').catch(() => {});
+      await Promise.race([
+        settled,
+        new Promise((resolve) => {
+          const timer = setTimeout(resolve, 5000);
+          timer.unref();
+        }),
+      ]);
+      assert.equal(
+        probe.state.clustered,
+        null,
+        '行为面：开始一个新任务后 clustered 必须回到 null（实际 ' +
+          JSON.stringify(probe.state.clustered) +
+          '）',
+      );
+    }
 
     console.log('[face-regression] PASS');
   } finally {

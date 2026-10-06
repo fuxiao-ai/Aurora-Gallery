@@ -3,7 +3,7 @@
 // 🔴 缓存策略是 cache-first：`index.html` / `js/app.js` 一旦被缓存，改磁盘文件**不会**
 // 让已装过 PWA 的设备看到新版本。所以每次改到 SHELL_ASSETS 里的资源，都要把这里 +1
 // （activate 会清掉旧 cache，install 会重新预缓存），否则改动只在新设备上生效。
-var CACHE_NAME = 'aurora-gallery-shell-v42';
+var CACHE_NAME = 'aurora-gallery-shell-v46';
 var SHELL_ASSETS = [
   '/',
   '/index.html',

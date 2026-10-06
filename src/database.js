@@ -2,6 +2,16 @@ const logger = require('./main/logger');
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+// 拍摄参数的内容列清单只有一份（`src/main/exif-meta.js`）：那边负责「字段 ↔ 列」的映射，
+// 这边用它派生「文件内容变了要连带置空哪些列」。两边各抄一份 = 加了列忘了清 = 脏数据。
+const {
+  EXIF_METADATA_COLUMNS,
+  EXIF_FIELD_SPECS,
+  EXIF_COLUMN_TYPES,
+  EXIF_SCHEMA_VERSION,
+} = require('./main/exif-meta');
+// `getPhotos` 的 total 记忆化（住在 worker 进程里，桌面端与网页端共用同一份）。
+const photosTotalCache = require('./photos-total-cache');
 
 /**
  * 缩略图编码格式白名单。
@@ -15,10 +25,195 @@ const fs = require('fs');
  */
 var THUMB_FORMAT_WHITELIST = ['jpeg', 'webp'];
 
+/**
+ * 连接级 PRAGMA 的唯一真相源（`cache_size` / `mmap_size`）。
+ *
+ * 🔴 这两个值同时作用于**两条连接**，必须同源：
+ *   ① 主进程的写连接 —— 由 `applyDeferredCachePragma()` / `applyDeferredMmapPragma()` 应用
+ *      （刻意分步、首窗后 250ms，避免单次 PRAGMA 卡住主线程）；
+ *   ② 读池 worker 的只读连接 —— `src/workers/db-read-worker.js#openDb()`。
+ *
+ * 为什么读池那条更要紧：**最贵的查询全在它手上**。它过去一个都没设 ⇒ 吃 SQLite 默认值
+ * （cache 2 MB、mmap 关闭），而它跑的是 `getFolderTree` 这种「91 万行回表 + MIN/MAX 聚合」。
+ * 真库（1,656,580 行 / 14.5 GB）实测：`getFolderTree` 单根 >4 分钟未返回；回表聚合几乎全靠
+ * OS page cache 兜底，而 14.5 GB 的库不可能全缓存。
+ *
+ * ⇒ 数值只许在**这里**改一次。worker 那边引用常量（`PhotoDatabase.DB_CACHE_SIZE_KB`），
+ *   各抄一份数字 = 将来只改一处，另一条连接静默变慢且不报错。
+ */
+const DB_CACHE_SIZE_KB = -131072; // 负值 = KB ⇒ -131072 KB = 128 MB
+const DB_MMAP_SIZE_BYTES = 1073741824; // 1 GB
+
+/**
+ * 搜图取一页时，从「FTS 驱动」切换到「日期索引序」的**命中数**门槛。
+ *
+ * 🔴 这个数是**真库上标定**出来的（`.workbuddy/tmp/sql-search-tuning.log`，
+ *    9 个词从 544,235 命中一直铺到 0 命中），不是拍的 —— 而且**实测推翻了我最初的保守判断**：
+ *
+ *     | 命中数 | FTS 驱动 | 索引序 | 赢家 |
+ *     | ---: | ---: | ---: | --- |
+ *     | 544,235（`IMG`） | 29,379 ms | **151 ms** | 索引序 195× |
+ *     | 224,491（`2024`） | 6,059 ms | **63 ms** | 索引序 97× |
+ *     | 203,934（`2025`） | 1,280 ms | **58 ms** | 索引序 22× |
+ *     | 51,298（`DSC`） | **56 ms** | 89 ms | FTS 驱动 1.6× |
+ *     | 16,590（`DSC0`） | **22 ms** | 65 ms | FTS 驱动 2.9× |
+ *     | 0（不存在的词） | **0.3 ms** | 135 ms | FTS 驱动 450× |
+ *
+ *    ⇒ 交叉点落在 **51,298 与 203,934 之间**。
+ *    ⇒ 两侧代价**极度不对称**：FTS 驱动的耗时随命中数**超线性**涨（51k→204k 只多了 4 倍命中，
+ *      耗时却涨了 23 倍：56 → 1,280 ms），而索引序近似**恒定**（58~89 ms，冷读最坏 184 ms）。
+ *      所以「阈值取错」的代价一边是几十毫秒、另一边是**几十秒**。
+ *    ⇒ 取 **100,000**：比实测交叉点略高，宁可让中等命中数多花 30~300 ms，
+ *      也绝不让大命中数掉进秒级。搜「IMG」这类相机通用前缀（本机 544,235 命中）是最常见的
+ *      搜法，它必须走索引序 —— 195× 的收益就在这一档。
+ *
+ * ⚠️ 别把它想成「精确的交叉点」：交叉点会随磁盘状态、页缓存、库规模漂移，
+ *    这里要的只是「站在安全的一侧」。
+ *
+ * @type {number}
+ */
+const SEARCH_INDEX_ORDER_MIN_HITS = 100000;
+/**
+ * 索引序用的索引名。它在 `createCoreSchema` 里建（建库时就有，不是 `deferred-index-worker`
+ * 那批运行期索引），但仍走 `hasIndex()` 判一遍 —— `INDEXED BY` 指向不存在的索引是
+ * **直接抛 `no query solution`**，不是变慢。
+ */
+const SEARCH_INDEX_ORDER_INDEX = 'idx_photos_date';
+
+/**
+ * 给**只读**连接套上同一套连接级 PRAGMA。
+ *
+ * 只读连接不写库文件，`cache_size` / `mmap_size` 纯粹是本地读缓存 —— 多占内存、不占锁，
+ * 所以不进 `dbWriteQueue`（那会把一把它根本不需要的锁占住）。
+ *
+ * @param {import('better-sqlite3').Database} conn
+ */
+function applyReadConnectionPragmas(conn) {
+  conn.pragma('busy_timeout = 8000');
+  conn.pragma('cache_size = ' + DB_CACHE_SIZE_KB);
+  conn.pragma('mmap_size = ' + DB_MMAP_SIZE_BYTES);
+}
+
 /** 归一化：不在白名单里的一律返回 `''`（未知），而不是原样落库。 */
 function normalizeThumbFormat(value) {
   var format = value ? String(value).trim().toLowerCase() : '';
   return THUMB_FORMAT_WHITELIST.indexOf(format) >= 0 ? format : '';
+}
+
+/**
+ * 扫描收尾阶段「按 id 区间分批」的批大小。
+ *
+ * 🔴 这不是性能调优参数，是**看门狗契约**的一部分：`scan-worker` 主进程侧有一条
+ * 「120 秒收不到任何消息就认定线程卡死并 `terminate()`」的看门狗
+ * （`main.js#runFolderScanInWorker`）。worker 是单线程，同步 SQL 期间连 300ms 一次的
+ * progress 心跳都发不出去，所以**任何一段同步工作都不能超过看门狗阈值**。
+ * 真库（1,656,580 行 / 13.3 GB）实测：`K:\COS` 一根 912,222 行，一次性
+ * `SELECT id, file_path … WHERE root_id = ?` 的 `.all()` 单次同步 57,367 ms、逐行比对
+ * 13,703 ms；拆成 20,000 行一批后总耗时 30,990 ms、**单批最大 1,433 ms**。
+ */
+var SCAN_TAIL_BATCH_ROWS = 20000;
+
+/** 分批之间的让出点：必须是**宏任务**让出（`setImmediate`），微任务让不出心跳。 */
+function yieldToEventLoop() {
+  return new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+}
+
+/**
+ * 扫描写入的照片列清单 —— `getInsertStmt()`（新增）与 `getUpdateFileFactsStmt()`
+ * （同路径文件内容变更）**共用同一份顺序**。
+ *
+ * 🔴 这是一份**单一真相源**：两条语句的参数顺序必须逐位一致，散着写两份字符串一定会漂移，
+ * 而漂移的症状是**静默串列**（比如把 `date_modified` 写进 `date_taken`），不报错、不抛异常。
+ * `scanner.js#processFile` 只构造一次参数数组，UPDATE 走的是同一数组去掉 `file_path` 那一项
+ * （`file_path` 在 UPDATE 里只作 `WHERE`，不参与 `SET`），顺序由本常量保证。
+ *
+ * ⚠️ `file_path` 在第 4 位（下标 3）。`scanner.js` 依赖这个下标做 `splice(3, 1)`，
+ * 挪动它必须同步改那边 —— 那里有对应的断言守着。
+ */
+var SCAN_WRITE_COLUMNS = [
+  'root_id',
+  'folder_path',
+  'file_name',
+  'file_path',
+  'file_size',
+  'file_type',
+  'width',
+  'height',
+  'date_taken',
+  'date_modified',
+  'thumbnail',
+  'has_thumbnail',
+  'thumb_size',
+  'thumb_format',
+  'camera_make',
+  'camera_model',
+  'lens_model',
+  'focal_length',
+  'aperture',
+  'iso_speed',
+  'shutter_speed',
+  'gps_latitude',
+  'gps_longitude',
+];
+
+/**
+ * 「同一个路径的文件内容变了」时，必须**额外置空**的派生列（本次扫描产不出来的那些）。
+ *
+ * 🔴 判定「过期」的**唯一**位置就在这里（见 CONTRACTS §P2-2）：后台任务的候选谓词保持简单，
+ * 不自己判 mtime/size。
+ *
+ * 为什么只有两组：
+ * - 缩略图四列（`thumbnail` / `has_thumbnail` / `thumb_size` / `thumb_format`）**不在这里** ——
+ *   它们由 `SET` 子句按本次扫描的结果直接覆盖。扫描期不生成缩略图时
+ *   （`scanner.js#GENERATE_THUMBNAILS_DURING_SCAN === false`）写的就是 0 / `''`（未知），
+ *   旧缩略图自然失效；生成过时写的就是新图。两条路都不会留下旧值。
+ * - `dhash*` 与 `file_hash` / `hash_*` **必须在这里**置空：它们由别的后台任务
+ *   （dHash 回填 / 查重指纹）产出，扫描根本不碰这两组列，不主动清就是**脏数据**——
+ *   文件换过了指纹却还是旧的，会报出早已不存在的重复对。
+ * - 拍摄参数组（`camera_make` … `gps_longitude` + `exif_date_taken`）**同理必须在这里**：
+ *   它们由缩略图补全任务顺带从文件头读出来，扫描同样不产出。不清就是「换了相机拍的新文件
+ *   还挂着旧相机的型号」，以及「换过的文件仍显示旧文件的拍摄时间」。
+ *   连带 `exif_mtime`（「已检查」标记）一起清 —— 它是这组列**唯一的**失效开关。
+ */
+var SCAN_INVALIDATED_ON_CONTENT_CHANGE = [
+  'dhash = NULL',
+  'dhash_mtime = NULL',
+  'dhash_size = NULL',
+  'file_hash = NULL',
+  'hash_mtime = NULL',
+  'hash_size = NULL',
+  'exif_mtime = NULL',
+  // 版本列与标记列同生共死：内容变了就该按**当前口径**重读一遍，而不是当作「已经看过 v2」。
+  'exif_ver = NULL',
+].concat(
+  // 拍摄参数的内容列：清单从 `exif-meta.js` 派生，别在这里再抄一遍列名
+  EXIF_METADATA_COLUMNS.map(function (col) {
+    return col + ' = NULL';
+  }),
+);
+
+/** `coerceExifValue` 认定为数值的字段类型 */
+var EXIF_NUMERIC_TYPES = { int: 1, number: 1, gpsAltitude: 1, dmsLat: 1, dmsLon: 1 };
+
+/**
+ * 把 `extractExifFields()` 的值按字段类型**再归一化一次**再绑进 SQLite。
+ *
+ * 🔴 为什么不能直接绑：better-sqlite3 对 `undefined`、数组、Buffer 会**抛**，
+ *    而这条语句跑在补全任务的热路径上（每张照片一次），抛出会被上层的 `try/catch` 吞掉 ⇒
+ *    症状是「批量回填静默零写入」，没有日志、也不中断任务。
+ *    这里对非文本类型拿到数组/Buffer 一律放弃该字段（宁可空着，也不写垃圾或炸掉整行）。
+ */
+function coerceExifValue(v, type) {
+  if (v === undefined || v === null || v === '') return null;
+  if (EXIF_NUMERIC_TYPES[type]) {
+    var n = Number(v);
+    if (!isFinite(n)) return null;
+    return type === 'int' ? Math.round(n) : n;
+  }
+  if (Array.isArray(v) || Buffer.isBuffer(v)) return null;
+  return String(v);
 }
 
 class PhotoDatabase {
@@ -35,6 +230,8 @@ class PhotoDatabase {
     this._deferredMmapApplied = false;
     /** file_hash / hash_* 列：首次重复哈希时再迁移 */
     this._duplicateHashSchemaDone = false;
+    /** `updatePhotoExif` 的预编译语句缓存（60 个占位符，热路径上每次 prepare 太贵） */
+    this._exifUpdateStmt = null;
     /** 根目录聚合计数缓存表（root_folder_stats_cache） */
     this._rootStatsCacheSchemaDone = false;
     /** 聚合/重复比对辅助索引：由 `src/workers/deferred-index-worker.js` 在首窗后建，主进程不碰（见该文件头注释） */
@@ -52,7 +249,7 @@ class PhotoDatabase {
     if (this._deferredCacheApplied) return;
     this._deferredCacheApplied = true;
     try {
-      this.db.pragma('cache_size = -131072'); // 128MB
+      this.db.pragma('cache_size = ' + DB_CACHE_SIZE_KB);
     } catch (e) {
       void e;
     }
@@ -62,7 +259,7 @@ class PhotoDatabase {
     if (this._deferredMmapApplied) return;
     this._deferredMmapApplied = true;
     try {
-      this.db.pragma('mmap_size = 1073741824'); // 1GB
+      this.db.pragma('mmap_size = ' + DB_MMAP_SIZE_BYTES);
     } catch (e) {
       void e;
     }
@@ -78,10 +275,12 @@ class PhotoDatabase {
   // `ensurePhotosRootFolderCompositeIndex()` / `ensurePhotosAggPartialIndexes()` /
   // `ensurePhotosDupHashPendingIndex()`。它们**一个调用点都没有**，SQL 却和真正在跑的
   // `src/workers/deferred-index-worker.js` 逐字重复 —— 同一批索引两个真相源，改一处必漏另一处。
-  // 已于 2026-09-29 删除。启动期这 7 个 `CREATE INDEX` + 13 次 `ALTER TABLE` 的**唯一定义处**
+  // 已于 2026-09-29 删除。启动期那批 `CREATE INDEX` / `ALTER TABLE` 的**唯一定义处**
   // 就是那个 worker（由 `main.js` 经 `db-write-queue` 以 `deferred-index` 名义入队）。
   // 要加索引 / 加列，改 worker；不要再在主线程加一份同步版本 —— 那等于在启动路径上拿主进程
   // 跑几次大表 CREATE INDEX 并长时间独占写锁（`maintenance-regression` 的静态契约会拦住它）。
+  // ⚠️ 刻意**不写条数**：以前这里写「7 个 `CREATE INDEX`」，而 worker 里实际只有 6 条 ——
+  //    散文里的数字没人校，必然漂。要看规模去看 worker。
 
   /**
    * 缩略图补全加速索引 + has_thumbnail 数据修复；在 Worker 线程中执行，避免阻塞主线程。
@@ -167,11 +366,12 @@ class PhotoDatabase {
   }
 
   /**
-   * 「补全任务待处理」的统一谓词 —— 缩略图 / dHash / 原图尺寸三者任一缺失即命中。
+   * 「补全任务待处理」的统一谓词 —— 缩略图 / dHash / 原图尺寸 / 拍摄参数四者任一缺失即命中。
    *
    * 🔴 必须与 `src/main.js#runRowsWithThumbConcurrency` 的处理逻辑**同源**：那个任务在拿到候选行后
    * 除了生成缩略图与 dHash，还会读一次 sharp metadata 并回填 `width` / `height`
-   * （见 `updatePhotoDimensions`），所以「缺尺寸」也是它的职责范围。
+   * （见 `updatePhotoDimensions`）**以及拍摄参数**（见 `updatePhotoExif`），所以「缺尺寸」
+   * 与「没看过 EXIF」都是它的职责范围。
    * ⚠️ 2026-10-05 之前这里指向的 `src/main/thumbnail-backfill.js` 是一个**从未被运行时加载**的
    * 孤儿模块 —— 实现只落在它里面，于是这条谓词与活代码长期不同源：候选集永不收敛、每轮补全
    * 走遍全库。该逻辑已移植进 `main.js`，孤儿文件已删除（守护 `module-reachability-regression`）。
@@ -184,7 +384,145 @@ class PhotoDatabase {
    *    但它已有缩略图时 `processOne` 会立刻跳过，代价只是一次索引命中，可接受。
    */
   _sqlBackfillPendingExpr() {
-    return "(has_thumbnail = 0 OR dhash IS NULL OR TRIM(dhash) = '' OR width IS NULL OR width = 0)";
+    // 🔴 后四支必须被 `is_image` 门住。`processOne` 对**视频**既不读尺寸
+    //    （`needSize = !isVideo && …`）、不算 dHash（`needDhash = !isVideo && …`），
+    //    也不读拍摄参数（`needExif = !isVideo && …`），
+    //    而「dHash 为空」「没看过 EXIF」的视频永远填不上 ⇒ 留在候选集里就是
+    //    **每轮必然被取到、处理完又原样留在集合里的死行**。
+    //    本机真实库（166 万行）实测：全部 **26,609** 个视频都缺 width/height，
+    //    其中 **25,585** 个已有缩略图 ⇒ 纯空跑（每轮白烧约 256 个批次，而且
+    //    「待补数」**永远不归零** —— `getMissingThumbnailCount()` 的收敛断言在带视频的库上不可满足）。
+    //    视频真正欠的只有缩略图，由第一支（`_sqlNeedsThumbnailExpr()`）覆盖（实测 1,024 个）。
+    //    ⚠️ 这一支**不能**一并挪进 `is_image` 里 —— 视频的缩略图是能生成的（ffmpeg / 占位图兜底），
+    //       门进 `is_image` 就等于把 1,024 个视频的缩略图永远放弃。
+    return (
+      '(' +
+      this._sqlNeedsThumbnailExpr() +
+      ' OR (' +
+      this._sqlFileTypeIsImageExpr() +
+      ' AND (' +
+      // 🔴 第二支的**每一项都要配自己那一路的失败标记**（2026-10-06 补）。
+      //
+      // 为什么：`thumb_fail_mtime` 只门住了**第一支**（缺缩略图），第二支一个都不认它。
+      // 而「读不了的文件」正好 `width = 0` / `dhash = NULL` / `exif_mtime = NULL`
+      // ⇒ 它们**从第一支漏进第二支**，照样留在候选集里 —— 每轮被取出、每轮重读一遍原文件，
+      // 而且主分母（候选集规模）**永远归不了零**。
+      // 本机实测（2026-10-06 15:10，真库）：已盖章失败的 10 行（9 个 18 MB 的 .CR2
+      // + 1 个截断 JPEG）**10/10 命中第二支** ⇒ 每轮白读约 162 MB。
+      //
+      // 分工按「缺的那一项**靠什么**才能补上」：
+      //   dHash 缺      ← 要**解码** ⇒ 失败标记 `thumb_fail_mtime`
+      //   尺寸 / EXIF 缺 ← 只读**文件头** ⇒ 失败标记 `header_fail_mtime`
+      // ⚠️ 三个子条件**不能**合并成一个 `AND`/`OR` 的粗判：一个文件可以「头读得出、解码读不出」
+      //    （截断 JPEG：尺寸与 EXIF 已经补上了，只差 dHash）—— 那种行只该被 thumb 那一路门住，
+      //    用 header 那一路去门它会把尺寸/EXIF 的重试一起关掉。
+      // ⚠️ 视频不会走到这里：整个第二支仍被 `is_image` 门着。
+      "((dhash IS NULL OR TRIM(dhash) = '') AND " +
+      this._sqlFailMarkerRetryableExpr('thumb_fail_mtime') +
+      ') OR ((width IS NULL OR width = 0) AND ' +
+      this._sqlFailMarkerRetryableExpr('header_fail_mtime') +
+      ') OR (' +
+      this._sqlNeedsExifExpr() +
+      ' AND ' +
+      this._sqlFailMarkerRetryableExpr('header_fail_mtime') +
+      '))))'
+    );
+  }
+
+  /**
+   * 「这一行**还缺缩略图**，而且值得再试一次」的判据 —— 候选谓词的第一支。
+   *
+   * 🔴 为什么不直接写 `has_thumbnail = 0`（2026-10-06 修正）：
+   *    那一支是**无条件**入选的，于是**读不了的文件**（Canon 旧式 RAW 的旧式 JPEG 压缩、
+   *    被截断的 JPEG）永远停在里面 —— 每轮开局被取出、每轮白读一次盘（.CR2 单个 18 MB）、
+   *    每轮失败，且**失败不留任何痕迹**。本机实测 10 行，而且正好是全库**最高** id
+   *    （`G:\国模\依华_20140318_151P\4322.CR2`~`4330.CR2`），也就是任务每轮最先撞上的位置。
+   *    ⇒ 每次启动都先白烧 160 MB 读取 + 10 次失败，而库里分不出「还没轮到」与「试过失败了」。
+   *
+   * 判据的语义（与 `exif_mtime` **刻意不同**，别照抄那一套）：
+   *    `exif_mtime` 只回答「看过没」（二元），所以必须再配一个 `exif_ver` 管「看过第几版」。
+   *    缩略图这边不需要版本号（规格变了是靠 `thumb_size`/`thumb_format` 另外判），
+   *    需要的是**能自愈**：记下「失败当时该行是什么 date_modified」，文件被替换后
+   *    `date_modified` 会变 ⇒ 下面的 `<>` 自动把这一行放回候选集，**不依赖用户重新扫描**。
+   *    （这比 `hash_mtime` / `exif_mtime` 那套「靠扫描时置空派生列」更省一条链。）
+   *
+   * 自愈判据本身抽在 `_sqlFailMarkerRetryableExpr()` 里（两个失败标记列**共用一份实现**）。
+   *
+   * ⚠️ 不要指望它走 `idx_photos_hasThumb` 的覆盖索引：`thumb_fail_mtime` / `date_modified`
+   *    都不在索引里，判定要回表。但回表次数 = 「倒序扫到的行数」而不是「全库缺缩略图的行数」
+   *    —— `ORDER BY id DESC LIMIT n` 凑满 n 行就停，所以只要失败行是**少数**，代价可忽略。
+   */
+  _sqlNeedsThumbnailExpr() {
+    return 'has_thumbnail = 0 AND ' + this._sqlFailMarkerRetryableExpr('thumb_fail_mtime');
+  }
+
+  /**
+   * 「某个失败标记列说：这一行**还值得再试一次**」的通用判据。
+   *
+   * 语义 = 标记列记的是「**失败当时**该行的 `date_modified`」⇒ 文件被替换后日期一变，
+   * `<>` 自动成立、把这一行放回候选集（**自愈，不依赖用户重新扫描**）。
+   * 见 `markThumbFailed()` / `markHeaderFailed()` 的 JSDoc：那两个写入口都必须传**行当前的
+   * `date_modified`**，绝不能传 `Date.now()`（时间戳只会前进、永远不可能相等 ⇒ 那行永远回不来）。
+   *
+   * ⚠️ NULL 必须**两侧都兜**：`date_modified` 在老数据上可能是 NULL，写成裸的
+   *    `col <> date_modified` 会得到 NULL（当假处理）⇒ **那些行被永久排除**，
+   *    而它们正是最需要补的老照片。用 `IFNULL(..., '')` 把「两边都空」判成**相等**。
+   *    唯一的真牙是「盖章时有日期、之后 `date_modified` 被清成 NULL」——
+   *    裸比较得 NULL（永久排除）vs 有 IFNULL 得真（回来重试）。
+   *
+   * 🔴 两个标记列**共用这一个实现**是刻意的：`thumb_fail_mtime`（解码这一路）与
+   *    `header_fail_mtime`（文件头这一路）必须是同一条自愈规则。各写一份迟早漂开，
+   *    而漂开的症状是「某一路的失败行永远回不来」——不报错、不写日志。
+   *
+   * @param {string} col 标记列名（`thumb_fail_mtime` / `header_fail_mtime`）
+   */
+  _sqlFailMarkerRetryableExpr(col) {
+    return '(' + col + " IS NULL OR IFNULL(" + col + ", '') <> IFNULL(date_modified, ''))";
+  }
+
+  /**
+   * 「拍摄参数还没读过（或读过的是旧口径）」的判据。
+   *
+   * 🔴 判**标记列**，不判内容列有没有值：截图 / 网图 / PNG 本来就没有 EXIF，
+   *    用 `camera_make IS NULL` 判会让这几类照片永远留在候选集里 —— 每轮被取出来、
+   *    读完文件头、写回一堆 null，却永远不算「已补」。见 `ensurePhotosExifColumn()`。
+   *
+   * 🔴 第二个判据 `exif_ver` 管「看过**第几版**」。`exif_mtime` 是**二元**标记（看过就再也不看），
+   *    只靠它的话，扩一次字段会让**已经跑过的行永久缺新列** —— 不报错、不写日志，
+   *    只是那些照片在面板上永远少几行。版本号在 `src/main/exif-meta.js#EXIF_SCHEMA_VERSION` 单点维护。
+   */
+  _sqlNeedsExifExpr() {
+    return '(exif_mtime IS NULL OR IFNULL(exif_ver, 0) < ' + EXIF_SCHEMA_VERSION + ')';
+  }
+
+  /**
+   * `_sqlNeedsExifExpr()` 的 **JS 孪生**：这一行**在本进程里**还要不要读一次文件头。
+   *
+   * 🔴 这不是「顺手多加一个函数」，而是补一个**静默数据缺失**的洞：
+   *    `_sqlNeedsExifExpr()` 一旦加上版本判据，它就变成**两个列**的判据（`exif_mtime` + `exif_ver`），
+   *    而 `processOne` 原来只判 `exif_mtime`。两者一漂开就出现这样一条死路 ——
+   *      · 候选查询：`IFNULL(exif_ver, 0) < 2` 为真 ⇒ 这行**每轮都被取出来**；
+   *      · `processOne`：`exif_mtime` 有值 ⇒ 判「不需要读」⇒ **跳过**；
+   *      · 结果：行被原样写回，`exif_ver` 永远是 NULL ⇒ **永远补不上新扩出来的列**，
+   *        而且候选集**永不收敛**（每轮启动都白取一遍）。
+   *    本机真实库实测（2026-10-06 12:23）：旧口径跑过的 9,799 行整段命中候选谓词、
+   *    却全部拿不到新列，`exif_ver` 一个都没写上 —— 正是这条死路。
+   *
+   * 🔴 判的这一组列必须与 `_sqlNeedsExifExpr()` **逐列相同**。守护
+   *    `exif-backfill-regression` 会从那条 SQL 里机械抽出列名与这里比对，
+   *    所以将来再加标记列时，只改 SQL 会被当场抓红。
+   *
+   * ⚠️ 调用方仍需自己判 `!isVideo`：视频本来就不读拍摄参数（见 `_sqlBackfillPendingExpr()` 的注释），
+   *    这不是本函数该管的事 —— 它只回答「按标记列看，这行的拍摄参数是不是旧口径」。
+   *
+   * ⚠️ `row` 必须由 `getPhotosMissingThumbnailsBefore()` 取出来，它的 SELECT 列表**必须带**
+   *    `exif_mtime` 与 `exif_ver`。少任何一列，这里就会把有值的行判成「没看过」或反之。
+   */
+  photoNeedsExif(row) {
+    if (!row) return true;
+    var seenAt = row.exif_mtime;
+    if (seenAt === null || seenAt === undefined || String(seenAt).trim() === '') return true;
+    return !(Number(row.exif_ver) >= EXIF_SCHEMA_VERSION);
   }
 
   /**
@@ -236,6 +574,31 @@ class PhotoDatabase {
         -- 判断有没有缩略图一律看 has_thumbnail 列，不要看这两列。
         thumb_size INTEGER DEFAULT 0,
         thumb_format TEXT DEFAULT '',
+        -- 缩略图生成**失败**的记账列（2026-10-06 新增）：记的是「尝试失败当时」该行的 date_modified。
+        -- 为什么必须有：has_thumbnail = 0 恒为真，而**读不了的文件**（Canon 旧式 RAW、被截断的 JPEG）
+        --   每轮被取出、每轮读一次盘、每轮失败 —— 永不收敛。本机实测：9 个 18 MB 的 .CR2 排在
+        --   全库最高 id，任务每轮开局必然先撞上它们、必然白读 160 MB，且失败后**不留任何痕迹**，
+        --   库里分不出「还没轮到」与「试过失败了」。
+        -- 与 exif_mtime 的关键差别：EXIF 那套只判「看过没」，这里必须**能自愈** —— 文件被替换后
+        --   date_modified 会变，_sqlNeedsThumbnailExpr() 里的 <> 自动把它放回候选集，
+        --   不依赖用户重新扫描。见 database.js#_sqlNeedsThumbnailExpr()。
+        -- 注意：0 / 空串 表示「本列引入之前的存量」，语义是**没失败过**；判断有没有缩略图仍看 has_thumbnail。
+        thumb_fail_mtime TEXT,
+        -- 「文件头都读不出来」的记账列（2026-10-06 新增，与 thumb_fail_mtime 分工见下）。
+        -- 为什么不能只有 thumb_fail_mtime：那只门住了候选谓词的**第一支**（缺缩略图），
+        --   而候选谓词的**第二支**（是图片 AND (dhash 缺 OR width 0 OR EXIF 待补)）判的是
+        --   另一组列。读不了的文件正好 width=0 / dhash=NULL / exif_mtime=NULL ⇒ 第二支恒为真
+        --   ⇒ 它们从第一支漏出来、照样留在候选集里，每轮被取出、每轮重读一遍原文件。
+        --   本机实测：9 个 18 MB 的 .CR2 + 1 个截断 JPEG，10/10 命中第二支（约 162 MB/轮 白读），
+        --   而且候选集规模（主分母）因此永远归不了零。
+        -- 分工（两列各管自己那一路，别混）：
+        --   thumb_fail_mtime  ← 只记「解码这一路失败」（缩略图 / dHash 都要解码）
+        --   header_fail_mtime ← 只记「文件头读不出来」（原图尺寸 / 拍摄参数只读文件头）
+        --   注意「解码失败但文件头读到了」是真实存在的一类（截断 JPEG）：它只盖 thumb_fail_mtime，
+        --   尺寸与 EXIF 照样补得上 —— 这正是 bug B 的修复效果，别把它一起排除掉。
+        -- 与 thumb_fail_mtime 完全同构：记「失败当时该行的 date_modified」⇒ 文件被替换后
+        --   date_modified 一变就自动回到候选集（自愈，不依赖重新扫描）。
+        header_fail_mtime TEXT,
         is_favorite INTEGER DEFAULT 0,
         camera_make TEXT,
         camera_model TEXT,
@@ -246,6 +609,22 @@ class PhotoDatabase {
         shutter_speed TEXT,
         gps_latitude REAL,
         gps_longitude REAL,
+        -- 拍摄参数（EXIF）回填的「已检查」标记：记的是**读取当时**该行的 date_modified。
+        -- 🔴 非 NULL = 这行已经试过读文件头 —— **不代表读到了 EXIF**（截图 / 网图 / PNG 本就没有）。
+        --    候选谓词判的必须是这一列，不是「camera_make IS NULL」：后者会让本来就没有 EXIF
+        --    的照片永远留在候选集里，任务永不收敛（与 dhash 对视频那类死行同一个坑）。
+        exif_mtime TEXT,
+        -- EXIF 里的**真实拍摄时间**。🔴 刻意与 date_taken 分成两列、且**不参与排序**：
+        --    date_taken 现全库等于 date_modified（文件落盘时间），是排序默认列 + 日期分组
+        --    + idx_photos_date 的唯一输入；而真实拍摄时间只有 ~23% 的照片取得到，
+        --    覆盖过去会让时间线变成「23% 真 + 77% 原样」的混合口径（同一天拍的分落两处）。
+        --    原委见 src/main/exif-meta.js 里 formatExifDate 上方的长注释。
+        exif_date_taken TEXT,
+        -- ⚠️ 上面只列了拍摄参数的**第一批**列。后来扩出来的那 48 列（方向 / 曝光补偿 / 测光 /
+        --    闪光 / 白平衡 / 器材序列号 / 软件 / Windows 关键词 …）刻意**不写在这里**，
+        --    统一由 ensurePhotosExifColumn() 从 src/main/exif-meta.js 的注册表派生并迁移 ——
+        --    两处各抄一份 60 列的清单必然漂移。新建库也走 init() ⇒ 一样会被补齐。
+        --    ⚠️ 本段在模板字符串里，注释中**不能出现反引号**（会当场截断 SQL）。
         FOREIGN KEY (root_id) REFERENCES root_folders(id) ON DELETE CASCADE
       );
 
@@ -292,6 +671,10 @@ class PhotoDatabase {
     // 一旦列还没加上（老库首次启动），那几条语句会直接 `no such column` 全部失败。
     // ALTER TABLE ADD COLUMN 带常量 DEFAULT 是 O(1)，不会拖慢启动。
     this.ensurePhotosThumbnailMetaColumns();
+    // `exif_mtime` 同理必须在这里同步加：`_sqlBackfillPendingExpr()` 引用了它，
+    // 而那个谓词会被「待补数」这类随时可调的只读查询用到（不像 dhash / file_hash
+    // 只在补全任务开跑前才被碰）。老库上少这一列 = 启动后第一次点开就 no such column。
+    this.ensurePhotosExifColumn();
     // ensurePhotosIsFavoriteColumn: 首窗后延时调度，避免大库 PRAGMA/CREATE INDEX 阻塞启动
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
   }
@@ -347,16 +730,35 @@ class PhotoDatabase {
   }
 
   /**
-   * 确保 photos 表有 `thumb_size` / `thumb_format` 两列（缩略图规格）。
+   * 确保 photos 表有 `thumb_size` / `thumb_format` / `thumb_fail_mtime` / `header_fail_mtime` 四列
+   * （缩略图元信息 + 两个失败记账列）。
    *
-   * 为什么要有这两列：在此之前**全库没有任何地方记录缩略图是用什么档位、什么格式生成的**，
+   * 为什么要有规格两列：在此之前**全库没有任何地方记录缩略图是用什么档位、什么格式生成的**，
    * 于是「换了 thumbSize 之后哪些图还是旧的」「哪些图还是 JPEG 需要转 WebP」这类问题
    * 既查不出来也没法做增量迁移，只能整表硬跑。列加上之后，这两个问题都变成一句 WHERE。
    *
-   * 🔴 **刻意不回填历史行**：`0` / `''` 就是「本列引入之前的存量」。
+   * 为什么要有失败记账列（2026-10-06）：候选谓词里的 `has_thumbnail = 0` 是**无条件**入选的，
+   * 而读不了的文件（Canon 旧式 RAW、被截断的 JPEG）会永远停在那里 —— 每轮开局被取出、
+   * 每轮白读一次盘（.CR2 单个 18 MB）、每轮失败，且**失败不留任何痕迹**，
+   * 库里分不出「还没轮到」与「试过失败了」。本机实测 10 行（9 个 CR2 + 1 个截断 JPEG）
+   * 正好排在**全库最高 id**，也就是任务每轮最先撞上的位置。
+   *
+   * 🔴 两列分工（2026-10-06 同一轮补上 `header_fail_mtime`，因为只加一列**没修干净**）：
+   *    `thumb_fail_mtime` 只门住候选谓词的**第一支**（缺缩略图）；第二支
+   *    （`是图片 AND (dhash 缺 OR width 0 OR EXIF 待补)`）判的是另一组列，一个都不认它。
+   *    而读不了的文件正好 `width=0` / `dhash=NULL` / `exif_mtime=NULL` ⇒ **从第一支漏进第二支**，
+   *    照样每轮被取出。实测 10/10 命中第二支（约 162 MB/轮 白读），且主分母（候选集规模）
+   *    因此永远归不了零。⇒ 两个标记列各管自己那一路：
+   *      `thumb_fail_mtime`  ← 解码路（缩略图 / dHash）
+   *      `header_fail_mtime` ← 文件头路（原图尺寸 / 拍摄参数）
+   *    ⚠️ 别把「解码失败但文件头读到了」（截断 JPEG）也盖成 header 失败 —— 它尺寸与 EXIF
+   *       照样补得上，那正是 bug B 的修复效果。
+   *
+   * 🔴 **刻意不回填历史行**：`0` / `''` / NULL 就是「本列引入之前的存量」。
    *    全表 `UPDATE photos SET thumb_size = 256` 会独占写锁扫完整个 12 GB 库
    *    （项目里已有这条红线），而它在迁移判断上和 `0` 是等价的——两者都需要重生成。
    *    与其花一次全表写锁换一个不改变结论的数字，不如老实留着「未知」。
+   *    对 `thumb_fail_mtime` 更明显：回填等于给全库盖一个「失败过」的章，语义直接错。
    *
    * ALTER TABLE ADD COLUMN 带常量 DEFAULT 是 O(1)（只改 schema、不重写数据），
    * 所以这个函数放在 `init()` 里**同步**调用也不会拖慢百万级库的启动。
@@ -373,6 +775,23 @@ class PhotoDatabase {
         this.db.exec("ALTER TABLE photos ADD COLUMN thumb_format TEXT DEFAULT '';");
         added.push('thumb_format');
       }
+      // 🔴 `thumb_fail_mtime` 必须在这里**同步**加：它被 `_sqlNeedsThumbnailExpr()` 引用，
+      //    而那个谓词是候选查询（含「第一趟只取缺缩略图」那条）的 WHERE —— 老库上少这一列，
+      //    补全任务**第一次取批**就 `no such column`（不是启动时炸，启动日志里看不出来）。
+      //    与 `exif_mtime` 同理：被随时可调的只读谓词引用的列，不能等到任务开跑才迁移。
+      //    ALTER TABLE ADD COLUMN 不带 DEFAULT 是 O(1)，不拖慢百万级库的启动。
+      if (!this.hasPhotosColumn('thumb_fail_mtime')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN thumb_fail_mtime TEXT;');
+        added.push('thumb_fail_mtime');
+      }
+      // `header_fail_mtime` 同理必须在这里**同步**加：候选谓词的第二支引用了它，
+      // 而那条谓词会被「待补数」这类随时可调的只读查询用到（`estimatePendingCandidateCount`
+      // 的抽样点查、`getPhotosMissingThumbnailsBefore` 的取批）。老库上少这一列 =
+      // 启动后第一次取批就 `no such column`，而且**不是启动时炸**，启动日志里看不出来。
+      if (!this.hasPhotosColumn('header_fail_mtime')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN header_fail_mtime TEXT;');
+        added.push('header_fail_mtime');
+      }
       if (added.length) {
         logger.log('[db migration] added missing thumbnail meta columns: ' + added.join(', '));
       }
@@ -385,6 +804,68 @@ class PhotoDatabase {
         return { added: added };
       }
       logger.error('[db migration] ensure thumbnail meta columns failed:', message);
+    }
+    return { added: added };
+  }
+
+  /**
+   * 确保 photos 表有 `exif_mtime` 列 —— 拍摄参数回填的「已检查」标记。
+   *
+   * 🔴 为什么必须有这一列：判「这行还要不要读 EXIF」**不能**看内容列有没有值。
+   *    `camera_make IS NULL` 对「截图 / 网图 / PNG」恒为真，而这些照片**永远也不会有 EXIF**
+   *    ⇒ 它们会一轮一轮被取出来、处理完又原样留下，任务**永不收敛**（与 `_sqlBackfillPendingExpr`
+   *    里视频那类死行是同一个坑）。标记列把「本来就没有」和「还没看过」彻底分开。
+   *
+   * 🔴 与 `thumb_size` / `thumb_format` 一起放在 `init()` 里**同步**加（见那边的注释）：
+   *    这些列被随时可调的只读谓词引用，不能等到补全任务开跑时才迁移。
+   *    `ALTER TABLE ADD COLUMN` 不带 DEFAULT 是 O(1)，不会拖慢百万级库的启动。
+   *
+   * 🔴 本方法同时是**拍摄参数全部内容列**（当前 58 列）的迁移点：列名与类型都从
+   *    `src/main/exif-meta.js` 的注册表派生 ⇒ 扩字段只改那张表，这里一个字都不用动。
+   *    少了任何一列就是 `updatePhotoExif` 当场 `no such column`（第一次取批时炸，启动日志看不出来）。
+   *    逐列 ALTER、单列失败不阻断其余列；并发实例撞 `duplicate column name` 是幂等命中。
+   *
+   * @returns {{added: string[]}}
+   */
+  ensurePhotosExifColumn() {
+    if (!this.hasTable('photos')) return { added: [] };
+    var added = [];
+    try {
+      // 一次 PRAGMA 取回全部列名：本方法现在要核对 50 列，逐列调 `hasPhotosColumn()`
+      // 就会变成 50 次 `PRAGMA table_info`（每次都要遍历整张表的结构）。
+      var existing = {};
+      var pragma = this.db.prepare('PRAGMA table_info(photos)').all();
+      for (var p = 0; p < pragma.length; p++) existing[pragma[p].name] = true;
+
+      // 账本列 —— **不在**解析注册表里：它们是「回填记账」，不是从文件里读出来的内容。
+      //   `exif_mtime` = 看过没；`exif_ver` = 看过第几版（见 `_sqlNeedsExifExpr()`）。
+      var plan = [
+        ['exif_mtime', 'TEXT'],
+        ['exif_ver', 'INTEGER'],
+      ];
+      // 内容列：列名与类型全部从 `exif-meta.js` 的注册表派生，别在这里再抄一遍列名。
+      for (var c = 0; c < EXIF_METADATA_COLUMNS.length; c++) {
+        var exifCol = EXIF_METADATA_COLUMNS[c];
+        plan.push([exifCol, EXIF_COLUMN_TYPES[exifCol] || 'TEXT']);
+      }
+      for (var n = 0; n < plan.length; n++) {
+        if (existing[plan[n][0]]) continue;
+        this.db.exec('ALTER TABLE photos ADD COLUMN ' + plan[n][0] + ' ' + plan[n][1] + ';');
+        existing[plan[n][0]] = true;
+        added.push(plan[n][0]);
+      }
+      if (added.length) {
+        logger.log('[db migration] added missing exif meta column(s): ' + added.join(', '));
+      }
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      // 主进程 / scan-worker / web-server 各持一个 Database 实例，启动早期可能同时跑这里。
+      // 后到的那个会撞 `duplicate column name` —— 那是幂等命中，不是故障。
+      if (/duplicate column name/i.test(message)) {
+        logger.log('[db migration] exif meta column already added by another connection');
+        return { added: added };
+      }
+      logger.error('[db migration] ensure exif meta column failed:', message);
     }
     return { added: added };
   }
@@ -606,32 +1087,48 @@ class PhotoDatabase {
 
   /**
    * 按单根重算 all/image/video 写入 root_folder_stats_cache，不碰其他根；扫描结束或需精确单根修正时调用。
+   *
+   * 🔴 **异步 + 三档之间让出**，调用端必须 `await`（`scanner.js` 的收尾段）。
+   * 三档聚合各自是一次同步 SQL；改写后单档仍有数百 ms～2.6 s（`K:\COS` 912,222 行实测
+   * all=2,595 ms / image=383 ms / video=54 ms），要让 `scan-worker` 的 300 ms 心跳
+   * 在这段里发得出去，只能在档与档之间给事件循环让路。
+   *
+   * 读与写**分开**：先把三档算完（只读，可让出），最后一次性落库（单个同步事务，微秒级）。
+   * 代价是「算」与「写」之间理论上可能被别人插进一次并发写，但本方法的调用点就在扫描收尾、
+   * 且扫描整段占着写库闸门（`dbWriteQueue.run('scan')`），所以落库值仍然是那一时刻的聚合。
    */
-  refreshRootFolderStatsCacheForRoot(rootId) {
+  async refreshRootFolderStatsCacheForRoot(rootId, options) {
     if (rootId == null) return;
     var rid = parseInt(rootId, 10);
     if (!isFinite(rid) || rid <= 0) return;
+    options = options || {};
+    var yieldFn = typeof options.yieldFn === 'function' ? options.yieldFn : yieldToEventLoop;
     this.ensureRootFolderStatsCacheSchema();
     var heavy = require('./db-heavy-read');
     if (typeof heavy.runAggregateStatsForSingleRoot !== 'function') return;
     var exists = this.db.prepare('SELECT 1 AS x FROM root_folders WHERE id = ? LIMIT 1').get(rid);
     if (!exists) return;
-    var self = this;
-    var insert = this.db.prepare(
-      `INSERT OR REPLACE INTO root_folder_stats_cache (root_id, media_key, photo_count, folder_count, video_count)
-       VALUES (?, ?, ?, ?, ?)`,
-    );
     var variants = [
       { key: 'all', opts: {} },
       { key: 'image', opts: { mediaType: 'image' } },
       { key: 'video', opts: { mediaType: 'video' } },
     ];
+    var computed = [];
+    for (var i = 0; i < variants.length; i++) {
+      var v = variants[i];
+      var stats = heavy.runAggregateStatsForSingleRoot(this.db, rid, v.opts);
+      if (stats) computed.push({ key: v.key, stats: stats });
+      if (i < variants.length - 1) await yieldFn();
+    }
+    if (!computed.length) return;
+    var insert = this.db.prepare(
+      `INSERT OR REPLACE INTO root_folder_stats_cache (root_id, media_key, photo_count, folder_count, video_count)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
     var tx = this.db.transaction(function () {
-      for (var i = 0; i < variants.length; i++) {
-        var v = variants[i];
-        var stats = heavy.runAggregateStatsForSingleRoot(self.db, rid, v.opts);
-        if (!stats) continue;
-        insert.run(rid, v.key, stats.photo_count, stats.folder_count, stats.video_count);
+      for (var j = 0; j < computed.length; j++) {
+        var c = computed[j];
+        insert.run(rid, c.key, c.stats.photo_count, c.stats.folder_count, c.stats.video_count);
       }
     });
     tx();
@@ -813,25 +1310,6 @@ class PhotoDatabase {
     return row && row.c != null ? Number(row.c) : 0;
   }
 
-  /**
-   * 存量补充：按 file_path 顺序分批拉取「有缩略图但无 dHash」的照片
-   * 顺序读盘优化：同文件夹文件连续，利用操作系统预读
-   */
-  getDhashBackfillPhotosAfter(afterId, batchSize) {
-    this.ensureDhashSchema();
-    var aid = Math.max(0, parseInt(afterId, 10) || 0);
-    var lim = Math.max(1, Math.min(parseInt(batchSize, 10) || 2000, 5000));
-    return this.db
-      .prepare(
-        `SELECT id, file_path, file_name, file_size, date_modified, file_type
-         FROM photos
-         WHERE id > ? AND has_thumbnail = 1 AND (dhash IS NULL OR TRIM(dhash) = '') AND file_path != ''
-         ORDER BY file_path ASC
-         LIMIT ?`,
-      )
-      .all(aid, lim);
-  }
-
   /** 尚无 file_hash 的图片数量（非视频）；已有指纹的不重复计算 */
   _sqlNeedsFileHashExpr() {
     return "(file_hash IS NULL OR TRIM(file_hash) = '')";
@@ -851,26 +1329,33 @@ class PhotoDatabase {
   }
 
   /**
-   * 按 id 升序分批拉取「仍无哈希」的图片行（供主进程 runDuplicateHashDetection）
+   * 按 id **倒序**分批拉取「仍无哈希」的图片行（供主进程 runDuplicateHashDetection）。
+   *
+   * 🔴 **方向刻意是倒序的**（2026-10-05，与缩略图补全同一条策略）：用户导入新照片之后最想做的
+   *    就是查重，而「刚加入的」正是 id 最大的那批；升序会让新导入的排在全部历史积压之后。
+   *    查询写法与理由同 `getPhotosMissingThumbnailsBefore()`：两个方向都走主键区间扫描，
+   *    一次完整跑的代价相同，倒序只是把有用的行提前。
+   *
+   * 🔴 游标与排序必须同向且单调：调用方取「本批最后一行的 id」续接（倒序下那是**最小** id）。
    */
-  getHashAllPhotosAfter(afterId, batchSize) {
+  getHashAllPhotosBefore(beforeId, batchSize) {
     this.ensureDuplicateHashSchema();
-    var aid = Math.max(0, parseInt(afterId, 10) || 0);
+    var bid = Math.max(0, parseInt(beforeId, 10) || 0);
     var lim = Math.max(1, Math.min(parseInt(batchSize, 10) || 2000, 5000));
     return this.db
       .prepare(
         `SELECT id, file_path, file_name, file_size, date_modified,
                 file_hash, hash_mtime, hash_size
          FROM photos
-         WHERE id > ? AND ` +
+         WHERE id < ? AND ` +
           this._sqlFileTypeIsImageExpr() +
           ' AND ' +
           this._sqlNeedsFileHashExpr() +
           `
-         ORDER BY id ASC
+         ORDER BY id DESC
          LIMIT ?`,
       )
-      .all(aid, lim);
+      .all(bid, lim);
   }
 
   /**
@@ -979,11 +1464,22 @@ class PhotoDatabase {
   addRootFolder(folderPath) {
     const name = path.basename(folderPath);
     const stmt = this.db.prepare('INSERT OR IGNORE INTO root_folders (path, name) VALUES (?, ?)');
-    const result = stmt.run(folderPath, name);
-    // INSERT OR IGNORE 不插入时 lastInsertRowid 为 0，需要重新查询
-    if (result.lastInsertRowid) {
-      return result.lastInsertRowid;
-    }
+    stmt.run(folderPath, name);
+    /**
+     * 🔴 **一律回表查 id，绝不用 `lastInsertRowid` 判断。**
+     *
+     * `sqlite3_last_insert_rowid()` 是**连接级**的「上一次成功插入的 rowid」，
+     * `INSERT OR IGNORE` 真的被忽略时它**不会归零**，而是**保留上一次插入**（可能是别的表！）的值。
+     * 于是重复登记一个已存在的根目录时，这里会返回一个**不属于 `root_folders` 的 id**
+     * （比如上一批 photos 的 rowid）⇒ 之后每一行的写入都撞
+     * `FOREIGN KEY constraint failed` ⇒ 扫描把**全部文件**静默跳过，只打一行 `SKIP (FK)`，
+     * 用户看到的是「扫描完成，0 张」。
+     *
+     * ⚠️ 线上 worker 场景碰不到它（`scan-worker` 用新连接，`last_insert_rowid` 初始为 0，
+     * 恰好是 falsy），但**同一个连接里先插过照片、再登记根目录**就会中招 ——
+     * `scripts/scan-incremental-update-regression.js` 钉了这条（真跑：插一行 photos
+     * 再重复 addRootFolder，第二次必须仍返回同一个 id）。
+     */
     const row = this.db.prepare('SELECT id FROM root_folders WHERE path = ?').get(folderPath);
     return row ? row.id : null;
   }
@@ -1091,9 +1587,34 @@ class PhotoDatabase {
 
     const whereClause = 'WHERE 1=1' + (conditions.length ? ' AND ' + conditions.join(' AND ') : '');
 
-    const total = this.db
-      .prepare(`SELECT COUNT(*) as count FROM photos ${whereClause}`)
-      .get(...params);
+    // 🔴 P0-1：`root_id = ? AND <媒体档谓词>` 形状的 COUNT 必须**钉住**已有的部分索引。
+    //    规划器不会自己选它 —— 它以为 `idx_photos_root (root_id)` 更便宜。真库
+    //    （1,656,580 行 / 14 GB）实测 root 23（912,222 行）：自选 71,617 ms、加 hint 275 ms
+    //    （图片档）/ 10 ms（视频档），结果值逐个相同。差在 `idx_photos_root` 只含 `(root_id)`
+    //    ⇒ 数 91 万行要回表 91 万次去读 `file_type`；部分索引把非目标档排除在索引之外。
+    //    索引名与「存在才加」的判断都在 `db-heavy-read.js#mediaCountIndexHint`（唯一真相源）。
+    //    ⚠️ hint 刻意**不进** `photosTotalCache` 的键：那个键的不变量是「同一条 SQL + 同一组
+    //    参数 ⇒ 同一个数」，而 hint 只改执行计划、不改结果值；并进键反而会把同一份计数
+    //    按索引状态拆成两条、白占条目。
+    const countIndexHint = require('./db-heavy-read').mediaCountIndexHint(
+      this.db,
+      rootId,
+      mediaType,
+    );
+
+    // total 的记忆化见 `src/photos-total-cache.js`（为什么、键怎么取、失效两条腿都在那里）。
+    // 一句话：真库默认参数下整条 42.3 ms 里 COUNT 占 38.2 ms，而它只随行数变化、翻页根本不变。
+    const cachedTotal = photosTotalCache.get(whereClause, params);
+    let totalCount;
+    if (cachedTotal != null) {
+      totalCount = cachedTotal;
+    } else {
+      const totalRow = this.db
+        .prepare(`SELECT COUNT(*) as count FROM photos${countIndexHint} ${whereClause}`)
+        .get(...params);
+      totalCount = Number(totalRow.count) || 0;
+      photosTotalCache.set(whereClause, params, totalCount);
+    }
     const photoCols = lite
       ? `id, file_name, folder_path, file_size, file_type,
               width, height, date_taken, date_modified, has_thumbnail, is_favorite`
@@ -1122,10 +1643,10 @@ class PhotoDatabase {
 
     return {
       photos: plainPhotos,
-      total: Number(total.count),
+      total: totalCount,
       page: Number(page),
       pageSize: Number(pageSize),
-      totalPages: Math.ceil(Number(total.count) / Number(pageSize)),
+      totalPages: Math.ceil(totalCount / Number(pageSize)),
     };
   }
 
@@ -1524,36 +2045,210 @@ class PhotoDatabase {
     return row ? row.count : 0;
   }
 
-  getPhotosMissingThumbnails(limit = 20000) {
-    return this.db
-      .prepare(
-        `SELECT id, file_path, has_thumbnail
-       FROM photos
-       WHERE ${this._sqlBackfillPendingExpr()}
-       ORDER BY id ASC
-       LIMIT ?`,
-      )
-      .all(limit);
+  /**
+   * 「还缺缩略图」的照片数 —— 补全进度的**副指标**（「预览图 +N / 共 M」里的 M）。
+   *
+   * 🔴 它**刻意不与** `getMissingThumbnailCount()` 同源，两者回答的是两个问题：
+   *    - `getMissingThumbnailCount()` / `estimatePendingCandidateCount()` = **任务候选集**
+   *      （缺缩略图 / 缺 dHash / 缺尺寸 / 没看过 EXIF）= 「这个任务还有多少活要干」，
+   *      必须与 `_sqlBackfillPendingExpr()` 同源；
+   *    - 本方法 = 「还差几张预览图」。
+   *
+   * 🔴 **主进度条的分子 / 分母都不是它**（分子 = 已处理行数、分母 = 候选集估计值，
+   *    见 `estimatePendingCandidateCount()`）。这是 2026-10-06 用真实库翻掉的一个错判：
+   *    当初的推理是「用户等的是图 ⇒ 分母就该是缩略图」，并预测进度条会停在 22%。
+   *    实测把两个前提都推翻了 ——
+   *      ① 候选集约 156 万行里，真正缺缩略图的只有 **339,913**；
+   *      ② 补全按 id **倒序**走（最新入库优先），而缺缩略图的行**几乎全压在低位老照片**上：
+   *         `id 1,900,000~1,999,999` 只有 **10 行**缺，`1,600,000~1,899,999` 才是那 33.9 万。
+   *    于是任务从 `MAX(id)` 往下走的**头 2 万行里缺缩略图的是 0 行** ⇒ 分子恒 0、
+   *    分母 339,913 ⇒ 进度条在 **0%** 上趴了十几分钟一动不动，用户看到的是「卡住了」。
+   *    ⚠️ 所以主口径必须是「已处理行数 / 候选集规模」：它与任务真正的工作量对齐，
+   *    百分比与剩余时间都跟着它走。本方法退居副指标。
+   *
+   * 🔴 正因为谓词只有 `has_thumbnail = 0` 一列，它才负担得起「每轮补全都算一次」：
+   *    走 `idx_photos_hasThumb` 的 **covering index**，零回表。本机实测 **16 ms**；
+   *    对照 `getMissingThumbnailCount()` 是 **76 秒级**（`SCAN photos` + 每行穿过缩略图
+   *    BLOB 的溢出页链回表取 `dhash` / `width` / `file_type` / `exif_mtime`）。
+   *    `EXPLAIN` 证据钉在 `scripts/thumb-backfill-progress-regression.js`。
+   *
+   * ⚠️ 语义是**快照**：调用方（`runThumbnailBackfill`）在任务开始时取一次当副指标的 M，
+   *    跑动期间不再刷新 —— 并发入库的新照片不在里面，所以分子可能反超分母，两个方向都由调用方夹住。
+   * ⚠️ `has_thumbnail IS NULL` 的行两边都不计入（`_sqlBackfillPendingExpr()` 同样只判 `= 0`）。
+   *
+   * ⚠️ **刻意含「已盖章失败」的行**（2026-10-06 补记）：谓词只有 `has_thumbnail = 0` 一列，
+   *    不问 `thumb_fail_mtime`。所以这个数比「还会出图的张数」**偏大**，
+   *    副作用是副行的 `预览图 N / 待补 M` 可能永远差着那几十张。
+   *    **这是有意的取舍，别去「修」**：多引用 `thumb_fail_mtime` + `date_modified` 就要求回表，
+   *    covering index 直接失效（14 ms → 339,913 次回表），而它是在任务面板里每轮刷新都调的。
+   *    真正需要「待补」精确值的地方走 `getPhotosLackingThumbnailBefore()`（那份谓词带失败记账）。
+   */
+  countPhotosLackingThumbnail() {
+    var row = this.db
+      .prepare('SELECT COUNT(*) as count FROM photos WHERE has_thumbnail = 0')
+      .get();
+    return row && row.count != null ? Number(row.count) : 0;
   }
 
   /**
-   * 仅取 id > afterId 的待补行（缺缩略图 / 缺 dHash / 缺原图尺寸），
-   * 避免同一轮补全对失败记录死循环重试。
+   * 抽样估计「补全候选集」的规模 —— 补全主进度条的**分母**。
+   *
+   * 🔴 为什么是抽样、而不是精确 `COUNT(*)`：
+   *    候选谓词（`_sqlBackfillPendingExpr()`）判的列（`dhash` / `width` / `file_type` /
+   *    `exif_mtime` / `exif_ver`）**一个索引都没有** ⇒ 精确计数只能 `SCAN photos`。
+   *    本机真实库（1,656,580 行 / 14.17 GB）实测 **80~95 秒**；而且那还只是「与正在跑的
+   *    补全任务抢同一块盘」的量级 —— 补全此刻正在逐张读图，再压一次全表扫，两头都慢。
+   *    进度分母不值得让用户等一分半，更不值得把补全本身拖慢。
+   *
+   * 🔴 抽样沿 **id 轴均匀铺点**、每个点走主键点查（`WHERE id = ?`），不是 `id % k = 0` ——
+   *    后者同样要扫全表，等于没省。
+   *
+   * 🔴 点查「不存在的 id」**不计入样本**，而不是记成「未命中」：`id` 有空洞（删除过的行），
+   *    把空洞算成未命中会让命中率偏低 ⇒ 估计值偏小 ⇒ 分母偏小 ⇒ **百分比偏高、剩余时间
+   *    偏乐观**，是方向最坏的那种偏差。只对**真实存在的行**算命中率，估计才无偏。
+   *
+   * ⚠️ 结果是**估计值**（不是真值）：本机 2000 样本 × 命中率 ~94% 下，标准误约
+   *    ±0.5%（相对），分母 156 万上的绝对误差约 ±8 千行。UI 必须带「约」。
+   *    UI 侧还要把分子夹在分母之内（并发入库会让分子反超）。
+   * ⚠️ 语义同样是**起始快照**，跑动期间不刷新。
+   *
+   * ~2000 次主键点查，本机实测亚秒级（对照精确计数的 80 秒）。
+   */
+  estimatePendingCandidateCount(samples) {
+    var want = Number(samples);
+    if (!isFinite(want) || want <= 0) want = 2000;
+    want = Math.max(50, Math.min(20000, Math.round(want)));
+    var head = this.db.prepare('SELECT COUNT(*) AS c, MAX(id) AS m FROM photos').get();
+    var total = head && head.c != null ? Number(head.c) : 0;
+    var maxId = head && head.m != null ? Number(head.m) : 0;
+    if (total <= 0 || maxId <= 0) {
+      return { total: total, sampled: 0, hits: 0, estimate: total };
+    }
+    var step = Math.max(1, Math.floor(maxId / want));
+    var hitStmt = this.db.prepare(
+      'SELECT (' + this._sqlBackfillPendingExpr() + ') AS hit FROM photos WHERE id = ?',
+    );
+    var sampled = 0;
+    var hits = 0;
+    for (var id = step; id <= maxId; id += step) {
+      var row = hitStmt.get(id);
+      if (!row) continue; // id 空洞：这个 id 上没有行，不计入样本（见上面的注释）
+      sampled++;
+      if (Number(row.hit) === 1) hits++;
+    }
+    return {
+      total: total,
+      sampled: sampled,
+      hits: hits,
+      estimate: sampled > 0 ? Math.round((hits / sampled) * total) : total,
+    };
+  }
+
+  /**
+   * 取 `id < beforeId` 的待补行（缺缩略图 / 缺 dHash / 缺原图尺寸）中 **id 最大**的一批
+   * —— 即**最新入库的优先补**。
+   *
+   * 🔴 **方向刻意是倒序的**（2026-10-05）：补全的可见收益只落在「用户刚导入、正在翻看」的
+   *    那批照片上，而它们正是 id 最大的那批。升序会让刚导入的照片排在**全部历史积压之后**，
+   *    用户扫完一个新目录却要等老行全部补完才看到图。本机真实库（1,656,594 行，
+   *    id ∈ [324737, 1981503]，待补 1,556,474 行）实测首批 100 行：升序 **269ms**
+   *    （低位区间命中率仅 ~7%，每命中 1 行要跳十几行）、倒序 **2ms**（高位区间几乎 100% 命中）。
+   *    两个方向都走 `SEARCH photos USING INTEGER PRIMARY KEY`（谓词用不上索引），
+   *    所以**一次完整跑的代价相同**，倒序只是把有用的行提前，不是「更快」而是「更早看见」。
+   *
+   * 🔴 游标必须与排序**同向且单调**：本方法配 `ORDER BY id DESC`，上层取「本批最后一行的 id」
+   *    续接 —— 倒序下最后一行是**最小** id，于是游标严格递减。方向写反或游标不推进，
+   *    都会让同一轮对刚失败的那些行反复重试（死循环）。
    *
    * ⚠️ `dhash` / `width` / `height` **必须出现在 SELECT 里**：上层靠它们判断
    *    「这次命中只是因为缺尺寸」，从而跳过 `computeDhash`（整图解码）与重复的
-   *    metadata 读取 —— 少了这三列，1224 万行里每一行都会被白解码一遍。
+   *    metadata 读取 —— 少了这三列，每一行都会被白解码一遍。
+   *
+   * ⚠️ `file_hash` 同理，别顺手删：`processOne` 靠它判断**这行的查重指纹算过没**，
+   *    从而决定要不要在下一次读盘里顺带把 SHA-256 也算出来（见那里的注释）。
+   *    少了它 ⇒ 每行都判成「缺指纹」⇒ 对**全库候选**反复重算 SHA-256，不报错、只是白烧读盘。
+   *
+   * ⚠️ `exif_mtime` 与 `exif_ver` 也必须带上：`processOne` 靠它们判断**这行的拍摄参数
+   *    看过没、看的是第几版**（`photoNeedsExif()`），决定要不要在**同一次**
+   *    `sharp.metadata()` 里顺手解析 EXIF。少了它们 ⇒ 判据走兜底 ⇒ 要么每行都判成
+   *    「没看过」对全库反复写同一批 null，要么把「旧版看过」的行整段跳过、新列永远补不上。
+   *
+   * 🔴 `dhash` 与 `file_hash` 都是**延迟迁移列**，靠 `runThumbnailBackfill` 开跑前那次
+   *    `dbWriteQueue.run` 里的 `ensureDhashSchema()` + `ensureDuplicateHashSchema()` 保证存在。
+   *    老库上少了任一列，这条 SELECT 直接 `no such column`（在**第一次取批**时炸，不是启动时）。
+   *    ⚠️ `exif_mtime` / `exif_ver` **不在这条路上**：它们由 `init()` 同步加
+   *    （见 `ensurePhotosExifColumn()`），因为被随时可调的只读谓词引用，不能等到任务开跑。
+   *
+   * 🔴 SELECT 列表与 `_sqlBackfillPendingExpr()` **同生共死**：谓词里判了哪一列，
+   *    这里就必须取出来 —— `processOne` 的 `needSize` / `needDhash` / `needExif`
+   *    （后者见 `photoNeedsExif()`）全靠这几个字段做决定。少取一列不报错，
+   *    而是**那条判据永远走兜底分支**：漏了 `exif_ver` 时，扩列前跑过的行会被判成
+   *    「已看过」而整段跳过 —— 行留在候选集里、每轮被取出来、每轮被跳过，
+   *    新列永远补不上（本机实测 9,799 行落在这条死路上）。
+   *
+   * ⚠️ 视频的 dHash 恒为 `NULL` ⇒ 会长期留在候选集里（但 `processOne` 立刻跳过），
+   *    代价只是一次索引命中，可接受。见 `_sqlBackfillPendingExpr()` 的注释。
    */
-  getPhotosMissingThumbnailsAfter(afterId, limit) {
+  getPhotosMissingThumbnailsBefore(beforeId, limit) {
     return this.db
       .prepare(
-        `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height
+        `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height,
+                file_hash, exif_mtime, exif_ver
        FROM photos
-       WHERE id > ? AND ${this._sqlBackfillPendingExpr()}
-       ORDER BY id ASC
+       WHERE id < ? AND ${this._sqlBackfillPendingExpr()}
+       ORDER BY id DESC
        LIMIT ?`,
       )
-      .all(afterId, limit);
+      .all(beforeId, limit);
+  }
+
+  /**
+   * 补全任务**第一趟**的取数：只要「还缺缩略图、且值得再试」的行。
+   *
+   * 🔴 为什么要单独一趟（2026-10-06 用户报「预览图计数一直是 0」的根因）：
+   *    缩略图补全与元数据回填**共用同一条 id 倒序游标**，而 `EXIF_SCHEMA_VERSION` 升一版
+   *    会让**全库**重新入选。于是游标从最高 id 起手时，前面几万行全是
+   *    「早有缩略图、只缺新 EXIF 字段」的行 —— 走 `skipThumbnail` 分支，一张图都不产出。
+   *    本机实测：id 1,889,290 以上只剩 10 行缺缩略图，而缺口全压在
+   *    id 1,502,489~1,889,290 的 **33.9 万行**里 ⇒ 界面长时间显示「预览图 0 张」，
+   *    用户合理地以为任务卡住了（实测 90 秒窗口 `has_thumbnail=1` 总数纹丝不动）。
+   *    拆出一趟之后：`idx_photos_hasThumb` 的倒序扫第一个命中就是 id 1,889,290
+   *    ⇒ 任务开局立刻开始出图，不必先爬完那几万行元数据。
+   *
+   * ⚠️ 游标必须与第二趟（`getPhotosMissingThumbnailsBefore`）**各自独立**，
+   *    两边都从 `MAX(id)+1` 起手、各自递减。共用一条游标会静默跳过中间所有行：
+   *    第一趟把游标拉到 1,889,290 之后，第二趟再也取不到 1,889,291~1,981,503 那批 ——
+   *    不报错、不写日志，只是那些行的元数据永远补不上（本项目踩过同类的坑）。
+   *
+   * SELECT 列表与 `getPhotosMissingThumbnailsBefore()` **逐列相同**：`processOne` 的
+   * `needSize` / `needDhash` / `needExif` / `needHash` 全靠这几个字段做决定，少取一列
+   * 就会让对应判据**永远走兜底分支**（不报错，静默做错事）。这也是第二趟能直接复用
+   * 同一个 `processOne` 的原因。
+   */
+  getPhotosLackingThumbnailBefore(beforeId, limit) {
+    return this.db
+      .prepare(
+        `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height,
+                file_hash, exif_mtime, exif_ver
+       FROM photos
+       WHERE id < ? AND ${this._sqlNeedsThumbnailExpr()}
+       ORDER BY id DESC
+       LIMIT ?`,
+      )
+      .all(beforeId, limit);
+  }
+
+  /**
+   * 倒序补全的起始游标：`MAX(id) + 1`（升序版本对应 `0`，两边都是「比边界多退/进一格」，
+   * 否则 id 最大 / 最小的那一行永远扫不到）。
+   *
+   * `id` 是 INTEGER PRIMARY KEY（rowid 别名）→ `MAX(id)` 是一次索引定位，**不是全表扫**，
+   * 可以放心在补全开始前调一次（与 `getMissingThumbnailCount()` 那种真 `SCAN photos` 不同）。
+   */
+  getMaxPhotoId() {
+    var row = this.db.prepare('SELECT MAX(id) AS hi FROM photos').get();
+    var hi = row && row.hi != null ? Number(row.hi) : 0;
+    return Number.isFinite(hi) && hi > 0 ? hi : 0;
   }
 
   /**
@@ -1580,23 +2275,86 @@ class PhotoDatabase {
       .run(thumbnailBuffer, size, format, photoId);
   }
 
+  /**
+   * 记下「这一行试过生成缩略图、但失败了」—— `_sqlNeedsThumbnailExpr()` 据此把它移出候选集。
+   *
+   * 🔴 传进来的必须是**这一行当前的 `date_modified`**（不是当前时间）：
+   *    这一列存的是「失败当时该行是什么日期」，将来文件被替换、`date_modified` 一变，
+   *    谓词里的 `<>` 就自动把它放回候选集。存 `Date.now()` 会让这一行**永远回不来**
+   *    —— 时间戳只会前进，永远不可能等于那一行的 `date_modified`。
+   *
+   * ⚠️ 空值要写**空串**而不是 NULL：谓词是
+   *    `thumb_fail_mtime IS NULL OR IFNULL(thumb_fail_mtime,'') <> IFNULL(date_modified,'')`，
+   *    写 NULL 会让 `IS NULL` 为真 ⇒ 被判成「没失败过」⇒ 这行下一轮还会被取出来，
+   *    白重试的坑原样留着。写空串则两侧都归 `''`、判相等 ⇒ 正确排除。
+   *
+   * ⚠️ **只在「文件读得到、但做不出图」时调用**。文件根本读不到的（磁盘没挂、已被删除）
+   *    不许写这条标记：那是 `invalid-cleanup` 的活，而且外接盘没插时写标记等于把
+   *    整个图库的缩略图补全都永久挡掉 —— 判据见 `main.js#processOne` 的失败分支。
+   *
+   * @param {number} photoId
+   * @param {string|null|undefined} dateModified 该行当前的 `date_modified`
+   */
+  markThumbFailed(photoId, dateModified) {
+    this.db
+      .prepare('UPDATE photos SET thumb_fail_mtime = ? WHERE id = ?')
+      .run(dateModified == null ? '' : String(dateModified), photoId);
+  }
+
+  /**
+   * 记下「这一行试过**读文件头**、但读不出来」—— 候选谓词第二支据此把它的
+   * 「缺尺寸 / 缺拍摄参数」两项移出候选集。
+   *
+   * 🔴 为什么不能复用 `thumb_fail_mtime`：两列管的**不是同一件事**，混用会误伤。
+   *    真实的截断 JPEG 就是反例 —— 它 `metadata()` 成功（尺寸 4608×3456 + 9,687 B EXIF 都补上了）、
+   *    只是**解码**失败。它该被 `thumb_fail_mtime` 从「缺 dHash」那一项里排除，
+   *    但**绝不该**因此丢掉尺寸与 EXIF 的重试资格。
+   *
+   * 🔴 三条硬约束与 `markThumbFailed()` **逐条相同**（同一套自愈判据，
+   *    共用 `_sqlFailMarkerRetryableExpr()`；两边漂开 = 某一路的失败行永远回不来）：
+   *    ① 必须传**该行当前的 `date_modified`**，不是 `Date.now()`；
+   *    ② 空值写**空串**不写 NULL（写 NULL 会让 `IS NULL` 为真 ⇒ 被判「没失败过」⇒ 白重试）；
+   *    ③ **只在「文件读得到、但读不出文件头」时调用** —— 文件不在磁盘上（外接盘没插）不许盖章，
+   *       否则会把整个图库的尺寸与拍摄参数补全永久挡掉，而且它不会自愈
+   *       （盘没插时扫描同样读不到新日期）。判据见 `main.js#recordHeaderFailure`。
+   *
+   * @param {number} photoId
+   * @param {string|null|undefined} dateModified 该行当前的 `date_modified`
+   */
+  markHeaderFailed(photoId, dateModified) {
+    this.db
+      .prepare('UPDATE photos SET header_fail_mtime = ? WHERE id = ?')
+      .run(dateModified == null ? '' : String(dateModified), photoId);
+  }
+
   photoExists(photoId) {
     var row = this.db.prepare('SELECT 1 FROM photos WHERE id = ?').get(photoId);
     return !!row;
   }
 
+  /**
+   * 清理「文件已不存在」的记录。
+   *
+   * 🔴 **扫描方向统一为倒序（新记录优先）**（2026-10-05，与缩略图补全 / 查重指纹同一条策略）：
+   *    升级前只有**无游标**那一支是 `ORDER BY id DESC`，**带游标**那一支却是 `id > ? ORDER BY id ASC`
+   *    —— 于是启动期第一批取最新 400 行、之后**跳到最老那一段再往新走**：同一个任务里两种方向
+   *    混用，而且第二批还会与第一批重叠几百行（`lastId` 是那批里最小的 id）。
+   *    现在统一成「从最新往老扫」，`beforeId` 是**排他上界**，传 0 / 不传 = 不限（从 MAX(id) 开始）。
+   *
+   * 语义上也本该如此：**刚导入 / 刚被搬走的照片最容易失效**，用户点「清理无效记录」先想看到的就是它们。
+   */
   cleanupMissingFiles(options = {}) {
     var batchSize = parseInt(options && options.batchSize, 10);
     var hasBatchLimit = isFinite(batchSize) && batchSize > 0;
-    var afterId = parseInt(options && options.afterId, 10);
-    var hasAfterId = isFinite(afterId) && afterId > 0;
+    var beforeId = parseInt(options && options.beforeId, 10);
+    var hasBeforeId = isFinite(beforeId) && beforeId > 0;
     var rows;
     if (hasBatchLimit) {
-      if (hasAfterId) {
-        // 按主键游标分批扫描，避免重复检查同一批记录
+      if (hasBeforeId) {
+        // 按主键游标分批扫描（倒序，排他上界），避免重复检查同一批记录
         rows = this.db
-          .prepare('SELECT id, file_path FROM photos WHERE id > ? ORDER BY id ASC LIMIT ?')
-          .all(afterId, batchSize);
+          .prepare('SELECT id, file_path FROM photos WHERE id < ? ORDER BY id DESC LIMIT ?')
+          .all(beforeId, batchSize);
       } else {
         // 启动阶段仅限量检查，避免百万级库冷启动时全表 existsSync 拖慢应用
         rows = this.db
@@ -1646,6 +2404,10 @@ class PhotoDatabase {
   /**
    * 与 cleanupMissingFiles（带 batchSize）语义一致；existsSync 分段 + setImmediate 让出主线程，
    * 避免启动分批清理时连续数千次 stat 导致进程「未响应」。
+   *
+   * 🔴 游标同样是**倒序**的排他上界 `beforeId`（见 `cleanupMissingFiles` 的说明）；
+   * 返回值里的 `lastId` = 本批**最后一行的 id**，倒序下即这批里**最小**的那个，
+   * 直接拿去当下一批的 `beforeId`。方向混用会让批次重叠（旧代码就是这么错的）。
    */
   cleanupMissingFilesYielding(options = {}) {
     var self = this;
@@ -1654,18 +2416,18 @@ class PhotoDatabase {
     if (!hasBatchLimit) {
       return Promise.reject(new Error('cleanupMissingFilesYielding requires positive batchSize'));
     }
-    var afterId = parseInt(options && options.afterId, 10);
-    var hasAfterId = isFinite(afterId) && afterId > 0;
+    var beforeId = parseInt(options && options.beforeId, 10);
+    var hasBeforeId = isFinite(beforeId) && beforeId > 0;
     var sliceSize = parseInt(options && options.existsSyncSlice, 10);
     if (!isFinite(sliceSize) || sliceSize < 8) sliceSize = 72;
 
     return new Promise(function (resolve, reject) {
       var rows;
       try {
-        if (hasAfterId) {
+        if (hasBeforeId) {
           rows = self.db
-            .prepare('SELECT id, file_path FROM photos WHERE id > ? ORDER BY id ASC LIMIT ?')
-            .all(afterId, batchSize);
+            .prepare('SELECT id, file_path FROM photos WHERE id < ? ORDER BY id DESC LIMIT ?')
+            .all(beforeId, batchSize);
         } else {
           rows = self.db
             .prepare('SELECT id, file_path FROM photos ORDER BY id DESC LIMIT ?')
@@ -1680,7 +2442,7 @@ class PhotoDatabase {
         resolve({
           checked: 0,
           deleted: 0,
-          lastId: hasAfterId ? afterId : 0,
+          lastId: hasBeforeId ? beforeId : 0,
           hasMore: false,
         });
         return;
@@ -1746,18 +2508,6 @@ class PhotoDatabase {
 
       setImmediate(scanSlice);
     });
-  }
-
-  /**
-   * 兼容主进程旧调用名：
-   * 启动时清理磁盘已不存在的记录，并返回统一字段。
-   */
-  markMissingFilesAsNotExists(options = {}) {
-    var r = this.cleanupMissingFiles(options);
-    return {
-      checked: Number(r && r.checked) || 0,
-      markedMissing: Number(r && r.deleted) || 0,
-    };
   }
 
   rebuildThumbnailFlags() {
@@ -1959,6 +2709,11 @@ class PhotoDatabase {
    * 不再在 JS 侧维护第二份扩展名清单，否则「仅视频」筛出来的和面板写的不一致。
    * `root_path` 走 LEFT JOIN：照片的 root_id 理论上必定命中，但外键没开强制，
    * 兜底成 NULL 而不是把整条记录丢掉。
+   *
+   * 🔴 这里**只带面板用得到的列**：`photos` 现在有 58 个拍摄参数列，但只有注册表里
+   *    `panel: true` 的那批（见 `src/main/exif-meta.js#EXIF_PANEL_KEYS`）会被显示 ——
+   *    其余 27 列（与已有列重复的派生值、技术标定值）**刻意不查**，否则每打开一张照片
+   *    都要为它们多传一次 IPC 载荷，而界面一个字节都用不上。
    */
   getPhotoInfo(photoId) {
     const photo = this.db
@@ -1968,6 +2723,13 @@ class PhotoDatabase {
                 p.file_hash, p.dhash,
                 p.camera_make, p.camera_model, p.lens_model, p.focal_length, p.aperture,
                 p.iso_speed, p.shutter_speed, p.gps_latitude, p.gps_longitude,
+                p.exif_date_taken,
+                p.orientation, p.exposure_bias, p.exposure_program, p.exposure_mode,
+                p.metering_mode, p.light_source, p.flash, p.white_balance,
+                p.scene_capture_type, p.max_aperture, p.focal_length_35mm, p.lens_spec,
+                p.body_serial, p.lens_serial, p.gps_altitude, p.lens_make,
+                p.software, p.image_datetime, p.color_space, p.user_comment,
+                p.sub_sec_time,
                 r.path AS root_path,
                 CASE WHEN ${this._sqlFileTypeIsVideoExpr()} THEN 'video' ELSE 'image' END AS media_kind
          FROM photos p
@@ -1999,6 +2761,75 @@ class PhotoDatabase {
     return r.changes > 0;
   }
 
+  /**
+   * 写入一次「拍摄参数回填」的结果（缩略图补全顺带读的那次文件头）。
+   *
+   * 🔴 `dateModified` 非空时**必须**一起写进 `exif_mtime` —— 它是这组列**唯一**的
+   *    「已检查」标记，也是候选谓词（`_sqlNeedsExifExpr()`）唯一的判据。
+   *    少了它，这行下一轮还会被取出来重新读一次文件头：任务永不收敛。
+   *    ⚠️ 标记写的是**读取当时**该行的 `date_modified`；文件内容变了由扫描侧
+   *    （`SCAN_INVALIDATED_ON_CONTENT_CHANGE`）把这组列连同标记一起置空。
+   *
+   * 🔴 字段为 `null` 的含义是「**文件里没有这一项**」，不是「没读到」，所以照样要写 ——
+   *    只写非空字段会让「没有 EXIF 的照片」永远无法被标记为已看。
+   *    （调用方只在**文件头读成功**时才调这里：读失败是「没看到文件」，不能标记。）
+   *
+   * 🔴 这里写的是 `exif_date_taken`（真实拍摄时间），**不是** `date_taken`。
+   *    `date_taken` 是排序默认列 + 日期分组 + `idx_photos_date` 的唯一输入，
+   *    而真实拍摄时间只有 ~23% 的照片取得到 ⇒ 覆盖它会把时间线变成
+   *    「23% 真 + 77% 原样」的混合口径。原委见 `src/main/exif-meta.js#formatExifDate`。
+   *    ⚠️ 因此这个 UPDATE **绝不许**把 `date_taken` 写进去（守护有断言钉这一条）。
+   *
+   * @param {number} photoId
+   * @param {object} fields `exif-meta.js#extractExifFields()` 的返回（全 null 也合法）
+   * @param {string|null} dateModified 该行的 `date_modified`（写进 `exif_mtime`）
+   */
+  updatePhotoExif(photoId, fields, dateModified) {
+    var id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return { changes: 0 };
+    var stmt = this.getExifUpdateStmt();
+    if (!stmt) return { changes: 0 };
+    var f = fields || {};
+    var args = [];
+    // 参数顺序 = 注册表顺序（`getExifUpdateStmt()` 的 SET 子句就是按它拼的）——
+    // 两处都从 `EXIF_FIELD_SPECS` 派生，所以「加了字段忘了绑参数」在结构上不可能发生。
+    for (var i = 0; i < EXIF_FIELD_SPECS.length; i++) {
+      args.push(coerceExifValue(f[EXIF_FIELD_SPECS[i].key], EXIF_FIELD_SPECS[i].type));
+    }
+    args.push(dateModified != null ? String(dateModified) : null); // exif_mtime
+    args.push(EXIF_SCHEMA_VERSION); // exif_ver
+    args.push(id);
+    return stmt.run.apply(stmt, args);
+  }
+
+  /**
+   * `updatePhotoExif` 的预编译语句（**缓存**，不是每次 `prepare`）。
+   *
+   * 🔴 为什么必须缓存：补全任务对**每一张**照片都要调一次 `updatePhotoExif`
+   *    （真库 163 万张），而这条 SQL 现在有 60 个占位符 —— 每次重新 `prepare` 都要重新编译，
+   *    在热路径上是纯浪费。列集合由 `EXIF_METADATA_COLUMNS` 单点决定，建好后不会变。
+   */
+  getExifUpdateStmt() {
+    if (this._exifUpdateStmt) return this._exifUpdateStmt;
+    try {
+      this.ensurePhotosExifColumn();
+      var setters = [];
+      for (var i = 0; i < EXIF_METADATA_COLUMNS.length; i++) {
+        setters.push(EXIF_METADATA_COLUMNS[i] + ' = ?');
+      }
+      // 账本两列写在最后，与 `updatePhotoExif` 的参数顺序一致
+      setters.push('exif_mtime = ?');
+      setters.push('exif_ver = ?');
+      this._exifUpdateStmt = this.db.prepare(
+        'UPDATE photos SET ' + setters.join(', ') + ' WHERE id = ?',
+      );
+      return this._exifUpdateStmt;
+    } catch (e) {
+      logger.error('[db] prepare exif update statement failed:', e && e.message ? e.message : String(e));
+      return null;
+    }
+  }
+
   searchPhotos(query, options = {}) {
     const { page = 1, pageSize = 100, favoritesOnly, mediaType, lite = false } = options;
     const offset = (page - 1) * pageSize;
@@ -2023,23 +2854,80 @@ class PhotoDatabase {
       const whereSql = favoritesOnly
         ? `${ftsSub} AND is_favorite = 1${mediaSql}`
         : `${ftsSub}${mediaSql}`;
-      const total = this.db
-        .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
-        .get(ftsQuery);
-      const photos = this.db
-        .prepare(
-          `SELECT ${photoCols}
-         FROM photos WHERE ${whereSql}
-         ORDER BY date_taken DESC
-         LIMIT ? OFFSET ?`,
-        )
-        .all(ftsQuery, pageSize, offset);
+      /**
+       * 有没有「FTS 之外」的筛选。它决定两件事，见下。
+       * `mediaConds` 非空 ⇔ 请求了 image / video 档。
+       */
+      const hasExtraFilter = !!favoritesOnly || mediaConds.length > 0;
+
+      // ── P0-2：total 直接问 FTS（真库 25,759.7 ms → 79.5 ms，324×）
+      //
+      // 🔴 现写法的代价在于写法本身：`photos.id IN (SELECT rowid FROM photos_fts WHERE MATCH ?)`
+      //    会被 SQLite 物化成一张 54 万行的临时 list，然后**回到 `photos` 里一行一行确认**
+      //    （计划：`SEARCH photos USING INTEGER PRIMARY KEY (rowid=?)` + `LIST SUBQUERY 1`）。
+      //    而 `photos_fts` 是 `content='photos'` 的外部内容表，匹配的 rowid 全在 FTS 索引里
+      //    ⇒ 无附加筛选时直接问 FTS 就是同一个数（实测 544,235 逐个相同）。
+      //
+      // ⚠️ **有**附加筛选时保留现写法：`is_favorite` / 媒体档只有 `photos` 表知道，
+      //    而这两个条件都不在 FTS 索引里，逼着它回表 —— 那是语义要求，不是写法问题。
+      //
+      // ⚠️ 两者相等的依据是三个触发器（`photos_fts_ai/ad/au`）让外部内容表与 `photos` 同步。
+      //    这条**不能靠「应该同步」四个字**：`scripts/read-latency-regression.js` 里有一条
+      //    机械断言（同一组词、两种写法必须逐个相等），夹具上跑，守住它。
+      //
+      // ⚠️ total 也走 `photosTotalCache`：它只随命中集变化、**翻页时根本不变**，
+      //    而与 `getPhotos` 共用同一套 TTL / 显式清空（搜完图去删照片，清空会一起生效）。
+      //    键前缀 `SEARCH|` 把这里的键空间与 `getPhotos` 的分开，两组不变量互不干扰。
+      const totalCacheKey = 'SEARCH|' + whereSql;
+      const totalCacheParams = [ftsQuery];
+      const cachedSearchTotal = photosTotalCache.get(totalCacheKey, totalCacheParams);
+      let totalCount;
+      if (cachedSearchTotal != null) {
+        totalCount = cachedSearchTotal;
+      } else {
+        const countSql = hasExtraFilter
+          ? `SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`
+          : `SELECT COUNT(*) as count FROM photos_fts WHERE photos_fts MATCH ?`;
+        totalCount = Number(this.db.prepare(countSql).get(ftsQuery).count) || 0;
+        photosTotalCache.set(totalCacheKey, totalCacheParams, totalCount);
+      }
+
+      // ── P0-3：取一页按命中规模分流（真库 32,428.3 ms → 141.2 ms，230×）
+      //
+      // 两条路各有一个「越……越亏」的方向，所以必须分流而不是替换：
+      //   · 原写法（FTS 驱动）= 把**全部命中**物化再回表 + `USE TEMP B-TREE FOR ORDER BY`
+      //     ⇒ 命中越多越亏（54 万命中要排 54 万行才取前 100）；
+      //   · 索引序（`INDEXED BY idx_photos_date`）= 沿 `date_taken` 走、凑满一页就停
+      //     ⇒ 命中越少越亏（冷门词要走到索引尽头才凑够 100 行）。
+      //
+      // 🔴 **只在无附加筛选时考虑索引序**：有 `favoritesOnly` / 媒体档时，附加条件只有
+      //    `photos` 表知道 ⇒ 走索引序要沿途过滤，筛得越严放大得越多（视频档只占 1.5%）。
+      //
+      // 🔴 副作用（已知、可接受，`searchPhotos` 这条路本来就没有稳定并列序）：
+      //    换索引序会让**同秒并列**（`date_taken` 到秒相同）的返回顺序改变。`getPhotos`
+      //    有 `applyNaturalNameTieSort` 把并列拉成确定序，这条路**没有** ⇒ 并列项的先后
+      //    在此之前就是未定义的。标定时核对过：只有含并列的词首行 id 会变。
+      const indexOrderUsable =
+        !hasExtraFilter &&
+        totalCount >= SEARCH_INDEX_ORDER_MIN_HITS &&
+        require('./db-heavy-read').hasIndex(this.db, SEARCH_INDEX_ORDER_INDEX);
+      const pageSql = indexOrderUsable
+        ? `SELECT ${photoCols}
+           FROM photos INDEXED BY ${SEARCH_INDEX_ORDER_INDEX}
+           WHERE ${whereSql}
+           ORDER BY date_taken DESC
+           LIMIT ? OFFSET ?`
+        : `SELECT ${photoCols}
+           FROM photos WHERE ${whereSql}
+           ORDER BY date_taken DESC
+           LIMIT ? OFFSET ?`;
+      const photos = this.db.prepare(pageSql).all(ftsQuery, pageSize, offset);
       return {
         photos,
-        total: total.count,
+        total: totalCount,
         page,
         pageSize,
-        totalPages: Math.ceil(total.count / pageSize),
+        totalPages: Math.ceil(totalCount / pageSize),
       };
     }
 
@@ -2177,16 +3065,66 @@ class PhotoDatabase {
     );
   }
 
+  /**
+   * 扫描「新文件入库」用的语句。
+   *
+   * 🔴 保留 `OR IGNORE`：它承担**快速判重**的角色 —— `changes === 0` 就说明这个
+   * `file_path` 已经有一行了。但「已存在」**不等于「不用管」**：路径一样、文件被换过的情况
+   * 必须走 `getUpdateFileFactsStmt()`（见它的注释）。只留 `OR IGNORE` 一条写路径就是
+   * 当年「候选永不收敛」的成因。
+   *
+   * 列清单与 `getUpdateFileFactsStmt()` 共用 `SCAN_WRITE_COLUMNS`，不许各写一份。
+   */
   getInsertStmt() {
-    return this.db.prepare(`
-      INSERT OR IGNORE INTO photos
-        (root_id, folder_path, file_name, file_path, file_size, file_type,
-         width, height, date_taken, date_modified, thumbnail, has_thumbnail,
-         thumb_size, thumb_format,
-         camera_make, camera_model, lens_model, focal_length, aperture,
-         iso_speed, shutter_speed, gps_latitude, gps_longitude)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    return this.db.prepare(
+      'INSERT OR IGNORE INTO photos (' +
+        SCAN_WRITE_COLUMNS.join(', ') +
+        ') VALUES (' +
+        SCAN_WRITE_COLUMNS.map(function () {
+          return '?';
+        }).join(', ') +
+        ')',
+    );
+  }
+
+  /**
+   * 扫描「同一个 `file_path`、但文件内容变了」时更新该行。
+   *
+   * 🔴 **为什么必须有这条路径**：`getInsertStmt()` 是 `INSERT OR IGNORE`，同路径已存在时
+   * `changes === 0`，新的 `file_size` / `date_modified` 连同本次读到的元数据**全被丢弃**，
+   * 于是下一轮扫描仍然判定它「已变更」⇒ **候选集永不收敛**；就地替换过的照片还会一直
+   * 保留旧缩略图与旧指纹。全工程过去**没有任何** `UPDATE photos SET file_size / date_modified`。
+   *
+   * 参数顺序与 `getInsertStmt()` **逐位相同**（`SCAN_WRITE_COLUMNS`），只少了 `file_path`
+   * 那一项 —— 它在 `SET` 里不出现，只在 `WHERE` 里用（列上有 UNIQUE 约束，走自动索引定位）。
+   * 调用端（`scanner.js#processFile`）传的就是 INSERT 的同一份参数数组 `splice(3, 1)` 之后的结果。
+   *
+   * `dhash*` / `file_hash` / `hash_*` 这几列是**延迟迁移**出来的（`ensureDhashSchema` /
+   * `ensureDuplicateHashSchema`），老库上可能还不存在。这里**按列实际存在与否裁剪 SET 子句**，
+   * 刻意**不**在这条路径上触发迁移 —— 迁移里带着 `CREATE INDEX`，在扫描启动路径上同步跑
+   * 会把首窗卡住（见 `ensureDuplicateHashSchema` 头注释）。
+   *
+   * ⚠️ `is_favorite` 不在此列：它是用户数据，与文件内容无关。
+   *
+   * @returns {import('better-sqlite3').Statement}
+   */
+  getUpdateFileFactsStmt() {
+    var self = this;
+    var setters = [];
+    for (var i = 0; i < SCAN_WRITE_COLUMNS.length; i++) {
+      var col = SCAN_WRITE_COLUMNS[i];
+      if (col === 'file_path') continue;
+      setters.push(col + ' = ?');
+    }
+    for (var j = 0; j < SCAN_INVALIDATED_ON_CONTENT_CHANGE.length; j++) {
+      var fragment = SCAN_INVALIDATED_ON_CONTENT_CHANGE[j];
+      var colName = fragment.split(' ')[0];
+      var exists = typeof self.hasPhotosColumn === 'function' ? self.hasPhotosColumn(colName) : false;
+      if (exists) setters.push(fragment);
+    }
+    return this.db.prepare(
+      'UPDATE photos SET ' + setters.join(', ') + ' WHERE file_path = ?',
+    );
   }
 
   // 兼容扫描器：当前库结构未启用 file_hash 时直接返回空候选
@@ -2225,32 +3163,68 @@ class PhotoDatabase {
     return r && r.changes > 0;
   }
 
-  // 兼容扫描器：扫描完成后删除该根目录下已不存在的旧记录
-  cleanupStalePhotosForRoot(rootId, scannedPathSet) {
-    var rows = this.db.prepare('SELECT id, file_path FROM photos WHERE root_id = ?').all(rootId);
+  /**
+   * 兼容扫描器：扫描完成后删除该根目录下已不存在的旧记录。
+   *
+   * 🔴 **按 id 区间分批 + 批间让出，禁止 `.all()` 一次性物化整根**，且调用端必须 `await`
+   * （`scanner.js` 收尾段）。理由是同一个看门狗：真库 `K:\COS`（912,222 行）实测
+   * 「一次性 `.all()` + 逐行比对」是一段 **71,070 ms 完全不发消息**的同步代码，
+   * 早已越过 `main.js#runFolderScanInWorker` 的 120 秒阈值 —— 于是一个只是**正在读盘**的
+   * 扫描被判成「线程无响应」并 `terminate()`，用户看到「自动扫描失败：扫描线程无响应…已终止」。
+   * 分批后同一工作量总耗时 30,990 ms、单批最大 1,433 ms，心跳照发、扫描能跑完。
+   *
+   * ⚠️ 「主键倒序」那条统一方向约定**不适用**于这里：那条约定针对的是「本批没跑完就要下次继续」
+   * 的后台补全类任务（最新入库优先）。这里是**一次扫尾必须看完全部行**的完整性遍历，
+   * 方向不影响结果，只影响读盘顺序 —— 按 id 升序与 `idx_photos_root` 的 (root_id, rowid)
+   * 顺序一致，是覆盖最顺的走法。
+   *
+   * @param {number} rootId
+   * @param {Set<string>} scannedPathSet 本次枚举到的绝对路径；为空集时退回逐行 `fs.existsSync`
+   * @param {{ batchSize?: number, yieldFn?: () => Promise<void> }} [options]
+   * @returns {Promise<{ checked: number, deleted: number, markedMissing: number }>}
+   */
+  async cleanupStalePhotosForRoot(rootId, scannedPathSet, options) {
+    options = options || {};
+    var result = { checked: 0, deleted: 0, markedMissing: 0 };
+    var rid = parseInt(rootId, 10);
+    if (!isFinite(rid) || rid <= 0) return result;
+    var batchSize =
+      parseInt(options.batchSize, 10) > 0 ? parseInt(options.batchSize, 10) : SCAN_TAIL_BATCH_ROWS;
+    var yieldFn = typeof options.yieldFn === 'function' ? options.yieldFn : yieldToEventLoop;
+    var useScannedSet = !!(scannedPathSet && scannedPathSet.size > 0);
+    // ❗ 必须带 ORDER BY id 才能让 `idx_photos_root`（rowid 有序）顺着走并靠 LIMIT 早停；
+    // 少了它计划会退化成整表扫 + 临时排序（回归里钉了计划）。
+    var pageStmt = this.db.prepare(
+      'SELECT id, file_path FROM photos WHERE root_id = ? AND id > ? ORDER BY id LIMIT ?',
+    );
     var delStmt = this.db.prepare('DELETE FROM photos WHERE id = ?');
-    var deleted = 0;
+    var cursor = 0;
     var checked = 0;
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      checked++;
-      var p = row && row.file_path ? String(row.file_path) : '';
-      if (!p) {
-        delStmt.run(row.id);
-        deleted++;
-        continue;
-      }
-      if (scannedPathSet && scannedPathSet.size > 0) {
-        if (!scannedPathSet.has(p)) {
+    var deleted = 0;
+    for (;;) {
+      var rows = pageStmt.all(rid, cursor, batchSize);
+      if (!rows.length) break;
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        checked++;
+        var p = row && row.file_path ? String(row.file_path) : '';
+        var stale = !p;
+        if (!stale) {
+          stale = useScannedSet ? !scannedPathSet.has(p) : !fs.existsSync(p);
+        }
+        if (stale) {
           delStmt.run(row.id);
           deleted++;
         }
-      } else if (!fs.existsSync(p)) {
-        delStmt.run(row.id);
-        deleted++;
       }
+      cursor = rows[rows.length - 1].id;
+      if (rows.length < batchSize) break;
+      await yieldFn();
     }
-    return { checked: checked, deleted: deleted, markedMissing: deleted };
+    result.checked = checked;
+    result.deleted = deleted;
+    result.markedMissing = deleted;
+    return result;
   }
 
   async backupToFile(destPath) {
@@ -2261,5 +3235,11 @@ class PhotoDatabase {
     this.db.close();
   }
 }
+
+// 连接级 PRAGMA 常量的对外出口：读池 worker（`src/workers/db-read-worker.js`）靠它拿到
+// 与主进程**逐位相同**的 cache_size / mmap_size，不许在那边再抄一份数字。
+PhotoDatabase.DB_CACHE_SIZE_KB = DB_CACHE_SIZE_KB;
+PhotoDatabase.DB_MMAP_SIZE_BYTES = DB_MMAP_SIZE_BYTES;
+PhotoDatabase.applyReadConnectionPragmas = applyReadConnectionPragmas;
 
 module.exports = PhotoDatabase;

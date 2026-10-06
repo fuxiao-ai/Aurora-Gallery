@@ -2649,6 +2649,16 @@ select.ui-select option {
   height: auto;
 }
 
+/* 瀑布流（原比例）里卡片高度只能由「内容」决定：有缩略图时是 <img> 的内在尺寸，
+   没有缩略图 / 缩略图文件缺失加载失败时是占位块 —— 而占位块是纯文本，自身没有尺寸，
+   卡片会塌成一条比文字还矮的横杠。这两条路径（`ui-grid.js` 的 `buildSinglePhotoCardHtml`
+   与 `markFailed`）都会给卡片挂上 `--square-placeholder`，这里统一按 1:1 占位。
+   统一高度那一档不要这个：`.grid:not([data-use-media-ratio='1']) .photo-card` 已经
+   给死 `--photo-card-ratio`，占位块 `height: 100%` 自动铺满。 */
+.grid.grid--masonry .photo-card--square-placeholder {
+  aspect-ratio: 1 / 1;
+}
+
 /* 照片卡片（对齐网页端 photo-card 精致样式*/
 .photo-card {
   position: relative;
@@ -2922,24 +2932,51 @@ select.ui-select option {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   background: var(--bg-hover);
   color: var(--text-muted);
   font-size: 12px;
-  gap: 6px;
 }
-.photo-card .placeholder.placeholder-fallback {
-  gap: 8px;
-}
-.photo-card .placeholder .ext {
-  font-size: 16px;
-  font-weight: 600;
-  text-transform: uppercase;
+/* 「没有缩略图」的统一占位图 —— 构建期（has_thumbnail=0）与运行期（缩略图 404）共用同一套
+   标记，观感必须一致。网页端有一份同构的规则（src/web/index.html），改这里要一起改。 */
+.photo-card .placeholder.placeholder--media {
+  background:
+    radial-gradient(
+      ellipse 72% 56% at 50% 42%,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+      transparent 70%
+    ),
+    var(--bg-hover);
 }
 .placeholder-icon {
-  width: 28px;
-  height: 28px;
-  opacity: 0.35;
+  width: min(56px, 38%);
+  height: auto;
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.34;
   pointer-events: none;
+}
+.placeholder-icon rect,
+.placeholder-icon polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.placeholder-icon circle {
+  fill: currentColor;
+}
+.placeholder-caption {
+  max-width: 88%;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .photo-card .photo-info {
   position: absolute;
@@ -3752,11 +3789,12 @@ html[data-theme='light'] .folder-cover-card:hover {
 
 /* === 闪动光晕（「随机」按钮） ===
    静态的实心块只能说明「这是一枚按钮」；要让它在**不点也看得见**的余光里持续发声，
-   所以给一层循环的呼吸 + 扩散光环 —— 重点是「闪动」，不是「亮」。
+   所以给一层循环的呼吸光晕 —— 重点是「闪动」，不是「亮」。
 
-   两层伪元素分工（半周期刻意错开，光晕才不会像呼吸机一样机械）：
+   ⚠️ 原设计是**两层**（呼吸 + 扩散环，半周期刻意错开，光晕才不像呼吸机一样机械）：
      ::before = 常驻外发光，不透明度在 0.24 ↔ 0.86 之间来回（呼吸感）
-     ::after  = 扩散光环，从边缘向外扩 6px 并淡出（脉冲感）
+     ::after  = 扩散光环，从边缘向外扩 6px 并淡出（脉冲感）—— **已删除**，理由见下。
+       「只剩一层」是实测后的性能取舍，不是漏做；也不要拿它去评判观感是否变朴素。
 
    🔴 为什么必须挂在伪元素上，而不是直接动画按钮的 `box-shadow`：
       **CSS 动画的优先级高于普通声明**（动画来源层压在 author 层之上）。
@@ -3772,17 +3810,25 @@ html[data-theme='light'] .folder-cover-card:hover {
       这时候还让光晕闪，是把人往一个点不动的按钮上引 —— 比不突出更坏。
       这一条与上面「单页时禁用」是同一个契约的两半：**别做假的可点击性**。
 
-   ⚠️ 动画只碰 `opacity` / `box-shadow`：前者走合成器不重绘；后者在这种 77×36 的小盒子上
-      每帧重绘的代价可忽略（整条底栏就这一个按钮，且 AI 视图里 `display: none` 会自动停）。 */
-.browse-footer-actions .pagination-random::before,
-.browse-footer-actions .pagination-random::after {
+   ⚠️ 动画只碰 `opacity`（走合成器，不重绘）。
+   🔴🔴 **扩散环（`::after` 的 `box-shadow` 动画）已于 2026-10-06 实测后删除，不得加回。**
+      原委：它是本应用**唯一一个「常驻每帧重绘」的源**。实测（隔离库、60 张卡、13 轮探针）——
+        · 稳态每 1000ms：Paint 122 次 / 27.75ms + StyleRecalc 61 次 / 11.15ms —— 全部来自它；
+          把 `::after` 的动画停掉后，这两项**双双归零**（6 轮零方差）。
+          只停 `::before`（保留扩散环）则读数**一点不变**（122 次 / 26.15ms），
+          证明重绘元凶是 `box-shadow` 动画，而 `opacity` 呼吸那层只花 61 次/秒样式重算（7ms/秒，0.7%）。
+        · `box-shadow` 的插值**无法被提升为合成动画**：实测给它加
+          `will-change: opacity,transform` 或 `transform: translateZ(0)` 都**零效果**
+          （稳态 121 次 / 30.4ms vs 基线 122 次 / 28ms）⇒ 只能每帧回主线程重算样式 + 重绘。
+        · 换成「静态环 + `transform: scale()`」同样不行（实测掉帧更差）。
+      视觉代价：丢掉「向外扩 6px 淡出」的那层脉冲感，呼吸光晕（`::before`）完整保留。
+      收益：进入照片流时的 Paint 耗时 64.15ms → 18.9ms（−71%）。 */
+.browse-footer-actions .pagination-random::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-}
-.browse-footer-actions .pagination-random::before {
   /* ⚠️ 这一句是**动画被压掉时的静态兜底**（关键帧一跑就由 0.24↔0.86 接管）：
      reduced-motion 会把动画压成 `0.01ms` + 1 次，而 `animation-fill-mode` 默认 `none`
      ⇒ 动画一结束就回落到这里的静态值。不写它，回落值是 1 = **最亮的呼吸峰值**，
@@ -3790,12 +3836,6 @@ html[data-theme='light'] .folder-cover-card:hover {
   opacity: 0.35;
   box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 62%, transparent);
   animation: randomBtnGlowBreathe 2.6s ease-in-out infinite;
-}
-.browse-footer-actions .pagination-random::after {
-  /* 同理：静态兜底取「不可见」（spread 0 + alpha 0）。不写的话会回落成一个紧贴边框的
-     强调色描边，在按钮边缘留一道突兀的线。动画跑起来后由 0% → 62% 帧接管。 */
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-  animation: randomBtnGlowPing 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 @keyframes randomBtnGlowBreathe {
   0%,
@@ -3806,18 +3846,8 @@ html[data-theme='light'] .folder-cover-card:hover {
     opacity: 0.86;
   }
 }
-@keyframes randomBtnGlowPing {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 58%, transparent);
-  }
-  62%,
-  100% {
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
-  }
-}
 /* 禁用：光晕整个摘掉（不是压暗 —— 压暗后仍在闪，仍然是「这里可以点」的暗示）。 */
-.browse-footer-actions .pagination-random:disabled::before,
-.browse-footer-actions .pagination-random:disabled::after {
+.browse-footer-actions .pagination-random:disabled::before {
   display: none;
 }
 .page-numbers {
@@ -6073,12 +6103,13 @@ html[data-theme='light'] .settings-number-input:hover {
      `reduce`（见 CONTRACTS「本机 reduce=true」），不豁免 = 这套光晕**一次都看不见**，
      那不是「安静的降级」，是功能直接缺失。
      豁免理由与加载圈同源：它是**重点功能的可辨识信号**，不是装饰性位移动效。
-     只放行这一个按钮的两层伪元素，不做全局；周期刻意取 2.6s 慢档、扩散只到 6px ——
+     只放行这一个按钮的呼吸层，不做全局；周期刻意取 2.6s 慢档、只动不透明度 ——
      低频呼吸而非高频闪烁，对前庭敏感场景友好。
+     （扩散环 `::after` 已于 2026-10-06 因常驻每帧重绘删除，见上方那段实测记录；
+       这一段也随之下调为单层，两处必须同进同退。）
      🔴 选择器特异性 (0,3,1) 高于上方的 `*`(0,0,0)，且同样带 !important ⇒ 压得住。
-     改动这一段必须同步 web/index.html 里那对孪生规则（守护 `browse-grid-style-regression` 对账）。 */
-  .browse-footer-actions .pagination-random::before,
-  .browse-footer-actions .pagination-random::after {
+     改动这一段必须同步 web/index.html 里那条孪生规则（守护 `browse-grid-style-regression` 对账）。 */
+  .browse-footer-actions .pagination-random::before {
     animation-duration: 2.6s !important;
     animation-iteration-count: infinite !important;
   }
@@ -6904,8 +6935,12 @@ html[data-theme='light'] .app-dialog-actions .btn:hover {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  flex: 1;
-  min-width: 240px;
+  /* 「启动后自动执行」那一组：一行一项（2026-10-05 用户要求）。
+     原先 flex:1 + min-width:240px 会在宽面板上自己挤成两项一行，
+     改成基准 100% 后每个开关各占一行；min-width 必须同时归零，
+     否则窄窗口下 240px 的下限会让文字块撑破卡片。 */
+  flex: 1 1 100%;
+  min-width: 0;
   padding: 8px 10px;
   background: linear-gradient(
     180deg,

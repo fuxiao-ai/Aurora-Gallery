@@ -7,6 +7,14 @@ contextBridge.exposeInMainWorld('photoAPI', {
   notifyBrowsePhotosReady: function () {
     ipcRenderer.send('notify-browse-photos-ready');
   },
+  /**
+   * 启动阶段上报：白名单 = 主进程的 `RENDERER_STARTUP_STAGES`
+   * （'init.enter' / 'settings.done' / 'rootFolders.done' / 'landing.done'）。
+   * 只写启动指标、无副作用；不在白名单里的名字主进程直接丢弃。
+   */
+  notifyStartupStage: function (stage) {
+    ipcRenderer.send('notify-startup-stage', stage);
+  },
   selectFolder: function () {
     return ipcRenderer.invoke('select-folder');
   },
@@ -197,6 +205,9 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   rescanFolder: function (rootPath) {
     return ipcRenderer.invoke('rescan-folder', rootPath);
+  },
+  rescanAllFolders: function () {
+    return ipcRenderer.invoke('rescan-all-folders');
   },
   onScanStart: function (callback) {
     ipcRenderer.on('scan-start', function () {

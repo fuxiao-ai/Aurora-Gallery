@@ -15,6 +15,13 @@ async function run() {
       instances.push(this);
     }
     postMessage(message) {
+      // 复位指令是**没有 options** 的（它压根不是一次查询），所以这一支必须排在
+      // `message.options.uncloneable` 之前 —— 否则这里会先撞一个 TypeError。
+      if (message && message.op === '__cache_reset') {
+        this.resets = (this.resets || 0) + 1;
+        this.resetMessage = message;
+        return;
+      }
       if (message.options.uncloneable) throw new Error('clone failed');
       this.message = message;
     }
@@ -50,6 +57,14 @@ async function run() {
   instances[1].complete('healthy');
   assert.equal((await a).error, 'crashed');
   assert.equal((await b).value, 'healthy', 'other slots survive a crash');
+  // 读池只读缓存复位（见 src/photos-total-cache.js）：只发给**还有连接**的槽 ——
+  // 刚崩掉/正在退役的槽 `slot.worker` 已经是 null，进程都没了、也就没有缓存可清。
+  pool.invalidateReadCaches();
+  assert.equal(instances[1].resets, 1, '活着的槽必须收到复位指令');
+  assert.equal(instances[0].resets || 0, 0, '已经退役的槽不该收到复位指令（它没有连接）');
+  // 复位指令**不许带 id**：它走的是「没有回执」的那条路，带上 id 就会被当成某次查询的应答，
+  // 把 `slot.job` 的配对打乱（那正是这个池最不能出错的地方）。
+  assert.equal(instances[1].resetMessage.id, undefined, '复位指令不许带 id');
   const c = request();
   instances[2].complete('replacement');
   assert.equal((await c).value, 'replacement');

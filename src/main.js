@@ -29,6 +29,13 @@ const { runDatabaseMaintenance } = require('./main/database-maintenance');
 const maintenanceGuard = require('./main/maintenance-guard');
 const { createDbWriteQueue, PRIORITY } = require('./main/db-write-queue');
 /**
+ * 查重指纹（SHA-256）的两条入口。抽成独立模块是为了让回归脚本能**真跑**着验证
+ * 「流式读」与「对内存 Buffer」给出逐字符相同的摘要 —— 它们写的是同一列 `file_hash`。
+ */
+const { hashFileSha256, hashBufferSha256 } = require('./main/file-hash');
+// 拍摄参数的解析只有一份（`src/main/exif-meta.js`），扫描期与补全任务共用 —— 见该模块头注释。
+const { extractExifFields, hasAnyExifField } = require('./main/exif-meta');
+/**
  * 「能不能建 AI 索引」的判据。剥成独立模块是为了能被回归脚本真跑 —— 这条判据曾经因为
  * 与 FTS 共用同一个开关，把开机期的正常点击误报成「数据库维护进行中」。
  */
@@ -81,7 +88,7 @@ const { CatalogCacheDb, normalizeMediaKey } = require('./catalog-cache-db');
 const logger = require('./main/logger');
 const similarDetection = require('./main/similar-detection');
 const { idListPredicate, toIdListJson } = require('./main/sql-id-list');
-const { computeDhash, getDhashBuckets } = require('./main/perceptual-hash');
+const { computeDhash, computeDhashFromPipeline, getDhashBuckets } = require('./main/perceptual-hash');
 /** 搜图匹配阈值的范围与默认值：唯一定义处（src/ai/index-store.js），设置默认值从它取。 */
 const { MATCH_THRESHOLD_RANGE } = require('./ai/index-store');
 // 随包内置模型（`models/`）的播种层：只读 fs/path/crypto，不碰 electron 与原生模块，
@@ -262,6 +269,24 @@ var workerScanProgress = {
 };
 /** 当前目录扫描开始时间（毫秒），用于预计剩余时间 */
 var workerScanStartedAt = 0;
+/**
+ * worker 最近一次自报的「正在跑哪个阶段」（scan-worker → `{type:'phase'}`）。
+ *
+ * 只为一件事：心跳看门狗超时时能说出**卡在哪一步**。worker 是单线程，同步 SQL 期间连心跳都
+ * 发不出去，所以「静默 120 秒」既可能是真死锁、也可能是某一阶段同步太久 —— 没有这个字段，
+ * 报错只能是一句「线程无响应，请重试」，用户重试十次也还是同一句话。
+ */
+var workerScanLastPhase = '';
+/** 阶段名 → 用户能看懂的说法（只用于报错文案，不影响逻辑） */
+var SCAN_PHASE_LABELS = {
+  start: '启动扫描线程',
+  enumerate: '枚举文件',
+  partition: '比对文件变更',
+  'scan-files': '写入照片记录',
+  'cleanup-stale': '清理失效记录',
+  'refresh-stats': '重算目录统计',
+  cancel: '响应取消',
+};
 var scanQueue = [];
 /**
  * 规范化 rootPath → 扫描任务，用于**同目录去重**（见 `enqueueScanTask`）。
@@ -273,12 +298,141 @@ var currentScanTask = null;
 var scanTaskIdSeq = 1;
 /** 单次补全任务记录的失败路径上限，避免极端情况下占用过多内存 */
 var THUMB_BACKFILL_FAILED_PATHS_MAX = 50000;
+/**
+ * 缩略图补全**同时处理张数**的默认值与上界。**唯一真相源** ——
+ * `createDefaultSettings()` 与 `normalizeGeneralSettings()` 的兜底都引用这两个常量，
+ * 别在一处写 4、另一处写 3（那会让「默认值」与「非法值兜底」悄悄不一致，
+ * 症状是「配置文件坏掉之后速度变了」，且不报错）。
+ *
+ * 为什么是 4 / 上限为什么是 8：见 `createDefaultSettings()` 里那张两轮实测表。
+ * 一句话 —— 冷读（外接盘）拐在 4、热读拐在 8，12/16 无增益。
+ *
+ * ⚠️ 渲染层 `src/renderer/app.js#normalizeThumbBackfillConcurrency` 有**同一份兜底值**，
+ *    它是独立进程、拿不到这里的常量。改这个数时三处一起改（这里两个常量 + 那边一个字面量）。
+ */
+var THUMB_BACKFILL_CONCURRENCY_DEFAULT = 4;
+var THUMB_BACKFILL_CONCURRENCY_MAX = 8;
+/**
+ * 副指标「还缺多少张预览图」的刷新间隔。
+ *
+ * 🔴 它是**实时值**（2026-10-06 起），不是任务起始快照。改成实时的理由见
+ *    `countPendingThumbnailsForProgress()`。
+ *
+ * 🔴 **5 s（2026-10-06 由 30 s 下调）—— 这个数是量出来的，不是拍的**：
+ *    那次计数 = worker 里一句 `COUNT(*) WHERE has_thumbnail = 0`，命中覆盖索引
+ *    `idx_photos_hasThumb`，本机实测**中位 14.0 ms**（8.0~14.6 ms，8 次）⇒
+ *    占空比 14 ms / 5 s = **0.28%**；而读池本身占用率才 0.016%，加这点没关系。
+ *    ⚠️ 原注释写「本机 150 ms、外接机械盘上会慢几个数量级」是**当时的估计、不是实测**，
+ *    而且前提也不成立：**库在 `LOCALAPPDATA`（系统盘），只有照片在 `K:` / `G:` 外接盘**
+ *    ⇒ 这个计数读的是本地库、根本不碰那块外接盘。所以「为了不抢外接盘而取 30 s」
+ *    这条理由站不住（30 s 的真实后果是：读数每跳只降约 300 张 / 占 28.7 万基数的 0.1%，
+ *    看着像卡住）。⚠️ 若将来把 UserData 挪到外接盘或网络路径，这条必须重新量。
+ */
+var THUMB_TOTAL_REFRESH_MS = 5000;
+/**
+ * 副指标刷新定时器的滴答间隔。
+ *
+ * 🔴 必须**严格小于** `THUMB_TOTAL_REFRESH_MS`：两者相等时，定时器只要早触发一点点
+ *    就会被节流闸门挡掉，硬生生把一个 5 s 周期拖成 10 s（本项目踩过同类的定时器坑）。
+ */
+var THUMB_TOTAL_TICK_MS = 1000;
+/** 副指标刷新定时器句柄（随补全任务起手 / 收尾，见 `start/stopPendingThumbRefreshTicker`）。 */
+var thumbTotalRefreshTimer = null;
+/** 副指标刷新是否**在途**。worker 慢时不许叠起来（每次都在扫同一个库）。 */
+var thumbTotalRefreshInFlight = false;
+/** 上次取「还缺多少张」的时刻，同时充当节流闸门（初始值 0 = 从未取过）。 */
+var thumbTotalRefreshedAt = 0;
 var thumbnailBackfill = {
   running: false,
   cancelled: false,
-  total: 0,
+  /**
+   * 本轮**已取出的候选行数**（含当前这一批里还没处理完的）。
+   *
+   * 🔴 它**曾经叫 `total` 并被 UI 当「总数」用**，而它是滚动累加的（每批 `+= rows.length`）——
+   *    于是 `total - done` 恒等于「当前这批还剩几行」（≤ 100），百分比在 0↔100% 之间锯齿，
+   *    剩余时间也只在批次尺度上打转。改名成 `fetched` 就是为了让任何残留的旧用法
+   *    **立刻变成 undefined 而不是静默拿到一个错的数**；现在它只进日志。
+   */
+  fetched: 0,
+  /**
+   * 「**当前**还缺缩略图的张数」的**基线**（最近一次精确统计值）——副指标的 M。
+   *
+   * 🔴 它**不是**直接画到 UI 上的那个数。UI 要的是**实时值**，由
+   *    `currentPendingThumbTotal()` = 本字段 − 「自基线以来新生成的缩略图数」（`thumbs` 增量）
+   *    派生出来。
+   *
+   * 为什么必须派生：精确统计要沿索引扫 166 万条（本机实测 16 ms，但库在外接机械盘 /
+   * 网络路径上可以慢几个数量级），**不可能每批都跑**；而它在两次统计之间**一动不动**。
+   * 于是用户看到的是「预览图 N 在涨、还缺 M 不动」—— 2026-10-06 用户就是这么报上来的。
+   * 对比之下旁边三项（拍摄信息 / 视觉指纹 / 查重指纹）都是累加器、每批都变，
+   * 这一项显得尤其像坏了。
+   *
+   * ⚠️ 派生的前提是「**只有本任务会写出缩略图**」。运行期并发的**扫描入库**会新增缺图的行，
+   *    这部分派生不出来 ⇒ 仍靠 `THUMB_TOTAL_REFRESH_MS`（5 s）周期精确统计纠偏，
+   *    偏差有上界（最坏一个周期内新增的入库行数）。
+   *
+   * 🔴 **不是**主进度条的分母（主分母是 `pendingTotal`）。见 `countPhotosLackingThumbnail()`：
+   *    曾经拿它当分母，结果因为「倒序走 + 缺缩略图的行几乎全在低位老照片上」，
+   *    进度条在 0% 上趴了十几分钟不动。这条历史不能因为改了刷新方式就丢掉。
+   * @type {number|null}
+   */
+  thumbTotal: null,
+  /**
+   * 取到 `thumbTotal` 那个基线**同一时刻**的 `thumbs` 值。
+   *
+   * 🔴 派生实时剩余时必须拿 `thumbs` **减它**再扣：不减就等于把「基线之前已经生成的那批」
+   *    也当成从基线里扣掉了 ⇒ **越跑越低**，最后恒显示 0（而实际还有几十万张缺）。
+   *    两者之间不能有 `await`（单线程下即原子），否则快照与基线会错位。
+   */
+  thumbTotalBaseThumbs: 0,
+  /**
+   * 主进度条的**分母**：任务起手时「候选集」规模的**抽样估计值**（约数，非精确值）。
+   * 候选谓词要扫全表（实测 80~95 秒）⇒ 只能抽样，见 `estimatePendingCandidateCount()`。
+   * @type {number|null}
+   */
+  pendingTotal: null,
+  /**
+   * 分母的取值状态，决定 UI 敢不敢画百分比：
+   *   `'counting'` = 已发起统计、结果还没回来（异步走读 worker，**不在前台等**）
+   *   `'ready'`    = `pendingTotal` 可用
+   *   `'failed'`   = 统计失败 ⇒ 降级：只说「已处理 N 张」，不显示百分比与剩余时间
+   * 未运行时为 `null`。
+   * @type {'counting'|'ready'|'failed'|null}
+   */
+  pendingPhase: null,
+  /**
+   * 当前在跑哪一趟：`'thumbnail'` = 先补「还缺缩略图」的（会出图）；
+   * `'metadata'` = 后补只缺 EXIF / dHash / 尺寸的（**本来就不出图**）。
+   * 未运行时为 `null`。
+   *
+   * 🔴 为什么值得暴露：第二趟的 `thumbs` 恒为 0 是**设计如此**，不是卡住 ——
+   *    UI 拿不到这个字段就只能显示「预览图 0 张」，用户合理地以为任务没干活
+   *    （2026-10-06 用户就是这么报上来的）。
+   * @type {'thumbnail'|'metadata'|null}
+   */
+  pass: null,
+  /**
+   * 每轮任务的**身份**：`runToken` 在起手时自增，异步统计回来时对不上就丢弃。
+   * 没有它，上一轮迟到的分母会写进下一轮的状态 —— 不报错，只是百分比全错。
+   */
+  runToken: 0,
+  /**
+   * 本轮**新生成缩略图**的张数 —— **副指标**的 N（不是主分子；主分子是 `done`）。
+   * 跳过早有缩略图、只补元数据的行不计。
+   */
+  thumbs: 0,
+  /** 本轮顺带补出**原图尺寸**的行数：只进状态与日志，让用户看到「不只在做预览图」 */
+  sized: 0,
+  /** 本轮顺带补出 **dHash** 的行数：同上 */
+  dhashed: 0,
   done: 0,
   success: 0,
+  /** 本轮顺带补出的查重指纹（SHA-256）条数：只用于日志与分组缓存失效判据，不进 UI 状态 */
+  hashed: 0,
+  /** 本轮「试过读拍摄参数」的行数（写了 `exif_mtime` 标记）：只进日志 */
+  exifChecked: 0,
+  /** 其中真的解析出至少一项拍摄参数的行数（截图 / 网图 / PNG 本就没有 EXIF）：只进日志 */
+  exifFilled: 0,
   failed: 0,
   currentFile: '',
   /** @type {number} */
@@ -561,10 +715,24 @@ var BG_TASKS_CHANGED_MIN_INTERVAL_MS = 200;
 var startupInvalidCleanupTask = {
   running: false,
   timer: null,
-  afterId: 0,
+  beforeId: 0,
 };
 
+/**
+ * 目录类缓存（root_folders / folder_tree）与**读池里的 `getPhotos` total 记忆化**
+ * （`src/photos-total-cache.js`）一起失效。
+ *
+ * 两者绑在同一个入口上不是巧合：会让目录结构变脏的动作（扫描收尾 / 删除 / 移除根目录）
+ * 同时也是**改 photos 行数**的动作。行数一变，那份 total 就不再是「同一条 SQL 同一个数」了。
+ * 挂在既有失效点上 ⇒ 这 4 个调用点自动都覆盖到，不用各加一行、也就不会漏一处。
+ * （缓存另有 5 s TTL 兜底，所以这里漏掉也只会陈旧 ≤5 s。）
+ */
 function invalidateCatalogCachesSafe() {
+  try {
+    dbReadWorkerPool.invalidateReadCaches();
+  } catch (ePool) {
+    void ePool;
+  }
   try {
     if (catalogCache && typeof catalogCache.invalidateAllCatalogCaches === 'function') {
       catalogCache.invalidateAllCatalogCaches();
@@ -575,6 +743,11 @@ function invalidateCatalogCachesSafe() {
 }
 
 function invalidateCatalogCacheForRootSafe(rootId) {
+  try {
+    dbReadWorkerPool.invalidateReadCaches();
+  } catch (ePool) {
+    void ePool;
+  }
   try {
     if (catalogCache && typeof catalogCache.invalidateByRootId === 'function') {
       catalogCache.invalidateByRootId(rootId);
@@ -624,6 +797,33 @@ function startupStageLog(stage, detail) {
     logger.log('[startup-stage +%dms] %s', elapsed, stage);
   }
 }
+/**
+ * 长任务进度打点：进 console **并**进 `startup-performance.json#longTasks`。
+ *
+ * 🔴 不能直接用 `startupStageLog`（它只写 `stages`）：`stages` 有 **120 s 采集截止**，
+ *    而建索引这类**十几分钟**的独占写锁任务必然整段落在窗口外 ⇒ 打点被静默丢弃，
+ *    看起来完全像「明明加了埋点还是没有现场」。见 `startup-metrics.js#markLong`。
+ * ⚠️ 只给低频事件用（每条索引一两次、每个长阶段一次）。
+ */
+function longTaskStageLog(stage, detail) {
+  var elapsed = Date.now() - startupStageT0;
+  if (detail != null && String(detail).length > 0) {
+    logger.log('[startup-stage +%dms] %s | %s', elapsed, stage, String(detail));
+  } else {
+    logger.log('[startup-stage +%dms] %s', elapsed, stage);
+  }
+  startupMetrics.markLong(stage, detail);
+}
+/**
+ * 渲染层允许上报的启动阶段名（白名单）。
+ * 渲染层送过来的字符串**绝不直接拼进日志** —— 这里是唯一的过滤点，
+ * 见下方 `notify-startup-stage` 的 handler。
+ *
+ * 用途：把 `window.did-finish-load` → `renderer.first-grid-paint` 之间那段黑盒切开。
+ * 本机 122 万张库实测那段有 **52 秒**没有任何标记（7.3s → 59.0s），
+ * 导致「首屏在等谁」无法从数据回答。见 CONTRACTS §启动首帧。
+ */
+var RENDERER_STARTUP_STAGES = ['init.enter', 'settings.done', 'rootFolders.done', 'landing.done'];
 var RAW_EXTENSIONS = new Set(['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw']);
 var VIDEO_EXTENSIONS = new Set([
   '.mp4',
@@ -883,9 +1083,36 @@ function createDefaultSettings() {
     autoScanOnStartup: false,
     /** 启动后空闲时自动补全缺失缩略图与 dHash（与扫描队列互斥） */
     autoThumbBackfillOnStartup: false,
-    /** 缩略图补全同时处理张数（1–8），过大易占内存并加重磁盘随机读 */
-    thumbBackfillConcurrency: 3,
+    /**
+     * 缩略图补全**同时处理张数**（1–8）。
+     *
+     * 🔴 默认 3 → 4（2026-10-06），依据是**两轮实测**（`.workbuddy/tmp/thumb-concurrency-probe.log`
+     *    与 `thumb-concurrency-cold.log`；16 核机器、24 / 80 张真实照片、只读不写库）：
+     *
+     *     | 并发 | 热读（页缓存命中） | 冷读（外接盘、文件未缓存） |
+     *     | ---: | ---: | ---: |
+     *     | 1 | 18.4 张/秒 | 11.3 |
+     *     | 3（旧默认） | 30.3 | 13.6 |
+     *     | **4** | 42.1 | **19.8 ← 两轮里唯一的共同最优** |
+     *     | 6 | 48.3 | （未测） |
+     *     | **8** | **58.6 ← 热读最优** | **15.8 ← 冷读回落** |
+     *     | 12 / 16 | 55.2 / 54.2（**无增益**） | — |
+     *
+     *    ⇒ 两轮拐点**不一样**：热读拐在 8，冷读拐在 4，而且 8 上冷读**反而变慢** ——
+     *      外接 / 机械盘上并发随机读过高会互相抢寻道（并行度从 1.86 掉到 1.55）。
+     *      用户的图库正是在 `K:\COS` / `G:\T` 这类盘上，首次补全大量是冷读
+     *      ⇒ 取 **4**：两轮都接近最优，不押单边。
+     *    ⇒ **上限 8 已经够**，不必再提高：12 / 16 实测无增益（并行度封顶 ~3.9，
+     *      瓶颈是单张图内部的串行段，不是核数），提高上限只会白占内存。
+     *    ⚠️ 改这里**不影响已有配置**（磁盘上的值优先于默认形状）—— 老用户要享受这次调整
+     *      得自己去设置页改，这是刻意的：用户显式选过的值不该被一次升级悄悄覆盖。
+     */
+    thumbBackfillConcurrency: THUMB_BACKFILL_CONCURRENCY_DEFAULT,
     autoHashOnStartup: false,
+    /** 启动后自动跑一遍搜图（语义）索引；缺多少补多少，**跑到底**，只能手动取消 */
+    autoSemanticIndexOnStartup: false,
+    /** 启动后自动跑一遍人脸索引；缺多少补多少，**跑到底**，只能手动取消 */
+    autoFaceIndexOnStartup: false,
     /** 默认关闭局域网访问；本机 127.0.0.1 预览/HLS 仍可在内嵌服务启动后使用 */
     webLanEnabled: false,
     cloudflareTunnelAutoStart: false,
@@ -1074,6 +1301,8 @@ function buildWebSettingsSnapshot() {
     autoScanOnStartup: s.autoScanOnStartup,
     autoThumbBackfillOnStartup: s.autoThumbBackfillOnStartup,
     autoHashOnStartup: s.autoHashOnStartup,
+    autoSemanticIndexOnStartup: s.autoSemanticIndexOnStartup,
+    autoFaceIndexOnStartup: s.autoFaceIndexOnStartup,
     thumbBackfillConcurrency: s.thumbBackfillConcurrency,
     similarThreshold: s.similarThreshold,
     aiSearchMatchThreshold: s.aiSearchMatchThreshold,
@@ -1116,6 +1345,8 @@ function ensureSettingsShape() {
   settings.autoScanOnStartup = !!settings.autoScanOnStartup;
   settings.autoThumbBackfillOnStartup = !!settings.autoThumbBackfillOnStartup;
   settings.autoHashOnStartup = !!settings.autoHashOnStartup;
+  settings.autoSemanticIndexOnStartup = !!settings.autoSemanticIndexOnStartup;
+  settings.autoFaceIndexOnStartup = !!settings.autoFaceIndexOnStartup;
   settings.webLanEnabled = settings.webLanEnabled === true;
   settings.cloudflareTunnelAutoStart = !!settings.cloudflareTunnelAutoStart;
   var subFamily = String(settings.subtitleFontFamily || '')
@@ -1250,8 +1481,9 @@ function ensureSettingsShape() {
   settings.hlsMaxCacheEntries = hme;
 
   var tbc = parseInt(settings.thumbBackfillConcurrency, 10);
-  if (isNaN(tbc) || tbc < 1) tbc = 3;
-  if (tbc > 8) tbc = 8;
+  // 兜底值必须与 `createDefaultSettings()` 一致 ⇒ 两处都引用常量，别各写一个字面量。
+  if (isNaN(tbc) || tbc < 1) tbc = THUMB_BACKFILL_CONCURRENCY_DEFAULT;
+  if (tbc > THUMB_BACKFILL_CONCURRENCY_MAX) tbc = THUMB_BACKFILL_CONCURRENCY_MAX;
   settings.thumbBackfillConcurrency = tbc;
 }
 
@@ -1343,6 +1575,7 @@ function runFolderScanInWorker(normalizedRootPath) {
     scanWorkerDoneReceived = false;
     workerScanIsActive = true;
     workerScanStartedAt = Date.now();
+    workerScanLastPhase = 'start';
     workerScanProgress = { current: 0, total: 0, status: 'scanning', currentFile: '' };
     logger.task('scan', 'start', 'root=' + normalizedRootPath, { startedAt: workerScanStartedAt });
     var lastHeartbeatAt = Date.now();
@@ -1396,6 +1629,21 @@ function runFolderScanInWorker(normalizedRootPath) {
           workerScanProgress = Object.assign({}, workerScanProgress, { status: 'done' });
         }
       } catch (e0) {}
+      /**
+       * 扫描结局落盘。理由同 phase 打点：生产档日志是静默的，
+       * 「这次扫描到底跑完没有、是报错还是被取消」如果只打日志就等于没记录 ——
+       * 用户说「自动扫描失败」时，我们手里就只剩一句他自己转述的文案。
+       */
+      try {
+        var outcome = result && result.error
+          ? 'error | ' + result.error
+          : result && result.cancelled
+            ? 'cancelled'
+            : 'done';
+        startupStageLog('scan.finish', outcome);
+      } catch (eSM) {
+        void eSM;
+      }
       var cur = scanWorker;
       scanWorker = null;
       if (cur) {
@@ -1409,9 +1657,16 @@ function runFolderScanInWorker(normalizedRootPath) {
       if (scanWorkerDoneReceived) return;
       var silentMs = Date.now() - lastHeartbeatAt;
       // Worker 在加载大库映射 / 全量枚举时可能数秒～数十秒无消息；过短会误杀。真死锁仍会被终止。
+      //
+      // ⚠️ 这个阈值是**契约**，不是随便定的数：`scanner.js` 里每一个同步阶段都必须让它自己
+      // 小于本值（做法是按批 + `await` 让出，见 `cleanupStalePhotosForRoot` /
+      // `refreshRootFolderStatsCacheForRoot`）。真库上曾经有一处一次性 `.all()` 物化
+      // 91 万行、单段同步 71 秒，叠上三条 61 秒的聚合，把一个只是**正在读盘**的健康扫描
+      // 判成了「线程无响应」并终止。改阈值治不了这类问题，只会把误杀时间往后推。
       var scanWorkerHeartbeatMs = 120000;
       if (silentMs > scanWorkerHeartbeatMs) {
-        logger.task('scan', 'heartbeat.timeout', 'silentMs=' + silentMs, {
+        var phaseLabel = SCAN_PHASE_LABELS[workerScanLastPhase] || workerScanLastPhase || '未知';
+        logger.task('scan', 'heartbeat.timeout', 'silentMs=' + silentMs + ' phase=' + phaseLabel, {
           startedAt: workerScanStartedAt,
         });
         finish({
@@ -1419,7 +1674,9 @@ function runFolderScanInWorker(normalizedRootPath) {
           error:
             '扫描线程无响应（超过 ' +
             Math.round(silentMs / 1000) +
-            ' 秒），已终止。请重试添加目录/重新扫描。',
+            ' 秒，最后阶段：' +
+            phaseLabel +
+            '），已终止。请重试添加目录/重新扫描。',
         });
       }
     }, 5000);
@@ -1427,6 +1684,14 @@ function runFolderScanInWorker(normalizedRootPath) {
     w.on('message', function (msg) {
       lastHeartbeatAt = Date.now();
       if (!msg || !msg.type) return;
+      if (msg.type === 'phase' && msg.name) {
+        // 阶段自报：既证明线程活着（重置安静计时），也让超时文案能说出卡在哪一步
+        workerScanLastPhase = String(msg.name);
+        // 落盘留痕：生产档 `logger` 是静默的（`warn` 档丢掉 `info`），不写进
+        // `startup-performance.json` 就等于事后没有任何现场 —— 「卡在哪个阶段、每段多久」
+        // 是排查这条看门狗的唯一线索。每个阶段只在进入时自报一次，成本可忽略。
+        startupStageLog('scan.phase.' + msg.name);
+      }
       if (msg.type === 'progress' && msg.p) {
         workerScanProgress = Object.assign(
           { current: 0, total: 0, status: 'scanning', currentFile: '' },
@@ -1462,12 +1727,32 @@ function runFolderScanInWorker(normalizedRootPath) {
     });
 
     w.on('exit', function (code) {
-      if (code !== 0 && !scanWorkerDoneReceived) {
+      /**
+       * 🔴 判据必须是「有没有收到过 `done`」，**不是**「退出码是不是 0」。
+       *
+       * worker 在 `parentPort` 关闭、或事件循环里再没有任何 handle 时是**以 0 退出**的。
+       * 旧代码只处理 `code !== 0`，于是这种「没发 done 就退出」的情况下主进程一直干等，
+       * 直到 120 秒看门狗报出「扫描线程无响应（超过 123 秒），已终止」——
+       * 用户以为**卡死**了，其实线程**早就退出了**，真正的死因（未捕获异常、栈）在那一刻就丢了，
+       * 重试多少次都只会看到同一句话。
+       */
+      if (scanWorkerDoneReceived) return;
+      /**
+       * ⚠️ 必须**延后**再判定：worker 可能刚 `postMessage(done)` 就退出，而
+       * `exit` 与 `message` 的**到达顺序没有保证**（跨线程投递）。立刻判定会把
+       * 「正常完成」误报成「提前退出」。延后 500ms 对「发现线程已死」这件事没有代价 ——
+       * 它本来要等 120 秒看门狗。
+       */
+      setTimeout(function () {
+        if (scanWorkerDoneReceived) return;
         finish({
           cancelled: false,
-          error: '扫描线程异常退出（代码 ' + code + '）',
+          error:
+            code === 0
+              ? '扫描线程提前退出（未返回结果）'
+              : '扫描线程异常退出（代码 ' + code + '）',
         });
-      }
+      }, 500);
     });
   });
 }
@@ -1737,23 +2022,263 @@ async function processScanQueue() {
   }
 }
 
+/**
+ * 补全进度快照。**分母是缩略图口径**（还差几张预览图），不是候选集口径（任务还剩几行活）——
+ * 两者在本机真实库上差 4 倍以上（34 万 vs 156 万），混用会让百分比与用户的等待时间脱钩。
+ * 见 `database.js#countPhotosLackingThumbnail()`。
+ *
+ * 🔴 `phase` 是承重字段，UI 必须**先按它分支**再决定画不画百分比：
+ *    分母没到手（`'counting'`）与分母为 0 是两件事 —— 前者是「还不知道」，后者是「没有要补的」。
+ *    把前者画成 `0 / 0` + 空进度条，就是把「不知道」画成了「没进展」。
+ */
+/**
+ * 「当前还缺多少张缩略图」的**实时值**（UI 副行的 `还缺 M`）。
+ *
+ * ## 为什么不能直接把 `thumbnailBackfill.thumbTotal` 画出去
+ *
+ * 那个字段是**最近一次精确统计**的结果，两次统计之间（`THUMB_TOTAL_REFRESH_MS` = 5 s，
+ * 且带 in-flight 闸门，实际落在 5~10 s）**一动不动**。而旁边三项
+ * （拍摄信息 / 视觉指纹 / 查重指纹）都是每批自增的累加器 ⇒ 用户看到「三项在涨、
+ * 还缺不动」，合理地认为数字坏了。2026-10-06 用户报的就是这个。
+ *
+ * ## 派生公式
+ *
+ *     实时剩余 = 基线 − (本轮已生成缩略图数 − 取基线时的那个数)
+ *
+ * 口径上逐项对得上：能减少「还缺」的**只有**真的写出了缩略图这件事 ——
+ * 只补了尺寸 / dHash / 指纹 / 拍摄参数的行不减（那些行本来就有缩略图），
+ * 失败的行也不减（它仍然缺）。两者与 `thumbnailBackfill.thumbs` 的累加条件完全一致
+ * （见 `processOne` 里 `thumbs++` 的注释：只在 `updatePhotoThumbnail` 之后自增）。
+ *
+ * ⚠️ 第二趟（`pass === 'metadata'`）本就不出图 ⇒ 这个数不动，那是**对的**，
+ *    不是卡住；UI 拿 `pass` 区分。
+ *
+ * ⚠️ 结果是**下界**：并发**扫描入库**新加进来的缺图行不计（它们不在基线里），
+ *    所以这个数可能偏小，由 5 s 的周期精确统计纠偏。宁可偏小也不能偏大 ——
+ *    偏大意味着「明明还在补却显示 0」，会被当成「已跑完」。
+ *
+ * @returns {number} 非负整数；基线还没到手时返回 0（UI 的判据是 `> 0` ⇒ 不显示这一段）
+ */
+function currentPendingThumbTotal() {
+  var base = thumbnailBackfill.thumbTotal;
+  if (base == null) return 0;
+  var baseValue = Number(base) || 0;
+  var generated = (Number(thumbnailBackfill.thumbs) || 0) - (Number(thumbnailBackfill.thumbTotalBaseThumbs) || 0);
+  if (!(generated > 0)) return baseValue;
+  return Math.max(0, baseValue - generated);
+}
+
 function getThumbnailBackfillProgress() {
-  var d = thumbnailBackfill.done;
-  var tot = thumbnailBackfill.total;
+  /** 主分子：本轮**已处理的行数**（含只补了尺寸 / dHash / 指纹 / 拍摄参数、没出预览图的行） */
+  var processed = Number(thumbnailBackfill.done) || 0;
+  /** 副分子：本轮真的写出了预览图的张数 */
+  var thumbs = Number(thumbnailBackfill.thumbs) || 0;
+  /** 主分母：候选集规模的**抽样估计值**（约数） */
+  var total = thumbnailBackfill.pendingTotal;
+  var hasTotal = total != null && total > 0;
+  // 分母是**起始快照**：并发入库的新照片不在里面，分子可能反超。两头都夹住，
+  // 否则会显示「107%」和负的剩余时间。
+  var denom = hasTotal ? Math.max(Number(total), processed) : 0;
+  var pct = denom > 0 ? Math.min(100, Math.round((processed / denom) * 100)) : 0;
   var exportable = thumbnailBackfill.running
     ? thumbnailBackfill.failedPaths.length
     : thumbnailBackfill.failedPathsLastRun.length;
   return {
     running: thumbnailBackfill.running,
     cancelled: thumbnailBackfill.cancelled,
-    total: tot,
-    done: d,
+    /** `'counting'` | `'ready'` | `'failed'`；未运行时为 `null` */
+    phase: thumbnailBackfill.running ? thumbnailBackfill.pendingPhase || 'counting' : null,
+    /**
+     * 当前趟：`'thumbnail'` | `'metadata'` | `null`（未运行）。
+     * `'metadata'` 那一趟**本来就不出图** ⇒ UI 不能把「预览图 0 张」画成异常。
+     */
+    pass: thumbnailBackfill.running ? thumbnailBackfill.pass || 'thumbnail' : null,
+    /**
+     * 候选集规模的**估计值**（任务起始快照）⇒ UI 必须带「约」。
+     * `null` = 还没统计出来。
+     */
+    total: hasTotal ? denom : null,
+    /** 本轮**已处理的行数**（主分子）。任务真正在做的事由它体现 */
+    done: processed,
+    /** 同 `done`；语义更直白的别名，给不方便读 `done` 的消费方 */
+    processed: processed,
+    /**
+     * ⚠️ 分母未就绪时它恒为 0，**不代表没进展** —— 只给不方便读 `phase` 的消费方兜底，
+     *    UI 一律以 `phase` 为准。
+     */
+    pct: pct,
+    /**
+     * 副指标 · 预览图：`thumbTotal` = **当前**还缺缩略图的张数（`has_thumbnail = 0`），
+     * `thumbs` = 本轮新生成的张数。
+     *
+     * ⚠️ 2026-10-06 起它是**派生实时值**（`currentPendingThumbTotal()`）：精确统计每 5 s 校准
+     *    一次基线，两次统计之间按「本轮新生成了几张」递推 ⇒ 每批都在动，与旁边三项同节拍。
+     *    在此之前它是「每 5 s 才跳一次的精确值」（注释里曾写「30 s」，早已过时），
+     *    用户拿它对比旁边三个累加器就会认为这个数坏了。
+     *
+     * 🔴 它**刻意不做主口径**：补全按 id 倒序走，而缺缩略图的行几乎全压在低位老照片上
+     *    （本机真实库：`id 1,900,000~1,999,999` 只有 10 行缺、`1,600,000~1,899,999` 才有 33.9 万）
+     *    ⇒ 任务头几万行一张图都不出，拿它当分母会让进度条在 0% 上趴十几分钟。
+     *    详见 `database.js#countPhotosLackingThumbnail()`。
+     *    UI 的判据是 `> 0`，所以「还没统计出来」与「真的都补齐了」都表现为「不显示这一段」。
+     */
+    thumbs: thumbs,
+    thumbTotal: currentPendingThumbTotal(),
+    /** 细分产出：让「不只是在做预览图」在 UI 上看得见（否则用户只看到预览图 0 张） */
+    sized: Number(thumbnailBackfill.sized) || 0,
+    dhashed: Number(thumbnailBackfill.dhashed) || 0,
+    hashed: Number(thumbnailBackfill.hashed) || 0,
+    exifFilled: Number(thumbnailBackfill.exifFilled) || 0,
     success: thumbnailBackfill.success,
     failed: thumbnailBackfill.failed,
     currentFile: thumbnailBackfill.currentFile,
-    etaSeconds: estimateEtaSecondsSmoothed('thumbBackfill', thumbnailBackfill.startedAt, d, tot),
+    // ETA 按**已处理行数**算：它与任务的总工作量对齐（分母就是候选集规模），
+    // 而按预览图算会在头十几分钟里恒为 null。
+    // ⚠️ taskKey 与旧口径的 `'thumbBackfill'` / `'thumbBackfillByThumbs'` 都分开，
+    //    避免平滑状态被不同口径交替喂（那会把 ETA 变成两种速率的加权平均）。
+    etaSeconds: hasTotal
+      ? estimateEtaSecondsSmoothed(
+          'thumbBackfillByProcessed',
+          thumbnailBackfill.startedAt,
+          processed,
+          denom,
+        )
+      : null,
     failedPathsExportable: exportable,
   };
+}
+
+/**
+ * 异步取「**当前**还缺几张缩略图」，写进 `thumbnailBackfill.thumbTotal`。
+ *
+ * 🔴 语义是**实时剩余**（2026-10-06 改），不是任务起始快照 —— 用户看到「预览图 N 涨、
+ *    待补 M 一动不动」会以为数字坏了。改成实时之后 `N + M ≈ 起跑线`（恒等式），
+ *    两个数同一时点、读起来自洽。它**不参与**任何百分比与 ETA（那两个走 `pendingTotal`），
+ *    所以这次改动只影响副行那一段文字。
+ *
+ * ⚠️ 因此**绝不能**再夹 `Math.max(n, thumbs)`（旧快照口径下那条夹取是必要的：
+ *    快照是分母、`thumbs` 是分子，分子不许超过分母）。实时口径下 N 与 M 是**互补**的，
+ *    任务过半后必然 `M < N`；再夹一次就把 M 冻在 N 上、再也不降 —— 正是要修的毛病。
+ *
+ * 🔴 必须走读 worker，**不能**在主进程直接 `db.countPhotosLackingThumbnail()`：
+ *    本机 14 GB 库实测 16 ms，但那是本地盘且页缓存热的情况；同一个库在外接机械盘
+ *    （本机的图库就在 `K:\COS` 这类盘上）或网络路径上，扫 166 万条索引条目可以慢几个数量级
+ *    —— 主进程同步等它，冻的是整个界面。worker 还自带超时，等不到就 reject ⇒ 降级。
+ *
+ * ⚠️ 结果要拿 `runToken` 对身份：任务可能已经结束、甚至已经开始了下一轮，这时把旧值
+ *    写进新任务的状态 = 数字凭空变成上一轮的，不报错但读数是错的。
+ * ⚠️ 拿不到就**留 `null`**（而不是写 0）：`thumbTotal = 0` 与「还没统计出来」在 UI 上
+ *    必须能区分（副行的判据是 `> 0`）。⚠️ 实时口径下 0 是**合法值**（真的都补齐了），
+ *    副行此时不显示这一段 —— 这是可接受的降级，比显示「还缺 0」与其他状态混淆要好。
+ * ⚠️ 入口处先盖时间戳：初始那一次调用与周期刷新共用同一个节流闸门。
+ */
+async function countPendingThumbnailsForProgress() {
+  var token = thumbnailBackfill.runToken;
+  thumbTotalRefreshedAt = Date.now();
+  if (!sqliteDbPath) return;
+  try {
+    var n = await runDbReadWorkerOnly(sqliteDbPath, 'getPendingThumbCount', {});
+    if (token !== thumbnailBackfill.runToken) return; // 上一轮的迟到结果，丢弃
+    // 🔴 先记「此刻已生成多少张」，再写基线。两者之间**不许有 await**（本函数当前满足，
+    //    因为是连续两条赋值）—— 一旦插入挂起点，快照就可能落在基线之后，
+    //    `thumbs − baseThumbs` 会把这之间生成的张数当成「基线之前」的，实时剩余系统性偏小。
+    thumbnailBackfill.thumbTotalBaseThumbs = Number(thumbnailBackfill.thumbs) || 0;
+    thumbnailBackfill.thumbTotal = Number(n) || 0;
+  } catch (eCount) {
+    if (token !== thumbnailBackfill.runToken) return;
+    // warn 级：生产档 info 是静默的，这条日志是「为什么副行没有分母」的唯一现场
+    logger.warn(
+      '[thumb-backfill] count pending thumbnails failed, thumbnail sub-counter has no denominator:',
+      eCount && eCount.message ? eCount.message : eCount,
+    );
+  }
+  emitBackgroundTasksChangedThrottled(false);
+}
+
+/**
+ * 刷新副指标（「还缺多少张预览图」）的**唯一入口**：按 `THUMB_TOTAL_REFRESH_MS` 节流。
+ *
+ * 两个调用点（缺一不可，各管一种情形）：
+ *   ① `startPendingThumbRefreshTicker()` 的 1 s 定时器 —— **主节拍**；
+ *   ② 主循环每批之后 —— 兜底（定时器万一被清掉，批次边界仍会刷新）。
+ *
+ * 🔴 为什么主节拍从「每批一次」改成**定时器**（2026-10-06）：补全一批 100 行、约 8~10 s，
+ *    节流再短也白搭 —— 检查点被批次边界量化 ⇒ 30 s 的节流实际落在 30~40 s。
+ *    改用定时器后节拍与批次解耦，读数才真的是「每 5 s 一次」。
+ * 🔴 **不许 `await`**（调用点就是这么用的）：它是纯附属读数，让 worker 往返拖慢主循环
+ *    等于用进度文字换补全速度。结果通过 `emitBackgroundTasksChangedThrottled` 回流到 UI。
+ * 🔴 `thumbTotalRefreshInFlight` 是必需的，不是保险：这次计数在慢盘 / 大库上可能远超一个周期，
+ *    没闸门就会每个滴答叠一个 worker 任务，各自扫一遍同一份索引 —— 反过来拖慢补全。
+ */
+function schedulePendingThumbRefresh() {
+  if (thumbTotalRefreshInFlight) return;
+  if (Date.now() - thumbTotalRefreshedAt < THUMB_TOTAL_REFRESH_MS) return;
+  thumbTotalRefreshInFlight = true;
+  void countPendingThumbnailsForProgress().finally(function () {
+    thumbTotalRefreshInFlight = false;
+  });
+}
+
+/**
+ * 起手副指标定时器。**必须与 `stopPendingThumbRefreshTicker()` 成对**：
+ * 任务收尾（含取消 / 抛异常）不清定时器 = 进程里留一个永远在跑的 1 s 定时器，
+ * 关掉任务后还在打 worker、还在推 `background-tasks-changed`，静默耗电、查不出来源。
+ */
+function startPendingThumbRefreshTicker() {
+  stopPendingThumbRefreshTicker();
+  thumbTotalRefreshTimer = setInterval(schedulePendingThumbRefresh, THUMB_TOTAL_TICK_MS);
+  // 刻意**不** `unref()`：它随任务存亡（任务在跑时本来就该有它），
+  // 且主进程由窗口持有，不存在「定时器吊住进程不退」的问题。
+}
+
+/** 收尾副指标定时器（幂等：没起过 / 已清掉都安全）。 */
+function stopPendingThumbRefreshTicker() {
+  if (thumbTotalRefreshTimer) {
+    clearInterval(thumbTotalRefreshTimer);
+    thumbTotalRefreshTimer = null;
+  }
+}
+
+/**
+ * 异步估计「补全候选集」的规模 —— **主进度条的分子 / 分母**。
+ *
+ * 🔴 为什么不像缩略图那样做**精确**计数：候选谓词（`_sqlBackfillPendingExpr()`）判的列
+ *    （`dhash` / `width` / `file_type` / `exif_mtime` / `exif_ver`）一个索引都没有 ⇒ 精确
+ *    `COUNT(*)` 只能 `SCAN photos`，本机真实库实测 **80~95 秒**（还是它与补全任务抢同一块盘
+ *    时量到的）。进度分母等不起一分半，更不该反过来把正在读图的补全拖慢。
+ *    `estimatePendingCandidateCount()` 走 id 轴抽样点查：约 2000 次主键定位，亚秒级。
+ *
+ * ⚠️ 结果是**估计值**（±1% 量级）⇒ UI 必须带「约」；且它是**起始快照**，跑动中不刷新。
+ * 🔴 身份判据与 `countPendingThumbnailsForProgress` 完全一致（`runToken`）：迟到的估计值
+ *    写进下一轮状态会让百分比凭空变形，且不报错。
+ */
+async function countPendingCandidatesForProgress() {
+  var token = thumbnailBackfill.runToken;
+  if (!sqliteDbPath) {
+    thumbnailBackfill.pendingPhase = 'failed';
+    return;
+  }
+  try {
+    var res = await runDbReadWorkerOnly(sqliteDbPath, 'estimatePendingCount', {});
+    if (token !== thumbnailBackfill.runToken) return; // 上一轮的迟到结果，丢弃
+    var est = res && typeof res === 'object' ? Number(res.estimate) : Number(res);
+    if (!isFinite(est) || est <= 0) {
+      thumbnailBackfill.pendingPhase = 'failed';
+    } else {
+      // 统计期间任务已经开跑 ⇒ 取更大值，别让分母小于分子
+      thumbnailBackfill.pendingTotal = Math.max(est, Number(thumbnailBackfill.done) || 0);
+      thumbnailBackfill.pendingPhase = 'ready';
+    }
+  } catch (eCount) {
+    if (token !== thumbnailBackfill.runToken) return;
+    thumbnailBackfill.pendingPhase = 'failed';
+    // warn 级：生产档 info 是静默的，这条日志是「为什么没有百分比」的唯一现场
+    logger.warn(
+      '[thumb-backfill] estimate pending candidates failed, progress continues without denominator:',
+      eCount && eCount.message ? eCount.message : eCount,
+    );
+  }
+  emitBackgroundTasksChangedThrottled(false);
 }
 
 function getThumbnailBackfillFailedPathsForExport() {
@@ -1842,18 +2367,38 @@ function getEffectiveThumbBackfillConcurrency() {
  * @param {*} instance 已构造但未挂 pipeline 的 sharp 实例（可为 null）
  * @returns {Promise<{width:number,height:number}|null>}
  */
-async function readOriginalSize(instance) {
+/**
+ * 读一次**文件头**：同一个 `sharp.metadata()` 同时给出**原图尺寸**与**拍摄参数**。
+ *
+ * 为什么要合并成一次：`metadata()` 只读文件头（不解码像素），几乎是零成本，而
+ * 「原图尺寸」与「拍摄参数」本来就装在同一段 EXIF/头部字节里 —— 分两次调用就是同一个文件
+ * 被打开两次。补全任务本来就为这两个目的各要读一次，合并后**每张照片只开一次文件**。
+ *
+ * 🔴 返回值有三态，调用方**必须**区分：
+ *   · `null`  —— 连文件头都读不到（文件已不在磁盘 / 损坏 / sharp 不认这个格式）。
+ *     ⇒ **不许**写 `exif_mtime` 标记：这是「没看到文件」，不是「看过了没有 EXIF」。
+ *       标了就等于把一次读盘失败永久当成结论，而且与 dHash 那边「失败留空、下轮重试」的口径不一致。
+ *   · `{ width: 0, height: 0, exif: … }` —— 文件读到了，只是拿不到这两样（或本来就没有 EXIF）。
+ *     ⇒ 尺寸照旧不写（`width > 0` 才落地），EXIF 标记照写。
+ *
+ * 🔴 尺寸只认**正数**：`0` / `null` 一律视为「读不到」。把这个 0 写进 `photos.width`
+ *    会把整库分辨率覆盖成 0（尺寸是原图的，不是缩略图的 —— 不许改用 `toBuffer` 的 info）。
+ */
+async function readHeaderMeta(instance) {
   if (!instance) return null;
   try {
     var meta = await instance.metadata();
-    if (meta && meta.width > 0 && meta.height > 0) {
-      return { width: meta.width, height: meta.height };
-    }
+    if (!meta) return null;
+    return {
+      width: meta.width > 0 ? meta.width : 0,
+      height: meta.height > 0 ? meta.height : 0,
+      exif: extractExifFields(meta),
+    };
   } catch (e) {
     // 读不到头部不影响缩略图。不写日志：损坏文件往往是批量导入的，会把日志刷爆。
     void e;
+    return null;
   }
-  return null;
 }
 
 /**
@@ -1865,6 +2410,132 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
   var conc = Math.min(getEffectiveThumbBackfillConcurrency(), n);
   var next = 0;
 
+  /**
+   * 共享读取：把整个文件读进内存，供 sharp 解码与 SHA-256 **共用同一份字节**。
+   *
+   * 🔴 读不到时返回 `null` 而**不抛**：调用方会退回「按路径」，由那条路去决定要不要记失败。
+   *    直接抛会把「文件已不在磁盘上」记成一次**缩略图失败**，而失败清单是给用户导出核对的
+   *    —— 那些行本来就该由 `invalid-cleanup` 删掉，不该混进「缩略图生成失败」里。
+   *    （与查重那边 `kind: 'missing'` 记 `skippedMissing` 而不是 `failed` 同一个口径。）
+   */
+  async function tryReadShared(filePath) {
+    try {
+      return await fs.promises.readFile(filePath);
+    } catch (eRead) {
+      void eRead;
+      return null;
+    }
+  }
+
+  /**
+   * 把一条路径记进「失败清单」（用户可导出核对）。
+   *
+   * ⚠️ 抽成函数不是为了复用一行代码，是为了**避开 `no-redeclare`**：两处原本各自写
+   *    `var fpe = row.file_path || '';`，而 `var` 是**函数作用域**（不是块作用域）——
+   *    同一个 `processOne` 里出现两次就直接踩 lint error（2026-10-06 真踩到，基线是 0 error）。
+   *    用 `var` 改 `let` 能骗过 lint，但那会让这两块的行为依赖「谁先执行」，反而更脆。
+   *
+   * ⚠️ 上限只挡新条目，满了之后后面的失败**不再记录**（用户实机 33.9 万缺口，无上限会撑爆内存）。
+   *
+   * ⚠️ **同一路径可能被记两次**：一行可以先「缩略图生成失败」（内层 catch）、
+   *    再「元数据写入失败」（外层 catch），两处都会调这里。这是刻意的 ——
+   *    导出清单给用户看的是「这行出过问题」，重复项无害且能看出它错了两件不同的事。
+   */
+  function pushFailedPath(filePath) {
+    if (thumbnailBackfill.failedPaths.length >= THUMB_BACKFILL_FAILED_PATHS_MAX) return;
+    var p = filePath || '';
+    if (p) thumbnailBackfill.failedPaths.push(p);
+  }
+
+  /**
+   * 「这个文件**此刻确实读得到**」—— 决定要不要盖失败章的唯一判据。
+   *
+   * 🔴 两个盖章点（`recordThumbFailure` / `recordHeaderFailure`）**必须共用这一份实现**：
+   *    它是「文件读不到就不许盖章」这条红线的唯一落点，各写一份迟早漂开，
+   *    而漂开的后果不对称 —— 多盖一次是**灾难**（外接盘没插的那段时间，把整个图库的
+   *    补全永久挡在候选集外，且不会自愈：标记只在 `date_modified` 变了才失效，
+   *    而盘没插时扫描同样读不到新日期），少盖一次只是多重试几轮。
+   *
+   * 判据优先用「共享读取有没有拿到字节」（`sharedBuf` 非空即文件在）；没走共享读取的
+   * （超大文件 / 视频）才退回一次 `existsSync`。失败路径上多一次 stat 可以接受：
+   * 量级是每轮个位数，而读不了的 `.CR2` 每个 18 MB —— 那才是原本被浪费掉的大头。
+   */
+  function fileReachableForFailureStamp(row, sharedBuf) {
+    if (sharedBuf) return true;
+    try {
+      return fs.existsSync(row.file_path);
+    } catch (eStat) {
+      void eStat;
+      return false;
+    }
+  }
+
+  /**
+   * 缩略图生成失败之后的收尾：决定要不要盖「试过失败」章（`photos.thumb_fail_mtime`）。
+   *
+   * 🔴 判据是「**文件读得到但做不出图**」，不是「失败了」：
+   *    文件根本读不到的（外接盘没插、已被删除）**不许**盖章 ——
+   *    ① 那是 `invalid-cleanup` 的活，不该混进「缩略图生成失败」；
+   *    ② 盖了就是灾难（见 `fileReachableForFailureStamp` 的注释）。
+   *    这跟 `readHeaderMeta()` 里「没读到文件头就不许写 `exif_mtime`」是同一条约定。
+   */
+  async function recordThumbFailure(row, err, sharedBuf) {
+    if (!fileReachableForFailureStamp(row, sharedBuf)) {
+      logger.warn(
+        '[thumb-backfill] source file unreachable, kept in candidate set for invalid-cleanup:',
+        row.file_path,
+        err && err.message ? err.message : err,
+      );
+      return;
+    }
+    try {
+      db.markThumbFailed(row.id, row.date_modified);
+    } catch (eMark) {
+      logger.warn(
+        '[thumb-backfill] mark thumb_fail_mtime failed:',
+        row.file_path,
+        eMark && eMark.message ? eMark.message : eMark,
+      );
+    }
+  }
+
+  /**
+   * 读不出**文件头**之后的收尾：决定要不要盖「试过失败」章（`photos.header_fail_mtime`）。
+   *
+   * 🔴 为什么需要第二个盖章点（2026-10-06，用户报「待补数是否要相应变动」时挖出来）：
+   *    `thumb_fail_mtime` 只门住了候选谓词的**第一支**（缺缩略图），**第二支一个都不认它**
+   *    （第二支判的是 `dhash` / `width` / `exif_mtime` / `exif_ver`）。而读不了的文件正好
+   *    `width = 0` / `dhash = NULL` / `exif_mtime = NULL` ⇒ 它们**从第一支漏进第二支**，
+   *    照样每轮被取出、每轮重读一遍原文件，候选集规模（进度主分母）也因此永远归不了零。
+   *    真库实测：9 个 18 MB 的 `.CR2` + 1 个截断 JPEG，**10/10 命中第二支**（约 162 MB/轮）。
+   *
+   * 🔴 判据与 `recordThumbFailure` **逐条相同**（同一个「文件读得到」闸门，同一个自愈规则）：
+   *    只在「文件读得到、但读不出文件头」时盖章 —— 盘没插时盖章会把尺寸与拍摄参数的补全
+   *    永久挡掉且不自愈（理由见 `fileReachableForFailureStamp`）。
+   *
+   * ⚠️ 与 `thumb_fail_mtime` 的分工**不能混**：`readHeaderMeta()` 读不出头时返回 `null`，
+   *    但它**内部已经吞掉了异常**，所以「头读不出」不会走到 `catch (eThumb)` —— 那两个章
+   *    是两件独立的事，别指望一个能替另一个盖。
+   */
+  async function recordHeaderFailure(row, sharedBuf) {
+    if (!fileReachableForFailureStamp(row, sharedBuf)) {
+      logger.warn(
+        '[thumb-backfill] source file unreachable, kept in candidate set for invalid-cleanup (header):',
+        row.file_path,
+      );
+      return;
+    }
+    try {
+      db.markHeaderFailed(row.id, row.date_modified);
+    } catch (eMark) {
+      logger.warn(
+        '[thumb-backfill] mark header_fail_mtime failed:',
+        row.file_path,
+        eMark && eMark.message ? eMark.message : eMark,
+      );
+    }
+  }
+
   async function processOne(row) {
     if (thumbnailBackfill.cancelled) return;
     thumbnailBackfill.currentFile = row.file_path || '';
@@ -1872,46 +2543,144 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
     var skipThumbnail = row.has_thumbnail === 1;
     // 已经有原图尺寸就不必再读文件头。⚠️ 库里缺尺寸存的是 0 而不是 NULL，两个条件都要判。
     var needSize = !isVideo && !(row.width > 0 && row.height > 0);
-    var sizeInfo = null;
+    // ⚠️ dHash 已存在时**必须跳过**：这行之所以进候选集可能只是因为缺 width/height，
+    //    重算一遍等于白做一次整图解码（`computeDhash` 比读文件头贵几个数量级）。
+    //    判据只在这里算一次，下面缩略图分支与写库分支共用。
+    var needDhash = !isVideo && !(row.dhash && String(row.dhash).trim());
+    // 缩略图分支已经把这个文件解码过了 ⇒ dHash 白用那次解码，不再重开一次文件。
+    // `dhashDecodeUsed` 是「试过了」的标志（结果可能是 null = 解码失败），不能用结果本身判。
+    var dhashFromDecode = null;
+    var dhashDecodeUsed = false;
+    // 拍摄参数（EXIF）：判据**一律走 `db.photoNeedsExif()`**，不许在这里手写。
+    // 🔴 手写 `!(row.exif_mtime && String(row.exif_mtime).trim())` 只判了**一个**标记列，
+    //    而候选谓词 `_sqlNeedsExifExpr()` 判的是**两个**（`exif_mtime` + `exif_ver`）。
+    //    两者一漂开就是一条静默死路：老口径跑过的行**每轮被取出来**（谓词说该补）、
+    //    **每轮被判「不需要读」而跳过**（这里说不用补）、原样写回 ⇒
+    //    它永远拿不到新扩出来的列，候选集也永不收敛。
+    //    本机真实库实测（2026-10-06 12:23）：旧口径跑过的 9,799 行全在这条死路上，
+    //    `exif_ver` 一行未写。判据只留一份，改口径时两边自动同步。
+    //    ⚠️ `row.exif_ver` 由 `getPhotosMissingThumbnailsBefore()` 的 SELECT 带出来 ——
+    //      少取那一列，这里就会把「旧版看过」误判成「已看过」。
+    var needExif = !isVideo && db.photoNeedsExif(row);
+    // 文件头读**一次**的产物：`{ width, height, exif }`。
+    // 用 `header` 而不是拆成 sizeInfo / exif 两份：尺寸与拍摄参数本来就来自同一个
+    // `sharp.metadata()`，拆开写必然会有人再调一次（同一个文件被打开两遍）。
+    // ⚠️ `null` 表示**连文件头都没读到**（文件不在 / 损坏 / 格式不认）——
+    //    这时不许写 `exif_mtime` 标记，理由见 `readHeaderMeta()`。
+    var header = null;
+    // 「**试过**读文件头」的标志。与 `header` 分开是必须的：`header === null` 也可能是
+    // 「压根不需要读」（尺寸与 EXIF 都齐了）⇒ 只看 `header` 会把没试过的行也盖成失败章，
+    // 而那是**永久**排除（除非文件又变了）。判据只用 `(needSize || needExif)`。
+    var headerTried = false;
+    // 🔴 查重指纹（SHA-256）读的是**同一个文件的同一份字节**。而缩略图补全与查重
+    //    在准入上互斥（`thumbnailBackfillBlockReason` / `duplicateHashBlockReason` 互相拦截）
+    //    ⇒ 两者永远串行，不合并就是同一份字节被完整读两遍 —— 在这块 USB 外接机械盘上纯属白烧。
+    //    合并后**一次读盘同时出缩略图 / dHash / SHA-256**。
+    //    只对「同时缺 file_hash」的行生效（即与查重候选集的重叠部分），候选谓词不动。
+    //    ⚠️ 判据必须用 `row.file_hash`（SELECT 里带着它），拿不到就会每行都重算一遍。
+    var needHash = !isVideo && !(row.file_hash && String(row.file_hash).trim());
+    // 共享读取 = 整份进内存；超大 / 大小未知的文件退回「各读各的」老路径
+    //（见 THUMB_SHARED_READ_MAX_BYTES 的注释：宁可多读一遍，也不要把并发峰值撑爆）
+    var shareRead = needHash && row.file_size > 0 && row.file_size <= THUMB_SHARED_READ_MAX_BYTES;
+    var sharedBuf = null;
     try {
       if (skipThumbnail) {
         // 已有缩略图：不重新生成，只补原图尺寸
         thumbnailBackfill.success++;
-        if (needSize) {
-          sizeInfo = await readOriginalSize(loadSharp()(row.file_path, { failOnError: false }));
+        // 这一行也可能只需要 SHA-256（缩略图与 dHash 都在、只缺指纹的那部分）：
+        // 照样只读一次，不必让查重任务回头把同一个文件再读一遍。
+        if (shareRead) sharedBuf = await tryReadShared(row.file_path);
+        if (needSize || needExif) {
+          headerTried = true;
+          header = await readHeaderMeta(
+            loadSharp()(sharedBuf || row.file_path, { failOnError: false }),
+          );
         }
       } else {
-        var topts = getThumbOptions();
-        var thumb;
-        if (isVideo) {
-          thumb = await extractVideoThumbnailWithFfmpeg(row.file_path, topts);
-          if (!thumb) {
-            thumb = await buildVideoPlaceholderThumbnail(topts);
+        // 🔴 缩略图生成**单独一层 try**（2026-10-06）：它失败不许把下面几件事一起带走。
+        //    尺寸与拍摄参数来自 `readHeaderMeta()`，而那一步只读文件头（`metadata()`），
+        //    在解码**之前**就已经拿到手了。旧写法让一次 `toBuffer()` 异常把到手的数据一起丢
+        //    —— 本机实测那个被截断的 JPEG：`metadata()` 明明读出了 4608x3456 + 9,687B EXIF，
+        //    却因为解码失败一样都没写进库，于是**每一轮都白读 1.15 MB、每一轮都丢一次**。
+        //    框在这里之后，失败的行照样能补上尺寸 / 拍摄参数 / dHash / 指纹，
+        //    并靠 `thumb_fail_mtime` 退出候选集，不再无限重试。
+        try {
+          var topts = getThumbOptions();
+          var thumb;
+          if (isVideo) {
+            thumb = await extractVideoThumbnailWithFfmpeg(row.file_path, topts);
+            if (!thumb) {
+              thumb = await buildVideoPlaceholderThumbnail(topts);
+            }
+          } else {
+            // ⚠️ 用同一个 sharp 实例：先取原图尺寸（只读文件头、几乎零成本）再走 pipeline，
+            //    文件只打开一次。两者**顺序不能颠倒**。
+            // 🔴 共享读取时把**同一份 Buffer** 交给 sharp：sharp 从内存解码、不会再读盘。
+            //    下面三样产物（原图尺寸 / dHash / 缩略图）与「按路径解码」必须逐位相同 ——
+            //    同一段字节、同一组算子，回归脚本对两条路做逐位比对。
+            if (shareRead) sharedBuf = await tryReadShared(row.file_path);
+            var instance = loadSharp()(sharedBuf || row.file_path, { failOnError: false });
+            if (needSize || needExif) {
+              headerTried = true;
+              header = await readHeaderMeta(instance);
+            }
+            // 🔴 dHash 必须取在 `.rotate()` **之前**：dHash 历来是不旋转的（旧路径
+            //    `computeDhash(row.file_path)` 就没有 `.rotate()`），带 EXIF 方向的照片
+            //    一旦先旋转再算，位会全变 —— 而 dHash 是相似聚类的输入，位差会翻面。
+            if (needDhash) {
+              dhashFromDecode = await computeDhashFromPipeline(instance);
+              dhashDecodeUsed = true;
+            }
+            thumb = await instance
+              .rotate()
+              .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
+              .jpeg({ quality: topts.quality })
+              .toBuffer();
           }
-        } else {
-          // ⚠️ 用同一个 sharp 实例：先取原图尺寸（只读文件头、几乎零成本）再走 pipeline，
-          //    文件只打开一次。两者**顺序不能颠倒**。
-          var instance = loadSharp()(row.file_path, { failOnError: false });
-          if (needSize) sizeInfo = await readOriginalSize(instance);
-          thumb = await instance
-            .rotate()
-            .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: topts.quality })
-            .toBuffer();
+          db.updatePhotoThumbnail(row.id, thumb, { size: topts.size, format: 'jpeg' });
+          thumbnailBackfill.success++;
+          // 进度条的**分子**：只有真写出了缩略图的行才计入。上面 `skipThumbnail` 那一支
+          // （早就有图、只是来补尺寸 / 指纹 / 拍摄参数的）**不计** —— 计入就会让分子追上
+          // 甚至反超分母。放在 `updatePhotoThumbnail` 之后：写库抛异常的行不算已补。
+          thumbnailBackfill.thumbs++;
+        } catch (eThumb) {
+          thumbnailBackfill.failed++;
+          pushFailedPath(row.file_path);
+          await recordThumbFailure(row, eThumb, sharedBuf);
         }
-        db.updatePhotoThumbnail(row.id, thumb, { size: topts.size, format: 'jpeg' });
-        thumbnailBackfill.success++;
       }
       // 原图尺寸惰性回补：只在拿到正尺寸时写 —— 库里已有真实值时不许被覆盖成 0
-      if (sizeInfo && sizeInfo.width > 0 && sizeInfo.height > 0) {
-        db.updatePhotoDimensions(row.id, sizeInfo.width, sizeInfo.height);
+      if (header && header.width > 0 && header.height > 0) {
+        db.updatePhotoDimensions(row.id, header.width, header.height);
+        thumbnailBackfill.sized++;
+      }
+      // 拍摄参数：与尺寸共用**同一次** metadata 读盘（`header.exif`），这里不再碰盘。
+      // 🔴 只有**读到了文件头**才写标记：`header === null` 是「没看到文件」（已不在磁盘 /
+      //    损坏 / 格式不认），不是「看过了、没有 EXIF」。把一次读盘失败标成「已检查」，
+      //    这行就永远不会再尝试 —— 而且与 dHash 那边「失败留空、下轮重试」的口径不一致。
+      if (needExif && header) {
+        db.updatePhotoExif(row.id, header.exif, row.date_modified);
+        thumbnailBackfill.exifChecked++;
+        if (hasAnyExifField(header.exif)) thumbnailBackfill.exifFilled++;
+      }
+      // 文件头读不出来 ⇒ 盖「试过、读不出头」章，让它退出候选谓词**第二支**里的
+      // 「缺尺寸 / 缺拍摄参数」两项（见 `recordHeaderFailure` 的注释）。
+      // 🔴 判据是「**试过**、且没拿到**可用尺寸**」，不是 `header === null`：
+      //    `metadata()` 成功但报不出正尺寸的（极端格式）同样补不上 `width`/`height`，
+      //    只看 null 会让它永久留在候选集里（`width IS NULL OR width = 0` 恒真）。
+      //    ⚠️ 这一支**必须**在缩略图 try/catch **之后**：CR2 那条路上
+      //    `readHeaderMeta()` 自己吞掉异常返回 null，根本走不到 `catch (eThumb)`，
+      //    两个章是两件独立的事（一个管解码路、一个管文件头路）。
+      //    而且 `header` 是异常**之前**就赋的值，所以这里读到的一定是本轮的真实结果。
+      if (headerTried && !(header && header.width > 0 && header.height > 0)) {
+        await recordHeaderFailure(row, sharedBuf);
       }
       // 同步计算 dHash（仅图片，文件系统缓存大概率还热着）
-      // ⚠️ dHash 已存在时**必须跳过**：这行之所以进候选集可能只是因为缺 width/height，
-      //    重算一遍等于白做一次整图解码（`computeDhash` 比读文件头贵几个数量级）。
-      if (!isVideo && !(row.dhash && String(row.dhash).trim())) {
+      if (needDhash) {
         try {
-          var dhash = await computeDhash(row.file_path);
+          // 缩略图分支已经解过一次码 ⇒ 直接用它的结果；否则（已有缩略图、还缺 dHash 的那一大批）
+          // 才回落到「按路径重新打开并解码」。
+          var dhash = dhashDecodeUsed ? dhashFromDecode : await computeDhash(row.file_path);
           if (dhash) {
             db.updatePhotoDhash(
               row.id,
@@ -1920,6 +2689,19 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
               row.date_modified,
               row.file_size,
             );
+            thumbnailBackfill.dhashed++;
+          } else {
+            // 🔴 「试过、算不出哈希」也要盖章（2026-10-06 补）。
+            //    `computeDhash` / `computeDhashFromPipeline` 的失败语义是**返回 null、
+            //    从不抛**（见 `perceptual-hash.js`）⇒ 这一支既不抛异常、也没有日志：
+            //    不盖章的话，这一行会永远留在候选谓词第二支的「缺 dHash」那一项里。
+            //    本机那个截断 JPEG 就是这么留在候选集里的（它解码失败 ⇒ dhash 恒 null，
+            //    而它的尺寸与 EXIF 都补齐了，所以第一支与第二支的另外两项都拦不住它）。
+            //    ⚠️ 章的语义是「**解码**这一路失败」——与 `thumb_fail_mtime` 的定位一致，
+            //       与其「缩略图失败」的字面名不同；两个标记载荷同一路失败，共用
+            //       `_sqlFailMarkerRetryableExpr()` 的自愈规则。
+            logger.warn('[thumb-backfill] dHash unusable (decode failed) for:', row.file_path);
+            await recordThumbFailure(row, null, sharedBuf);
           }
         } catch (eDhash) {
           logger.warn(
@@ -1929,12 +2711,31 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
           );
         }
       }
+      // 查重指纹：与上面共用同一次读盘。
+      // 🔴 有 `sharedBuf` 就直接对内存算，**这一行不再碰盘**；没有（超大 / 大小未知的文件）
+      //    才走流式 `hashFileSha256` —— 与查重任务内部那条路径语义一致，摘要逐字符相同。
+      if (needHash) {
+        try {
+          var digest = sharedBuf
+            ? hashBufferSha256(sharedBuf)
+            : await hashFileSha256(row.file_path, function () {
+                return thumbnailBackfill.cancelled;
+              });
+          if (digest) {
+            db.updatePhotoHash(row.id, digest, row.date_modified, row.file_size);
+            thumbnailBackfill.hashed++;
+          }
+        } catch (eHash) {
+          logger.warn(
+            '[thumb-backfill] SHA-256 failed for:',
+            row.file_path,
+            eHash && eHash.message,
+          );
+        }
+      }
     } catch (e) {
       thumbnailBackfill.failed++;
-      if (thumbnailBackfill.failedPaths.length < THUMB_BACKFILL_FAILED_PATHS_MAX) {
-        var fpe = row.file_path || '';
-        if (fpe) thumbnailBackfill.failedPaths.push(fpe);
-      }
+      pushFailedPath(row.file_path);
     }
     thumbnailBackfill.done++;
     if (thumbnailBackfill.done % yieldEvery === 0) {
@@ -1961,14 +2762,46 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
   await Promise.all(workers);
 }
 
+/**
+ * 缩略图补全的准入判据 —— **IPC 入口（`start-thumbnail-backfill`）与任务内部共用这一处**。
+ *
+ * 🔴 为什么必须只有一份（2026-10-06 用户报「补齐缩略图点击之后不开始」的根因）：
+ * 过去 IPC handler 只查 `optimizeTaskRunning` / `isFolderScanRunning()` /
+ * `thumbnailBackfill.running` 三条，而 `runThumbnailBackfill()` 内部**多一条**
+ * `duplicateHashTask.running`。于是当「重复文件比对」正跑着（逐文件算 SHA-256，小时级）时：
+ * 三道闸全过 → IPC 返回 `{ success: true }` → 前端**不弹任何提示** →
+ * 任务在 `setTimeout` 里立刻 `return { started: false, reason: 'maintenance' }`，
+ * 而这个返回值**被丢弃**（调用点只挂 `.catch`）→ 界面刷新后显示「未运行」。
+ * 用户看到的就是**点下去什么都没发生**；而这几条拒绝日志都是 `logger.log`（info），
+ * 生产档级别是 `warn` ⇒ 连一行现场都没有。
+ *
+ * 判据刻意不含 `dbWriteQueue.isBusy()`：回填 / 重复哈希是**按批次**入队的，
+ * 队列「批间空、批中满」→ 拿它当「库被长期占用」的信号会抖成「有时能启动、
+ * 有时被静默跳过」，而自动回填那条路径不会重试，跳过就等于永久漏掉。
+ * 这里只挡真正的长期占用者；队列里的短任务（thumbnail-fix / deferred-index / FTS）
+ * 不拦启动 —— 本函数的批次自然会排队等它们，串行由队列保证。
+ *
+ * 🔴 新增拦截条件时**只能加在这里**，IPC 与任务内部会自动同步。
+ *
+ * @returns {string} 空串 = 放行；否则是可直接展示给用户的原因
+ */
+function thumbnailBackfillBlockReason() {
+  if (optimizeTaskRunning) return '数据库维护进行中';
+  if (isFolderScanRunning()) return '扫描进行中，请稍后再试';
+  // 缩略图补全与重复比对都要把整文件读一遍、抢的是同一块盘（本机 K:/G: 是外接机械盘），
+  // 同时跑只会互相拖慢；谁先谁后交给用户决定。
+  if (duplicateHashTask.running) return '重复文件比对进行中，请稍后再试';
+  if (thumbnailBackfill.running) return '补全已在进行中';
+  return '';
+}
+
 async function runThumbnailBackfill(limit) {
-  // 🔴 判据刻意不再是 `dbWriteQueue.isBusy()`。回填 / 重复哈希现在**按批次**入队，
-  // 队列「批间空、批中满」→ 拿它当「库被长期占用」的信号会抖成「有时能启动、
-  // 有时被静默跳过」，而自动回填那条路径不会重试，跳过就等于永久漏掉。
-  // 这里只挡真正的长期占用者；队列里的短任务（thumbnail-fix / deferred-index / FTS）
-  // 不拦启动 —— 本函数的批次自然会排队等它们，串行由队列保证。
-  if (optimizeTaskRunning || duplicateHashTask.running)
-    return { started: false, reason: 'maintenance' };
+  const blockReason = thumbnailBackfillBlockReason();
+  if (blockReason) {
+    // warn 级：被拒绝/被跳过正是最需要留现场的事件（用户只会说「点了没反应」）
+    logger.warn('[runThumbnailBackfill] skipped: ' + blockReason);
+    return { started: false, reason: blockReason };
+  }
   const taskStart = Date.now();
   logger.log('[runThumbnailBackfill] task started, limit=', limit);
   if (thumbnailBackfill.running) {
@@ -1980,21 +2813,67 @@ async function runThumbnailBackfill(limit) {
   thumbnailBackfill.done = 0;
   thumbnailBackfill.success = 0;
   thumbnailBackfill.failed = 0;
+  thumbnailBackfill.hashed = 0;
+  thumbnailBackfill.sized = 0;
+  thumbnailBackfill.dhashed = 0;
+  thumbnailBackfill.exifChecked = 0;
+  thumbnailBackfill.exifFilled = 0;
   thumbnailBackfill.currentFile = '';
   thumbnailBackfill.failedPaths = [];
   thumbnailBackfill.startedAt = Date.now();
-  thumbnailBackfill.total = 0; // 流式处理，初始不计数，避免长时阻塞
+  // 本轮身份：异步统计靠它对身份（见 countPendingThumbnailsForProgress / countPendingCandidatesForProgress）
+  thumbnailBackfill.runToken++;
+  thumbnailBackfill.fetched = 0;
+  thumbnailBackfill.thumbs = 0;
+  // 主分母先置空、phase 置 'counting'：UI 会显示「正在估计待补数量…」而不是 `0 / 0`。
+  // 🔴 绝不能拿一个假的分母起跑（比如把 0 当分母）—— 那会让进度条在统计完成前的
+  //    那段时间里显示 0%，与「统计失败」无法区分。
+  thumbnailBackfill.pendingTotal = null;
+  thumbnailBackfill.pendingPhase = 'counting';
+  // 副指标（**当前**还缺预览图数）：
+  //  ⚠️ 这里置空的是**基线**，不是 UI 上那个数 —— UI 画的是 `currentPendingThumbTotal()`
+  //     派生出来的实时值，基线为 null 时它返回 0 ⇒ UI 只说「预览图 +N 张」，不说「还缺 0」。
+  //  ⚠️ `thumbTotalBaseThumbs` 必须一起归零：它是「取基线那一刻的 thumbs」，跨轮残留会让
+  //     新一轮的派生值从一个错误的高度起算（见该字段的注释）。
+  thumbnailBackfill.thumbTotal = null;
+  thumbnailBackfill.thumbTotalBaseThumbs = 0;
+  // 节流闸门复位：上一轮结束后 `thumbTotalRefreshedAt` 停在旧时刻，不复位就会
+  // 让新一轮的**第一次**周期刷新提前触发（甚至与初始那一次叠在一起）。
+  thumbTotalRefreshedAt = Date.now();
   emitBackgroundTasksChangedThrottled(true);
   logger.log('[runThumbnailBackfill] state initialized');
 
   try {
+    // 🔴 两个计数 + 副指标节拍器必须在**要写闸门之前**发起（2026-10-06 修）。
+    //
+    // 起因：面板上「正在估计待补数量…」长时间一动不动 —— 它是 `pendingPhase = 'counting'`
+    // 画上去的，而**真正的估计**过去排在下面那句 `await dbWriteQueue.run('thumbnail-backfill')`
+    // **之后**才发起。写闸门被长任务占着时（真库实测：`deferred-index` 建 7 条索引，独占
+    // 6 分钟以上），这一段 await 就把估计永远挡在门外 ⇒ 面板既不显示分母、也不显示副指标，
+    // 看起来像任务坏了。而这两个计数走的是**只读连接**，与写闸门本来就无关
+    // （WAL 下读不被写阻塞），没有任何理由排在它后面。
+    //
+    // 顺序上仍满足「初始计数先盖时间戳、节拍器后起」：三条语句之间无 await。
+    var thumbCountPromise = countPendingThumbnailsForProgress();
+    var pendingCountPromise = countPendingCandidatesForProgress();
+    // 副指标「还缺 M」的**主节拍**：1 s 滴答 + 5 s 节流 ⇒ 约 5 s 一跳，与批次边界解耦。
+    // ⚠️ 起得太早只会白发一次（被节流挡住），所以放在初始计数之后；起在 `try` 内是因为
+    //    收尾只在 `finally` 里清 —— 中途抛异常（含下面等闸门时被取消）也能停掉。
+    startPendingThumbRefreshTicker();
+
     // 先确保 dhash 列和 LSH 表已创建。DDL 也要走队列：它同样写库、同样需要独占写锁，
     // 而且一旦与启动期的迁移任务并行，就是两边互相等 timeout。
-    // 回填是**建性能索引**（INDEX）：晚做只是慢，该给修复类与用户手动操作让路
+    // 回填是**建性能索引**（INDEX）：晚做只是慢，该给修复类与用户手动操作让路。
+    //
+    // 🔴 `ensureDuplicateHashSchema()` 也**必须在这里**，不是「顺手加的」：下面第一次
+    //    `getPhotosMissingThumbnailsBefore()` 的 SELECT 列表里就带着 `file_hash`，
+    //    而它和 `dhash` 一样是**延迟迁移列** —— 老库上少任何一个，取批那一刻就是
+    //    `no such column`，整个回填当场挂掉。⚠️ 这条 SELECT 的列表与本处必须**同生共死**。
     await dbWriteQueue.run(
       'thumbnail-backfill',
       function () {
         if (typeof db.ensureDhashSchema === 'function') db.ensureDhashSchema();
+        if (typeof db.ensureDuplicateHashSchema === 'function') db.ensureDuplicateHashSchema();
       },
       { priority: PRIORITY.INDEX },
     );
@@ -2006,14 +2885,37 @@ async function runThumbnailBackfill(limit) {
     await yieldForPreviewPlaybackMs(50);
     logger.log('[runThumbnailBackfill] yielded after', Date.now() - yieldStart, 'ms');
 
+    // ⚠️ 上面两个 promise 在主循环之后必须被 await（与查重任务 `await totalPromise` 同一条
+    //    策略）：短任务（只剩几十张）会在统计回来之前跑完，不 await 就是让它和 finally 抢着
+    //    写状态。声明位置提前不影响这一点 —— 它们是在 import 之后、主循环之前发起的。
+
     var batchSize = 100; // 更小批次，保证频繁让出
     var maxToProcess = typeof limit === 'number' && limit > 0 ? limit : null;
 
     var processedInThisRun = 0;
-    var afterId = 0;
+    // 🔴 倒序补全的游标：起点比 MAX(id) 大一格，否则 id 最大那一行永远扫不到
+    //（升序版本对应 `afterId = 0` + 谓词 `id > ?`，同样是「退一格」）。
+    // 取 `MAX(id)` 是一次索引定位，代价 O(1)。
+    //
+    // 🔴 **两条游标，各自独立**（2026-10-06 改成两趟）：
+    //    `thumbCursor` = 第一趟，只取 `_sqlNeedsThumbnailExpr()` 命中的行（还缺缩略图的）；
+    //    `metaCursor`  = 第二趟，取其余候选（只缺 EXIF / dHash / 尺寸的行）。
+    //    为什么必须分开：如果两趟共用一条游标，第一趟起手就把游标拉到「最大的那个缺图 id」
+    //    （本机 = 1,889,290，索引倒序扫的第一个命中），第二趟于是**再也取不到它以上的行**
+    //    —— 1,889,291~1,981,503 那批的元数据永远补不上。不报错、不写日志，静默丢活。
+    var thumbCursor = db.getMaxPhotoId() + 1;
+    var metaCursor = db.getMaxPhotoId() + 1;
+    /**
+     * 当前趟：`'thumbnail'`（先，出图）→ `'metadata'`（后，补元数据）。
+     * 暴露给 UI 是为了让「预览图 N 张」为 0 的那段时间**有解释** ——
+     * 第二趟本来就不出图，那不是卡住。
+     * @type {'thumbnail'|'metadata'}
+     */
+    var pass = 'thumbnail';
+    thumbnailBackfill.pass = pass;
     var yieldEvery = 20;
     logger.log(
-      '[runThumbnailBackfill] starting main loop (streaming mode, no pre-count), batchSize=',
+      '[runThumbnailBackfill] starting main loop (two-pass: thumbnail -> metadata), batchSize=',
       batchSize,
     );
 
@@ -2039,28 +2941,42 @@ async function runThumbnailBackfill(limit) {
         fetchLimit = Math.min(batchSize, left);
       }
       const queryStart = Date.now();
+      const isThumbPass = pass === 'thumbnail';
       // const 而非 var：下面的批次要在闭包里引用它，块作用域保证每次迭代捕获到的是当轮的值
-      const rows = db.getPhotosMissingThumbnailsAfter(afterId, fetchLimit);
+      const rows = isThumbPass
+        ? db.getPhotosLackingThumbnailBefore(thumbCursor, fetchLimit)
+        : db.getPhotosMissingThumbnailsBefore(metaCursor, fetchLimit);
       const queryTime = Date.now() - queryStart;
       logger.log(
         '[runThumbnailBackfill] fetched',
         rows.length,
-        'rows after id',
-        afterId,
-        'in',
+        'rows before id',
+        isThumbPass ? thumbCursor : metaCursor,
+        '(' + pass + ' pass) in',
         queryTime,
         'ms',
       );
 
-      // 累积总数，UI 会看到总数逐步增加
-      thumbnailBackfill.total += rows.length;
+      // 记账：本轮已取出行数。**只进日志**，不再当分母 —— 它是滚动累加的，
+      // 拿它当分母会让百分比在 0↔100% 之间锯齿（见 thumbnailBackfill.fetched 的注释）。
+      thumbnailBackfill.fetched += rows.length;
 
-      // 查询完成后立即让出，让 UI 更新总数
+      // 查询完成后立即让出，让 UI 更新一次
       await yieldForPreviewPlaybackMs(10);
       emitBackgroundTasksChangedThrottled(true);
       await yieldForPreviewPlaybackMs(10);
 
       if (rows.length === 0) {
+        if (isThumbPass) {
+          // 第一趟走完：缺缩略图的行要么补上了、要么盖了失败章 ⇒ 换第二趟补元数据。
+          // ⚠️ 这里**不能** break：break 会让「只缺 EXIF / dHash / 尺寸」的那一大批
+          //    永远没人补（本轮实测就有十几万行落在这类里）。
+          pass = 'metadata';
+          thumbnailBackfill.pass = pass;
+          logger.log('[runThumbnailBackfill] thumbnail pass drained, switching to metadata pass');
+          emitBackgroundTasksChangedThrottled(false);
+          continue;
+        }
         logger.log('[runThumbnailBackfill] no more rows, exiting loop');
         break;
       }
@@ -2085,8 +3001,16 @@ async function runThumbnailBackfill(limit) {
         Date.now() - batchStart,
         'ms',
       );
-      afterId = rows[rows.length - 1].id;
+      // 倒序：本批最后一行是**最小** id，游标严格递减 —— 同一轮不会重复取到刚失败的行
+      // ⚠️ 两条游标各推各的，别写成一个：第一趟推完 thumbCursor 就换第二趟，
+      //    两边都从 MAX(id)+1 起手，第二趟才能重新覆盖高位那批只缺元数据的行。
+      if (isThumbPass) thumbCursor = rows[rows.length - 1].id;
+      else metaCursor = rows[rows.length - 1].id;
       processedInThisRun += rows.length;
+
+      // 副指标（还缺多少张预览图）按 `THUMB_TOTAL_REFRESH_MS` 节流刷新。
+      // 🔴 **不 await**：它是附属读数，不许拖慢主循环；结果自己走 emit 回流到 UI。
+      schedulePendingThumbRefresh();
 
       // 每批处理完多次让出，保证 UI 持续响应
       emitBackgroundTasksChangedThrottled(false);
@@ -2096,12 +3020,19 @@ async function runThumbnailBackfill(limit) {
       logger.log(
         '[runThumbnailBackfill] progress: processed',
         processedInThisRun,
-        ', total estimated',
-        thumbnailBackfill.total,
+        ', fetched',
+        thumbnailBackfill.fetched,
+        ', thumbs',
+        thumbnailBackfill.thumbs,
       );
 
       if (maxToProcess != null && processedInThisRun >= maxToProcess) break;
     }
+
+    // 主循环走完再等两个分母：短任务（只剩几十张）会在统计回来之前就跑完，
+    // 不在这里收口就是让它与 finally 抢着写状态。计数函数自己吞掉异常，不会抛。
+    await thumbCountPromise;
+    await pendingCountPromise;
 
     const totalTime = Date.now() - taskStart;
     logger.log(
@@ -2113,6 +3044,10 @@ async function runThumbnailBackfill(limit) {
     );
     return { started: true };
   } finally {
+    // 🔴 第一件事就停副指标定时器：它是本任务里**唯一「收尾之后还会自己动」**的东西。
+    //    放最后清 = 中间任何一步抛异常，进程里就永久留一个 1 s 定时器：任务早结束了，
+    //    它还在每 5 s 打一次 worker、推一次 `background-tasks-changed`，查不出来源。
+    stopPendingThumbRefreshTicker();
     thumbnailBackfill.failedPathsLastRun = thumbnailBackfill.failedPaths.slice(
       0,
       THUMB_BACKFILL_FAILED_PATHS_MAX,
@@ -2121,58 +3056,57 @@ async function runThumbnailBackfill(limit) {
     thumbnailBackfill.running = false;
     thumbnailBackfill.currentFile = '';
     thumbnailBackfill.startedAt = 0;
+    // 三态只对「正在运行」有意义；完成态靠 `total` 说「这轮一共处理了多少张」（见 UI 的完成文案）。
+    thumbnailBackfill.pendingPhase = null;
     emitBackgroundTasksChangedThrottled(true);
-    logger.log('[runThumbnailBackfill] task cleanup done');
+    // 🔴 这一轮顺手补了查重指纹 ⇒ 重复分组缓存里那些「组」已经过期（少算了由新指纹组成的组）。
+    //    不清 = 用户看到「回填明明跑过，重复项页面还是旧结果」—— 是**静默的错数据**，不是「慢」。
+    //    放 finally：取消 / 中途退出时也已经写了一部分指纹，同样必须失效。
+    if (thumbnailBackfill.hashed > 0) {
+      clearDuplicateHashGroupsCache('thumb-backfill-hashed');
+    }
+    logger.log(
+      '[runThumbnailBackfill] task cleanup done, processed=' +
+        thumbnailBackfill.done +
+        ' (thumbs=' +
+        thumbnailBackfill.thumbs +
+        ', fetched=' +
+        thumbnailBackfill.fetched +
+        ', pendingTotal=' +
+        String(thumbnailBackfill.pendingTotal) +
+        ', thumbTotal=' +
+        String(thumbnailBackfill.thumbTotal) +
+        '), sized=' +
+        thumbnailBackfill.sized +
+        ', dhashed=' +
+        thumbnailBackfill.dhashed +
+        ', hashed=' +
+        thumbnailBackfill.hashed +
+        ', exif=' +
+        thumbnailBackfill.exifFilled +
+        '/' +
+        thumbnailBackfill.exifChecked,
+    );
   }
 }
 
-/** 大缓冲减少读系统调用；并发由 runDuplicateHashDetection 控制，避免机械盘一次性开太多流 */
-var DUP_HASH_READ_BUFFER = 1024 * 1024;
-/** 单文件哈希超时（毫秒），防止异常文件/设备导致任务长时间卡住不前 */
-var DUP_HASH_FILE_TIMEOUT_MS = 90000;
+/**
+ * 摘要的两条入口（`hashFileSha256` / `hashBufferSha256`）已抽到 **`src/main/file-hash.js`**。
+ *
+ * 🔴 抽出去不是为了好看：两条路写的是同一列 `photos.file_hash`，而「重复项」按它分组 ——
+ *    摘要一旦不一致，成对的照片会被**静默**分到两个组里。`file-hash.js` 不依赖 electron，
+ *    回归脚本才能**真跑**着对同一份内容两条路各算一次、逐字符比对（见 `perceptual-hash-share-regression`）。
+ *    别把它们搬回本文件 —— 搬回来就再也验不了了。
+ */
 
-function hashFileSha256(filePath, shouldCancel) {
-  return new Promise(function (resolve, reject) {
-    var crypto = require('crypto');
-    var hash = crypto.createHash('sha256');
-    var stream = fs.createReadStream(filePath, { highWaterMark: DUP_HASH_READ_BUFFER });
-    var settled = false;
-    var timer = setTimeout(function () {
-      if (settled) return;
-      settled = true;
-      try {
-        stream.destroy(new Error('hash timeout'));
-      } catch (e0) {
-        void e0;
-      }
-      reject(new Error('hash timeout'));
-    }, DUP_HASH_FILE_TIMEOUT_MS);
-    function done(err, digest) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (err) reject(err);
-      else resolve(digest);
-    }
-    stream.on('data', function (chunk) {
-      if (typeof shouldCancel === 'function' && shouldCancel()) {
-        try {
-          stream.destroy(new Error('hash cancelled'));
-        } catch (eStop) {
-          void eStop;
-        }
-        return;
-      }
-      hash.update(chunk);
-    });
-    stream.on('error', function (err) {
-      done(err);
-    });
-    stream.on('end', function () {
-      done(null, hash.digest('hex'));
-    });
-  });
-}
+/**
+ * 「共用一次读盘」允许**整份进内存**的单文件上限（64 MB）。
+ *
+ * 超过它的行退回「sharp 按路径流式解码 + `hashFileSha256` 流式读」的老路径：那是两次读盘，
+ * 但内存是常数。判据用库里已有的 `file_size`，**不额外 stat**（本机 95 万次 stat 实测 1.1 分钟）。
+ * 大小未知（`0` / NULL）时**不共享** —— 宁可多读一遍，也不要为省一次读盘把并发峰值撑爆。
+ */
+var THUMB_SHARED_READ_MAX_BYTES = 64 * 1024 * 1024;
 
 /** 并行算摘要：慢盘场景更保守，避免随机读放大后反而变慢 */
 function getDupHashConcurrency() {
@@ -2291,14 +3225,34 @@ function getDuplicateHashTaskProgress() {
   };
 }
 
+/**
+ * 重复比对的准入判据 —— **IPC 入口（`maintenance-start-duplicate-hash-detection`）
+ * 与任务内部共用这一处**，理由与 `thumbnailBackfillBlockReason()` 完全对称：
+ * 过去 IPC 只查 `duplicateHashTask.running`，而任务内部**多一条** `thumbnailBackfill.running`
+ * ⇒ 缩略图补全正跑着时点「开始获取」会返回 `{ success: true, started: true }`，
+ * 而任务什么都没做（返回值被 `void` 丢弃），界面不给任何提示。
+ *
+ * 同 `runThumbnailBackfill`：刻意不用 `dbWriteQueue.isBusy()` 当判据（批次化后它会抖）。
+ * 两个长任务不并行抢磁盘 —— 否则机械盘随机读写会互相拖垮（各自的批次虽然串行，
+ * 但文件读取是并发的）。
+ *
+ * 🔴 新增拦截条件时**只能加在这里**。
+ *
+ * @returns {string} 空串 = 放行；否则是可直接展示给用户的原因
+ */
+function duplicateHashBlockReason() {
+  if (optimizeTaskRunning) return '数据库维护进行中';
+  if (isFolderScanRunning()) return '扫描进行中，请稍后再试';
+  if (thumbnailBackfill.running) return '缩略图补全进行中，请稍后再试';
+  if (duplicateHashTask.running) return '重复哈希任务已在运行';
+  return '';
+}
+
 async function runDuplicateHashDetection() {
-  // 同 runThumbnailBackfill：不用 `dbWriteQueue.isBusy()` 当判据（批次化后它会抖）。
-  // 两个长任务不并行抢磁盘 —— 回填在跑时先不启动，否则机械盘随机读写会互相拖垮，
-  // 各自的批次虽然串行，但文件读取是并发的。
-  if (optimizeTaskRunning || thumbnailBackfill.running)
-    return { started: false, reason: 'maintenance' };
-  if (duplicateHashTask.running) {
-    return { started: false, reason: 'running' };
+  const blockReason = duplicateHashBlockReason();
+  if (blockReason) {
+    logger.warn('[runDuplicateHashDetection] skipped: ' + blockReason);
+    return { started: false, reason: blockReason };
   }
   clearDuplicateHashGroupsCache('dup-hash-start');
   duplicateHashTask.running = true;
@@ -2359,7 +3313,8 @@ async function runDuplicateHashDetection() {
         emitBackgroundTasksChangedThrottled(false);
       });
 
-    var afterId = 0;
+    // 🔴 倒序游标：起点比 MAX(id) 大一格（与缩略图补全同一条策略 —— 新导入的先算指纹）
+    var beforeId = db.getMaxPhotoId() + 1;
     duplicateHashTask.phase = 'hashing';
     duplicateHashBgLog('hashing.start', 'batchSize=2000 subChunk=24', true);
     var batchSize = 2000;
@@ -2371,7 +3326,7 @@ async function runDuplicateHashDetection() {
       // 交互抢占：与缩略图回填同理，在入队之前让位
       await interactionPreempt.awaitIdle();
       await yieldForPreviewPlaybackMs(80);
-      var rows = db.getHashAllPhotosAfter(afterId, batchSize);
+      var rows = db.getHashAllPhotosBefore(beforeId, batchSize);
       if (!rows || rows.length === 0) break;
       for (var sc = 0; sc < rows.length; sc += subChunkSize) {
         if (duplicateHashTask.cancelled) break;
@@ -2390,10 +3345,11 @@ async function runDuplicateHashDetection() {
           { priority: PRIORITY.INDEX },
         );
       }
-      afterId = rows[rows.length - 1].id;
+      // 倒序：本批最后一行是**最小** id，游标严格递减 —— 不会重复算刚失败的行
+      beforeId = rows[rows.length - 1].id;
       duplicateHashBgLog(
         'batch.done',
-        'afterId=' + String(afterId) + ' rows=' + String(rows.length),
+        'beforeId=' + String(beforeId) + ' rows=' + String(rows.length),
         false,
       );
       emitBackgroundTasksChangedThrottled(false);
@@ -2483,9 +3439,22 @@ async function runDuplicateHashDetection() {
 
 async function tryRunThumbnailBackfillWhenIdle() {
   // 队列与扫描都空闲时再自动补图
-  if (isScanQueueProcessing || scanQueue.length > 0 || isFolderScanRunning()) return;
-  if (thumbnailBackfill.running) return;
-  await runThumbnailBackfill();
+  if (isScanQueueProcessing || scanQueue.length > 0 || isFolderScanRunning()) {
+    // 🔴 这里的 `return` 等于「**本会话不再自动补**」：`scheduleAutoThumbnailBackfill`
+    //    只给一次机会，只有扫描**成功**结束时才会重新排（见 `processScanQueue`）。
+    //    过去这里静默返回 ⇒「开关开着却一直不补」完全无迹可查，
+    //    只能靠用户报「十小时没动」才发现。打点落盘（`startup-performance.json`）。
+    startupStageLog('auto-thumb-backfill.skip', 'scan busy（本会话不再自动重试）');
+    return;
+  }
+  if (thumbnailBackfill.running) {
+    startupStageLog('auto-thumb-backfill.skip', 'already running');
+    return;
+  }
+  const result = await runThumbnailBackfill();
+  if (result && result.started === false) {
+    startupStageLog('auto-thumb-backfill.skip', result.reason || 'unknown');
+  }
 }
 
 function scheduleAutoThumbnailBackfill() {
@@ -2503,10 +3472,23 @@ function scheduleAutoThumbnailBackfill() {
   }, 300);
 }
 
+/**
+ * 自动查重被「扫描忙」推迟的次数。**只用于日志汇总**，不放宽任何抢占逻辑。
+ *
+ * 🔴 为什么需要它：这个排程每 5 秒会被自己重试一次，过去每次重试都打两条 stage
+ * （`auto-dup-hash.schedule` + `auto-dup-hash.defer`），而 `startup-metrics` 的 stage
+ * 数组有**条数上限** —— 两分钟就能把额度吃光，之后 `renderer.first-grid-paint`、
+ * 扫描结束、看门狗超时**全部被静默丢弃**。线上那次「自动扫描失败」的现场就是这么丢的：
+ * `startup-performance.json` 停在 115.9s，看起来像「记录中断」，其实是额度用完。
+ */
+var autoDuplicateHashDeferCount = 0;
+
 function scheduleAutoDuplicateHashDetection() {
   if (autoDuplicateHashScheduled) return;
+  // 重试进来的调用不再重复打 schedule 点（见上方注释）：只保留第一次
+  var isRetry = autoDuplicateHashDeferCount > 0;
   autoDuplicateHashScheduled = true;
-  startupStageLog('auto-dup-hash.schedule', 'delay=700ms');
+  if (!isRetry) startupStageLog('auto-dup-hash.schedule', 'delay=700ms');
   if (autoDuplicateHashRetryTimer) {
     clearTimeout(autoDuplicateHashRetryTimer);
     autoDuplicateHashRetryTimer = null;
@@ -2516,7 +3498,11 @@ function scheduleAutoDuplicateHashDetection() {
     if (!settings.autoHashOnStartup) return;
     // 与扫描互斥，减少机械盘随机读写竞争
     if (isScanQueueProcessing || scanQueue.length > 0 || isFolderScanRunning()) {
-      startupStageLog('auto-dup-hash.defer', 'scan busy, retry in 5000ms');
+      autoDuplicateHashDeferCount += 1;
+      // 只打**第一条**：这个分支每 5 秒就会走到一次，逐条打点会吃光 stage 额度（见变量注释）
+      if (autoDuplicateHashDeferCount === 1) {
+        startupStageLog('auto-dup-hash.defer', 'scan busy, retry every 5000ms');
+      }
       autoDuplicateHashRetryTimer = setTimeout(function () {
         autoDuplicateHashRetryTimer = null;
         scheduleAutoDuplicateHashDetection();
@@ -2525,9 +3511,12 @@ function scheduleAutoDuplicateHashDetection() {
     }
     if (duplicateHashTask.running) return;
     try {
-      startupStageLog('auto-dup-hash.start');
+      startupStageLog(
+        'auto-dup-hash.start',
+        autoDuplicateHashDeferCount > 0 ? 'deferredTimes=' + autoDuplicateHashDeferCount : '',
+      );
       await runDuplicateHashDetection();
-      startupStageLog('auto-dup-hash.done');
+      startupStageLog('auto-dup-hash.done', 'deferredTimes=' + autoDuplicateHashDeferCount);
     } catch (e) {
       startupStageLog('auto-dup-hash.error', e && e.message ? e.message : String(e));
       if (isDev) {
@@ -2535,6 +3524,86 @@ function scheduleAutoDuplicateHashDetection() {
       }
     }
   }, 700);
+}
+
+/**
+ * 启动后自动跑「搜图索引」与「人脸索引」——设置页「启动后自动执行」的第 4、5 项。
+ *
+ * 🔴 **这两个是「跑到底」**（2026-10-06 用户拍板）。语义索引与人脸索引都**刻意不设墙钟超时**
+ * （见 `semantic-search.js#spawn`：大库可能跑数天，固定 deadline 只会杀掉健康的长任务，
+ * 它们有显式取消），所以一旦开跑就会占着 AI 索引槽位直到跑完或用户手动取消。
+ * 这是刻意选的语义，**不要再给它们加时限**。
+ *
+ * 🔴 与扫描的关系是**让路**，不是并行：两者都吃同一块盘的随机 IO（本机 `K:\COS` 是
+ * USB 外接机械盘）。让路用**无限延后重试**表达 —— 与「跑到底」的选择一致，不设次数上限。
+ * ⚠️ 但 defer **只打第一条**：`startup-metrics` 的 stage 数组有条数上限，
+ * 每 5 秒打一条会在两分钟内把首屏与扫描结局全挤掉（2026-10-06 那次故障现场就是这么丢的，
+ * 见 `startup-metrics.js#MAX_STAGES`）。
+ *
+ * 🔴 走 `run('index')` 而不是 `start('index')`：`start` 是**发射后不管**（`void run(...)`），
+ * 拿不到结束与失败，而这两条恰恰是排查时唯一想看的东西。两者最终调的是同一个 `run()`，
+ * 路径等价（`start` 多一层 operation 白名单与 worker 冲突校验，这里已各自判过）。
+ */
+var autoAiIndexTasks = {
+  semantic: { scheduled: false, started: false, deferCount: 0, reportedBusy: false },
+  face: { scheduled: false, started: false, deferCount: 0, reportedBusy: false },
+};
+
+function scheduleAutoAiIndexOnStartup(kind, delayMs) {
+  var isSemantic = kind === 'semantic';
+  var state = autoAiIndexTasks[kind];
+  if (!state || state.scheduled) return;
+  var enabled = isSemantic
+    ? settings.autoSemanticIndexOnStartup
+    : settings.autoFaceIndexOnStartup;
+  if (!enabled) return;
+  var service = isSemantic ? semanticSearch : faceService;
+  if (!service) return;
+  var label = isSemantic ? 'auto-semantic-index' : 'auto-face-index';
+  state.scheduled = true;
+  var delay = parseInt(delayMs, 10) > 0 ? parseInt(delayMs, 10) : isSemantic ? 1200 : 1600;
+  setTimeout(async function () {
+    state.scheduled = false;
+    if (state.started) return;
+    // 自己已经在跑（可能是用户手动点的）：不重复启动，也不必重试
+    if (service.status().busy) {
+      if (!state.reportedBusy) {
+        state.reportedBusy = true;
+        startupStageLog(label + '.skip', 'already running');
+      }
+      return;
+    }
+    var scanBusy = isScanQueueProcessing || scanQueue.length > 0 || isFolderScanRunning();
+    // canRun() 返回的是**错误码**而不是布尔（'AI_MAINTENANCE' / false），照原样放进日志
+    var gate = scanBusy
+      ? 'SCAN_BUSY'
+      : typeof service.canRun === 'function'
+        ? service.canRun()
+        : true;
+    if (gate !== true) {
+      state.deferCount += 1;
+      if (state.deferCount === 1) {
+        startupStageLog(label + '.defer', 'busy=' + String(gate) + ', retry every 5000ms');
+      }
+      setTimeout(function () {
+        scheduleAutoAiIndexOnStartup(kind, 5000);
+      }, 5000);
+      return;
+    }
+    state.started = true;
+    try {
+      startupStageLog(
+        label + '.start',
+        state.deferCount > 0 ? 'deferredTimes=' + state.deferCount : '',
+      );
+      await service.run('index');
+      startupStageLog(label + '.done', 'deferredTimes=' + state.deferCount);
+    } catch (e) {
+      // 失败允许下次启动再来一遍（本次会话不自动重排，免得失败后 5 秒一撞变成日志洪水）
+      state.started = false;
+      startupStageLog(label + '.error', e && e.message ? e.message : String(e));
+    }
+  }, delay);
 }
 
 /**
@@ -2562,10 +3631,26 @@ function runInvalidCleanupBatch(options) {
   );
 }
 
+/**
+ * 失效清理被「别人忙」推迟的次数。**只用于打点收敛与日志汇总**，不放宽避让判断本身。
+ *
+ * 🔴 为什么需要它（与 `autoDuplicateHashDeferCount` 同一个病，这是漏掉的第二个入口）：
+ * 下面那个让路分支每 5 秒会走到一次，过去**每次都打一条 stage**。`startup-metrics`
+ * 的 stage 数组有上限（400 条），而这条打点的持续时长 = 「缩略图补全跑多久」——
+ * 本机实测补全剩 33.2 万张 ≈ 6.4 小时，打满就是 4,600 条。当前没炸只是因为启动指标
+ * 采集有 120s deadline 把它们挡在额度外（实测 120s 内 21 条），**那是运气**：
+ * deadline 一变长就会重演 `auto-dup-hash` 那次「故障现场被挤掉、记录停在半截」的事故。
+ * 口径与它保持一致：**只打第一条 + 收尾汇总**。
+ */
+var invalidCleanupDeferCount = 0;
+/** 「被推迟过才补打」的那条 `invalid-cleanup.start` 是否已打过（避免每批都打）。 */
+var invalidCleanupStartLogged = false;
+
 function scheduleStartupInvalidCleanup() {
   if (startupInvalidCleanupTask.running) return;
   startupInvalidCleanupTask.running = true;
-  startupInvalidCleanupTask.afterId = 0;
+  // 倒序游标：0 = 不限上界（从最新记录往下扫，见 database.js#cleanupMissingFilesYielding）
+  startupInvalidCleanupTask.beforeId = 0;
   startupStageLog('invalid-cleanup.schedule', 'startDelay=4500ms batch=400');
   /** 与 schedulePostWindowDeferredTasks 错开；小批量 + 间隔 + exists 让出，避免主进程假死 */
   var START_DELAY_MS = 4500;
@@ -2576,7 +3661,9 @@ function scheduleStartupInvalidCleanup() {
   function finish() {
     startupStageLog(
       'invalid-cleanup.finish',
-      'afterId=' + String(startupInvalidCleanupTask.afterId || 0),
+      'beforeId=' +
+        String(startupInvalidCleanupTask.beforeId || 0) +
+        (invalidCleanupDeferCount > 0 ? ' deferredTimes=' + invalidCleanupDeferCount : ''),
     );
     startupInvalidCleanupTask.running = false;
     if (startupInvalidCleanupTask.timer) {
@@ -2587,16 +3674,28 @@ function scheduleStartupInvalidCleanup() {
 
   function step() {
     if (!startupInvalidCleanupTask.running || !db) return finish();
-    // 避让更重要任务，降低对交互和扫描的影响
+    // 只避让「交互」与「扫描」—— 这两条才是本函数最初、也是仅有的避让理由
+    //（原注释原文即「降低对交互和扫描的影响」）。**刻意不再避让缩略图补全 / 重复比对**：
+    // ① 它俩是 INDEX 档的长任务（本机补全一次约 6.4 小时），避让 = 失效清理被**无限期**
+    //    推迟；而本函数的 `PRIORITY.REPAIR`（=1，高于 INDEX=2）正是为「数据正确性优先于
+    //    建索引」而设的 —— 避让发生在**入队之前** ⇒ 那个优先级对它们永远用不上，自相矛盾。
+    // ② 本任务只做 `fs.existsSync`（元数据），不读文件内容、不解码，与补全抢的不是同一类
+    //    I/O；真正需要写锁的 DELETE 段既被 `dbWriteQueue` 串行化，又因失效记录极稀而
+    //    绝大多数批次压根不开事务（见 database.js#cleanupMissingFilesYielding）。
+    // 实测（本机 165.7 万行真库）：每批 400 行占队列 40~385 ms（冷热差 10×，热态
+    // 100~160 ms），相对补全一批约 7 s 只是 2.0%~5.5% 的额外延迟；2000 行样本里失效 0 行。
     if (
       isFolderScanRunning() ||
-      thumbnailBackfill.running ||
-      duplicateHashTask.running ||
-      // 用户正在搜图：这条是**抢占**（任务停下），上面的 previewPlaybackActive 是**降载**（照跑但降并发）
+      // 用户正在搜图：这条是**抢占**（任务停下）
       interactionPreempt.active() ||
+      // 预览播放：**降载**（照跑但降并发）
       previewPlaybackActive
     ) {
-      startupStageLog('invalid-cleanup.defer', 'busy, retry in 5000ms');
+      invalidCleanupDeferCount += 1;
+      // 只打**第一条**：这个分支每 5 秒会走到一次，逐条打点会吃光 stage 额度（见变量注释）
+      if (invalidCleanupDeferCount === 1) {
+        startupStageLog('invalid-cleanup.defer', 'busy, retry in 5000ms');
+      }
       startupInvalidCleanupTask.timer = setTimeout(step, RETRY_DELAY_MS);
       return;
     }
@@ -2604,16 +3703,33 @@ function scheduleStartupInvalidCleanup() {
       finish();
       return;
     }
+    // 被推迟过才补一条：正常路径（没被挡）保持原有打点数不变，不多消耗 stage 额度。
+    // 这条是「等了多少次才真正开始」的唯一现场 —— 否则只能从 defer 与 finish 两条去反推。
+    if (invalidCleanupDeferCount > 0 && !invalidCleanupStartLogged) {
+      invalidCleanupStartLogged = true;
+      startupStageLog('invalid-cleanup.start', 'deferredTimes=' + invalidCleanupDeferCount);
+    }
     // 队列里排队跑：这批是写事务，别和启动期迁移抢写锁。
     runInvalidCleanupBatch({
       batchSize: BATCH_SIZE,
-      afterId: startupInvalidCleanupTask.afterId,
+      beforeId: startupInvalidCleanupTask.beforeId,
       existsSyncSlice: 64,
     })
       .then(function (r) {
         if (!startupInvalidCleanupTask.running || !db) return finish();
-        startupInvalidCleanupTask.afterId =
-          Number(r && r.lastId) > 0 ? Number(r.lastId) : startupInvalidCleanupTask.afterId;
+        startupInvalidCleanupTask.beforeId =
+          Number(r && r.lastId) > 0 ? Number(r.lastId) : startupInvalidCleanupTask.beforeId;
+        // 这一批真的删了行 ⇒ `getPhotos` 的 total 记忆化立刻作废（见 photos-total-cache.js）。
+        // 只在这条路径上清是**刻意**的：这个任务每 5 秒一批、本机实测绝大多数批次 deleted = 0，
+        // 无条件清等于每 450ms 打自己一巴掌，缓存形同虚设。
+        // ⚠️ 这条路径**不进** `invalidateCatalog*Safe()`（它删的是行、不动目录结构），所以要单独清。
+        if (Number(r && r.deleted) > 0) {
+          try {
+            dbReadWorkerPool.invalidateReadCaches();
+          } catch (eInv) {
+            void eInv;
+          }
+        }
         if (isDev && r && r.checked) {
           logger.log(
             '[startup] invalid-cleanup chunk checked=%d deleted=%d lastId=%d',
@@ -2693,9 +3809,10 @@ var browseUiReadyStartupTimer = null;
 var startupWriteTasksSubmitted = false;
 
 /**
- * 延迟索引补齐 worker。7 个 `CREATE INDEX` + 13 次 `ALTER TABLE` 的**唯一定义处**是
+ * 延迟索引补齐 worker。那批 `CREATE INDEX` / `ALTER TABLE` 的**唯一定义处**是
  * `src/workers/deferred-index-worker.js`（主线程那套同步副本已于 2026-09-29 删除，
  * 别在主线程再加一份 —— 那等于在启动路径上拿主进程跑大表 CREATE INDEX 并长期独占写锁）。
+ * （刻意不写条数：散文里的数字没人校，必然漂。）
  *
  * 返回的 Promise 在 **worker 退出（连接关掉）之后**才 resolve，不是消息到达时 ——
  * 连接还开着就等于还占着库，调用方要拿它把这段时间登记进写库队列，
@@ -2722,6 +3839,20 @@ function runDeferredIndexWorker() {
     }
     var reported = null;
     worker.on('message', function (msg) {
+      // 🔴 逐条建索引进度（带 `__progress`）必须**立刻落盘**，不能像最终结果那样只存进
+      //    `reported`、等 worker 退出时才写 —— 建索引是十几分钟级的独占写锁过程，
+      //    「退出才写」就等于零现场（2026-10-06 真库上写闸门被占 6 分钟，打点里一条没有，
+      //    只能靠库体积有没有涨来猜它是在跑还是死了）。条数很少：只对「真的不存在、
+      //    这一轮真的在建」的索引发，已存在的走 `IF NOT EXISTS` 秒过、不发，不会刷爆埋点。
+      if (msg && msg.__progress) {
+        longTaskStageLog(
+          'deferred-index.item.' + String(msg.name),
+          msg.kind === 'start'
+            ? 'start'
+            : 'ms=' + msg.ms + (msg.error ? ' error=' + msg.error : ''),
+        );
+        return;
+      }
       reported = msg;
     });
     worker.on('error', function (eIdx) {
@@ -2916,6 +4047,14 @@ function runAutoStartupTasksOnce() {
   }
   if (settings.autoThumbBackfillOnStartup) {
     scheduleAutoThumbnailBackfill();
+  }
+  // 「跑到底」的两个索引任务（见 scheduleAutoAiIndexOnStartup 的注释）。
+  // 刻意排在最后：它们启动后会长时间占着 AI 索引槽位，让前面那些「有终点」的任务先落地。
+  if (settings.autoSemanticIndexOnStartup) {
+    scheduleAutoAiIndexOnStartup('semantic');
+  }
+  if (settings.autoFaceIndexOnStartup) {
+    scheduleAutoAiIndexOnStartup('face');
   }
 }
 
@@ -3348,6 +4487,17 @@ function createWindow(appIcon) {
         String(os.release() || ''),
       );
     }
+  } else {
+    /* 🔴 首帧兜底色。窗口在 `new BrowserWindow` 这一刻就已经可见（全工程**没有**
+     * `show:false` + `ready-to-show` 闸门），而页面要好几秒才 load 完 —— 本机 122 万张库
+     * 实测 `create-window.done` 在 +1.1s、`window.did-finish-load` 在 +7.3s，
+     * 也就是说有 **6 秒**窗口里什么都没有。这段空白期的底色就是 `backgroundColor`：
+     * 原先 solid 档**完全不给**，走 Electron 默认的纯白，深色主题下是一记很刺眼的白闪。
+     * 🔴 只按主题深浅给一个近似值，**不做 22 套预设各自的精确配色** —— 这几百毫秒里
+     * 肉眼分不出 `#0a0a18` 与 `#120d09` 的差别，却会造出**第四张主题表**，
+     * 破坏「`THEME_STYLE_PRESETS` 是唯一真相源」这条红线（见 CONTRACTS §外观 / §启动首帧）。
+     * 取值 = styles.css 里 `--bg` 的两个默认档：深色 `#0a0a18`、浅色 `#f0f2fa`。 */
+    winOpts.backgroundColor = settings && settings.theme === 'light' ? '#f0f2fa' : '#0a0a18';
   }
   if (appIcon && !appIcon.isEmpty()) {
     winOpts.icon = appIcon;
@@ -4008,6 +5158,16 @@ app
     ipcMain.once('notify-browse-photos-ready', () => {
       startupStageLog('renderer.first-grid-paint');
     });
+    /**
+     * 渲染层启动阶段上报。**只记指标，零副作用** —— 不碰任何状态、不触发任何任务。
+     * 名字必须命中 `RENDERER_STARTUP_STAGES` 白名单：渲染层能往这里送任意字符串，
+     * 不过滤就等于让页面往启动日志里写任意内容（也顺手挡住超长字符串）。
+     */
+    ipcMain.on('notify-startup-stage', (event, stage) => {
+      var stageName = String(stage == null ? '' : stage);
+      if (RENDERER_STARTUP_STAGES.indexOf(stageName) < 0) return;
+      startupStageLog('renderer.' + stageName);
+    });
     ipcMain.on('begin-browse-request', (event, sequence) => {
       browseRequests.begin(event.sender, sequence);
     });
@@ -4139,16 +5299,16 @@ app
     });
 
     ipcMain.handle('start-thumbnail-backfill', async function (event, limit) {
-      if (optimizeTaskRunning) return { success: false, error: '数据库维护进行中' };
       const startTime = Date.now();
       logger.log('[start-thumbnail-backfill] IPC received, limit=', limit);
-      if (isFolderScanRunning()) {
-        logger.log('[start-thumbnail-backfill] rejected: scan running');
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
-      if (thumbnailBackfill.running) {
-        logger.log('[start-thumbnail-backfill] rejected: already running');
-        return { success: false, error: '补全已在进行中' };
+      // 🔴 判据与 `runThumbnailBackfill()` 内部**共用同一份**（过去这里漏了
+      //    `duplicateHashTask.running`，导致「返回成功但任务什么都没做」的静默失败，
+      //    用户报的就是「点击之后不开始」）。详见 `thumbnailBackfillBlockReason()`。
+      const blocked = thumbnailBackfillBlockReason();
+      if (blocked) {
+        // warn 级：生产档 logger 是 warn，info 会被静默 —— 拒绝是最需要留现场的事件
+        logger.warn('[start-thumbnail-backfill] rejected: ' + blocked);
+        return { success: false, error: blocked };
       }
       // 立即返回，任务在后台异步运行，不要阻塞 IPC 响应
       setTimeout(() => {
@@ -4257,7 +5417,8 @@ app
             }
             var totalChecked = 0;
             var totalDeleted = 0;
-            var afterId = 0;
+            // 倒序游标（0 = 不限上界）：新记录先查，刚被搬走的照片第一时间清掉
+            var beforeId = 0;
             var chunks = 0;
             var MAX_CHUNKS = 100000;
             while (
@@ -4267,16 +5428,16 @@ app
             ) {
               var r = await runInvalidCleanupBatch({
                 batchSize: 1200,
-                afterId: afterId,
+                beforeId: beforeId,
                 existsSyncSlice: 64,
               });
               chunks++;
               totalChecked += Number(r && r.checked) || 0;
               totalDeleted += Number(r && r.deleted) || 0;
-              afterId = Number(r && r.lastId) > 0 ? Number(r.lastId) : afterId;
+              beforeId = Number(r && r.lastId) > 0 ? Number(r.lastId) : beforeId;
               invalidCleanupTask.checked = totalChecked;
               invalidCleanupTask.deleted = totalDeleted;
-              invalidCleanupTask.currentFile = afterId > 0 ? '已检查到记录 ID ' + afterId : '';
+              invalidCleanupTask.currentFile = beforeId > 0 ? '已检查到记录 ID ' + beforeId : '';
               emitBackgroundTasksChangedThrottled(false);
               if (!r || !r.hasMore || !r.checked) break;
               // 短暂让出避免阻塞
@@ -4285,6 +5446,16 @@ app
           } catch (err) {
             logger.error('Cleanup missing files error:', err);
           } finally {
+            // 整轮只在**收尾**清一次（不是每批）：这个循环一批 1200 行、批间只 `setTimeout(0)`
+            // 让出，逐批清等于把 `getPhotos` 的 total 缓存整轮打成空转。
+            // 清的是读池里的 total 记忆化，见 `src/photos-total-cache.js`。
+            if (totalDeleted > 0) {
+              try {
+                dbReadWorkerPool.invalidateReadCaches();
+              } catch (eInv) {
+                void eInv;
+              }
+            }
             invalidCleanupTask.running = false;
             invalidCleanupTask.currentFile = '';
             invalidCleanupTask.startedAt = 0;
@@ -4361,12 +5532,12 @@ app
     });
 
     ipcMain.handle('maintenance-start-duplicate-hash-detection', async function () {
-      if (optimizeTaskRunning) return { success: false, error: '数据库维护进行中' };
-      if (isFolderScanRunning()) {
-        return { success: false, error: '扫描进行中，请稍后再试' };
-      }
-      if (duplicateHashTask.running) {
-        return { success: false, error: '重复哈希任务已在运行' };
+      // 判据与 `runDuplicateHashDetection()` 内部共用同一份（详见 `duplicateHashBlockReason()`）：
+      // 过去这里漏了 `thumbnailBackfill.running`，会「返回成功但什么都不做」。
+      const blocked = duplicateHashBlockReason();
+      if (blocked) {
+        logger.warn('[maintenance-start-duplicate-hash-detection] rejected: ' + blocked);
+        return { success: false, error: blocked };
       }
       /** 勿 await 整段 runDuplicateHashDetection：大库可能跑数小时，invoke 会一直挂起，设置页「开始获取」像无响应 */
       void runDuplicateHashDetection().catch(function (err) {
@@ -4799,6 +5970,13 @@ app
         if (!result) {
           return { success: false, error: '照片记录不存在' };
         }
+        // 「仅收藏」那一档的 `COUNT(*)` 变了（行数没变，变的是 is_favorite 的分布）⇒
+        // 清读池缓存。刻意**不清目录缓存**：收藏不影响目录结构 / 根目录统计。
+        try {
+          dbReadWorkerPool.invalidateReadCaches();
+        } catch (eInv) {
+          void eInv;
+        }
         return { success: true, is_favorite: result.is_favorite };
       } catch (err) {
         return { success: false, error: err.message };
@@ -5118,6 +6296,72 @@ app
         source: 'rescan',
         rootPath: rootPath,
       });
+    });
+
+    /**
+     * 重扫**全部**根目录（设置页「重新扫描全部」）。语义与单目录 `rescan-folder` 完全一致，
+     * 只是把 N 个任务一次性排上、等全部跑完再返回一个汇总。
+     *
+     * 🔴 根目录列表在**主进程**读（只读 Worker + lite），不拿渲染端 `state.rootFolders`：
+     * 那是一份可能过时的缓存 —— 扫描刚在库里登记了新根、渲染端那一拍还没同步到时它是空的，
+     * 结果就是「点了没反应」。此刻的事实只在库里。
+     *
+     * 并发仍然是串行的：`enqueueScanTask` 只是入队，真正执行在 `processScanQueue` 的
+     * while 循环里逐个取，每个都整段独占 `dbWriteQueue` 的 'scan' 租约。所以这里
+     * 「一次性全排上」不会变成并行写库，只是把队列一次性填满（用户能在任务条看到
+     * 「扫描队列 · 还有 N 项等待」）。优先级与手动单扫同档（USER）。
+     *
+     * 中断：停止按钮走 `cancel-scan` → `clearPendingScanQueue()`，它会把**还在排队的**
+     * 全部结算成 `cancelled`，本 Promise 随之解析 —— 所以「停止」停的是一整批。
+     */
+    ipcMain.handle('rescan-all-folders', async function () {
+      var readRootsPath = sqliteDbPath || dbPath;
+      if (!readRootsPath) return { success: false, error: 'database path unavailable' };
+      var roots;
+      try {
+        roots = await runDbReadWorkerOnly(readRootsPath, 'getRootFolders', { lite: true });
+      } catch (eRoots) {
+        return {
+          success: false,
+          error: eRoots && eRoots.message ? eRoots.message : String(eRoots),
+        };
+      }
+      var paths = [];
+      if (Array.isArray(roots)) {
+        for (var i = 0; i < roots.length; i++) {
+          var p = roots[i] && roots[i].path;
+          if (p) paths.push(p);
+        }
+      }
+      if (paths.length === 0) return { success: false, error: 'empty' };
+      var results = await Promise.all(
+        paths.map(function (p) {
+          return enqueueScanTask({ source: 'rescan', rootPath: p });
+        }),
+      );
+      var failed = 0;
+      var cancelled = 0;
+      var cleanupDeleted = 0;
+      var firstError = '';
+      for (var j = 0; j < results.length; j++) {
+        var r = results[j];
+        if (r && r.success) {
+          cleanupDeleted += Number(r.cleanupDeleted) || 0;
+        } else if (r && r.cancelled) {
+          cancelled++;
+        } else {
+          failed++;
+          if (!firstError && r && r.error) firstError = r.error;
+        }
+      }
+      return {
+        success: true,
+        total: paths.length,
+        cancelled: cancelled,
+        failed: failed,
+        cleanupDeleted: cleanupDeleted,
+        error: firstError,
+      };
     });
 
     // 窗口控制

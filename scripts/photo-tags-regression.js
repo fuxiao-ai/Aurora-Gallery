@@ -219,7 +219,9 @@ async function run() {
     check(
       '🔴 batchPendingTags 直接回向量与基线（补标签是纯算术，不再碰图片）',
       (() => {
-        const rows = store.batchPendingTags(0, 10, keysA);
+        // 🔴 游标是**倒序的排他上界**：起手必须取该域的最大值 + 1（写 0 = 恒空、一行都不补）。
+        //    补标签的域是 `embeddings.photo_id` —— 别借 `maxPhotoId()`（那个走 photos.id）。
+        const rows = store.batchPendingTags(store.maxEmbeddingPhotoId() + 1, 10, keysA);
         return (
           rows.length === 1 &&
           rows[0].photo_id === 1 &&
@@ -228,11 +230,14 @@ async function run() {
           Math.abs(rows[0].generic_sim - 0.5) < 1e-6
         );
       })(),
-      JSON.stringify(store.batchPendingTags(0, 10, keysA).map((r) => r.photo_id)),
+      JSON.stringify(
+        store.batchPendingTags(store.maxEmbeddingPhotoId() + 1, 10, keysA).map((r) => r.photo_id),
+      ),
     );
     check(
-      '🔴 补标签的候选谓词只按游标记事，不重复回同一行（否则死循环）',
-      store.batchPendingTags(1, 10, keysA).length === 0,
+      '🔴 补标签的候选谓词只按游标记事，不重复回同一行（排他上界；方向写反 = 死循环）',
+      store.batchPendingTags(1, 10, keysA).length === 0 &&
+        store.batchPendingTags(store.maxEmbeddingPhotoId() + 1, 10, keysA).length === 1,
     );
 
     check(
@@ -272,7 +277,7 @@ async function run() {
 
     const storeSrc = read(INDEX_STORE);
     const batchBody = (() => {
-      const start = storeSrc.indexOf('batch(after) {');
+      const start = storeSrc.indexOf('batch(before) {');
       if (start < 0) return '';
       const rest = storeSrc.slice(start + 10);
       const next = rest.indexOf('\n  batchPendingTags(');
@@ -297,7 +302,18 @@ async function run() {
     );
     check(
       '🔴 补标签走独立的 batchPendingTags()（两条路分开）',
-      storeSrc.includes('batchPendingTags(afterId, limit, tagsKey)'),
+      storeSrc.includes('batchPendingTags(beforeId, limit, tagsKey)'),
+    );
+    check(
+      '🔴 补标签的候选与 batch() 同向：主键倒序 + 游标是排他上界（写反 = 恒空或死循环）',
+      /batchPendingTags\(beforeId, limit, tagsKey\)[\s\S]{0,400}photo_id < \?[\s\S]{0,120}ORDER BY photo_id DESC/.test(
+        storeSrc,
+      ),
+    );
+    check(
+      '🔴 补标签的游标起点取自 embeddings 域（maxEmbeddingPhotoId），不借 photos 域的 maxPhotoId',
+      /maxEmbeddingPhotoId\(\)/.test(storeSrc) &&
+        /maxEmbeddingPhotoId\(\) \+ 1/.test(read(SEMANTIC_WORKER)),
     );
 
     // ---------------------------------------------------- 6. SemanticTags 只读通道

@@ -438,6 +438,11 @@
     var auto = document.getElementById('settingAutoScan');
     var autoThumb = document.getElementById('settingAutoThumbBackfillOnStartup');
     var autoHash = document.getElementById('settingAutoHashOnStartup');
+    // ⚠️ 两个索引开关**刻意不进下面那条硬 require 列表**：那条一失败就 `return`，
+    // 会让整次「保存通用设置」静默失效（不报错、不落库）。这里改为元素缺失即按「保持原值」，
+    // 其余字段照常保存。
+    var autoSemantic = document.getElementById('settingAutoSemanticIndexOnStartup');
+    var autoFace = document.getElementById('settingAutoFaceIndexOnStartup');
     var launchDefaultEl = document.getElementById('settingLaunchDefaultPage');
     var subFamilyEl = document.getElementById('settingSubtitleFontFamily');
     var subSizeEl = document.getElementById('settingSubtitleFontSize');
@@ -494,11 +499,17 @@
     if (isNaN(similarThreshold) || similarThreshold < 0) similarThreshold = 12;
     if (similarThreshold > 64) similarThreshold = 64;
     var ap = state.generalSettingsApplied;
+    var autoSemanticOn = autoSemantic
+      ? !!autoSemantic.checked
+      : !!(ap && ap.autoSemanticIndexOnStartup);
+    var autoFaceOn = autoFace ? !!autoFace.checked : !!(ap && ap.autoFaceIndexOnStartup);
     if (
       ap &&
       !!auto.checked === ap.autoScanOnStartup &&
       !!autoThumb.checked === ap.autoThumbBackfillOnStartup &&
       !!autoHash.checked === ap.autoHashOnStartup &&
+      autoSemanticOn === !!ap.autoSemanticIndexOnStartup &&
+      autoFaceOn === !!ap.autoFaceIndexOnStartup &&
       launchDefaultPage === (ap.launchDefaultPage || 'all_photos') &&
       appearance.theme === (ap.theme === 'light' ? 'light' : 'dark') &&
       appearance.uiAccent === (ap.uiAccent || 'violet') &&
@@ -523,6 +534,8 @@
         autoScanOnStartup: !!auto.checked,
         autoThumbBackfillOnStartup: !!autoThumb.checked,
         autoHashOnStartup: !!autoHash.checked,
+        autoSemanticIndexOnStartup: autoSemanticOn,
+        autoFaceIndexOnStartup: autoFaceOn,
         launchDefaultPage: launchDefaultPage,
         theme: appearance.theme,
         uiAccent: appearance.uiAccent,
@@ -544,6 +557,8 @@
         dom.settingAutoThumbBackfillOnStartup.checked = !!r.autoThumbBackfillOnStartup;
       if (dom.settingAutoHashOnStartup)
         dom.settingAutoHashOnStartup.checked = !!r.autoHashOnStartup;
+      if (autoSemantic) autoSemantic.checked = !!r.autoSemanticIndexOnStartup;
+      if (autoFace) autoFace.checked = !!r.autoFaceIndexOnStartup;
       if (launchDefaultEl) {
         var lp = String(r && r.launchDefaultPage ? r.launchDefaultPage : launchDefaultPage).trim();
         launchDefaultEl.value =
@@ -577,6 +592,8 @@
           dom.settingAutoThumbBackfillOnStartup.checked = !!ap.autoThumbBackfillOnStartup;
         if (dom.settingAutoHashOnStartup)
           dom.settingAutoHashOnStartup.checked = !!ap.autoHashOnStartup;
+        if (autoSemantic) autoSemantic.checked = !!ap.autoSemanticIndexOnStartup;
+        if (autoFace) autoFace.checked = !!ap.autoFaceIndexOnStartup;
         if (launchDefaultEl) launchDefaultEl.value = ap.launchDefaultPage || 'all_photos';
         if (concEl)
           concEl.value = String(normalizeThumbBackfillConcurrency(ap.thumbBackfillConcurrency));

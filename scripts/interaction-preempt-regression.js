@@ -216,11 +216,22 @@ function testBackoffPointsExist() {
     '回填 1 处 + 哈希外层 1 处 + 哈希子批 1 处，共 3 个让位点（检出 ' + awaitIdleCalls + ' 处）',
   );
 
+  // 🔴 2026-10-06：这条原本拿 `duplicateHashTask.running` 当「避让条件开头」的锚点，而那个条件
+  // 已被**刻意移除**（避让发生在入队之前 ⇒ `PRIORITY.REPAIR` 被架空，见 CONTRACTS「没有做让位的」）。
+  // 断言名说的是**语义**（要让位给搜图），实现却顺带钉死了**文本** —— 于是它替一个已被移除的
+  // 条件「作证」。现在改成：① 限定在函数体内找（整份源码跑正则，一旦别处出现同形的避让条件
+  // 就会变成「测了另一个函数」的假绿）；② 起点用 `isFolderScanRunning()`，它是这个避让条件的
+  // 第一条、且语义稳定（扫描期间让路是一条不动的契约）。
+  const cleanupStep = sliceBetween(
+    mainCode,
+    'function scheduleStartupInvalidCleanup() {',
+    '\nfunction schedulePostWindowDeferredTasks',
+  );
   assert(
-    /duplicateHashTask\.running\s*\|\|[\s\S]{0,300}?interactionPreempt\.active\(\)\s*\|\|[\s\S]{0,120}?previewPlaybackActive/.test(
-      mainCode,
+    /isFolderScanRunning\(\)\s*\|\|[\s\S]{0,300}?interactionPreempt\.active\(\)\s*\|\|[\s\S]{0,120}?previewPlaybackActive/.test(
+      cleanupStep,
     ),
-    '启动期失效清理的避让条件要含交互抢占',
+    '启动期失效清理的避让条件要含「扫描 + 交互抢占 + 预览降载」三条（2026-10-06 起刻意不再含补全/查重）',
   );
 
   assert(

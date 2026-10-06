@@ -176,20 +176,40 @@ async function run() {
       path.join(__dirname, '..', 'src', 'workers', 'deferred-index-worker.js'),
       'utf8',
     );
+    // 🔴 这条「只许定义在 worker 里」的检查必须带**词边界**，不能用裸 `includes`。
+    // 反例是现成的、而且一加索引就会撞上：`idx_photos_root_date` 是
+    // `idx_photos_root_date_mod` 的**前缀**，而后者由 `database.js#createCoreSchema` 建
+    // ⇒ 裸 `includes('CREATE INDEX IF NOT EXISTS idx_photos_root_date')` 会在
+    // database.js 里命中那一行，报出「src/database.js 也建了这个索引」的**假红**。
+    // （反向也危险：假红会被人用「把名字改长一点」绕过，而不是把索引搬回 worker。）
+    // 下面那条哨兵断言就是钉住「\b 真的在起作用」，别哪天被顺手改回 includes。
+    assert.ok(
+      !new RegExp('CREATE INDEX IF NOT EXISTS ' + 'idx_photos_root_date' + '\\b').test(
+        'CREATE INDEX IF NOT EXISTS idx_photos_root_date_mod ON photos(root_id, date_modified);',
+      ),
+      '哨兵：词边界的 `idx_photos_root_date\\b` 不许命中 `idx_photos_root_date_mod`（否则下面全是假红）',
+    );
     for (const indexName of [
       'idx_photos_folder_nocase',
       'idx_photos_agg_root_folder_image',
       'idx_photos_agg_root_folder_video',
       'idx_photos_dup_hash_pending',
+      // 2026-10-06 加的两条只读大查询覆盖/排序索引（见 deferred-index-worker 的 Phase 4）。
+      // 一并登记在这里：它们同样是「大表 CREATE INDEX」，一旦被谁搬回启动路径
+      // （比如有人在 main 里顺手补一条），代价是拿主进程独占写锁跑几分钟。
+      'idx_photos_root_folder_date',
+      'idx_photos_root_date',
     ]) {
-      assert.ok(
-        workerSource.includes(indexName),
+      assert.match(
+        workerSource,
+        new RegExp('CREATE INDEX IF NOT EXISTS ' + indexName + '\\b'),
         `延迟索引 ${indexName} 的定义必须在 deferred-index-worker 里（那是唯一真相源）`,
       );
       const offenders = [];
+      const offenderPattern = new RegExp('CREATE INDEX IF NOT EXISTS ' + indexName + '\\b');
       for (const file of walkJsFiles(path.join(__dirname, '..', 'src'))) {
         if (file.endsWith(path.join('workers', 'deferred-index-worker.js'))) continue;
-        if (fs.readFileSync(file, 'utf8').includes('CREATE INDEX IF NOT EXISTS ' + indexName)) {
+        if (offenderPattern.test(fs.readFileSync(file, 'utf8'))) {
           offenders.push(path.relative(path.join(__dirname, '..'), file));
         }
       }

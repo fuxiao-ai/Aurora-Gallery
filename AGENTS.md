@@ -40,7 +40,7 @@ npm run download-cloudflared # Fetch cloudflared binary for packaging/tunneling
 npm run bundle-models       # Build bundled AI models into models/ (face + search) for packaging
 ```
 
-**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 41 scripts) in the Electron runtime — database smoke, query / worker-pool / maintenance / browse / compare / semantic / face / people-page / search-page / navigation / layout / face-task / face-concurrency / ai-lifecycle regressions, plus eight static guards (`control-styles-regression`, `theme-regression`, `css-reference-regression`, `dead-reference-regression`, `photo-info-fields-regression`, `photo-tags-regression`, `photo-metadata-backfill-regression`, `check-text-corruption`). Run `npm run lint` and `npm run version-check` before shipping. See `docs/static-guards.md`.
+**Automated checks**: `npm test` runs the full regression suite (`scripts/run-regressions.js`, 50 scripts) in the Electron runtime — database smoke, query / worker-pool / maintenance / browse / compare / semantic / face / people-page / search-page / navigation / layout / face-task / face-concurrency / ai-lifecycle regressions, plus eight static guards (`control-styles-regression`, `theme-regression`, `css-reference-regression`, `dead-reference-regression`, `photo-info-fields-regression`, `photo-tags-regression`, `photo-metadata-backfill-regression`, `check-text-corruption`). Run `npm run lint` and `npm run version-check` before shipping. See `docs/static-guards.md`.
 
 ## High-Level Architecture
 

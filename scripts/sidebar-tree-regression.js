@@ -150,9 +150,11 @@ function loadDesktop() {
   return { ctx, tabsUi };
 }
 
-function testDesktop() {
+async function testDesktop() {
   const { ctx, tabsUi } = loadDesktop();
   const state = ctx.state;
+  // 第 7 / 8 节会把 ctx.loadRootFolders 换成 spy；第 12 节要驱动**真实**实现，先留一份引用
+  const realLoadRootFolders = ctx.loadRootFolders;
 
   // --- 1. isFolderSidebarTab 收窄：仅 folders ---
   assert.equal(ctx.isFolderSidebarTab('folders'), true, 'folders 属文件夹树侧栏');
@@ -393,6 +395,49 @@ function testDesktop() {
   assert.ok(
     /#searchSidebar\[hidden\]/.test(navCss) && /#peopleSidebar\[hidden\]/.test(navCss),
     '两个侧栏容器的 [hidden] 兜底规则应在',
+  );
+
+  // --- 12. 扫描期「只补数字」的 skipTree 刷新：不得把文件夹树抹成空白 ---
+  // 背景（2026-10-05 用户报「扫描中文件夹树消失 / 点重新扫描后消失」）：
+  // startScanLiveRefresh 扫描期每 3s 调一次 loadRootFolders(true, true)（skipTree=true，
+  // 大库上刻意不重绘整棵树、只补侧栏数字）。而 skipTree 分支里曾有一句
+  //     if (gate.isAlive() && skipTree) gate.render('');
+  // 本意是「设置页侧栏隐藏、顺手清掉内容」，但 gate.isAlive() 自身已蕴含
+  // state.currentTab === 'folders'（见 createSidebarRequestGate）——也就是说这句
+  // **只在侧栏正显示时**才会执行，在设置页恒为 no-op。于是它把用户正在看的那棵树
+  // 清空，且该分支 return 之前不会重绘，整棵树一直空到扫描结束。
+  // 这里用真实 loadRootFolders 驱动一遍真实分支：树 HTML 必须原样保留。
+  state.currentTab = 'folders';
+  state.sidebarLockedMode = '';
+  state.rootFolders = [
+    { id: 1, path: 'K:\\COS', name: 'COS', photo_count: 5, folder_count: 3 },
+  ];
+  state.rootFoldersStatsPending = false;
+  const treeHtml = '<div class="folder-item tree-parent" data-root-id="1">老目录树</div>';
+  ctx.dom.sidebarContent = makeEl({
+    innerHTML: treeHtml,
+    // 让「侧栏已有内容」这条判定为真，否则会先被替换成加载态骨架（与本次缺陷无关）
+    querySelector: (sel) => (String(sel).includes('folder-item') ? makeEl() : null),
+  });
+  ctx.api = {
+    getRootFolders: async (options) =>
+      options && options.lite === true
+        ? [{ id: 1, path: 'K:\\COS', name: 'COS', photo_count: null, folder_count: null }]
+        : [{ id: 1, path: 'K:\\COS', name: 'COS', photo_count: 5, folder_count: 3 }],
+  };
+  ctx.fetchRootFoldersSafe = () => Promise.resolve(state.rootFolders);
+  ctx.scheduleBrowseReload = () => {};
+  ctx.Logger = { error: () => {}, log: () => {} };
+  await realLoadRootFolders(true, true);
+  assert.equal(
+    String(ctx.dom.sidebarContent.innerHTML).includes('老目录树'),
+    true,
+    '🔴 skipTree 刷新（扫描期每 3s 一拍）不得清空文件夹树侧栏 —— 清了就是「扫描中文件夹树消失」',
+  );
+  assert.equal(
+    state.rootFolders[0].photo_count,
+    5,
+    '非设置页时 lite 行（photo_count 恒为 null）不得覆盖侧栏树的数据源，否则树上的数字会短暂变 0',
   );
 
   console.log('[sidebar-tree-regression] desktop PASS');
@@ -983,7 +1028,7 @@ function testWebParity() {
 }
 
 async function main() {
-  testDesktop();
+  await testDesktop();
   await testRootRowParity();
   testWebParity();
   await testWeb();

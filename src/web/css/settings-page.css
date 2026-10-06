@@ -303,35 +303,6 @@
   justify-content: flex-end;
   gap: 8px;
 }
-/* 行内「只读」小标签：说明这一项要回桌面端改 */
-.web-settings-readonly-tag {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid var(--design-line, var(--border));
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
-}
-
-/* 只读取值：刻意**不用 disabled 控件**——灰掉的下拉框看起来像坏了 */
-.web-settings-value {
-  max-width: 260px;
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  text-align: right;
-  word-break: break-word;
-}
-.web-settings-value.is-on {
-  color: var(--accent);
-  font-weight: 600;
-}
-.web-settings-value.is-off {
-  color: var(--text-muted);
-}
-
 .web-settings-select {
   min-width: 132px;
   height: 32px;
@@ -349,52 +320,12 @@
   border-color: var(--accent);
 }
 
-/* --------------------------------------------------------- 键位表格 */
-.web-settings-keys {
-  display: flex;
-  flex-direction: column;
-}
-.web-settings-key-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
-}
-.web-settings-key-row + .web-settings-key-row {
-  border-top: 1px solid var(--design-line, var(--border));
-}
-.web-settings-key-desc {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-}
-.web-settings-key-cap {
-  flex: 0 0 auto;
-  min-width: 74px;
-  padding: 3px 8px;
-  border: 1px solid var(--design-line, var(--border));
-  border-bottom-width: 2px;
-  border-radius: 6px;
-  background: var(--bg-secondary, var(--bg-card));
-  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--text-primary, var(--text));
-  text-align: center;
-}
-
 /* --------------------------------------------------------- 收尾提示 */
 .web-settings-note {
   padding: 10px 14px;
   font-size: 12px;
   line-height: 1.65;
   color: var(--text-secondary);
-}
-.web-settings-empty {
-  padding: 16px 14px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-muted);
 }
 
 /* ------------------------------------------------------------- 窄屏 */
@@ -440,10 +371,6 @@
   .web-settings-row-control {
     width: 100%;
     justify-content: flex-start;
-  }
-  .web-settings-value {
-    max-width: none;
-    text-align: left;
   }
   .web-settings-select {
     width: 100%;

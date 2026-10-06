@@ -156,6 +156,8 @@
         (sid === 'settingAutoScan' ||
           sid === 'settingAutoThumbBackfillOnStartup' ||
           sid === 'settingAutoHashOnStartup' ||
+          sid === 'settingAutoSemanticIndexOnStartup' ||
+          sid === 'settingAutoFaceIndexOnStartup' ||
           sid === 'settingSimilarThreshold' ||
           sid === 'settingLaunchDefaultPage' ||
           sid === 'settingThemeStyle' ||

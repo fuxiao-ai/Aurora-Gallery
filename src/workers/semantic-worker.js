@@ -224,7 +224,9 @@ function refreshTags() {
   try {
     const total = store.pendingTagsCount(words.key);
     if (!total) return { tagged: 0, total: 0 };
-    let cursor = 0;
+    // 倒序游标：从最大的 photo_id 往下补（新入库的先有标签）。
+    // 游标域是 `embeddings.photo_id`，所以起点取的是 `maxEmbeddingPhotoId()` 而不是 `maxPhotoId()`。
+    let cursor = store.maxEmbeddingPhotoId() + 1;
     let done = 0;
     for (;;) {
       check();
@@ -238,6 +240,7 @@ function refreshTags() {
       // 写失败就整批丢掉：游标照常前进，这一批的 tags 仍是 NULL，
       // 下一轮补标签会重新捞到它们（幂等，不会留下半写状态）。
       store.setTags(entries);
+      // 倒序：最后一行是本批**最小**的 photo_id，游标严格递减
       cursor = rows[rows.length - 1].photo_id;
       done += rows.length;
       progress({ phase: 'tagging', processed: done, total });
@@ -365,7 +368,9 @@ async function execute(operation, query, options) {
       key: vocabKey(MODEL_KEY, tagLabels),
     };
     check();
-    let after = 0;
+    // 🔴 倒序游标：起点比 MAX(id) 大一格，否则 id 最大那张永远扫不到；
+    // 写 0 会让 `batch(0)` 等价于 `id < 0` 恒空 —— 任务「秒完成」却一张不建、不报错。
+    let before = store.maxPhotoId() + 1;
     let processed = 0;
     let failed = 0;
     let skipped = 0;
@@ -385,11 +390,11 @@ async function execute(operation, query, options) {
       });
     while (true) {
       check();
-      const rows = store.batch(after);
+      const rows = store.batch(before);
       if (!rows.length) break;
       for (const photo of rows) {
         check();
-        after = photo.id;
+        before = photo.id;
         if (!imageTypes.has(path.extname(photo.file_name).slice(1).toLowerCase())) {
           skipped++;
           report(photo);

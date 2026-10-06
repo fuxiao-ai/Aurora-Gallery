@@ -13,6 +13,32 @@ const {
 const VALID = `JOIN faceindex.scans s ON s.photo_id = f.photo_id
   JOIN photos p ON p.id = s.photo_id AND p.file_path = s.file_path
   AND p.file_size = s.file_size AND COALESCE(p.date_modified, '') = s.date_modified AND s.version = ?`;
+
+/**
+ * 🔴 人脸读取的**唯一**规范顺序 —— 内容决定，不含 `faces.id`。
+ *
+ * `faces.id` 是**插入顺序**，也就等于**人脸扫描顺序**（父表 `scans` 带
+ * `ON DELETE CASCADE` ⇒ 重扫一张照片会删掉重插它那几行、拿到新的高位 id）。
+ * 而聚类结果依赖**节点下标**，有三处吃它：`chineseWhispers` 的初始标签是
+ * `labels[i] = i`、平票时靠 `heap.nodes[]` 的数组顺序决胜（`weight > bestWeight` ⇒ 先到先得）、
+ * 每轮巡访是「先对下标做 Fisher-Yates 再按序投票」；`representatives()` 的数组顺序还同时
+ * 决定 `groupScore` 抽哪 16 个成员，以及 `put()` 里 `for (const [person] of representatives)`
+ * 的**平票归属**（`score > best` ⇒ 也是先到先得）。所以读顺序一变，归组结果就变。
+ *
+ * 为什么 `(photo_id, id)` 对扫描方向不变：
+ *   - 主键 `photo_id` 与方向无关 —— 照片是既有行，扫描方向只决定 `faces.id` 怎么发；
+ *   - 次键 `f.id` 在**同一张照片内** = 检测顺序，同样与扫描方向无关。
+ * 于是「把索引改成倒序扫」不再改动归组结果。
+ *
+ * 实测（本机 `face-index/faces.sqlite`，81,043 张脸 / 851 张多脸照片）：与 `ORDER BY f.id`
+ * **逐位全等（差异 0 位）**；计划由 `SCAN f` 变为 `SCAN f USING ... idx_faces_photo`
+ * （索引序、无临时 B 树），同一读约 2.4× 快。
+ *
+ * ⚠️ 不要退回 `ORDER BY f.id`：那会让「重扫任意一张照片」把它挪到聚类节点序的末尾 ——
+ *    同一份内容重跑给出不同分组（旧的幂等只是「没重扫过」的巧合）。
+ * ⚠️ 唯一允许用 `f.id` 排序的是 `photos()`（人物页无限滚动的分页游标，与聚类无关）。
+ */
+const FACE_ORDER = 'ORDER BY f.photo_id, f.id';
 function id(value) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 1) throw new Error('FACE_ID_INVALID');
@@ -174,24 +200,44 @@ class FaceStore {
       throw error;
     }
   }
-  batch(after) {
+  /**
+   * 待扫照片，按**主键倒序**取（最新入库优先）。
+   *
+   * 游标 `beforeId` 是**排他上界**，调用方取「本批最后一行的 id」续接（倒序下那是**最小** id）。
+   * 为什么倒序：一个完整轮回的总代价与方向无关（谓词用不上索引、每行都要回表判定），
+   * 但高位区（刚导入的）命中率接近 100%、低位区可能只有个位数 —— 倒序让用户刚导入的照片
+   * 先出现在人物页。⚠️ **只改查询不改调用端 = 静默零扫**：首次游标给 `0` 会让 `p.id < 0`
+   * 恒空，任务「秒完成」却一张没扫、也不报错。
+   *
+   * 这里动的是**扫描顺序**，不影响归组结果 —— 所有聚类读取都走 `FACE_ORDER`（内容决定），
+   * 与 `faces.id` 的发放顺序已解耦（见该常量）。
+   */
+  batch(beforeId) {
     return this.source
       .prepare(
         `SELECT p.id, p.file_name, p.file_path, p.file_size, COALESCE(p.date_modified, '') date_modified,
       p.thumbnail FROM photos p LEFT JOIN faceindex.scans s ON p.id = s.photo_id
-      WHERE p.id > ? AND (s.photo_id IS NULL OR s.version != ? OR s.file_path != p.file_path
-      OR s.file_size != p.file_size OR s.date_modified != COALESCE(p.date_modified, '')) ORDER BY p.id LIMIT 8`,
+      WHERE p.id < ? AND (s.photo_id IS NULL OR s.version != ? OR s.file_path != p.file_path
+      OR s.file_size != p.file_size OR s.date_modified != COALESCE(p.date_modified, '')) ORDER BY p.id DESC LIMIT 8`,
       )
-      .all(after, VERSION);
+      .all(beforeId, VERSION);
+  }
+  /** 倒序游标的起点用：`id` 是 rowid 别名 ⇒ `MAX(id)` 是索引定位，不是全表扫。 */
+  maxPhotoId() {
+    const row = this.source.prepare('SELECT MAX(id) AS hi FROM photos').get();
+    const hi = row && row.hi != null ? Number(row.hi) : 0;
+    return Number.isFinite(hi) && hi > 0 ? hi : 0;
   }
   /**
-   * 每个已有组的**全部成员向量**，按 `faces.id` 升序（= 当初插入的顺序）。
-   * 返回 `Map<person_id, Float32Array[]>`；`groupScore` 自己决定从中抽哪几个。
-   * 旧版只取每组最早一张，那正是「锚点靠运气」的来源。
+   * 每个已有组的**全部成员向量**，按 `FACE_ORDER`（`photo_id, id`；见该常量）。
+   * 返回 `Map<person_id, Float32Array[]>`；`groupScore` 自己决定从中抽哪几个，
+   * 而 `put()` 又在 `for (const [person] of representatives)` 上用「先到先得分」决胜 ——
+   * 所以**这个数组的顺序是契约的一部分**，别随手改。旧版只取每组最早一张，
+   * 那正是「锚点靠运气」的来源。
    */
   representatives() {
     const rows = this.source
-      .prepare(`SELECT f.person_id, f.vector FROM faceindex.faces f ${VALID} ORDER BY f.id`)
+      .prepare(`SELECT f.person_id, f.vector FROM faceindex.faces f ${VALID} ${FACE_ORDER}`)
       .all(VERSION);
     const map = new Map();
     for (const row of rows) {
@@ -385,7 +431,7 @@ class FaceStore {
     const rows = this.db
       .prepare(
         `SELECT f.id, f.photo_id, f.person_id, f.vector FROM faces f
-      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ORDER BY f.id`,
+      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ${FACE_ORDER}`,
       )
       .all(VERSION);
     if (!rows.length) return { people: 0, faces: 0, regrouped: 0, created: 0, dissolved: 0 };
@@ -412,8 +458,10 @@ class FaceStore {
       const update = this.db.prepare('UPDATE faces SET person_id = ? WHERE id = ?');
       const insertPerson = this.db.prepare('INSERT INTO people DEFAULT VALUES');
       const resolved = new Map();
-      // 写入顺序仍按 `faces.id` 升序（= 当初插入的顺序），所以「同阈值重跑」的结果
-      // 与「删库重建索引」一致，只是省掉了模型推理。
+      // 写入顺序按 `FACE_ORDER`（`photo_id, id`），**与「当初插入的顺序」无关** ——
+      // 所以「同阈值重跑」的结果与「删库重建索引」一致，而且与索引的扫描方向也无关，
+      // 只是省掉了模型推理。（旧注释把这个等式挂在「写入按 faces.id 升序」上，
+      // 那只在「从未重扫过任何照片」时成立 —— 重扫一张就会把它挪到节点序末尾。）
       for (let i = 0; i < rows.length; i++) {
         const label = labels[i];
         let target;
@@ -460,7 +508,7 @@ class FaceStore {
     const rows = this.db
       .prepare(
         `SELECT f.id, f.photo_id, f.person_id, s.file_path FROM faces f
-      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ORDER BY f.id`,
+      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ${FACE_ORDER}`,
       )
       .all(VERSION);
     if (!rows.length) return { people: 0, faces: 0, regrouped: 0, created: 0, dissolved: 0 };
@@ -596,7 +644,7 @@ class FaceStore {
     const rows = this.db
       .prepare(
         `SELECT f.id, f.photo_id, f.person_id, f.vector, s.file_path FROM faces f
-      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ORDER BY f.id`,
+      JOIN scans s ON s.photo_id = f.photo_id AND s.version = ? ${FACE_ORDER}`,
       )
       .all(VERSION);
     if (!rows.length) return { people: 0, faces: 0, regrouped: 0, created: 0, dissolved: 0 };

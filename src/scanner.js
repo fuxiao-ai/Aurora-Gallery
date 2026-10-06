@@ -2,7 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const crypto = require('crypto');
-const exifReader = require('exif-reader');
+// 拍摄参数的解析与 `main.js#processOne` **共用同一份实现**（见 exif-meta.js 头注释）：
+// 只翻 exif.Photo 会让品牌/型号/定位永远取空。
+const { extractExifFields } = require('./main/exif-meta');
 const logger = require('./main/logger');
 
 var IMAGE_EXTENSIONS = new Set([
@@ -177,12 +179,15 @@ function resolveScanRuntimeProfile(scanOpts) {
 function Scanner(db, deps) {
   var getThumb;
   var getScanOpt;
+  var onPhase = null;
   if (typeof deps === 'function') {
     getThumb = deps;
   } else if (deps && typeof deps === 'object') {
     getThumb = deps.getThumbOptions;
     getScanOpt = deps.getScanOptions;
+    onPhase = typeof deps.onPhase === 'function' ? deps.onPhase : null;
   }
+  this.onPhase = onPhase;
   this.db = db;
   this.getThumbOptions =
     typeof getThumb === 'function'
@@ -202,10 +207,32 @@ function Scanner(db, deps) {
   this.progress = { current: 0, total: 0, status: 'idle', currentFile: '' };
   this.lastScanSummary = { cleanupDeleted: 0 };
   this.insertStmt = null;
+  /**
+   * 「同路径但文件内容变了」的更新语句（`database.js#getUpdateFileFactsStmt`）。
+   * 为什么必须有它：`insertStmt` 是 `INSERT OR IGNORE`，路径已存在时新值全被丢弃 ⇒ 候选永不收敛。
+   */
+  this.updateFileFactsStmt = null;
   this.pauseWaiter = null;
   this._scanStartedAtMs = 0;
   this._scanStats = null;
 }
+
+/**
+ * 自报「即将进入哪个长阶段」。
+ *
+ * 用途见 `scan-worker.js` 里 `onPhase` 的注释：worker 里它是一条会重置看门狗安静计时的
+ * 真实消息，同时也是超时报错文案里「最后阶段」的来源。**它不能替代真正的让出** ——
+ * 同步 SQL 占住线程时连这条消息都发不出去，所以每个长阶段还必须自己按批 `await`。
+ */
+Scanner.prototype._reportPhase = function (name) {
+  this.progress.phase = name;
+  if (!this.onPhase) return;
+  try {
+    this.onPhase(name);
+  } catch (e) {
+    void e;
+  }
+};
 
 Scanner.prototype.getProgress = function () {
   var out = Object.assign({}, this.progress);
@@ -269,6 +296,8 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     scanned: 0,
     skippedUnchanged: 0,
     inserted: 0,
+    /** 同路径、但文件已变更 ⇒ 走 UPDATE 的行数（新值已写入、派生列已失效） */
+    changed: 0,
     relocated: 0,
     ignored: 0,
     failed: 0,
@@ -295,6 +324,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
   }
 
   try {
+    this._reportPhase('enumerate');
     this.progress.status = 'enumerating';
     this._enumerateYieldCounter = 0;
     var files = [];
@@ -331,6 +361,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
       throw err;
     }
     perfMark('enumerate-files');
+    this._reportPhase('partition');
 
     if (!scanOpts.includeRaw) {
       var kept = [];
@@ -370,6 +401,15 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     perfMark('load-existing-map');
 
     this.insertStmt = this.db.getInsertStmt();
+    /**
+     * 变更文件的更新语句。🔴 必须在 `beginTransaction()` **之前**取：它内部要按列存在性
+     * 裁剪 SET 子句（老库上 `dhash*` / `file_hash` 是延迟迁移出来的列），
+     * 那会查 `PRAGMA table_info`，放进写事务里跑没有意义。
+     */
+    this.updateFileFactsStmt =
+      this.db && typeof this.db.getUpdateFileFactsStmt === 'function'
+        ? this.db.getUpdateFileFactsStmt()
+        : null;
     this.db.beginTransaction();
     this._txBatchInserts = 0;
 
@@ -427,6 +467,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     this.progress.total = normalFiles.length + rawFiles.length;
     this.progress.current = 0;
     this.progress.currentFile = '';
+    this._reportPhase('scan-files');
 
     await this.processFileGroupInChunks(
       normalFiles,
@@ -455,16 +496,22 @@ Scanner.prototype.scanFolder = async function (rootPath) {
 
     this._flushPendingScanBatchTransaction();
     // 关键：增量扫描后同步删除该根目录下已不存在的旧记录（含缩略图）
+    // 🔴 必须 await：`cleanupStalePhotosForRoot` 改成按 id 分批 + 批间让出后返回 Promise，
+    // 谁漏掉 await，谁就把「清理失效记录」变成**永不生效**（不报错、不写日志，
+    // 只是根目录里被删掉的文件永远留在库里）—— 回归里钉了这两处 await。
+    this._reportPhase('cleanup-stale');
     var cleanupResult = { deleted: 0, markedMissing: 0 };
     if (this.db && typeof this.db.cleanupStalePhotosForRoot === 'function') {
-      cleanupResult = this.db.cleanupStalePhotosForRoot(rootId, scannedPathSet) || cleanupResult;
+      cleanupResult = (await this.db.cleanupStalePhotosForRoot(rootId, scannedPathSet)) || cleanupResult;
     }
     this.lastScanSummary.cleanupDeleted =
       Number(cleanupResult.markedMissing) || Number(cleanupResult.deleted) || 0;
     this.db.commit();
+    this._reportPhase('refresh-stats');
     if (this.db && typeof this.db.refreshRootFolderStatsCacheForRoot === 'function') {
       try {
-        this.db.refreshRootFolderStatsCacheForRoot(rootId);
+        // 🔴 同样必须 await（详见 database.js 该方法的注释）
+        await this.db.refreshRootFolderStatsCacheForRoot(rootId);
       } catch (eInv) {
         void eInv;
       }
@@ -486,6 +533,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
     this.isScanning = false;
     this.paused = false;
     this.insertStmt = null;
+    this.updateFileFactsStmt = null;
     this.pauseWaiter = null;
   }
 };
@@ -513,6 +561,7 @@ Scanner.prototype.processFileGroup = async function (files, rootId, statCache, w
       var outcome = await self.processFile(filePath, rootId, preStat);
       if (self._scanStats) {
         if (outcome === 'inserted') self._scanStats.inserted++;
+        else if (outcome === 'updated') self._scanStats.changed++;
         else if (outcome === 'relocated') self._scanStats.relocated++;
         else if (outcome === 'ignored') self._scanStats.ignored++;
         else if (outcome === 'failed') self._scanStats.failed++;
@@ -695,40 +744,23 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
         if (metadata.width) width = metadata.width;
         if (metadata.height) height = metadata.height;
 
-        // Parse EXIF from raw Buffer using exif-reader
-        if (metadata.exif) {
-          try {
-            var exif = exifReader(metadata.exif);
-            var tags = exif.Photo || exif.tags || exif;
-
-            if (tags.DateTimeOriginal) {
-              dateTaken = this.parseExifDate(String(tags.DateTimeOriginal));
-            } else if (tags.DateTimeDigitized) {
-              dateTaken = this.parseExifDate(String(tags.DateTimeDigitized));
-            }
-
-            cameraMake = tags.Make || null;
-            cameraModel = tags.Model || null;
-            lensModel = tags.LensModel || null;
-            focalLength = tags.FocalLength || null;
-            aperture = tags.FNumber || tags.ApertureValue || null;
-            isoSpeed = tags.ISOSpeedRatings || null;
-
-            if (tags.ExposureTime) {
-              var exp = tags.ExposureTime;
-              if (typeof exp === 'number') {
-                shutterSpeed = exp >= 1 ? String(exp) + 's' : '1/' + Math.round(1 / exp);
-              } else {
-                shutterSpeed = String(exp);
-              }
-            }
-
-            if (tags.GPSLatitude && tags.GPSLongitude) {
-              gpsLatitude = tags.GPSLatitude;
-              gpsLongitude = tags.GPSLongitude;
-            }
-          } catch (e) {}
-        }
+        // 拍摄参数：走共用实现（`src/main/exif-meta.js`）。
+        // 🔴 旧写法只做 `exif.Photo || exif.tags || exif` 再取 `tags.Make` —— 而 `Make`/`Model`
+        //    住在 IFD0（`Image`）、GPS 住在 `GPSInfo`，所以品牌/型号/定位**永远是空的**；
+        //    `DateTimeOriginal` 被 exif-reader 转成 `Date` 后又被 `String()` 拼成人类可读串，
+        //    直接落库是垃圾；GPS 的 `[度,分,秒]` 数组更是绑不进 SQLite（抛错后被 catch 吞掉，
+        //    整段 EXIF 一起丢）。这些都在共用实现里归一化。
+        var exifFields = extractExifFields(metadata);
+        dateTaken = exifFields.dateTaken;
+        cameraMake = exifFields.cameraMake;
+        cameraModel = exifFields.cameraModel;
+        lensModel = exifFields.lensModel;
+        focalLength = exifFields.focalLength;
+        aperture = exifFields.aperture;
+        isoSpeed = exifFields.isoSpeed;
+        shutterSpeed = exifFields.shutterSpeed;
+        gpsLatitude = exifFields.gpsLatitude;
+        gpsLongitude = exifFields.gpsLongitude;
 
         try {
           var topts = this.getThumbOptions();
@@ -804,7 +836,9 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
       }
     }
 
-    var ir = this.insertStmt.run(
+    // 🔴 参数只构造一次，INSERT 与 UPDATE 共用同一份顺序（`database.js#SCAN_WRITE_COLUMNS`）。
+    // 分成两处各写一遍参数，迟早会串列，而串列是静默的（不报错、不抛异常，只是数据错位）。
+    var writeArgs = [
       rootId,
       path.dirname(filePath),
       fileName,
@@ -829,13 +863,32 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
       shutterSpeed,
       gpsLatitude,
       gpsLongitude,
-    );
+    ];
+    var ir = this.insertStmt.run.apply(this.insertStmt, writeArgs);
     this._maybeCommitScanBatch();
-    return ir && ir.changes > 0 ? 'inserted' : 'ignored';
+    if (ir && ir.changes > 0) return 'inserted';
+
+    // `changes === 0` ⇒ 这个 file_path 库里已有一行，而 partition 阶段只把
+    // 「mtime 或 size 与库内不一致」的文件放进本阶段 ⇒ **它就是被变更过的文件**。
+    // 🔴 必须把新值写回去（并在同一句里失效派生列），否则下一轮还会判它变了 —— 候选永不收敛，
+    // 就地替换过的照片永远留着旧缩略图与旧指纹。
+    // ⚠️ 测试替身 / 老库上取不到该语句时保持旧语义（返回 'ignored'），不要抛错中断整次扫描。
+    if (this.updateFileFactsStmt) {
+      var updateArgs = writeArgs.slice();
+      // 去掉 file_path（下标 3，见 SCAN_WRITE_COLUMNS 注释）：它在 SET 里不出现，只作 WHERE
+      updateArgs.splice(3, 1);
+      updateArgs.push(filePath);
+      var ur = this.updateFileFactsStmt.run.apply(this.updateFileFactsStmt, updateArgs);
+      this._maybeCommitScanBatch();
+      if (ur && ur.changes > 0) return 'updated';
+    }
+    return 'ignored';
   } catch (err) {
     // 跳过外键约束失败等数据库错误，不中断扫描
     if (err.message && err.message.indexOf('FOREIGN KEY') !== -1) {
-      console.error('SKIP (FK): ' + filePath);
+      // ⚠️ 必须带上原始 message：只打 'SKIP (FK)' 时根本看不出是哪条约束、哪个值不对，
+      // 排查时只能靠猜（血泪）。
+      console.error('SKIP (FK): ' + filePath + ' | ' + err.message);
     } else {
       console.error('File error: ' + filePath, err.message);
     }
@@ -863,9 +916,7 @@ Scanner.prototype.computeFileSha1 = function (filePath) {
   }
 };
 
-Scanner.prototype.parseExifDate = function (dateStr) {
-  if (!dateStr) return null;
-  return dateStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
-};
+// `parseExifDate` 已并入 `src/main/exif-meta.js#formatExifDate`（零调用点的方法不许留 ——
+// 留着就是「旧方向的活标本」，后来人照它写就会拿到未归一化的日期串）。
 
 module.exports = Scanner;

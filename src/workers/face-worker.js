@@ -57,7 +57,13 @@ async function execute(operation, args = {}) {
     if (operation === 'move') return store.move(args.faceId, args.target);
     // 重新归组：用已落库的特征重跑分组，不重跑模型。归组方式与阈值都取当前设置
     // （按文件夹归组时阈值不参与，但一起传过去省得判断）。
-    if (operation === 'regroup') return store.regroup(settings.read(root));
+    //
+    // 🔴 返回值必须显式带上 `clustered: true`：手动归组正是对 `index` 那次「收尾全局聚类
+    //    被 `AUTO_REGROUP_LIMIT` 跳过」的补偿，界面据此撤掉「当前分组只是增量近似」的提示
+    //    （`semantic-search.js` 的结果白名单会把它写进 `status()`）。少了这一句，用户点完
+    //    按钮提示仍然挂着，读起来就是「操作没生效」。
+    if (operation === 'regroup')
+      return { ...store.regroup(settings.read(root)), clustered: true };
     if (operation !== 'index') throw new Error('AI_BAD_OPERATION');
     const preferences = settings.read(root);
     progress({ phase: 'loading' });
@@ -68,7 +74,9 @@ async function execute(operation, args = {}) {
     encoder = await model.load(models);
     check();
     const representatives = store.representatives();
-    let after = 0,
+    // 倒序游标：起手「域内最大 id + 1」，之后每批续接「本批最后一行的 id」（倒序下那是**最小** id）。
+    // ⚠️ 起手写成 0 会让 `p.id < 0` 恒空 —— 任务瞬间「完成」却一张没扫、一条日志都不报。
+    let beforeId = store.maxPhotoId() + 1,
       processed = 0,
       failed = 0,
       skipped = 0,
@@ -87,11 +95,11 @@ async function execute(operation, args = {}) {
       });
     while (true) {
       check();
-      const rows = store.batch(after);
+      const rows = store.batch(beforeId);
       if (!rows.length) break;
       for (const photo of rows) {
         check();
-        after = photo.id;
+        beforeId = photo.id;
         if (!imageTypes.has(path.extname(photo.file_name).slice(1).toLowerCase())) {
           skipped++;
           report(photo);

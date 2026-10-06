@@ -77,6 +77,20 @@ parentPort.on('message', function (msg) {
     getScanOptions: function () {
       return scanOpts;
     },
+    /**
+     * 阶段自报（scanner 在进入每个长阶段前调一次）。
+     *
+     * 两条用途，缺一不可：
+     * ① 它是一条**真实消息**，主进程侧的心跳看门狗据此重置安静计时 —— 于是看门狗量的是
+     *    「每个阶段各自多久」而不是「整段扫描多久」；
+     * ② 万一还是被终止，错误信息里能说出卡在哪一步（`main.js#SCAN_PHASE_LABELS`）。
+     * 注意它**不能**替代 scanner 侧的按批让出：线程真被同步代码占住时这里也发不出去。
+     */
+    onPhase: function (name) {
+      try {
+        parentPort.postMessage({ type: 'phase', name: String(name) });
+      } catch (e) {}
+    },
   });
 
   var iv = setInterval(function () {

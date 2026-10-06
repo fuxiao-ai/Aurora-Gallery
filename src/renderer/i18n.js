@@ -55,8 +55,28 @@
       'task.scanning': '正在扫描...',
       'task.pause': '暂停',
       'task.stop': '停止',
-      'task.thumbTitle': '缩略图补全',
+      'task.thumbTitle': '缩略图与图片信息补全',
       'task.thumbStop': '停止补全',
+      // 后台任务面板（scan-flow.js）专用的主行 / 副行文案。
+      // ⚠️ 与设置页那条路径（settings.task.thumbProgress*）**刻意分开**：
+      //    面板的信息量更大（多出视觉指纹 / 查重指纹），强行共用一套模板只会互相牵制。
+      //    但「口径」必须一致 —— 两边都是「已处理 N / 约 M（x%）」。
+      'task.thumbCount': '{done} / 约 {total}（{pct}%）',
+      'task.thumbCountCounting': '已处理 {done} 张，正在估计待补数量…',
+      'task.thumbCountNoTotal': '已处理 {done} 张（待补总数估计失败，暂不显示百分比与剩余时间）',
+      'task.thumbDetailThumbs': '预览图 {n}',
+      // ⚠️ 2026-10-06 由「待补」改「还缺」：这个数从**任务起始快照**改成了**实时剩余**，
+      //    语义变了文案必须跟着变 —— 否则「预览图 N」在涨、「待补 M」不动，读起来自相矛盾。
+      'task.thumbDetailPending': '还缺 {n}',
+      'task.thumbDetailExif': '拍摄信息 +{n}',
+      'task.thumbDetailDhash': '视觉指纹 +{n}',
+      'task.thumbDetailHash': '查重指纹 +{n}',
+      'task.thumbDetailFailed': '失败 {n}',
+      // 预计剩余时间：四个面板（扫描 / 缩略图 / 无效清理 / 查重）共用 scan-flow.js#formatEtaLine
+      'task.etaPrefix': '预计剩余约 {parts}',
+      'task.etaDays': '{n} 天',
+      'task.etaHours': '{n} 小时',
+      'task.etaMinutes': '{n} 分',
       'task.invalidCleanup': '清理无效文件记录',
       'task.optimizeDb': '正在优化数据库',
       'task.dupTitle': '查找重复照片',
@@ -165,12 +185,18 @@
       'settings.lang.en': 'English',
       'settings.autoScan': '启动时自动扫描',
       'settings.autoScanDesc': '打开应用后自动重新扫描已添加的目录，把新增或变动的照片补进索引',
-      'settings.autoThumb': '启动时自动补全缩略图与视觉指纹',
+      'settings.autoThumb': '启动时自动补全缩略图、视觉指纹与拍摄信息',
       'settings.autoThumbDesc':
-        '在后台为缺少预览图或缺少视觉指纹的照片补齐数据，闲下来才会跑',
+        '在后台为缺少预览图、视觉指纹或拍摄参数（相机 / 光圈 / 快门 / ISO / 定位）的照片补齐数据，闲下来才会跑',
       'settings.autoDup': '启动后自动查找重复照片',
       'settings.autoDupDesc':
         '在后台比对还没处理过的照片。若同时开启了自动扫描，会等扫描结束后再开始。',
+      'settings.autoSemantic': '启动后自动建搜图索引',
+      'settings.autoSemanticDesc':
+        '把还没索引的照片交给搜图模型处理，完成后可以按画面内容搜图。首次会跑很久，期间请保持应用开着。',
+      'settings.autoFace': '启动后自动建人脸索引',
+      'settings.autoFaceDesc':
+        '识别照片里的人脸并自动分组，完成后「人物」页才有内容。首次会跑很久，期间请保持应用开着。',
       'settings.launchPage': '启动后先看',
       'settings.launchPageDesc': '打开应用后默认停留的位置',
       'settings.launch.welcome': '欢迎页',
@@ -487,7 +513,11 @@
       'settings.task.thumbExportFailedPaths': '导出失败路径',
       'settings.task.thumbConcurrency': '同时处理',
       'settings.task.thumbConcurrencyAria': '缩略图补全同时处理张数',
-      'settings.task.thumbConcurrencyHint': '越大越快，占用内存和磁盘读也更多',
+      // ⚠️ 文案带上「实测到顶的位置」：用户会自然地认为越大越快，而 12/16 实测无增益
+      //    （瓶颈是单张图内部的串行段，不是核数）；冷读场景 8 甚至比 4 慢
+      //    （外接盘随机读抢寻道）。详见 `main.js#createDefaultSettings()` 的实测表。
+      'settings.task.thumbConcurrencyHint':
+        '越大越快；实测 4~8 之间到顶，再大只多占内存（冷门硬盘上反而更慢）',
       'settings.task.dupHash': '重复照片比对',
       'settings.task.dupHashDesc':
         '逐张比对照片内容，找出完全相同的重复项。只处理还没比对过、并且文件仍在电脑上的照片。',
@@ -542,6 +572,20 @@
       'settings.folderRescan': '重新扫描',
       'settings.folderRescanTitle': '子文件夹移动、重命名或大量增删照片后，请重新扫描以同步索引',
       'settings.folderRemove': '移除',
+      // 面板级动作：一次重扫**全部**根目录（入口在「媒体库」面板头部，与「添加目录」并排）。
+      // 语义与单目录那枚「重新扫描」完全一致，只是把 N 个目录一次性排上、串行跑完。
+      'settings.rescanAll': '重新扫描全部',
+      'settings.rescanAllTitle': '依次重新扫描全部根目录；未变动的文件会跳过，可中途停止',
+      'settings.rescanAllBusy': '正在重新扫描…',
+      'settings.rescanAllPreparing': '正在准备重新扫描全部目录...',
+      'settings.rescanAllConfirm':
+        '将依次重新遍历全部根目录，仅更新有变动的文件。\n' +
+        '未变化记录会保留；本次未扫描到的记录会标记为失效并在界面隐藏（不会立刻删除）。\n\n' +
+        '逐个目录串行执行，点「停止」会连同还没开始的目录一起取消。\n\n' +
+        '确定继续？',
+      'settings.rescanAllEmpty': '还没有添加任何目录，先用「添加目录」选一个吧。',
+      'settings.rescanAllFail': '重新扫描失败: {error}',
+      'settings.rescanAllPartialFail': '{failed}/{total} 个目录重新扫描失败：{error}',
       'settings.network.statusNotReady': '未就绪',
       'settings.network.urlWhenOff': '未开启',
       'settings.network.readError': '读取失败',
@@ -565,8 +609,14 @@
         '当前生效：{gb}GB / {entries} 目录（磁盘上限 0GB 表示不限）',
       'settings.task.thumbEtaPrefix': '，',
       'settings.task.thumbProgressRunning':
-        '补全中 {done}/{total}（{pct}%），成功 {success}，失败 {failed}{eta}',
-      'settings.task.thumbProgressDone': '{doneLabel}：共 {total}，成功 {success}，失败 {failed}',
+        '补全中：已处理 {done} / 约 {total}（{pct}%），预览图 {thumbs} 张，拍摄信息 {exifFilled} 张，失败 {failed}{eta}',
+      'settings.task.thumbProgressCounting': '补全中：已处理 {done} 张，正在估计待补数量…',
+      'settings.task.thumbProgressNoTotal':
+        '补全中：已处理 {done} 张（待补总数估计失败，暂不显示百分比与剩余时间）',
+      'settings.task.thumbProgressDone':
+        '{doneLabel}：已处理 {done} 张（共约 {total}），预览图 {thumbs} 张，失败 {failed}',
+      'settings.task.thumbProgressDoneNoTotal':
+        '{doneLabel}：已处理 {done} 张，预览图 {thumbs} 张，失败 {failed}',
       'settings.task.thumbStopped': '已停止',
       'settings.task.thumbCompleted': '已完成',
       'settings.task.thumbReadError': '补全状态读取失败',
@@ -693,8 +743,22 @@
       'task.scanning': 'Scanning…',
       'task.pause': 'Pause',
       'task.stop': 'Stop',
-      'task.thumbTitle': 'Thumbnail backfill',
+      'task.thumbTitle': 'Thumbnails & photo info',
       'task.thumbStop': 'Stop backfill',
+      'task.thumbCount': '{done} / ~{total} ({pct}%)',
+      'task.thumbCountCounting': 'Processed {done}, estimating how many are pending…',
+      'task.thumbCountNoTotal':
+        'Processed {done} (could not estimate the pending total, so no percentage or ETA)',
+      'task.thumbDetailThumbs': 'Thumbnails {n}',
+      'task.thumbDetailPending': 'Missing {n}',
+      'task.thumbDetailExif': 'Photo info +{n}',
+      'task.thumbDetailDhash': 'Visual hash +{n}',
+      'task.thumbDetailHash': 'Dup hash +{n}',
+      'task.thumbDetailFailed': 'Failed {n}',
+      'task.etaPrefix': 'About {parts} left',
+      'task.etaDays': '{n}d',
+      'task.etaHours': '{n}h',
+      'task.etaMinutes': '{n}m',
       'task.invalidCleanup': 'Cleaning invalid records',
       'task.optimizeDb': 'Optimizing database',
       'task.dupTitle': 'Finding duplicates',
@@ -802,12 +866,18 @@
       'settings.autoScan': 'Scan on startup',
       'settings.autoScanDesc':
         'Rescan your library folders after launch and index new or changed photos.',
-      'settings.autoThumb': 'Backfill thumbnails & dHash on startup',
+      'settings.autoThumb': 'Backfill thumbnails, dHash & camera info on startup',
       'settings.autoThumbDesc':
-        'Generate thumbnails and visual fingerprints for photos that are missing them. Runs in the background when idle.',
+        'Generate thumbnails, visual fingerprints and camera info (make, aperture, shutter, ISO, GPS) for photos that are missing them. Runs in the background when idle.',
       'settings.autoDup': 'Find duplicates on startup',
       'settings.autoDupDesc':
         'Compare photos in the background. If “Scan on startup” is also on, this waits until scanning finishes.',
+      'settings.autoSemantic': 'Build search index on startup',
+      'settings.autoSemanticDesc':
+        'Index photos not yet processed for content-based search. The first run takes a long time; keep the app open while it works.',
+      'settings.autoFace': 'Build face index on startup',
+      'settings.autoFaceDesc':
+        'Detect and group faces so the People page has content. The first run takes a long time; keep the app open while it works.',
       'settings.launchPage': 'Open to',
       'settings.launchPageDesc': 'Where the app lands when you open it',
       'settings.launch.welcome': 'Welcome',
@@ -1114,7 +1184,8 @@
       'settings.task.thumbExportFailedPaths': 'Export failed paths',
       'settings.task.thumbConcurrency': 'Parallel jobs',
       'settings.task.thumbConcurrencyAria': 'Thumbnail backfill concurrency',
-      'settings.task.thumbConcurrencyHint': 'Higher is faster but uses more RAM and disk I/O',
+      'settings.task.thumbConcurrencyHint':
+        'Higher is faster, but it levels off between 4 and 8 and only uses more RAM beyond that (slower on slow disks)',
       'settings.task.dupHash': 'Duplicate detection',
       'settings.task.dupHashDesc':
         'Compare photo contents to find exact duplicates. Only photos not compared yet and still on disk are processed.',
@@ -1170,6 +1241,19 @@
       'settings.folderRescanTitle':
         'Rescan after moving/renaming subfolders or adding/removing many photos.',
       'settings.folderRemove': 'Remove',
+      'settings.rescanAll': 'Rescan all',
+      'settings.rescanAllTitle':
+        'Rescan every library folder in turn; unchanged files are skipped, and you can stop midway.',
+      'settings.rescanAllBusy': 'Rescanning…',
+      'settings.rescanAllPreparing': 'Preparing to rescan all folders...',
+      'settings.rescanAllConfirm':
+        'Every library folder will be walked in turn; only changed files are updated.\n' +
+        'Unchanged records are kept; records not found in this pass are marked stale and hidden (not deleted).\n\n' +
+        'Folders are scanned one after another — Stop cancels the folders that have not started yet.\n\n' +
+        'Continue?',
+      'settings.rescanAllEmpty': 'No library folders yet — add one with “Add folder” first.',
+      'settings.rescanAllFail': 'Rescan failed: {error}',
+      'settings.rescanAllPartialFail': '{failed}/{total} folders failed to rescan: {error}',
       'settings.network.statusNotReady': 'Not ready',
       'settings.network.urlWhenOff': 'Off',
       'settings.network.readError': 'Read failed',
@@ -1194,9 +1278,15 @@
         'Current: {gb} GB / {entries} folders (0 GB = no disk cap)',
       'settings.task.thumbEtaPrefix': ', ',
       'settings.task.thumbProgressRunning':
-        'Backfilling {done}/{total} ({pct}%), ok {success}, failed {failed}{eta}',
+        'Backfilling: {done} / ~{total} ({pct}%) processed, {thumbs} preview image(s), {exifFilled} with capture info, failed {failed}{eta}',
+      'settings.task.thumbProgressCounting':
+        'Backfilling: {done} processed, estimating the remaining total…',
+      'settings.task.thumbProgressNoTotal':
+        'Backfilling: {done} processed (could not estimate the total, so no percentage or ETA)',
       'settings.task.thumbProgressDone':
-        '{doneLabel}: total {total}, ok {success}, failed {failed}',
+        '{doneLabel}: {done} processed (of ~{total}), {thumbs} preview image(s), failed {failed}',
+      'settings.task.thumbProgressDoneNoTotal':
+        '{doneLabel}: {done} processed, {thumbs} preview image(s), failed {failed}',
       'settings.task.thumbStopped': 'Stopped',
       'settings.task.thumbCompleted': 'Done',
       'settings.task.thumbReadError': 'Could not read backfill status',

@@ -356,24 +356,51 @@ function testDbWriteWiringContracts() {
     /settleScanTask\(task,/,
     '扫描的每个出口都要走 settleScanTask（先摘去重表再 resolve），否则会留下永久占位的死任务',
   );
-  for (const [signature, peer, queueName] of [
-    ['async function runThumbnailBackfill(limit) {', 'duplicateHashTask\\.running', 'thumbnail-backfill'],
-    ['async function runDuplicateHashDetection() {', 'thumbnailBackfill\\.running', 'dup-hash'],
+  // 🔴 两个长任务（缩略图补全 / 重复比对）的准入判据**必须住在一个共用函数里**，
+  //    IPC 入口与任务内部都调它，不许各写一份。
+  //    理由（2026-10-06 用户报「补齐缩略图点击之后不开始」）：两边各写一份就会漂移 ——
+  //    `start-thumbnail-backfill` 漏了 `duplicateHashTask.running`、而任务内部有这一条，
+  //    于是「重复比对正跑着」时点开始补全：IPC 三道闸全过 ⇒ 返回 `{ success: true }`、
+  //    前端不弹任何提示，任务却立刻 `return { started: false }`（返回值被丢弃）⇒
+  //    界面刷新后显示「未运行」。**用户看到的就是「点下去什么都没发生」。**
+  //    所以这里钉两件事：①任务内部走共用判据 ②判据本体挡住了另一个长任务。
+  for (const [signature, judgeSignature, peer, queueName] of [
+    [
+      'async function runThumbnailBackfill(limit) {',
+      'function thumbnailBackfillBlockReason() {',
+      'duplicateHashTask\\.running',
+      'thumbnail-backfill',
+    ],
+    [
+      'async function runDuplicateHashDetection() {',
+      'function duplicateHashBlockReason() {',
+      'thumbnailBackfill\\.running',
+      'dup-hash',
+    ],
   ]) {
     const body = sliceFunctionBody(mainCode, signature);
     assert.ok(body.length > 0, '找不到 ' + signature + ' —— 函数签名变了，请同步本回归');
-    const gateEnd = body.indexOf("reason: 'maintenance'");
-    const gate = gateEnd > 0 ? body.slice(0, gateEnd) : body;
+
+    const judgeName = judgeSignature.slice('function '.length, judgeSignature.indexOf('('));
     assert.match(
-      gate,
+      body,
+      new RegExp(judgeName + '\\(\\)'),
+      signature + ' 的准入必须走共用判据 ' + judgeName + '()（内联回任务体 = 下次漂移的起点）',
+    );
+
+    const judgeBody = sliceFunctionBody(mainCode, judgeSignature);
+    assert.ok(judgeBody.length > 0, '找不到判据函数 ' + judgeSignature + ' —— 签名变了，请同步本回归');
+    assert.match(
+      judgeBody,
       new RegExp(peer),
-      signature + ' 的准入必须挡住另一个长任务（两个长任务不并行抢磁盘）',
+      judgeSignature + ' 必须挡住另一个长任务（两个长任务不并行抢磁盘）',
     );
     assert.equal(
-      /dbWriteQueue\.isBusy\(\)/.test(gate),
+      /dbWriteQueue\.isBusy\(\)/.test(judgeBody),
       false,
-      signature + ' 的准入判据不能用 dbWriteQueue.isBusy() —— 批次化后它会抖，任务会被静默跳过',
+      judgeSignature + ' 不能用 dbWriteQueue.isBusy() —— 批次化后它会抖，任务会被静默跳过',
     );
+
     assert.match(
       body,
       // `\s*`：T3 加了 `{ priority: … }` 第三参后 `.run(` 与任务名之间会换行
@@ -500,6 +527,138 @@ function testInvalidCleanupWiring() {
     /'maintenance-cleanup-missing-files'[\s\S]{0,600}?if \(maintenanceBusy\(\)\)\s*\{\s*return \{ success: false, error: maintenanceBusyMessage\(\) \}/,
     '手动清理要先查 maintenanceBusy()，否则能在启动期迁移正跑时开枪',
   );
+
+  // 🔴 方向契约（2026-10-05）：清理的候选**统一倒序**（新记录优先），游标是排他上界 `beforeId`。
+  //    旧代码只有「无游标」那一支是 DESC、带游标那一支却是 `id > ? ORDER BY id ASC` ——
+  //    同一个任务两种方向混用，第二批还会与第一批重叠几百行。
+  //    下面钉的是**真实 SQL 行**，不是注释里的字面量（改动说明里就引用了旧写法，用整文件正则必然误判）。
+  const descPick =
+    /prepare\('SELECT id, file_path FROM photos WHERE id < \? ORDER BY id DESC LIMIT \?'\)/g;
+  assert.equal(
+    (dbSource.match(descPick) || []).length,
+    2,
+    'cleanupMissingFiles / cleanupMissingFilesYielding 的游标批次都必须倒序（排他上界 id < ?）',
+  );
+  assert.match(
+    mainSource,
+    /beforeId: startupInvalidCleanupTask\.beforeId/,
+    '启动期清理必须把倒序游标传下去（beforeId），不能再有升序 afterId',
+  );
+  assert.match(mainSource, /beforeId: beforeId,/, '用户手动清理同样走倒序游标');
+
+  // ---- 打点收敛 + 避让范围（2026-10-06）-------------------------------------
+  // 背景：缩略图补全在跑时，本任务的让路分支**每 5 秒**走到一次。过去每次都打一条 stage，
+  // 而 `startup-metrics` 的 stage 数组有上限（400 条）—— 同族的 `auto-dup-hash.defer`
+  // 正是为此才加的 `autoDuplicateHashDeferCount`（见 `startup-metrics.js` 的 MAX_STAGES 注释）。
+  // 下面钉的是「同一个病不许犯第二次」，以及避让范围本身。
+  const cleanupBody = stripComments(
+    sliceFunctionBody(mainSource, 'function scheduleStartupInvalidCleanup() {'),
+  );
+  // 🔴 前置哨兵：函数体取空会让下面所有「不许含 X」的断言**静默假绿**。
+  assert.ok(
+    cleanupBody.length > 500 && cleanupBody.includes('function step()'),
+    '守护自身前置：scheduleStartupInvalidCleanup 的函数体必须取到（取空 ⇒ 下面的反向断言全是假绿）',
+  );
+  assert.match(
+    cleanupBody,
+    /invalidCleanupDeferCount \+= 1;[\s\S]{0,240}?if \(invalidCleanupDeferCount === 1\) \{[\s\S]{0,160}?startupStageLog\('invalid-cleanup\.defer'/,
+    '让路分支必须计数、且**只打第一条** —— 每 5 秒一条会吃光 startup-metrics 的 stage 额度',
+  );
+  assert.equal(
+    (cleanupBody.match(/startupStageLog\('invalid-cleanup\.defer'/g) || []).length,
+    1,
+    'invalid-cleanup.defer 只许有这一处打点：再加一处就等于把刚收敛好的口子又重新打开',
+  );
+  [
+    'isFolderScanRunning()',
+    'interactionPreempt.active()',
+    'previewPlaybackActive',
+  ].forEach((k) => {
+    assert.ok(
+      cleanupBody.includes(k),
+      '让路条件必须保留「交互 / 扫描」这一类避让（这正是本函数最初的避让理由）：' + k,
+    );
+  });
+  ['thumbnailBackfill.running', 'duplicateHashTask.running'].forEach((k) => {
+    assert.equal(
+      cleanupBody.includes(k),
+      false,
+      '**不许**再避让 ' +
+        k +
+        '：避让发生在入队之前 ⇒ PRIORITY.REPAIR(=1) 对它们永远用不上（自相矛盾）；' +
+        '而本任务只做 existsSync，与补全抢的不是同一类 I/O（实测每批 400 行仅 40~385 ms）',
+    );
+  });
+  assert.match(
+    cleanupBody,
+    /if \(invalidCleanupDeferCount > 0 && !invalidCleanupStartLogged\) \{/,
+    '「真正开始」那条打点必须有闸门：否则每批都打一次，等于换个地方刷屏',
+  );
+  assert.match(
+    cleanupBody,
+    /'invalid-cleanup\.finish',[\s\S]{0,260}?deferredTimes=/,
+    'finish 必须带上被推迟次数，否则「等了多久才真正跑起来」事后无从回答',
+  );
+}
+
+/**
+ * 查重指纹的候选顺序契约（2026-10-05，与缩略图补全同一条策略）：**主键倒序、新导入的先算指纹**。
+ *
+ * 这条和缩略图补全一样容易「只改一半」：查询改成 `id < ?` 而调用端还从 0 起手，等价于
+ * `id < 0` —— 恒空，任务「秒完成」却一张都没算，且不报任何错。
+ */
+function testHashScanDirection() {
+  const dbSource = readSource('src/database.js');
+  const mainSource = readSource('src/main.js');
+  const start = dbSource.indexOf('  getHashAllPhotosBefore(beforeId, batchSize) {');
+  assert.ok(start > 0, 'getHashAllPhotosBefore 必须还在（旧名 getHashAllPhotosAfter 已随倒序改造废弃）');
+  const body = dbSource.slice(start, start + 1500);
+  assert.match(body, /WHERE id < \?/, '查重候选必须是 id < ?（倒序游标的排他上界）');
+  assert.match(body, /ORDER BY id DESC/, '查重候选必须 ORDER BY id DESC（最新入库优先）');
+  assert.match(
+    mainSource,
+    /db\.getHashAllPhotosBefore\(beforeId, batchSize\)/,
+    'runDuplicateHashDetection 必须用倒序游标（只改查询不改调用端 = 静默零哈希）',
+  );
+  // 🔴 缩略图补全在 2026-10-06 改成了**两趟**（先补缺缩略图的、再补只缺元数据的），
+  //    于是它从「一条 `beforeId`」变成「`thumbCursor` + `metaCursor` **两条**」。
+  //    两趟**各自**从 MAX(id)+1 起手、各自递减是承重的：共用一条的话，第一趟起手就把游标
+  //    拉到「最大的那个缺图 id」（索引倒序扫的第一个命中），第二趟于是再也取不到它以上的行
+  //    —— 那批的元数据永远补不上，且不报错、不写日志。所以这里数的是 **3**：
+  //    查重 1 条 + 补全两趟各 1 条。
+  assert.equal(
+    (mainSource.match(/var (?:beforeId|thumbCursor|metaCursor) = db\.getMaxPhotoId\(\) \+ 1;/g) || [])
+      .length,
+    3,
+    '查重 1 条 + 补全两趟各 1 条 = 3 条游标都必须从 MAX(id) + 1 起手（少一处就会静默零补/静默跳过）',
+  );
+  // ⚠️ 下面四条断言的对象**刻意不是整个 `main.js`**（21 万字符）：`assert.match` 一失败
+  //    就会把整个被测字符串打进 diff，实测刷出 20 万字符、根本看不到是哪一处坏了
+  //    （2026-10-06 验牙时真撞过）。这里只截 `runThumbnailBackfill` 函数的头部 9000 字符 ——
+  //    两条游标声明（+3717/+3763）、两趟查询（+5043/+5113）、游标推进（+7188/+7251）全在里面。
+  const backfillStart = mainSource.indexOf('async function runThumbnailBackfill(');
+  assert.ok(backfillStart > 0, 'runThumbnailBackfill 必须还在（补全任务的唯一入口）');
+  const backfillHead = mainSource.slice(backfillStart, backfillStart + 9000);
+  assert.match(
+    backfillHead,
+    /var thumbCursor = db\.getMaxPhotoId\(\) \+ 1;/,
+    '补全**第一趟**（只补缺缩略图的）游标必须存在',
+  );
+  assert.match(
+    backfillHead,
+    /var metaCursor = db\.getMaxPhotoId\(\) \+ 1;/,
+    '补全**第二趟**（补元数据）的游标必须与第一趟分开 —— 共用一条会静默跳过中间所有行',
+  );
+  assert.match(
+    backfillHead,
+    /db\.getPhotosLackingThumbnailBefore\(thumbCursor, fetchLimit\)/,
+    '第一趟必须走专门取「缺缩略图」的查询（否则还是会被只缺 EXIF 的行堵住，预览图恒 0）',
+  );
+  assert.match(
+    backfillHead,
+    /db\.getPhotosMissingThumbnailsBefore\(metaCursor, fetchLimit\)/,
+    '第二趟必须走原来的候选查询 + 自己的游标（写成 thumbCursor = 静默跳过第一趟扫过的所有行）',
+  );
 }
 
 testAiIndexBusy();
@@ -507,6 +666,7 @@ testVacuumWorkspace();
 testVacuumSpaceShortage();
 testReclaimable();
 testFreeDiskBytes();
+testHashScanDirection();
 testWiringContracts();
 testDbWriteWiringContracts();
 testInvalidCleanupWiring();

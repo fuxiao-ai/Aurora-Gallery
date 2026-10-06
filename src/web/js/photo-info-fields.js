@@ -109,14 +109,160 @@
     return info.gps_latitude != null && info.gps_longitude != null;
   }
 
+  // ------------------------------------------------ 拍摄参数（EXIF）取值工具
+  //
+  // 🔴 这些枚举列在库里存的是**原始数值**（`photos.orientation` = 1…8、`metering_mode` = 0…255），
+  //    不是文本。存数值是刻意的：`src/main/exif-meta.js` 的采集侧不掺任何语言/展示逻辑，
+  //    文案只在**这里**一份，桌面端与网页端因此不会出现两种叫法。
+
+  /** 枚举原始值 → 本地化文案；未命中就退回原始数字（宁可显示怪值，也不要假装没有）。 */
+  function enumText(table, raw, locale) {
+    if (raw == null || raw === '') return '';
+    var hit = table[Number(raw)];
+    if (!hit) return String(raw);
+    return language(locale, hit[0], hit[1]);
+  }
+
+  /** `orientation` 的 8 个取值（决定了「这张是不是竖着拍的」） */
+  var ORIENTATIONS = {
+    1: ['正常', 'Normal'],
+    2: ['水平翻转', 'Mirrored'],
+    3: ['旋转 180°', 'Rotated 180°'],
+    4: ['垂直翻转', 'Flipped'],
+    5: ['顺时针 90° + 翻转', 'Rotated 90° CW, mirrored'],
+    6: ['逆时针 90°', 'Rotated 90° CCW'],
+    7: ['顺时针 90° + 翻转', 'Rotated 90° CW, mirrored'],
+    8: ['逆时针 90°', 'Rotated 90° CCW'],
+  };
+  var EXPOSURE_PROGRAMS = {
+    0: ['未定义', 'Not defined'],
+    1: ['手动', 'Manual'],
+    2: ['程序自动', 'Program'],
+    3: ['光圈优先', 'Aperture priority'],
+    4: ['快门优先', 'Shutter priority'],
+    5: ['创意', 'Creative'],
+    6: ['动作', 'Action'],
+    7: ['人像', 'Portrait'],
+    8: ['风景', 'Landscape'],
+  };
+  var EXPOSURE_MODES = {
+    0: ['自动曝光', 'Auto'],
+    1: ['手动曝光', 'Manual'],
+    2: ['自动包围', 'Auto bracket'],
+  };
+  var METERING_MODES = {
+    0: ['未知', 'Unknown'],
+    1: ['平均测光', 'Average'],
+    2: ['中央重点测光', 'Center-weighted'],
+    3: ['点测光', 'Spot'],
+    4: ['多点测光', 'Multi-spot'],
+    5: ['评价测光', 'Pattern'],
+    6: ['局部测光', 'Partial'],
+    255: ['其他', 'Other'],
+  };
+  var LIGHT_SOURCES = {
+    0: ['未知', 'Unknown'],
+    1: ['日光', 'Daylight'],
+    2: ['荧光灯', 'Fluorescent'],
+    3: ['钨丝灯', 'Tungsten'],
+    4: ['闪光灯', 'Flash'],
+    9: ['晴天', 'Fine weather'],
+    10: ['阴天', 'Cloudy'],
+    11: ['阴影', 'Shade'],
+    17: ['标准光 A', 'Standard light A'],
+    18: ['标准光 B', 'Standard light B'],
+    19: ['标准光 C', 'Standard light C'],
+    20: ['D55', 'D55'],
+    21: ['D65', 'D65'],
+    22: ['D75', 'D75'],
+    23: ['D50', 'D50'],
+    24: ['ISO 摄影灯', 'ISO studio tungsten'],
+    255: ['其他', 'Other'],
+  };
+  var WHITE_BALANCES = { 0: ['自动', 'Auto'], 1: ['手动', 'Manual'] };
+  var SCENE_CAPTURE_TYPES = {
+    0: ['标准', 'Standard'],
+    1: ['风景', 'Landscape'],
+    2: ['人像', 'Portrait'],
+    3: ['夜景', 'Night'],
+  };
+  var COLOR_SPACES = {
+    1: ['sRGB', 'sRGB'],
+    2: ['Adobe RGB', 'Adobe RGB'],
+    65535: ['未校准', 'Uncalibrated'],
+  };
+
+  /**
+   * `flash` 是**位掩码**不是枚举：bit0 = 闪过、bit5 = 机身上没有闪光灯、bit2 = 有回光但没回电。
+   * 直接当枚举查表会得到「1」这种没法读的东西。
+   */
+  function flashText(raw, locale) {
+    if (raw == null || raw === '') return '';
+    var v = Number(raw);
+    if (!isFinite(v)) return '';
+    if (v & 0x20) return language(locale, '无闪光灯', 'No flash unit');
+    if (v & 0x1) {
+      if (v & 0x4) return language(locale, '闪光（未回电）', 'Fired (no return)');
+      return language(locale, '已闪光', 'Fired');
+    }
+    return language(locale, '未闪光', 'Did not fire');
+  }
+
+  /** 曝光补偿：0 也要显示（`0 EV` 是真实读数，不是「没有」） */
+  function evText(raw) {
+    if (raw == null || raw === '') return '';
+    var n = Number(raw);
+    if (!isFinite(n)) return '';
+    return (n > 0 ? '+' : '') + Math.round(n * 100) / 100 + ' EV';
+  }
+
+  /** GPS 海拔：数值已带符号（海平面以下为负），单位米 */
+  function altitudeText(raw) {
+    if (raw == null || raw === '') return '';
+    var n = Number(raw);
+    if (!isFinite(n)) return '';
+    return Math.round(n * 10) / 10 + ' m';
+  }
+
+  /** 亚秒时间：`SubSecTime` 存的是秒的小数部分（`12` 表示 .12 秒） */
+  function subSecText(raw) {
+    if (raw == null || raw === '') return '';
+    var s = String(raw).trim();
+    if (!/^\d+$/.test(s)) return s;
+    return '.' + s + ' s';
+  }
+
+  /** 带单位的数值：`35 mm` / `f/2.8`；0 与空值都隐藏 */
+  function mmText(raw) {
+    if (raw == null || raw === '') return '';
+    var n = Number(raw);
+    if (!isFinite(n) || n <= 0) return '';
+    return Math.round(n * 100) / 100 + ' mm';
+  }
+
+  function fNumberText(raw) {
+    if (raw == null || raw === '') return '';
+    var n = Number(raw);
+    if (!isFinite(n) || n <= 0) return '';
+    return 'f/' + Math.round(n * 100) / 100;
+  }
+
   // ---------------------------------------------------------------- 字段表
   //
-  // 27 个字段。其中 16 个是这一轮之前面板里就有的（文件名 / 路径 / 类型 / 尺寸 / 大小 /
-  // 拍摄时间 / 修改时间 / 焦距 / 光圈 / ISO / 快门 / 相机品牌 / 相机型号 / 镜头 / GPS / 位置），
-  // 新增 11 个：所在文件夹、所属图库、媒体类型、宽高比、总像素、收藏、照片 ID、
-  // 文件哈希、感知哈希、缩略图、AI 标签。
-  // 「默认关」的 5 个（`def: false`）都是路径很长或只有排障才看的原始值，
-  // 不占用面板首屏 —— 想看的人在设置里勾一下即可。
+  // 49 个字段（2026-10-06 起）。上一版是 28 个，本轮扩了 21 个拍摄参数 / 器材 / 文件元数据：
+  // 方向、曝光补偿、曝光程序、曝光模式、测光模式、光源、闪光灯、白平衡、场景类型、
+  // 最大光圈、等效焦距（35mm）、亚秒时间、镜头规格、镜头厂商、机身序列号、镜头序列号、
+  // 处理软件、色彩空间、文件写入时间（EXIF）、用户注释、海拔。
+  //
+  // 🔴 这 21 项**一律默认关**（`def: false`）：老用户的面板首屏本来就排了十几行，
+  //    一次加 21 行会把它变成一张数据表 —— 想看的人在设置页勾一下即可。
+  //
+  // 🔴 库里其实有 **58** 个拍摄参数列（见 `src/main/exif-meta.js#EXIF_FIELD_SPECS`），
+  //    剩下 27 列**刻意不注册到这里**：它们是「与已有列重复的派生值」（`ShutterSpeedValue`
+  //    是 `ExposureTime` 的 APEX 表示，同屏会出现 `1/50` 与 `5.6` 两个读数）、
+  //    「纯技术标定值」（`ExifVersion` / `CFAPattern` / `ComponentsConfiguration`）与弱价值文本。
+  //    入库是为了**不丢信息**，显示出来只会制造「同一件事两个读数」的困惑。
+  //    有守护钉住这条边界：仅入库的列不得出现在本注册表，也不得出现在 `getPhotoInfo()` 的 SQL 里。
 
   var FIELDS = [
     {
@@ -295,6 +441,17 @@
       },
     },
     {
+      id: 'user_comment',
+      column: 'user_comment',
+      group: 'basic',
+      zh: '用户注释',
+      en: 'User comment',
+      def: false,
+      value: function (i) {
+        return i.user_comment || '';
+      },
+    },
+    {
       id: 'date_taken',
       column: 'date_taken',
       group: 'time',
@@ -306,6 +463,23 @@
       },
     },
     {
+      // 🔴 与上面那条**是两回事，标签必须带括注**：`date_taken` 现在全库等于
+      //    `date_modified`（文件落盘时间，扫描期的兜底分支每行都命中），
+      //    而这一条才是 EXIF 里的真实拍摄时间 —— 本机实测两者多数差几年。
+      //    没有括注就是「两个拍摄时间、一个还差 3000 多天」，用户只会当成 bug。
+      id: 'exif_date_taken',
+      column: 'exif_date_taken',
+      group: 'time',
+      zh: '拍摄时间（EXIF）',
+      en: 'Taken at (EXIF)',
+      // 默认**显示**：没有 EXIF 拍摄时间的照片（~77%）这一行会被「空值整行隐藏」吞掉，
+      // 所以打开它不会给多数照片添噪音，只在真有拍摄时间时多给一条读数。
+      def: true,
+      value: function (i) {
+        return formatDateTime(i.exif_date_taken);
+      },
+    },
+    {
       id: 'date_modified',
       column: 'date_modified',
       group: 'time',
@@ -314,6 +488,19 @@
       def: true,
       value: function (i) {
         return formatDateTime(i.date_modified);
+      },
+    },
+    {
+      // IFD0 的 `DateTime`：相机或编辑软件写这张图时的墙上时间，
+      // 与 `date_modified`（文件落盘时间）不是一回事 —— 但**只有半数照片有**。
+      id: 'image_datetime',
+      column: 'image_datetime',
+      group: 'time',
+      zh: '文件写入时间（EXIF）',
+      en: 'Written at (EXIF)',
+      def: false,
+      value: function (i) {
+        return formatDateTime(i.image_datetime);
       },
     },
     {
@@ -361,6 +548,139 @@
       },
     },
     {
+      id: 'orientation',
+      column: 'orientation',
+      group: 'exif',
+      zh: '方向',
+      en: 'Orientation',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(ORIENTATIONS, i.orientation, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'exposure_bias',
+      column: 'exposure_bias',
+      group: 'exif',
+      zh: '曝光补偿',
+      en: 'Exposure bias',
+      def: false,
+      value: function (i) {
+        return evText(i.exposure_bias);
+      },
+    },
+    {
+      id: 'exposure_program',
+      column: 'exposure_program',
+      group: 'exif',
+      zh: '曝光程序',
+      en: 'Exposure program',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(EXPOSURE_PROGRAMS, i.exposure_program, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'exposure_mode',
+      column: 'exposure_mode',
+      group: 'exif',
+      zh: '曝光模式',
+      en: 'Exposure mode',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(EXPOSURE_MODES, i.exposure_mode, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'metering_mode',
+      column: 'metering_mode',
+      group: 'exif',
+      zh: '测光模式',
+      en: 'Metering mode',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(METERING_MODES, i.metering_mode, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'light_source',
+      column: 'light_source',
+      group: 'exif',
+      zh: '光源',
+      en: 'Light source',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(LIGHT_SOURCES, i.light_source, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'flash',
+      column: 'flash',
+      group: 'exif',
+      zh: '闪光灯',
+      en: 'Flash',
+      def: false,
+      value: function (i, ctx) {
+        return flashText(i.flash, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'white_balance',
+      column: 'white_balance',
+      group: 'exif',
+      zh: '白平衡',
+      en: 'White balance',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(WHITE_BALANCES, i.white_balance, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'scene_capture_type',
+      column: 'scene_capture_type',
+      group: 'exif',
+      zh: '场景类型',
+      en: 'Scene type',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(SCENE_CAPTURE_TYPES, i.scene_capture_type, ctx && ctx.locale);
+      },
+    },
+    {
+      id: 'max_aperture',
+      column: 'max_aperture',
+      group: 'exif',
+      zh: '最大光圈',
+      en: 'Max aperture',
+      def: false,
+      value: function (i) {
+        return fNumberText(i.max_aperture);
+      },
+    },
+    {
+      // 换算成 35mm 等效焦距 —— 不同画幅的「24mm」视野完全不同，这一条才是可比的。
+      id: 'focal_length_35mm',
+      column: 'focal_length_35mm',
+      group: 'exif',
+      zh: '等效焦距（35mm）',
+      en: 'Focal length (35mm eq.)',
+      def: false,
+      value: function (i) {
+        return mmText(i.focal_length_35mm);
+      },
+    },
+    {
+      id: 'sub_sec_time',
+      column: 'sub_sec_time',
+      group: 'exif',
+      zh: '亚秒时间',
+      en: 'Sub-second',
+      def: false,
+      value: function (i) {
+        return subSecText(i.sub_sec_time);
+      },
+    },
+    {
       id: 'camera_make',
       column: 'camera_make',
       group: 'device',
@@ -394,6 +714,76 @@
       },
     },
     {
+      // 镜头规格（`LensSpecification` = 焦距范围 + 光圈范围）在人话里比 `lens_model` 更好认：
+      // 采集侧已把它格式化成 `24-70mm f/2.8`；没有它的照片这一行会被隐藏。
+      id: 'lens_spec',
+      column: 'lens_spec',
+      group: 'device',
+      zh: '镜头规格',
+      en: 'Lens spec',
+      def: false,
+      value: function (i) {
+        return i.lens_spec || '';
+      },
+    },
+    {
+      id: 'lens_make',
+      column: 'lens_make',
+      group: 'device',
+      zh: '镜头厂商',
+      en: 'Lens make',
+      def: false,
+      value: function (i) {
+        return i.lens_make || '';
+      },
+    },
+    {
+      // 多机身 / 多镜头的人靠这两条区分「这张是哪台机器拍的」——`camera_model` 同名时才有意义。
+      id: 'body_serial',
+      column: 'body_serial',
+      group: 'device',
+      zh: '机身序列号',
+      en: 'Body serial',
+      def: false,
+      value: function (i) {
+        return i.body_serial || '';
+      },
+    },
+    {
+      id: 'lens_serial',
+      column: 'lens_serial',
+      group: 'device',
+      zh: '镜头序列号',
+      en: 'Lens serial',
+      def: false,
+      value: function (i) {
+        return i.lens_serial || '';
+      },
+    },
+    {
+      // 处理软件：能看出这张是不是被 Lightroom / 美图 / 微信导出过。
+      id: 'software',
+      column: 'software',
+      group: 'device',
+      zh: '处理软件',
+      en: 'Software',
+      def: false,
+      value: function (i) {
+        return i.software || '';
+      },
+    },
+    {
+      id: 'color_space',
+      column: 'color_space',
+      group: 'device',
+      zh: '色彩空间',
+      en: 'Color space',
+      def: false,
+      value: function (i, ctx) {
+        return enumText(COLOR_SPACES, i.color_space, ctx && ctx.locale);
+      },
+    },
+    {
       id: 'gps',
       column: ['gps_latitude', 'gps_longitude'],
       group: 'location',
@@ -403,6 +793,18 @@
       value: function (i) {
         if (!hasGps(i)) return '';
         return Number(i.gps_latitude).toFixed(6) + ', ' + Number(i.gps_longitude).toFixed(6);
+      },
+    },
+    {
+      // 只有 0.5% 的照片带 GPS，而带上 GPS 的又大多带海拔 —— 单独一条比塞进 GPS 那行更好读。
+      id: 'gps_altitude',
+      column: 'gps_altitude',
+      group: 'location',
+      zh: '海拔',
+      en: 'Altitude',
+      def: false,
+      value: function (i) {
+        return altitudeText(i.gps_altitude);
       },
     },
     {

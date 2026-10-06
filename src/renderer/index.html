@@ -561,7 +561,9 @@
         </div>
         <div id="taskThumbSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="thumbProgressTitle" data-i18n="task.thumbTitle">缩略图补全</span>
+            <span id="thumbProgressTitle" data-i18n="task.thumbTitle"
+              >缩略图与图片信息补全</span
+            >
             <div class="progress-actions">
               <span id="thumbProgressCount">0 / 0</span>
               <button
@@ -577,6 +579,7 @@
           <div class="progress-bar">
             <div class="progress-fill" id="thumbProgressFill" style="width: 0%"></div>
           </div>
+          <div class="progress-file" id="thumbProgressDetail"></div>
           <div class="progress-file" id="thumbProgressFile"></div>
           <div class="progress-file progress-eta" id="thumbProgressEta"></div>
         </div>
@@ -1486,6 +1489,16 @@
               <div class="settings-section-desc" data-i18n="settings.section.foldersDesc"></div>
             </div>
             <div class="settings-header-actions">
+              <button
+                type="button"
+                class="btn"
+                id="settingsRescanAllBtn"
+                data-i18n="settings.rescanAll"
+                data-i18n-title="settings.rescanAllTitle"
+                title="依次重新扫描全部根目录；未变动的文件会跳过"
+              >
+                重新扫描全部
+              </button>
               <button class="btn btn-primary" id="settingsAddBtn" data-i18n="settings.addRoot">
                 添加目录
               </button>
@@ -2100,6 +2113,7 @@
                   <option value="4">4</option>
                   <option value="5">5</option>
                   <option value="6">6</option>
+                  <option value="7">7</option>
                   <option value="8">8</option>
                 </select>
                 <span class="setting-desc setting-desc--inline" data-i18n="settings.task.thumbConcurrencyHint"
@@ -2254,6 +2268,34 @@
                 </div>
                 <label class="toggle-switch">
                   <input type="checkbox" id="settingAutoHashOnStartup" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-toggle-col">
+                <div class="setting-info">
+                  <div class="setting-label" data-i18n="settings.autoSemantic">
+                    启动后自动建搜图索引
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.autoSemanticDesc">
+                    把还没索引的照片交给搜图模型处理，完成后可以按画面内容搜图。首次会跑很久，期间请保持应用开着。
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingAutoSemanticIndexOnStartup" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-toggle-col">
+                <div class="setting-info">
+                  <div class="setting-label" data-i18n="settings.autoFace">
+                    启动后自动建人脸索引
+                  </div>
+                  <div class="setting-desc" data-i18n="settings.autoFaceDesc">
+                    识别照片里的人脸并自动分组，完成后「人物」页才有内容。首次会跑很久，期间请保持应用开着。
+                  </div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="settingAutoFaceIndexOnStartup" />
                   <span class="toggle-slider"></span>
                 </label>
               </div>
