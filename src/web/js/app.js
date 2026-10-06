@@ -1068,6 +1068,66 @@ function closeMobileFilterSheet() {
   if (backdrop) backdrop.classList.remove('show');
 }
 
+/* ── 顶栏「外观」面板（2026-10-06）───────────────────────────────────────
+   背景：外观五维（主题 / 强调色 / 背景 / 纹理 / 透明度）原先各有一个下拉平铺在
+   顶栏，全条 11 个控件、换行位置由控件宽度**偶然**决定 —— 实测 1920 是 1 行、
+   1440 是 2 行、1024 与 768 是 3 行（1024 那档第三行只剩一个控件）。缺的是
+   信息层级。现在五维收进这个面板，顶栏剩下筛选 / 展示 / 外观 / 设置四组。
+
+   面板与 .header **平级**（不能放进去：外壳层有 `.header > * { position: relative }`，
+   会把这里的 fixed 定位改掉），位置只能在这里按按钮矩形算 —— 顶栏高度随断点变
+   （72px，折行后更高），纯 CSS 拿不到那个值。 */
+function positionAppearancePanel() {
+  var panel = $('#headerAppearancePanel');
+  var btn = $('#headerAppearanceBtn');
+  if (!panel || !btn) return;
+  var pw = panel.offsetWidth;
+  var ph = panel.offsetHeight;
+  if (!pw || !ph) return;
+  var br = btn.getBoundingClientRect();
+  var header = document.querySelector('.header');
+  var hdr = header ? header.getBoundingClientRect() : null;
+  var gapPx = 8;
+  var edge = 12;
+  /* 锚点是**顶栏下沿**，不是按钮下沿：按钮高 32px 而顶栏高 72px（折行档更高），
+     按按钮算会让面板盖住顶栏底部一截（实测差 12px）。 */
+  var top = (hdr ? hdr.bottom : br.bottom) + gapPx;
+  if (top + ph > window.innerHeight - edge) {
+    // 面板一律在顶栏**下方**展开；顶栏之上没有空间，放不下就贴视口底
+    top = Math.max(edge, window.innerHeight - edge - ph);
+  }
+  // 右对齐按钮。面板(320)比按钮(68)宽得多，会向左伸 —— 越出左边界时改为贴左边。
+  var right = Math.max(edge, window.innerWidth - br.right);
+  if (window.innerWidth - right - pw < edge) {
+    right = Math.max(edge, window.innerWidth - pw - edge);
+  }
+  panel.style.top = Math.round(top) + 'px';
+  panel.style.right = Math.round(right) + 'px';
+}
+
+function toggleAppearancePanel() {
+  var panel = $('#headerAppearancePanel');
+  if (!panel) return;
+  if (panel.classList.contains('show')) {
+    closeAppearancePanel();
+    return;
+  }
+  /* ⚠️ 必须先显示再定位：display: none 时 offsetWidth / offsetHeight 都是 0，
+     量不到真实尺寸，定位会算错（面板会贴到视口左边）。 */
+  panel.classList.add('show');
+  var btn = $('#headerAppearanceBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  positionAppearancePanel();
+}
+
+function closeAppearancePanel() {
+  var panel = $('#headerAppearancePanel');
+  if (!panel || !panel.classList.contains('show')) return;
+  panel.classList.remove('show');
+  var btn = $('#headerAppearanceBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
 function isIosSafari() {
   var ua = navigator.userAgent || '';
   var isIOS = /iP(hone|od|ad)/.test(ua);
@@ -1180,6 +1240,31 @@ function bindEvents() {
       },
       { passive: true },
     );
+  }
+  /* 顶栏外观面板：点面板外 / Esc / 视口变化都收起。
+     面板是 fixed 定位、位置由按钮矩形算出来，视口一变就会浮在错位置 —— 必须收起重开。 */
+  var appearancePanelEl = $('#headerAppearancePanel');
+  if (appearancePanelEl) {
+    document.addEventListener(
+      'pointerdown',
+      function (e) {
+        if (!appearancePanelEl.classList.contains('show')) return;
+        if (appearancePanelEl.contains(e.target)) return;
+        var btn = $('#headerAppearanceBtn');
+        if (btn && btn.contains(e.target)) return;
+        closeAppearancePanel();
+      },
+      true,
+    );
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !appearancePanelEl.classList.contains('show')) return;
+      closeAppearancePanel();
+      var btn = $('#headerAppearanceBtn');
+      if (btn) btn.focus();
+    });
+    window.addEventListener('resize', closeAppearancePanel, { passive: true });
+    // capture 才收得到 .photo-grid 内部的滚动 —— 它才是真正的滚动容器，不冒泡到 window
+    window.addEventListener('scroll', closeAppearancePanel, { passive: true, capture: true });
   }
   var searchOverlayInput = $('#searchOverlayInput');
   if (searchOverlayInput) {
@@ -4643,6 +4728,8 @@ window.switchTab = switchTab;
 window.toggleMobileSidebar = toggleMobileSidebar;
 window.openMobileFilterSheet = openMobileFilterSheet;
 window.closeMobileFilterSheet = closeMobileFilterSheet;
+window.toggleAppearancePanel = toggleAppearancePanel;
+window.closeAppearancePanel = closeAppearancePanel;
 window.applyWebThemeStyle = applyWebThemeStyle;
 window.applyWebAppearance = applyWebAppearance;
 window.changeWebAccent = changeWebAccent;

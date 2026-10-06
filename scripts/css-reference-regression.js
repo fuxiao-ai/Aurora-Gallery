@@ -117,6 +117,15 @@ const referenced = (name) =>
 // ---------- 解析 CSS 规则块 ----------
 const mask = (src) => src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
 
+/**
+ * 把 HTML 注释整段抹成空白（保留换行，故行号与原文一一对应）。
+ * 浏览器不会解析注释内部的标签，这里的 `<style ...>` 提取也不能 ——
+ * 2026-10-06 曾因此误报：注释正文里出现字面量 `<style>` 时，下面那段正则会把它
+ * 当成一个真实的样式块起点，于是把注释文字（连同其后所有 HTML）当成选择器读，
+ * 报出 `.css`（其实来自 link 的 href）这类并不存在的死类名。
+ */
+const maskHtmlComments = (src) => src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
+
 function splitTop(s) {
   const out = [];
   let depth = 0;
@@ -162,7 +171,10 @@ function collectSelectors(css, baseLine = 1) {
       if (/^@(media|supports|layer)/.test(trimmed)) {
         out.push(...collectSelectors(text.slice(i + 1, j - 1), lineOf(i)));
       } else if (!/^@/.test(trimmed)) {
-        out.push({ selector: trimmed, line: lineOf(selStart) });
+        // 行号取「选择器首个非空白字符」所在行。selStart 通常落在上一条规则右花括号之后的
+        // 换行符上，直接用 lineOf(selStart) 会让每条规则都报前一行（2026-10-06 修正）。
+        const lead = selector.length - selector.trimStart().length;
+        out.push({ selector: trimmed, line: lineOf(selStart + lead) });
       }
       selStart = j;
       i = j;
@@ -203,7 +215,9 @@ for (const f of cssFiles) {
 }
 
 for (const f of htmlFiles) {
-  const html = fs.readFileSync(f, 'utf8');
+  const raw = fs.readFileSync(f, 'utf8');
+  // 先屏蔽 HTML 注释再做样式块提取；maskHtmlComments 保留换行与长度，下面的行号推导不受影响。
+  const html = maskHtmlComments(raw);
   const re = /<style[^>]*>([\s\S]*?)<\/style>/gi;
   let m;
   while ((m = re.exec(html))) {

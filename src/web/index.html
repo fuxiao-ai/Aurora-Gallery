@@ -66,10 +66,8 @@
         --radius: 12px;
         --radius-sm: 10px;
         --radius-lg: 16px;
-        --shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
-        --card-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
-        --card-shadow-hover: 0 18px 42px rgba(0, 0, 0, 0.45), 0 0 26px var(--accent-dim);
+        --card-shadow: var(--elev-1);
+        --card-shadow-hover: var(--elev-2), 0 0 26px var(--accent-dim);
         --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
         --photo-card-ratio: 1 / 1;
         --glass: rgba(16, 16, 40, 0.7);
@@ -186,12 +184,15 @@
       .header::after {
         content: '';
         position: absolute;
-        bottom: -1px;
-        left: 0;
-        right: 0;
+        bottom: 0;
+        left: 22px;
+        right: 22px;
         height: 1px;
-        background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
-        animation: headerGlow 4s ease-in-out infinite alternate;
+        background: var(--glow-line);
+        /* 原实现是 4s 无限脉冲的通栏线：在圆角浮板上会从圆角两侧支出来，
+           且在手机上是一条常驻循环重绘。这里保留发光意图、改成静态内缩线。 */
+        animation: none;
+        opacity: 0.85;
       }
       @keyframes headerGlow {
         0% {
@@ -206,19 +207,37 @@
            放在标题而不是 .header-stats 上：后者在 max-height:700px 会被隐藏，
            那种情况下选择器仍需贴右。 */
         margin-right: auto;
+        /* ⚠️ 下面这几条**在网页端不生效**，只是留作兜底 —— 契约层
+           gallery-design.css 的 `.header .header-title`（(0,2,0)，且加载在本内联样式块
+           之后）接管了它们：字号 17px（≤768px 时 14px）、字重 650、
+           letter-spacing 0.06em、并把 `background: none` +
+           `-webkit-text-fill-color: currentColor` 打在渐变文字上（改用实色）。
+           本规则实际生效的只有：margin-right / white-space / overflow /
+           text-overflow / min-width —— 契约层没管这几条。
+           读代码时别把这些声明当成「当前效果」。 */
         font-size: 15px;
         font-weight: 700;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         min-width: 0;
-        max-width: 260px;
+        /* ⚠️ 此处曾有 max-width: 260px，不要恢复。
+           它原本想「防止长标题把右侧控件挤走」，但那是**冗余**的：标题是
+           flex: 0 1 auto（可收缩），右侧下拉/按钮是 0 0 auto 且各带 min-width
+           （不可收缩），空间不够时收缩全部由标题承担 —— 效果已经由 flex 实现。
+           而它多出来的副作用是**有害**的：品牌标题「拂晓图库 · Aurora Gallery」
+           实测需要 271px（25px 图标 + 12px 间距 + 234px 文字 @17px，图标与字号
+           都由契约层给出）超过 260px 上限 ⇒ **任何分辨率下都被截断成
+           「拂晓图库 · Aurora G」**，1920px 宽屏右侧明明富余 665px 也照截不误
+           （2026-10-06 实测）。
+           标题可达宽度现已完全交给 flex 的剩余空间决定。
+           （原本配它的 `transition: max-width` 已一并删除 —— 没有规则再改
+           max-width，留着只会误导。） */
         background: linear-gradient(135deg, var(--accent), #b388ff);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
         letter-spacing: 0.3px;
-        transition: max-width 0.2s ease;
       }
       .header-stats {
         flex: 0 1 auto;
@@ -387,7 +406,7 @@
       }
       .sidebar-tab:hover {
         color: var(--text);
-        background: color-mix(in srgb, #fff 5%, transparent);
+        background: color-mix(in srgb, var(--surface-sheen) 8%, transparent);
       }
       .sidebar-tab.active {
         color: var(--accent);
@@ -1429,7 +1448,7 @@
         left: 0;
         right: 0;
         bottom: 0;
-        background: color-mix(in srgb, var(--bg) 78%, rgba(0, 0, 0, 0.64));
+        background: var(--viewer-scrim);
         z-index: 1000;
         display: none;
         flex-direction: column;
@@ -2699,25 +2718,129 @@
         color: var(--accent);
         background: color-mix(in srgb, var(--accent) 16%, transparent);
       }
-      /* 2026-04 网页端视觉升级 */
+      /* ══════════════════════════════════════════════════════════════════════
+       * 网页外壳设计令牌（web-only，下面的外壳规则只准用这些刻度）
+       * ──────────────────────────────────────────────────────────────────────
+       * ⚠️ 本层**不定义任何主题色**：--bg / --bg-card / --text* / --accent* / --border /
+       *    --glass 一律由 web-theme-shared.js 按 (theme, uiAccent, uiBackground)
+       *    写进 root.style。这里只管「圆角多大、投影多重、面板表面怎么叠」。
+       *
+       * 🔴 这些刻度必须**随明暗翻转**，否则「适配多种主题」是假的。
+       *    本页有 22 套预设，其中 11 套浅色，而浅色的 --bg 是 #fbf1e2 / #cde0fd 这类
+       *    **有色彩的浅底**：同一条 `0 18px 40px rgba(0,0,0,.28)` 在深色档是「浮起来」，
+       *    在浅色档就是一圈脏灰（浅底 + 纯黑大模糊 = 灰蒙蒙）。
+       *    旧实现把 34 处深色常量写死在规则里（`#05050b` 混色、`rgba(0,0,0,.28)` 投影、
+       *    `rgba(255,255,255,.04)` 内高光），于是浅色档一律蒙灰。
+       *
+       * ⚠️ 令牌全部挂 :root —— applyWebThemeVariables 只改 html 的**行内**变量，
+       *    不会碰这些；浅色覆盖靠 html[data-theme='light']（同一函数会设该属性）。
+       * ══════════════════════════════════════════════════════════════════════ */
       :root {
+        /* 外壳栅格 */
         --shell-gap: 16px;
-        --shell-radius: 28px;
-        --panel-shadow: 0 18px 40px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
-        --panel-shadow-strong:
-          0 28px 72px rgba(0, 0, 0, 0.42),
+        --shell-radius: 28px; /* 旧名保留：多处选择器仍在引用 */
+        --shell-pad: 16px;
+        --shell-inset: 8px; /* 手机档：外壳与视口边缘的距离 */
+        --browse-bar-gap: 8px;
+
+        /* 圆角刻度 —— 收敛旧实现里混用的 7 / 8 / 10 / 14 / 16 / 22 / 24 / 28 / 32 */
+        --r-xs: 8px;
+        --r-sm: 12px;
+        --r-md: 16px;
+        --r-lg: 20px;
+        --r-xl: var(--shell-radius);
+
+        --r-2xl: 32px;
+        --r-pill: 999px;
+
+        /* 投影刻度 —— 深色档：深影 + 一点点 accent 内描边，靠对比浮起 */
+        --elev-1:
+          0 1px 2px rgb(0 0 0 / 26%),
+          0 6px 16px rgb(0 0 0 / 22%);
+        --elev-2:
+          0 2px 6px rgb(0 0 0 / 24%),
+          0 18px 40px rgb(0 0 0 / 30%),
+          0 0 0 1px rgb(255 255 255 / 3%) inset;
+        --elev-3:
+          0 4px 10px rgb(0 0 0 / 26%),
+          0 28px 72px rgb(0 0 0 / 44%),
           0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent) inset;
-        --surface-stroke: color-mix(in srgb, var(--glass-border) 82%, rgba(255, 255, 255, 0.12));
+        --panel-shadow: var(--elev-2);
+        --panel-shadow-strong: var(--elev-3);
+
+        /* 面板表面 —— 顶部一点「受光」由 --text-primary 低比例混入得到：
+           深色档 text-primary 近白 → 顶部提亮；浅色档近黑 → 顶部微沉。
+           ⚠️ 这里不能写死 white / black：写 white 只在深色档成立，写 black 只在浅色档成立。 */
+        --surface-sheen: var(--text-primary);
+        --surface-top: color-mix(in srgb, var(--glass) 94%, var(--surface-sheen) 6%);
+        --surface-bottom: color-mix(in srgb, var(--bg-card) 34%, var(--glass));
+        --surface-raised: linear-gradient(180deg, var(--surface-top) 0%, var(--surface-bottom) 100%);
         --surface-soft: linear-gradient(
           180deg,
           color-mix(in srgb, var(--bg-card) 42%, transparent) 0%,
           color-mix(in srgb, var(--glass) 88%, transparent) 100%
         );
+
+        /* 描边：主题玻璃描边 + 一点「由明暗决定方向」的提亮/压暗 */
+        --surface-stroke: color-mix(
+          in srgb,
+          var(--glass-border) 84%,
+          color-mix(in srgb, var(--surface-sheen) 14%, transparent)
+        );
+        --hairline: color-mix(in srgb, var(--glass-border) 76%, transparent);
+        /* 面板顶部那条 accent 渐隐细线（两端透明、中间 accent）—— 两档主题都成立 */
+        --glow-line: linear-gradient(
+          90deg,
+          transparent,
+          color-mix(in srgb, var(--accent) 34%, transparent),
+          transparent
+        );
+        /* 页底罩层：深色档顶部压暗、浅色档顶部提亮。
+           旧实现写死 `color-mix(in srgb, var(--bg) 94%, #05050b)` —— 浅色档等于往
+           淡蓝/暖沙底里掺黑，整页顶部发灰。 */
+        --page-veil: color-mix(in srgb, #05050b 6%, transparent);
+        /* 卡片文字压底：叠在**照片**上、压白字，两档都必须偏暗，故刻意不随明暗翻转 */
+        --card-scrim: linear-gradient(
+          to top,
+          rgb(8 10 20 / 82%) 0%,
+          rgb(8 10 20 / 50%) 60%,
+          transparent 100%
+        );
+        /* 图片查看器底色：也刻意偏暗（照片主体优先），浅色档只减淡一点 */
+        --viewer-scrim: color-mix(in srgb, #05070d 78%, transparent);
+        /* 压在 --card-scrim / --viewer-scrim 上的文字色。同样**刻意不随明暗翻转**：
+           这两层遮罩两档都偏暗，文字必须两档都浅。
+           ⚠️ 曾经这里跟着 --text 走（`color-mix(in srgb, var(--text) 96%, #fff 4%)`），
+              浅色档 --text 是深色 → 深字压在 82% 的黑遮罩上，文件名几乎看不见
+              （实测 mobile-light / warm 两档卡片底部的文件名对比度不合格）。 */
+        --on-scrim: color-mix(in srgb, #ffffff 92%, var(--accent) 8%);
+      }
+      html[data-theme='light'] {
+        /* 浅色档：低透明度冷灰影替代纯黑大模糊；内高光换成 accent 细描边 */
+        --elev-1:
+          0 1px 2px rgb(23 33 62 / 6%),
+          0 4px 12px rgb(23 33 62 / 7%);
+        --elev-2:
+          0 1px 3px rgb(23 33 62 / 6%),
+          0 10px 26px rgb(23 33 62 / 10%),
+          0 0 0 1px rgb(255 255 255 / 62%) inset;
+        --elev-3:
+          0 2px 8px rgb(23 33 62 / 8%),
+          0 22px 56px rgb(23 33 62 / 16%),
+          0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent) inset;
+        --page-veil: color-mix(in srgb, #ffffff 46%, transparent);
+        --viewer-scrim: color-mix(in srgb, #05070d 70%, transparent);
       }
       body {
+        /* dvh 而不是 vh：移动端浏览器地址栏收起/展开会改视口高度，100vh 会多留一段白 */
         min-height: 100vh;
-        padding: max(12px, env(safe-area-inset-top, 0px)) 16px
-          max(16px, env(safe-area-inset-bottom, 0px)) 16px;
+        min-height: 100dvh;
+        /* 四向安全区：旧实现只有上下 —— 横屏刘海机（inset-left/right ≈ 44px）会把
+           整个外壳压到刘海底下，且右侧内容被圆角裁掉 */
+        padding: max(12px, env(safe-area-inset-top, 0px))
+          max(var(--shell-pad), env(safe-area-inset-right, 0px))
+          max(16px, env(safe-area-inset-bottom, 0px))
+          max(var(--shell-pad), env(safe-area-inset-left, 0px));
         background:
           radial-gradient(
             1100px 620px at 50% -12%,
@@ -2729,20 +2852,39 @@
             color-mix(in srgb, var(--accent-hover) 12%, transparent),
             transparent 62%
           ),
-          linear-gradient(180deg, color-mix(in srgb, var(--bg) 94%, #05050b) 0%, var(--bg) 100%);
+          /* 顶部罩层：深色档压暗、浅色档提亮（见 --page-veil） */
+          linear-gradient(180deg, var(--page-veil) 0%, transparent 46%),
+          var(--bg);
+      }
+      /* 触屏通用：去掉点击高亮、避免双击缩放延迟；滚动不做链式传递（弹层滚到底时
+         不会把背后的照片网格一起带着滚） */
+      html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
+      body,
+      .photo-grid,
+      .sidebar-content,
+      .mobile-filter-sheet,
+      .web-settings,
+      .preview-info-panel {
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .photo-grid,
+      .sidebar-content,
+      .mobile-filter-sheet,
+      .preview-info-panel {
+        overscroll-behavior: contain;
       }
       .header {
         min-height: 72px;
         height: 72px;
         padding: 0 18px;
         border: 1px solid var(--surface-stroke);
-        border-radius: calc(var(--shell-radius) - 4px);
+        border-radius: var(--r-lg);
         box-shadow: var(--panel-shadow);
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--glass) 96%, rgba(255, 255, 255, 0.05)) 0%,
-          color-mix(in srgb, var(--bg-card) 34%, var(--glass)) 100%
-        );
+        background: var(--surface-raised);
       }
       .header::before {
         content: '';
@@ -2795,7 +2937,7 @@
       }
       .header-stats:not(:empty),
       .header-theme-select {
-        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+        box-shadow: var(--elev-1);
       }
       .main {
         min-height: 0;
@@ -2808,11 +2950,7 @@
       .sidebar {
         width: 284px;
         border-radius: var(--shell-radius);
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--glass) 96%, transparent) 0%,
-          color-mix(in srgb, var(--bg-card) 32%, var(--glass)) 100%
-        );
+        background: var(--surface-raised);
       }
       .sidebar::before {
         content: '浏览索引';
@@ -2833,14 +2971,14 @@
       .folder-item,
       .date-group {
         min-height: 46px;
-        border-radius: 16px;
+        border-radius: var(--r-md);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
       }
       .folder-item:hover,
       .date-group:hover {
         transform: translateX(3px);
-        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.12);
+        box-shadow: var(--elev-1);
       }
       .folder-item.active,
       .date-group.active {
@@ -2849,7 +2987,7 @@
       }
       .content {
         min-width: 0;
-        border-radius: calc(var(--shell-radius) + 4px);
+        border-radius: var(--r-2xl);
         background: linear-gradient(
           180deg,
           color-mix(in srgb, var(--glass) 44%, transparent) 0%,
@@ -2875,7 +3013,7 @@
       }
       .toolbar select {
         min-height: 44px;
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+        box-shadow: var(--elev-1);
       }
       .photo-grid {
         padding: 24px 24px 30px;
@@ -2896,9 +3034,7 @@
         gap: 16px;
       }
       .photo-card {
-        box-shadow:
-          0 14px 34px rgba(0, 0, 0, 0.18),
-          0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+        box-shadow: var(--elev-1);
         background: linear-gradient(
           180deg,
           color-mix(in srgb, var(--bg-card) 92%, white 8%) 0%,
@@ -2907,9 +3043,7 @@
       }
       .photo-card:hover {
         transform: translateY(-10px) scale(1.02);
-        box-shadow:
-          0 30px 58px rgba(0, 0, 0, 0.26),
-          0 0 0 1px color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.06)) inset;
+        box-shadow: var(--elev-2);
       }
       .photo-card .thumb-vignette {
         background:
@@ -2918,49 +3052,44 @@
       }
       .photo-card .photo-info {
         padding: 14px 14px 10px;
-        background: linear-gradient(
-          to top,
-          rgba(8, 10, 20, 0.82) 0%,
-          rgba(8, 10, 20, 0.5) 60%,
-          transparent 100%
-        );
+        background: var(--card-scrim);
         backdrop-filter: blur(8px) saturate(1.1);
         -webkit-backdrop-filter: blur(8px) saturate(1.1);
       }
       .media-type-badge {
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+        box-shadow: var(--elev-1);
       }
       .empty-state {
         max-width: 480px;
         padding: 52px 32px 56px;
         background: var(--surface-soft);
         border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--glass-border));
-        border-radius: 32px;
+        border-radius: var(--r-2xl);
         box-shadow: var(--panel-shadow-strong);
       }
       .browse-footer {
         padding: 14px 18px 16px;
       }
       .pagination {
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+        box-shadow: var(--elev-1);
       }
       .preview-overlay {
-        background: color-mix(in srgb, var(--bg) 80%, rgba(0, 0, 0, 0.7));
+        background: var(--viewer-scrim);
       }
       .preview-window-controls,
       .preview-nav,
       .preview-slideshow-controls,
       .preview-zoom {
-        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+        box-shadow: var(--elev-2);
       }
       .preview-img,
       .preview-video {
-        border-radius: 20px;
-        box-shadow: 0 36px 80px rgba(0, 0, 0, 0.28);
+        border-radius: var(--r-lg);
+        box-shadow: var(--elev-3);
       }
       .preview-slideshow-controls {
         padding: 8px 12px;
-        border-radius: 22px;
+        border-radius: var(--r-lg);
       }
       .preview-slideshow-controls button,
       .preview-slideshow-controls select {
@@ -2972,13 +3101,9 @@
         bottom: 12px;
         height: calc(72px + env(safe-area-inset-bottom, 0px));
         border: 1px solid var(--surface-stroke);
-        border-radius: 24px;
+        border-radius: var(--r-lg);
         box-shadow: var(--panel-shadow-strong);
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--glass) 92%, rgba(255, 255, 255, 0.04)) 0%,
-          color-mix(in srgb, var(--bg-card) 42%, var(--glass)) 100%
-        );
+        background: var(--surface-raised);
       }
       .mobile-bottom-nav::before {
         content: '';
@@ -2998,7 +3123,7 @@
       .mobile-nav-item {
         margin: 8px 4px 8px;
         height: calc(100% - 16px);
-        border-radius: 18px;
+        border-radius: var(--r-md);
       }
       .mobile-nav-item.active {
         background: color-mix(in srgb, var(--accent-dim) 62%, transparent);
@@ -3008,7 +3133,7 @@
         left: 12px;
         right: 12px;
         bottom: 12px;
-        border-radius: 24px;
+        border-radius: var(--r-lg);
         box-shadow: var(--panel-shadow-strong);
       }
       .mobile-filter-sheet .sheet-title {
@@ -3017,7 +3142,7 @@
       }
       .mobile-filter-sheet .sheet-row {
         padding: 10px 12px;
-        border-radius: 16px;
+        border-radius: var(--r-md);
         background: color-mix(in srgb, var(--bg-hover) 42%, transparent);
         border: 1px solid color-mix(in srgb, var(--glass-border) 76%, transparent);
       }
@@ -3121,7 +3246,7 @@
         position: fixed;
         inset: 0;
         z-index: 2000;
-        background: color-mix(in srgb, var(--bg) 88%, rgba(0, 0, 0, 0.5));
+        background: color-mix(in srgb, var(--bg) 82%, var(--page-veil));
         backdrop-filter: blur(24px) saturate(1.1);
         -webkit-backdrop-filter: blur(24px) saturate(1.1);
         display: none;
@@ -3147,7 +3272,7 @@
         border-radius: 16px;
         background: color-mix(in srgb, var(--bg-card) 94%, transparent);
         border: 1px solid var(--glass-border);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        box-shadow: var(--elev-3);
       }
       .search-overlay-input-wrap input {
         flex: 1;
@@ -3214,9 +3339,7 @@
         border-radius: var(--radius);
         backdrop-filter: blur(24px) saturate(1.4);
         -webkit-backdrop-filter: blur(24px) saturate(1.4);
-        box-shadow:
-          0 12px 40px rgba(0, 0, 0, 0.5),
-          0 0 0 1px rgba(255, 255, 255, 0.04);
+        box-shadow: var(--elev-3);
         opacity: 0;
         transform: scale(0.92) translateY(-8px);
         transform-origin: top left;
@@ -3298,7 +3421,7 @@
         mask-position: center;
         -webkit-mask-repeat: no-repeat;
         mask-repeat: no-repeat;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+        box-shadow: var(--elev-1);
         animation: checkPop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
       }
       @keyframes checkPop {
@@ -3336,7 +3459,7 @@
         border-radius: 999px;
         backdrop-filter: blur(24px) saturate(1.4);
         -webkit-backdrop-filter: blur(24px) saturate(1.4);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        box-shadow: var(--elev-2);
         white-space: nowrap;
       }
       .selection-count {
@@ -3412,7 +3535,7 @@
         pointer-events: none;
         transition: all 0.25s var(--ease-out);
         z-index: 100;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        box-shadow: var(--elev-2);
       }
       .back-to-top.show {
         opacity: 1;
@@ -3452,7 +3575,437 @@
           min-width: 55px;
         }
       }
-    </style>
+
+      /* ══════════════════════════════════════════════════════════════════════
+       * 响应式与触达修正（2026-10-06）
+       * ──────────────────────────────────────────────────────────────────────
+       * 为什么集中在**样式块最末**：同特异性时后写的赢 —— 这一节因此可以覆盖上面任何
+       * 一节，不必逐条去改历史规则（历史选择器常常在别处也被命中，改一处会连带打脸）。
+       *
+       * 🔴 但**不要**用「把整个样式块挪到契约层之后」来白拿这条便利（2026-10-06 试过，
+       *    已回退）。契约层 gallery-design.css 必须留在本样式块**之后**加载：它是两端
+       *    共用的收尾层，里面有**网页端专用的修正**，最要命的一条是
+       *    `.photo-card { opacity: 1; animation: none }` —— 内联样式里卡片声明的是
+       *    `opacity: 0` + 入场动画 forwards（且 reduce-motion 下动画被
+       *    `.photo-card { animation: none !important }` 关掉），全靠契约层这条才可见。
+       *    顺序一反，实测 50/50 张卡片 opacity 全为 0、网格只剩纯色空卡，而同页 DOM
+       *    读数（卡片数、列数、宽高）**完全正常** —— 极易误判成「截图坏了」。
+       *    要在契约层之后说话，就**提高特异性**（见下面 ⓪ 的 `html body …` 前缀），
+       *    与顺序无关，也不会打到桌面端。
+       *
+       * 断点口径（与 app.js 的 detectMobile 对齐）：
+       *   ≤1180px 顶栏换行 ／ ≤900px 平板与窄屏 ／ ≤600px 手机（浮动底栏导航出现）
+       * ══════════════════════════════════════════════════════════════════════ */
+
+      :root {
+        /* 浮动底栏导航的几何：导航自己与「为它留位的内容区」共用同一组值。
+           ⚠️ 两边各写一份常量必然漂移 —— 那正是下面那条「分页条被盖住」的成因。 */
+        --nav-h: 68px;
+        --nav-inset: max(10px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+      }
+
+      /* ── ⓪ 外壳各面：用特异性盖过契约层的「拍平」收尾口径 ──────────────────
+         契约层把这几个面拍成不透明实色、并且抹掉投影与毛玻璃：
+             .topbar, .header { background: var(--bg-secondary); border-bottom: …;
+                                box-shadow: none; backdrop-filter: none }   ← (0,1,0)
+             html .sidebar    { background: var(--bg-secondary, …); box-shadow: none }
+             .browse-footer   { background: var(--bg-secondary, …); box-shadow: none }
+         那是「收尾」该做的事，但外壳层要的是浮板语言（圆角 + --panel-shadow，
+         见上面 2026-04 那一节）。两者同特异性、且契约层在后 → 外壳层输，
+         于是同一屏里顶栏/侧栏/底栏是贴死的平面，内容区却是浮起的大投影：
+         实测 `.header` 生效值为 rgb(12,12,34)、headerShadow 为 none —— 半新半旧。
+         这里用 `html body …` 多要一个元素权重（(0,1,2) > (0,1,1) ≥ (0,1,0)），
+         与源码顺序无关地把这几面收回外壳层。
+         ⚠️ 刻意**不动** `.photo-card`：契约层对卡片是接管式的（圆角 / 投影 / 悬停 /
+            `::before` / 图片滤波一律以它为准，见契约层 .photo-card 那一段），
+            硬盖会把 `opacity: 1` 一起盖掉，照片立刻隐形。
+         这三条只声明「面」的材质，不碰任何几何 —— 因此不会被上面各断点的几何规则打架。 */
+      html body .header {
+        background: var(--surface-raised);
+        border: 1px solid var(--surface-stroke);
+        border-bottom-color: var(--surface-stroke);
+        border-radius: var(--r-lg);
+        box-shadow: var(--panel-shadow);
+      }
+      html body .sidebar {
+        background: var(--surface-raised);
+        box-shadow: var(--panel-shadow);
+      }
+      html body .browse-footer {
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--glass) 82%, transparent) 0%,
+          color-mix(in srgb, var(--bg) 72%, transparent) 100%
+        );
+        border-top-color: color-mix(in srgb, var(--glass-border) 88%, transparent);
+        box-shadow: var(--panel-shadow);
+      }
+      /* 压在卡片遮罩上的文件名 / 尺寸：必须用 --on-scrim，不能跟 --text 走。
+         基础层写的是 `color-mix(in srgb, var(--text) 96%, #fff 4%)`，浅色档 --text 为深色，
+         而遮罩两档都偏暗 → 深字压深底，文件名基本看不见（实测 mobile-light / warm）。
+         特异性 (0,2,2) 压过基础层 `.photo-card .photo-info` 的 (0,2,0)。 */
+      html body .photo-card .photo-info {
+        color: var(--on-scrim);
+      }
+
+      /* ── ① 顶栏：≤1020px 折行，标题独占一行 ───────────────────────────────
+         2026-10-06 重算。外观五维（主题 / 强调色 / 背景 / 纹理 / 透明度）原先各有
+         自己的下拉平铺在顶栏，全条共 11 个控件 —— 换行位置完全由控件宽度**偶然**
+         决定：实测 1920 是 1 行、1440 是 2 行、1024 与 768 是 3 行（1024 那档第三行
+         只剩「最新拍摄」一个控件孤零零挂着）。缺的是信息层级，不是宽度。
+         那五维现在收进外观面板（顶栏「外观」按钮打开），顶栏只剩 7 项。实测宽度：
+           标题 271 + 统计 130 + 媒体类型 104 + 卡片比例 123 + 排序 123 + 外观 68 + 设置 32
+         合计 851，加 6 个 gap(12px) = 923；内宽 = 视口 − 84
+         ⇒ 视口 ≥ 1008 才装得下，阈值取 1020（留 12px 余量）。
+         ⚠️ 不能取更小：阈值以上就不折行了，若阈值 < 1008，落在
+         「阈值 ~ 1008」之间的视口会 kept nowrap 却装不下 ⇒ 控件被挤出视口右侧。
+
+         折行后：行 1 = 标题（拿满整行，品牌名完整）；行 2 = 其余 6 项。
+         实测 768px 平板（视口 754 / 内宽 669）控件行需 620 ⇒ 2 行，孤行消失。
+
+         ⚠️ 这里**不能**改用「隐藏」：外观虽已进面板，但顶栏按钮只在 >600px 出现，
+         ≤600px 走底栏「设置」抽屉里那套等价控件。601–1020 若隐藏控件，就等于这几维
+         外观在该区间永远改不了。
+         ⚠️ 也不靠缩字号硬塞：17px→15px 只省 28px，且顶栏标题是视觉锚点，
+         不该随分辨率忽大忽小。 */
+      @media (max-width: 1020px) {
+        .header {
+          height: auto;
+          min-height: 64px;
+          flex-wrap: wrap;
+          /* 只声明纵向：横向留给契约层 —— ≥1100px 时它给 `.header`
+             `padding-inline: 26px`，与本选择器**特异性相同且加载在本内联样式块之后**
+             ⇒ 这里写横向值也不会生效（旧代码写的 `padding: 8px 14px` 里
+             `14px` 就是这样被悄悄吃掉的）。 */
+          /* 安全区由 body 一处负责。基础层另给了
+             `.header { padding-top: env(safe-area-inset-top) }`，而 body 已有
+             `max(12px, env(safe-area-inset-top))` —— 刘海机（inset-top ≈ 47px）上
+             顶栏高度里有 47px 变成内边距，控件只剩 25px 可放，整条会被压扁。 */
+          padding-top: 0;
+          padding-bottom: 10px;
+          row-gap: 8px;
+          column-gap: 8px;
+        }
+        /* 标题独占一行：若与控件同排，控件会被拦腰折成两行；
+           显式占满一行比依赖 flex 自然折行可预期得多。
+           ⚠️ 这里**不要**写 font-size。标题字号由契约层的
+           `.header .header-title`（(0,2,0)，加载在本块之后）按断点统一接管：
+           ≤768px 是 14px + 21px 图标，≥769px 是 17px + 25px 图标。
+           本块选择器只有 (0,1,0)，写字号也不会赢 —— 旧代码在这里写的
+           `font-size: 16px` 从来就没生效过，只制造「改过字号」的错觉。 */
+        .header-title {
+          flex: 1 1 100%;
+          min-width: 0;
+          overflow: hidden;
+          white-space: nowrap;
+        }
+        /* 折行后「外观」与「设置」一起贴控件行最右，其余控件左对齐。
+           ⚠️ 只给外观按钮一个 auto：两个 margin-left: auto 会平分剩余空间，
+           把两颗按钮一起推到行中间。 */
+        .header-appearance-btn {
+          margin-left: auto;
+        }
+        .header-settings-btn {
+          margin-left: 0;
+        }
+        /* 窄档收窄三个仍在顶栏的下拉，按各自最长选项文字留够。
+           不再沿用当年的统一 64px —— 那时是六个下拉、必须极端压缩；
+           现在只剩三个，64px 会把「原比例瀑布流」「体积从大到小」截断。
+           ⚠️ 刻意避开 132/110/120/90/104/96 —— control-styles-regression 逐值断言
+           那几个 min-width 在全文件里各出现**恰好一次**，重用一个值会把断言判红。 */
+        .header-media-filter-select {
+          min-width: 76px;
+          flex: 0 0 auto;
+        }
+        .header-card-aspect-select {
+          min-width: 116px;
+          flex: 0 0 auto;
+        }
+        .header-sort-select {
+          min-width: 124px;
+          flex: 0 0 auto;
+        }
+      }
+
+      /* ── ⑥ 顶栏「外观」按钮与外观面板（2026-10-06 新增）─────────────────────
+         按钮上那颗圆点取 `--accent`，所以它本身就是当前强调色的显示位。
+         面板与 .header **平级**（不能放进去：外壳层有 `.header > * { position: relative }`，
+         会把这里的 fixed 定位改掉），位置由 JS 按按钮矩形算。
+         ⚠️ 面板里的下拉沿用 `.header-theme-select` 等原类名，这是有意的：
+         换名会让 control-styles-regression 的「六下拉共用骨架」契约失去元素引用，
+         也会让 css-reference-regression 把那批类名判成死规则。 */
+      .header-appearance-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        flex: 0 0 auto;
+        height: 32px;
+        padding: 0 11px;
+        border: 1px solid var(--design-line, var(--border));
+        border-radius: 8px;
+        background: var(--bg-card, transparent);
+        color: var(--text-primary, var(--text));
+        font-size: 13px;
+        line-height: 1;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .header-appearance-btn:hover,
+      .header-appearance-btn[aria-expanded='true'] {
+        background: var(--bg-hover);
+        border-color: var(--accent);
+      }
+      .header-appearance-dot {
+        flex: 0 0 auto;
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 24%, transparent);
+      }
+      .header-appearance-panel {
+        position: fixed;
+        z-index: 60;
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        width: min(320px, calc(100vw - 24px));
+        padding: 14px;
+        border: 1px solid var(--surface-stroke);
+        border-radius: var(--r-lg);
+        /* 底色分两层：`background-color` 垫在下面，`--surface-raised` 那层渐变浮在上面
+           （保留顶面高光的材质感）。
+           ⚠️ 只写 `background: var(--surface-raised)` 会太透：实测它的 alpha 只有 0.67，
+           叠在照片上会透出 33% 的**锐利**照片，label 与下拉就像浮在噪点上。
+           `backdrop-filter` 虽然也设了（真机会把透出部分糊掉），但不能只靠它 ——
+           无头渲染 / 部分浏览器下它不生效，那时可读性就全指望底色。
+           两层叠加后不透明度 ≈ 0.90：既是浮层，又压得住照片。 */
+        background-color: color-mix(in srgb, var(--bg-card) 70%, transparent);
+        background-image: var(--surface-raised);
+        box-shadow: var(--panel-shadow-strong);
+        backdrop-filter: blur(20px) saturate(1.3);
+        -webkit-backdrop-filter: blur(20px) saturate(1.3);
+      }
+      .header-appearance-panel.show {
+        display: flex;
+      }
+      .appearance-field {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .appearance-field > label {
+        flex: 0 0 auto;
+        width: 76px;
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+      /* 面板内的下拉铺满剩余宽度。min-width: 0 才盖得掉那六条尺寸修饰
+         （(0,2,0) > (0,1,0)），否则 132px 的底宽会把 label + 下拉挤出面板。 */
+      .header-appearance-panel .header-theme-select,
+      .header-appearance-panel .header-accent-select,
+      .header-appearance-panel .header-background-select {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+      }
+
+      /* ── ② 手机档瀑布流固定两列：窄屏固定 180px 列宽 → 只剩 1 列 ──────────
+         `.grid.grid--masonry` 用的是 `columns: calc(var(--grid-card-basis) * 1px)`，
+         即**固定 px 列宽**。手机内容区只有约 317px，装不下两列 180px → 只剩 1 列，
+         卡片几乎铺满整屏，浏览体验退化。
+         `capMasonryColumns()` 只在「卡片数少于最大列数」时**减少**列数、从不增加，
+         所以必须从 CSS 侧兜底。
+
+         ⚠️ 两个踩过的坑，别改回去：
+         ① 不能用 `columns: min(calc(basis*1px), 46%)` 这类**百分比上限**。`column-width`
+            不接受百分比，那种声明属于「computed-value 阶段失效」：属性直接取**初始值
+            auto**，而且**不会**回落到前面那条 `columns: calc(180px)`（实测 768px 平板
+            由 2 列塌成 1 列，601–1180px 全区段单列）。
+         ② 只加 `column-count: 2` 也达不到两列。`column-width` 与 `column-count` 同时
+            非 auto 时取**较小**者（实测 N=min(count, fit)），即 count 是**上限**不是下限；
+            317px 容器里 fit=1 → 仍是 1 列。
+         所以手机档必须把列宽交出去：`columns: 2` = `column-width:auto; column-count:2`，
+         列宽由浏览器按容器均分。601–900px 不覆写，回到基础层 180px 列宽的自然排布
+         （容器约 370px 以上自然就是 2 列），与重构前一致。 */
+      @media (max-width: 600px) {
+        .grid.grid--masonry {
+          columns: 2;
+        }
+      }
+      @media (max-width: 900px) {
+        .grid.grid--masonry {
+          column-gap: 8px;
+        }
+        .grid.grid--masonry .photo-card {
+          margin-bottom: 8px;
+        }
+        body {
+          /* 视觉层在 ≤900 又重写了一遍 body padding，把四向安全区收回成上下两向；
+             这里按同一口径恢复 —— 横屏刘海机的 inset-left / inset-right 非零。 */
+          padding: max(10px, env(safe-area-inset-top, 0px))
+            max(12px, env(safe-area-inset-right, 0px))
+            max(14px, env(safe-area-inset-bottom, 0px))
+            max(12px, env(safe-area-inset-left, 0px));
+        }
+      }
+
+      /* ── ③ 面板透明度：补齐网页端缺失的两张主面 ──────────────────────────
+         契约层那组 `html[data-opacity] .x { background-color: … }` 列的是
+         .titlebar / .topbar / .toolbar / .sidebar / .content-area / .browse-footer /
+         .home-page / .settings-page / .app-rail —— 其中 .titlebar / .topbar /
+         .content-area / .home-page / .app-rail 都是**桌面端专有节点**，
+         而网页端的两张主面 `.header` 与 `.content` **不在列**。
+         后果：网页端把「面板透明度」调到「通透」时顶栏与内容区毫无反应，
+         只有侧栏 / 工具栏 / 底栏变透 —— 正是契约层自己警告过的「一块板不透、其余都透」。
+         这里按同一口径补上：只动界面框架的底色，**不碰照片**（.photo-card 不在列）。
+         `.content` 要连 background-image 一起清掉，否则它自带的 accent 渐变会继续兜底。 */
+      html[data-opacity] .header,
+      html[data-opacity] .content,
+      html[data-opacity] .mobile-bottom-nav {
+        background-image: none !important;
+        background-color: color-mix(in srgb, var(--glass) var(--ui-alpha), transparent) !important;
+      }
+
+      /* ── ⑤ 平板档（601–1180px）：分页药丸自动换行 ────────────────────────
+         侧栏在 601px 以上是常驻的，内容区（= 分页药丸的容器）只剩 470px 左右，
+         而药丸里要排：‹ › + 页码组（1 / 2 / … / 10）+ 「480 张」+「随机」+ 卡片大小
+         （S/M/L/XL）—— 基础层是 `flex-wrap: nowrap` + `justify-content: center`，
+         装不下时**向左右两侧同时溢出**（实测 768px：药丸 clientWidth 431、
+         scrollWidth 474，最左的 ‹ 跑到 x=249 而容器从 291 开始、最右的 XL 到 765
+         而容器右边缘 722 —— 两侧各被裁掉一截，用户以为这两个按钮不存在）。
+         ⚠️ 这里**不能照抄手机档的做法把卡片大小隐藏**：底栏「设置」面板只在
+         `detectMobile`（≤600）出现的浮动导航里，601px 以上没有它，
+         隐藏等于这几维外观在平板上彻底改不了。
+         也**不改用横向滚动**：37px 的溢出换来一个看不见内容的手势，比换行差。
+         `flex-wrap: wrap` 只在装不下时生效（1024px 视口内容约 640px，不换行），
+         且 `justify-content: center` 是按行居中，两行都居中。 */
+      @media (min-width: 601px) and (max-width: 1180px) {
+        .pagination {
+          flex-wrap: wrap;
+          row-gap: 6px;
+        }
+      }
+
+      /* ── ④ 手机档（≤600px，与 app.js detectMobile 同口径）──────────────── */
+      @media (max-width: 600px) {
+        body {
+          padding: max(8px, env(safe-area-inset-top, 0px))
+            max(var(--shell-inset), env(safe-area-inset-right, 0px))
+            max(12px, env(safe-area-inset-bottom, 0px))
+            max(var(--shell-inset), env(safe-area-inset-left, 0px));
+        }
+        /* 手机仍是单行：把 ① 的「标题独占一行」收回来（下拉本来就被藏了） */
+        .header-title {
+          flex: 1 1 auto;
+          /* ⚠️ 这条 font-size 不生效（写在这里也一样）：契约层
+             gallery-design.css 的 `@media (max-width: 768px)` 里
+             `.header .header-title` 特异性更高（0,2,0）、加载更晚，给的是
+             14px + 21px 图标 + 8px 间距。文件里另有 3 处同类死声明
+             （≤600 的 14px、max-height:760 的 14px、≤900 的 16px），
+             它们全部被契约层接管 —— 想改网页端标题字号，只能改契约层（会同时
+             影响桌面端），或在这里把选择器提到 `.header .header-title` 以上。 */
+          font-size: 15px;
+        }
+        /* 🔴 汉堡按钮：基础层写的是 `.mobile-menu-btn { display: none !important }`，
+           而移动端那条 `.mobile-menu-btn { display: flex !important }` 写在它**之前** ——
+           同特异性 + 同 !important → 源码顺序决胜 → 后者被压掉。
+           实测后果：手机上汉堡永久不显示（getBoundingClientRect 全 0），
+           侧栏（文件夹 / 日期 / 搜图 / 人物）**彻底打不开**。
+           修法：把「显示」写在样式块最后一节，让源码顺序站在正确的一边。 */
+        .mobile-menu-btn {
+          display: flex !important;
+          width: 40px;
+          height: 40px;
+        }
+        /* 🔴 统计徽章：基础层 `.header-stats:not(:empty) { display: flex }` 特异性 (0,2,0)，
+           压过了手机档的 `.header-stats { display: none }` (0,1,0) ——
+           于是手机顶栏被「照片 18.4K · 4」占满、标题被截成「拂晓图库 · Aurora Ga」。 */
+        .header-stats,
+        .header-stats:not(:empty) {
+          display: none;
+        }
+        /* 顶栏「外观」按钮在手机档隐藏：底栏「设置」抽屉（#mobileFilterSheet）
+           里本来就有一套等价的外观五维控件（mobileThemeStyleSelect 等），
+           两边是同一份状态、app.js 按 id 成对同步 —— 实测两处永远一致。
+           顶栏在手机上只有 3 个位置，留给汉堡 + 标题 + 设置更值。 */
+        .header-appearance-btn {
+          display: none;
+        }
+        /* 面板整块隐藏。⚠️ 不能只藏按钮：面板里的 5 个下拉带 `.header-*-select`
+           类名，而手机档上面那条规则正是按这些类名 `display: none` 的 ——
+           于是强制打开时会剩下一列孤零零的 label、右半边空着（实测截图确认）。
+           `!important` 是为了压过 `.header-appearance-panel.show { display: flex }`
+           的 (0,2,0)：否则任何残留的 show 状态都会把它露出来。 */
+        .header-appearance-panel,
+        .header-appearance-panel.show {
+          display: none !important;
+        }
+        /* 浮动底栏导航 + 为它留位，两边共用 ① 里那组几何值。
+           推导：导航顶边 = 视口底 − (--nav-inset + --nav-h)；
+                 分页条底边 = 视口底 − bodyPaddingBottom − paddingBottom；
+           要求「分页条不被导航盖住」⇒ paddingBottom ≥ --nav-inset + --nav-h − bodyPaddingBottom。
+           因为 --nav-inset 与 bodyPaddingBottom **都随安全区一起涨**，两者互相抵消，
+           所以需要的留位是个常量（最坏 74px），取 78px 留一点呼吸。
+           旧值 `calc(64px + env(safe-area-inset-bottom))` 在无安全区的机器上只有 64px，
+           比需要的 66px 还小 → 分页条被盖住约 4px（实测分页条底 706 / 导航顶 702）。 */
+        .mobile-bottom-nav {
+          bottom: var(--nav-inset);
+          height: var(--nav-h);
+          /* 基础层给这条导航加了 padding-bottom: env(safe-area-inset-bottom)；
+             但「浮动药丸」已靠 --nav-inset 抬离了指示条 —— 再留一份就会在药丸
+             底部多出一条 34px 空白带。 */
+          padding-bottom: 0;
+          left: max(var(--shell-inset), env(safe-area-inset-left, 0px));
+          right: max(var(--shell-inset), env(safe-area-inset-right, 0px));
+        }
+        .content {
+          padding-bottom: calc(var(--nav-h) + 10px);
+        }
+        .mobile-filter-sheet {
+          bottom: var(--nav-inset);
+          left: max(var(--shell-inset), env(safe-area-inset-left, 0px));
+          right: max(var(--shell-inset), env(safe-area-inset-right, 0px));
+        }
+        .web-toast {
+          bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+        }
+        /* 触达目标：分页按钮原为 34×34，低于可点最小尺寸
+           （WCAG 2.5.8 要求 24px，Apple HIG / Material 建议 44px） */
+        .pagination button {
+          min-width: 44px;
+          height: 44px;
+        }
+        /* 🔴 但 44px 会让这一行顶出容器：实测 `.pagination` 需要 365px、只有 321px，
+           `scrollWidth 365 > clientWidth 321`，最右的 XL 被裁在容器外看不见。
+           多出来的 85px 里有一半来自这组卡片大小档（S/M/L/XL 由 142 → 189px）。
+           它和底栏「设置」面板里的 `#cardSizeButtons` 是**同一维外观的两个入口**
+           （app.js 第 2725 行把两处的 active 状态一起同步），而手机上 321px 的
+           横排本来也放不下 4 个档位按钮 + 分页 + 随机；所以手机档只保留面板那一个入口。
+           ⚠️ 与「顶栏下拉不能隐藏」那条的区别：那里隐藏后**没有替代入口**
+           （面板当时不含那几维），这里隐藏的是**重复入口**，功能一个不少。
+           特异性 (0,2,0) 压过 `.card-size-group` 的 (0,1,0)，也与源码顺序无关。 */
+        .pagination .card-size-group {
+          display: none;
+        }
+      }
+</style>
+    <!-- 🔴 契约层必须留在**这个位置**（内联样式块之后、head 结束之前），不要上移。
+         它是两端共用的**收尾层**（文件头自述「在 styles.css 之后加载」），网页端没有
+         styles.css，所以它扮演的就是网页端的收尾层 —— 里面不止有桌面端的口径，
+         还有**网页端专用的修正**。最要命的一条：
+
+             .photo-card { opacity: 1; animation: none; will-change: auto; ... }
+
+         内联样式里 `.photo-card` 声明的是 `opacity: 0` + `animation: cardEnter … forwards`
+         ——卡片靠动画的 forwards 定格才可见（本来还叠加了 reduce-motion 下
+         `.photo-card { animation: none !important }`，见契约层同名媒体查询）。
+         所以这条 `opacity: 1` 一旦被内联样式盖过，**整个网格的照片会全部隐形**。
+         2026-10-06 实测：把本行上移到内联样式之前，375 张卡片 opacity 全为 0、
+         截图里只剩一片纯色空卡（同页 DOM 读数却完全正常，极易误判为「截图坏了」）。
+
+         ⇒ 网页外壳层要盖过契约层时，用**提高特异性**（末节里的 `html body …` 前缀），
+           不要靠源码顺序。 -->
     <link rel="stylesheet" href="/gallery-design.css?v=1" />
   </head>
   <body>
@@ -3871,97 +4424,6 @@
         <option value="uniform_9_16">9:16 固定</option>
         <option value="uniform_16_9">16:9 固定</option>
       </select>
-      <select id="webThemeStyle" class="header-theme-select" aria-label="主题风格" title="主题风格">
-        <option value="midnight_classic">夜幕经典</option>
-        <option value="ice_deep">深空冰蓝</option>
-        <option value="amber_dawn">晨光琥珀</option>
-        <option value="forest_shadow">森影暮霭</option>
-        <option value="ember_night">暗夜余烬</option>
-        <option value="graphite_night">石墨夜色</option>
-        <option value="nebula_violet">星云紫夜</option>
-        <option value="pine_abyss">松渊墨绿</option>
-        <option value="mocha_night">摩卡夜色</option>
-        <option value="glass_night">玻璃夜色</option>
-        <option value="aurora_night">渐变夜幕</option>
-        <option value="sky_light">晴空浅蓝</option>
-        <option value="cherry_blossom">樱雾粉昼</option>
-        <option value="lavender_dusk">暮紫微光</option>
-        <option value="arctic_mint">薄荷极光</option>
-        <option value="desert_sand">暖沙晨曦</option>
-        <option value="paper_gray">素纸浅灰</option>
-        <option value="sage_morning">鼠尾草晨雾</option>
-        <option value="apricot_haze">杏色薄雾</option>
-        <option value="frost_cyan">霜青微光</option>
-        <option value="glass_day">玻璃白昼</option>
-        <option value="aurora_dawn">渐变晨曦</option>
-        <option value="">自定义组合</option>
-      </select>
-      <select
-        id="webAccentSelect"
-        class="header-accent-select"
-        aria-label="强调色"
-        title="强调色（与「界面风格」独立）"
-        onchange="changeWebAccent(this.value)"
-      >
-        <option value="violet">紫罗兰</option>
-        <option value="cyan">青蓝</option>
-        <option value="teal">青绿</option>
-        <option value="rose">玫红</option>
-        <option value="amber">琥珀</option>
-        <option value="mono">中性</option>
-        <option value="coral">珊瑚</option>
-        <option value="indigo">靛蓝</option>
-        <option value="green">翠绿</option>
-        <option value="red">赤红</option>
-      </select>
-      <select
-        id="webBackgroundSelect"
-        class="header-background-select"
-        aria-label="背景基调"
-        title="背景基调（与「界面风格」独立）"
-        onchange="changeWebBackground(this.value)"
-      >
-        <option value="default">默认</option>
-        <option value="ink">墨色</option>
-        <option value="warm">暖调</option>
-        <option value="cool">冷调</option>
-        <option value="amoled">纯黑</option>
-        <option value="glass">玻璃</option>
-        <option value="aurora">渐变</option>
-        <option value="paper">纸感</option>
-        <option value="mist">海雾</option>
-        <option value="forest">深林</option>
-        <option value="clay">陶石</option>
-      </select>
-      <select
-        id="webTextureSelect"
-        class="header-background-select"
-        aria-label="材质纹理"
-        title="材质纹理（与「界面风格」「背景基调」独立，可任意叠加）"
-        onchange="changeWebTexture(this.value)"
-      >
-        <option value="none">无</option>
-        <option value="grain">颗粒</option>
-        <option value="paper">纸纤维</option>
-        <option value="linen">亚麻</option>
-        <option value="frost">磨砂</option>
-        <option value="grid">十字网</option>
-        <option value="dots">点阵</option>
-        <option value="stripe">竖条纹</option>
-        <option value="wood">木纹</option>
-      </select>
-      <select
-        id="webOpacitySelect"
-        class="header-background-select"
-        aria-label="面板透明度"
-        title="面板透明度（只影响界面框架，照片不受影响；与「材质纹理」独立，可任意叠加）"
-        onchange="changeWebOpacity(this.value)"
-      >
-        <option value="opaque">不透明</option>
-        <option value="slight">轻微</option>
-        <option value="medium">中等</option>
-        <option value="clear">通透</option>
-      </select>
       <select
         id="sortSelect"
         class="header-sort-select"
@@ -3978,6 +4440,19 @@
       </select>
       <button
         type="button"
+        class="header-appearance-btn"
+        id="headerAppearanceBtn"
+        onclick="toggleAppearancePanel()"
+        aria-label="外观"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        title="外观：主题 / 强调色 / 背景 / 纹理 / 透明度"
+      >
+        <span class="header-appearance-dot" aria-hidden="true"></span>
+        <span>外观</span>
+      </button>
+      <button
+        type="button"
         class="header-settings-btn"
         onclick="openWebSettingsPage()"
         aria-label="设置"
@@ -3985,6 +4460,132 @@
       >
         <svg class="icon" aria-hidden="true"><use href="#icon-settings" /></svg>
       </button>
+    </div>
+
+    <!-- ── 外观面板（2026-10-06）────────────────────────────────────────────
+         为什么从顶栏搬到这里：顶栏原有 11 个控件全部平铺，换行位置由控件宽度
+         **偶然**决定 —— 实测 1920 是 1 行、1440 是 2 行、1024 与 768 是 3 行
+         （1024 那档第三行只剩「最新拍摄」一个控件孤零零挂着）。问题是缺信息层级，
+         不是缺宽度。
+
+         搬动原则：**只搬位置，不动 id 与类名**。
+         · app.js 的外观同步是**按 id 查找**的（`['webThemeStyle','mobileThemeStyleSelect']`
+           这类 id 组），控件换父亲不影响同步；
+         · `.header-theme-select` 等 6 个类名仍被这些元素引用，所以
+           css-reference-regression 不会判死规则，control-styles-regression 的
+           「六下拉共用骨架 + 六条宽度修饰」三条断言也继续成立。
+         所以这一步**不需要改 app.js 一行**。
+
+         ⚠️ 本面板**不能**放进 .header 内部：外壳层有一条 `.header > * { position: relative }`，
+         会把面板的 absolute/fixed 定位一并改掉。它与 .header 平级，定位由 JS 按按钮位置算。
+         手机档（≤600px）隐藏顶栏这颗按钮 —— 底栏「设置」抽屉里本来就有一套等价的外观五维。 -->
+    <div class="header-appearance-panel" id="headerAppearancePanel" role="dialog" aria-label="外观设置">
+      <div class="appearance-field">
+        <label for="webThemeStyle">主题</label>
+        <select id="webThemeStyle" class="header-theme-select" aria-label="主题风格" title="主题风格">
+          <option value="midnight_classic">夜幕经典</option>
+          <option value="ice_deep">深空冰蓝</option>
+          <option value="amber_dawn">晨光琥珀</option>
+          <option value="forest_shadow">森影暮霭</option>
+          <option value="ember_night">暗夜余烬</option>
+          <option value="graphite_night">石墨夜色</option>
+          <option value="nebula_violet">星云紫夜</option>
+          <option value="pine_abyss">松渊墨绿</option>
+          <option value="mocha_night">摩卡夜色</option>
+          <option value="glass_night">玻璃夜色</option>
+          <option value="aurora_night">渐变夜幕</option>
+          <option value="sky_light">晴空浅蓝</option>
+          <option value="cherry_blossom">樱雾粉昼</option>
+          <option value="lavender_dusk">暮紫微光</option>
+          <option value="arctic_mint">薄荷极光</option>
+          <option value="desert_sand">暖沙晨曦</option>
+          <option value="paper_gray">素纸浅灰</option>
+          <option value="sage_morning">鼠尾草晨雾</option>
+          <option value="apricot_haze">杏色薄雾</option>
+          <option value="frost_cyan">霜青微光</option>
+          <option value="glass_day">玻璃白昼</option>
+          <option value="aurora_dawn">渐变晨曦</option>
+          <option value="">自定义组合</option>
+        </select>
+      </div>
+      <div class="appearance-field">
+        <label for="webAccentSelect">强调色</label>
+        <select
+          id="webAccentSelect"
+          class="header-accent-select"
+          aria-label="强调色"
+          title="强调色（与「界面风格」独立）"
+          onchange="changeWebAccent(this.value)"
+        >
+          <option value="violet">紫罗兰</option>
+          <option value="cyan">青蓝</option>
+          <option value="teal">青绿</option>
+          <option value="rose">玫红</option>
+          <option value="amber">琥珀</option>
+          <option value="mono">中性</option>
+          <option value="coral">珊瑚</option>
+          <option value="indigo">靛蓝</option>
+          <option value="green">翠绿</option>
+          <option value="red">赤红</option>
+        </select>
+      </div>
+      <div class="appearance-field">
+        <label for="webBackgroundSelect">背景基调</label>
+        <select
+          id="webBackgroundSelect"
+          class="header-background-select"
+          aria-label="背景基调"
+          title="背景基调（与「界面风格」独立）"
+          onchange="changeWebBackground(this.value)"
+        >
+          <option value="default">默认</option>
+          <option value="ink">墨色</option>
+          <option value="warm">暖调</option>
+          <option value="cool">冷调</option>
+          <option value="amoled">纯黑</option>
+          <option value="glass">玻璃</option>
+          <option value="aurora">渐变</option>
+          <option value="paper">纸感</option>
+          <option value="mist">海雾</option>
+          <option value="forest">深林</option>
+          <option value="clay">陶石</option>
+        </select>
+      </div>
+      <div class="appearance-field">
+        <label for="webTextureSelect">材质纹理</label>
+        <select
+          id="webTextureSelect"
+          class="header-background-select"
+          aria-label="材质纹理"
+          title="材质纹理（与「界面风格」「背景基调」独立，可任意叠加）"
+          onchange="changeWebTexture(this.value)"
+        >
+          <option value="none">无</option>
+          <option value="grain">颗粒</option>
+          <option value="paper">纸纤维</option>
+          <option value="linen">亚麻</option>
+          <option value="frost">磨砂</option>
+          <option value="grid">十字网</option>
+          <option value="dots">点阵</option>
+          <option value="stripe">竖条纹</option>
+          <option value="wood">木纹</option>
+        </select>
+      </div>
+      <div class="appearance-field">
+        <label for="webOpacitySelect">面板透明度</label>
+        <select
+          id="webOpacitySelect"
+          class="header-background-select"
+          aria-label="面板透明度"
+          title="面板透明度（只影响界面框架，照片不受影响；与「材质纹理」独立，可任意叠加）"
+          onchange="changeWebOpacity(this.value)"
+        >
+          <option value="opaque">不透明</option>
+          <option value="slight">轻微</option>
+          <option value="medium">中等</option>
+          <option value="clear">通透</option>
+        </select>
+      </div>
     </div>
 
     <!-- Main -->

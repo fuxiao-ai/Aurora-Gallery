@@ -156,13 +156,23 @@ function countOf(hay, needle) {
   return hay.split(needle).length - 1;
 }
 
-/** 取两个标记之间的片段（含首标记）。找不到时返回空串，由「夹具自证」断言兜住 */
+/**
+ * 取两个标记之间的片段（含 from、不含 to）。
+ * - `from` 找不到 → 空串（由调用方的「夹具自证」断言兜住）。
+ * - `to` 找不到 → 退回「from 到文件末尾」。
+ * ⚠️ `to` 里的换行按 `\r?\n` 匹配。本仓库在 Windows 上 core.autocrlf=true，工作区是 CRLF；
+ *    若把终点写死成裸 `\n`，本文件里 17 处以含换行串作终点的调用会全部落空，切片悄悄延伸到
+ *    文件末尾，断言就从「这一小块里有 X」退化成「整个文件里有 X」—— 看着全绿，实为假绿。
+ *    2026-10-06 修正前，本脚本在 CRLF 工作区上就是这种状态。
+ */
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function sliceBetween(src, from, to) {
   const a = src.indexOf(from);
   if (a < 0) return '';
   if (!to) return src.slice(a);
-  const b = src.indexOf(to, a + from.length);
-  return b < 0 ? src.slice(a) : src.slice(a, b);
+  const re = new RegExp(to.replace(/\r\n/g, '\n').split('\n').map(escapeRe).join('\\r?\\n'));
+  const m = re.exec(src.slice(a + from.length));
+  return m ? src.slice(a, a + from.length + m.index) : src.slice(a);
 }
 
 const htmlRaw = read(HTML);
