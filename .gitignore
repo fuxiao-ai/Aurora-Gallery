@@ -47,3 +47,8 @@ Desktop.ini
 # 随包内置模型（npm run bundle-models，打包时由 afterPack 复制到 resources/models）
 # 体积数百 MB，且 InsightFace 预训练权重仅限非商业研究用途，不进版本库。
 /models/
+
+# WorkBuddy 工作目录（记忆 / 探针截图 / 回归临时快照 / 基准数据）
+# 实测 282 MB（tmp/ 230 MB + artifacts/ 42 MB + bench/ 7.3 MB），历史上从未入库。
+# 契约与设计正文另在 docs/ 与 docs/contracts/，共享不依赖这里。
+.workbuddy/
