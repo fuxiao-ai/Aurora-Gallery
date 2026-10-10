@@ -27,6 +27,35 @@
   },
   "homepage": "https://foredawn.vip/",
   "license": "MIT",
+  "keywords": [
+    "photo-manager",
+    "photo-gallery",
+    "photo-library",
+    "image-viewer",
+    "image-management",
+    "local-first",
+    "offline",
+    "self-hosted",
+    "privacy",
+    "electron",
+    "desktop-app",
+    "windows",
+    "macos",
+    "raw",
+    "heic",
+    "live-photo",
+    "face-recognition",
+    "semantic-search",
+    "onnxruntime",
+    "sqlite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fuxiao-ai/Aurora-Gallery.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fuxiao-ai/Aurora-Gallery/issues"
+  },
   "type": "commonjs",
   "engines": {
     "node": ">=22.0.0 <23.0.0"
