@@ -242,6 +242,9 @@ const TERMS = [
   ['仰拍', 'a shot from below'],
   ['镜面反射', 'a mirror reflection'],
   ['水中倒影', 'a reflection in the water'],
+  // 🔴 词条是**数据**不是文案：zh 是用户点的那一下、en 直接进模型前向。整条 TERMS
+  //    同时兼任 `tag-vocabulary.js` 的零样本词表，改名会让已建索引的口径漂。
+  //    「统一 照片/图片 用词」那类全局替换必须把它排除。
   ['黑白照片', 'a black and white photo'],
   ['胶片感', 'a film look'],
   ['复古风', 'a retro style'],
@@ -376,4 +379,16 @@ function labelsFor(lang) {
   return TERMS.map((pair) => (english ? pair[1] : pair[0]));
 }
 
-module.exports = { TERMS, labelsFor };
+/**
+ * 预选词的**条数上限与下限，唯一定义处**。
+ *
+ * ⚠️ 这两组数现在被**两份实现**引用：
+ *   · `src/main/semantic-tags.js#SemanticTags.suggestTerms` —— 主进程只读 SQL（常规路径）；
+ *   · `src/workers/semantic-worker.js#readOnly` 的 `suggest` 分支 —— 老契约（给一组指定的词打分）。
+ * 两边各写一份的后果不是报错，而是**同一个界面元素在被两条路服务时给出不同条数**，
+ * 而界面只摆 5 个（`SUGGEST_COUNT`），差 24 还是 64 在界面上**看不出来** —— 静默分叉。
+ */
+const SUGGEST_LIMIT_DEFAULT = 24;
+const SUGGEST_LIMIT_MAX = 64;
+
+module.exports = { TERMS, labelsFor, SUGGEST_LIMIT_DEFAULT, SUGGEST_LIMIT_MAX };

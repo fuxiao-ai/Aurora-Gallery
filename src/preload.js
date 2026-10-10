@@ -54,6 +54,19 @@ contextBridge.exposeInMainWorld('photoAPI', {
   exportThumbnailBackfillFailedPaths: function () {
     return ipcRenderer.invoke('export-thumbnail-backfill-failed-paths');
   },
+  // 缩略图「全量重建」（把规格与当前设置不符的缩略图按新档位 / 新编码重跑一遍）
+  startThumbnailRebuild: function () {
+    return ipcRenderer.invoke('start-thumbnail-rebuild');
+  },
+  cancelThumbnailRebuild: function () {
+    return ipcRenderer.invoke('cancel-thumbnail-rebuild');
+  },
+  getThumbnailRebuildProgress: function () {
+    return ipcRenderer.invoke('get-thumbnail-rebuild-progress');
+  },
+  getThumbnailRebuildStatus: function () {
+    return ipcRenderer.invoke('get-thumbnail-rebuild-status');
+  },
   maintenanceCleanupMissingFiles: function () {
     return ipcRenderer.invoke('maintenance-cleanup-missing-files');
   },
@@ -93,11 +106,36 @@ contextBridge.exposeInMainWorld('photoAPI', {
   openDatabaseFolder: function () {
     return ipcRenderer.invoke('open-database-folder');
   },
+  /** 设置页「数据库位置」那一行的读数：位置 / 体积 / 目标盘余量。 */
+  getDataDirInfo: function () {
+    return ipcRenderer.invoke('get-data-dir-info');
+  },
+  /** 挑一个文件夹当新的数据目录（只挑，不搬）。 */
+  selectDataDir: function (options) {
+    return ipcRenderer.invoke('select-data-dir', options || null);
+  },
+  /**
+   * 把图库数据整份搬到新目录。耗时按 GB 计，进度走 `onDataDirMigrateProgress`；
+   * 成功后主进程会**重启应用**（1.5 秒后），调用方要把这句提示给用户。
+   */
+  migrateDataDir: function (payload) {
+    return ipcRenderer.invoke('migrate-data-dir', payload);
+  },
+  onDataDirMigrateProgress: function (callback) {
+    ipcRenderer.on('data-dir-migrate-progress', function (event, payload) {
+      callback(payload);
+    });
+  },
   backupDatabase: function () {
     return ipcRenderer.invoke('backup-database');
   },
   getBackgroundTasks: function () {
     return ipcRenderer.invoke('get-background-tasks');
+  },
+  // 诊断数据（上次维护结果 / 交互抢占 / 写库队列快照）—— **不是后台任务**，见
+  // `docs/contracts/background-tasks.md` §0。与任务分开一个通道，别混。
+  getDiagnostics: function () {
+    return ipcRenderer.invoke('get-diagnostics');
   },
   onBackgroundTasksChanged: function (callback) {
     ipcRenderer.on('background-tasks-changed', function () {
@@ -113,6 +151,70 @@ contextBridge.exposeInMainWorld('photoAPI', {
   photoToggleFavorite: function (photoId) {
     return ipcRenderer.invoke('photo-toggle-favorite', photoId);
   },
+  /**
+   * 组织元数据：评分 / 标记 / 用户标签。三个维度彼此独立，不要合成一个「设置元数据」
+   * 的胖接口 —— 冲片时一次只动一个维度（左手按 X 过片、按 1-5 打分），合起来会让
+   * 「按了一下」发一整包，网络/序列化成本乘以维度数。
+   *
+   * 🔴 `photoSetFlag` 与 `photoToggleFavorite` **语义不同**：收藏是 toggle（传 id 就翻转），
+   *    标记是**幂等设值**（传什么就是什么）。冲片是盲操作，toggle 会把「以为没按上、
+   *    又按一次」变成误清。理由详见 `database.js#setPhotoFlag` 与
+   *    `docs/contracts/org-metadata.md`。
+   *
+   * 四个写通道都返回 `{ success, ... }`，渲染端**必须**看 `success` 再更新本地状态，
+   * 并整体替换（而不是增量改）—— 标签是「全量替换」语义，回包才是真正的最终集合。
+   */
+  /** 设评分。`rating` 0 = 取消，1-5 = 星级；越界由主进程夹取。 */
+  photoSetRating: function (photoId, rating) {
+    return ipcRenderer.invoke('photo-set-rating', photoId, rating);
+  },
+  /** 设标记。`flag` ∈ 'none' | 'pick' | 'reject'；非法值回落 'none'。**幂等**。 */
+  photoSetFlag: function (photoId, flag) {
+    return ipcRenderer.invoke('photo-set-flag', photoId, flag);
+  },
+  /** 读某张图的用户标签（`[{id, name}]`，按名字不区分大小写排序）。 */
+  photoGetTags: function (photoId) {
+    return ipcRenderer.invoke('photo-get-tags', photoId);
+  },
+  /** **全量替换**某张图的标签集合。不存在的标签自动创建；返回最终集合。 */
+  photoSetTags: function (photoId, names) {
+    return ipcRenderer.invoke('photo-set-tags', photoId, names);
+  },
+  /** 标签列表 + 使用计数（`[{id, name, photo_count}]`，按使用量降序）。 */
+  listTags: function () {
+    return ipcRenderer.invoke('list-tags');
+  },
+  /** 重命名标签；归一后撞名会**合并**（返回的 id 可能是目标标签的 id，以返回值为准）。 */
+  renameTag: function (tagId, newName) {
+    return ipcRenderer.invoke('rename-tag', tagId, newName);
+  },
+  /** 删除标签（连同它的全部关联）。 */
+  deleteTag: function (tagId) {
+    return ipcRenderer.invoke('delete-tag', tagId);
+  },
+  /**
+   * 图片编辑（P0）：旋转 / 翻转，**写回原文件**。
+   *
+   * `actions` 是**一串**动作（按顺序应用）：预览态编辑把用户连点的动作攒成序列，
+   * 保存时合成一条算子 —— 只编码一次，天画质不会因为多点了两次而多掉一代。
+   *
+   * 返回 `{ success, id, width, height, size }` —— `width`/`height` 是**输出文件**的真实尺寸。
+   * 🔴 渲染端不要自己推算新尺寸（90/270 对调 + 翻转 + EXIF 方向归一化，组合有十几种）。
+   */
+  photoEditTransform: function (photoId, actions) {
+    return ipcRenderer.invoke('photo-edit-transform', photoId, actions);
+  },
+  /** 图片编辑（P1）：裁剪并另存副本（进库）。`rect` 用「用户看到的图」的坐标系。 */
+  photoEditCrop: function (photoId, rect) {
+    return ipcRenderer.invoke('photo-edit-crop', photoId, rect);
+  },
+  /**
+   * 图片编辑：一次性应用「一串变换 + 一个裁剪」（预览态点「保存」的唯一入口）。
+   * `payload` = `{ actions?: string[], crop?: {left,top,width,height}|null }`。
+   */
+  photoEditApply: function (photoId, payload) {
+    return ipcRenderer.invoke('photo-edit-apply', photoId, payload);
+  },
   showPhotoInFolder: function (photoId) {
     return ipcRenderer.invoke('show-photo-in-folder', photoId);
   },
@@ -126,7 +228,7 @@ contextBridge.exposeInMainWorld('photoAPI', {
     return ipcRenderer.invoke('get-photo-dimensions', photoId);
   },
   /**
-   * 「AI 内容标签」。独立于 getPhotoInfo 的一条路 —— 标签在搜图索引库里而不是 photos 表，
+   * 「主题标签」。独立于 getPhotoInfo 的一条路 —— 标签在搜图索引库里而不是 photos 表，
    * 所以渲染端要把它与 getPhotoInfo / getPhotoDimensions 的两次结果**并进同一个对象**
    * 再重画（见 app.js 的 patchInfo），不能各画各的。
    */
@@ -134,7 +236,36 @@ contextBridge.exposeInMainWorld('photoAPI', {
     return ipcRenderer.invoke('get-photo-ai-tags', photoId, locale);
   },
   /**
-   * 主进程**补写** AI 标签（启动期回填）并真的补到了才会推这个通道 —— 没有新标签时不推。
+   * 「画面标签」（JoyTag）。与 getPhotoAiTags 同构的跨库只读通道 —— 标签在 tag 索引库
+   * （tag-index.sqlite）里，同样要并进同一个对象再重画（见 app.js 的 patchInfo）。
+   * 中文映射在主进程通道内做，渲染端拿到的已是显示文本。
+   */
+  getPhotoJoyTags: function (photoId, locale) {
+    return ipcRenderer.invoke('get-photo-joy-tags', photoId, locale);
+  },
+  /**
+   * 「标签导航页」—— 分类树 / 节点下的标签 / 搜索 / 某标签下的照片。
+   *
+   * 四条独立通道而不是一条大接口：树的节点是**懒展开**的（三级树每次只展开一层），
+   * 合成一条会让「展开一个子类」也把整棵树重算一遍，而节点命中数是要查倒排的。
+   */
+  getTagNavStatus: function () {
+    return ipcRenderer.invoke('get-tag-nav-status');
+  },
+  getTagNavTree: function () {
+    return ipcRenderer.invoke('get-tag-nav-tree');
+  },
+  getTagNavNode: function (nodeId, locale) {
+    return ipcRenderer.invoke('get-tag-nav-node', nodeId, locale);
+  },
+  getTagNavSearch: function (keyword, locale) {
+    return ipcRenderer.invoke('get-tag-nav-search', keyword, locale);
+  },
+  getTagNavPhotos: function (tag, options) {
+    return ipcRenderer.invoke('get-tag-nav-photos', tag, options);
+  },
+  /**
+   * 主进程**补写** 主题标签（启动期回填）并真的补到了才会推这个通道 —— 没有新标签时不推。
    * 标签不在 `photos` 表里、也没有别的推送路径，所以不接这个通知就只能等用户手动切图。
    */
   onAiTagsUpdated: function (callback) {
@@ -176,6 +307,9 @@ contextBridge.exposeInMainWorld('photoAPI', {
   },
   searchPhotos: function (query, options) {
     return ipcRenderer.invoke('search-photos', query, options);
+  },
+  searchFolders: function (query, options) {
+    return ipcRenderer.invoke('search-folders', query, options);
   },
   aiSearchStatus: function () {
     return ipcRenderer.invoke('ai-search-status');
@@ -296,6 +430,18 @@ contextBridge.exposeInMainWorld('photoAPI', {
     ipcRenderer.on('show-close-chooser', function () {
       callback();
     });
+  },
+  /**
+   * 主进程发起的提示 / 确认（主进程没有界面 ⇒ 弹窗一律由渲染端画，才会跟主题走）。
+   * 收到后必须调 `respondAppDialog` 回执，否则主进程会等满 20 秒再回落到系统弹窗。
+   */
+  onAppDialogRequest: function (callback) {
+    ipcRenderer.on('app-dialog-request', function (event, payload) {
+      callback(payload);
+    });
+  },
+  respondAppDialog: function (payload) {
+    ipcRenderer.send('app-dialog-response', payload);
   },
   resolveWindowClose: function (payload) {
     ipcRenderer.send('resolve-window-close', payload);

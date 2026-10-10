@@ -39,7 +39,7 @@
   /**
    * 大数压成「1.2万 / 3.4k」。
    *
-   * 覆盖率的分母是**全库照片数**（本机 122 万），原样写进状态行会把整行撑破；阈值那两个
+   * 覆盖率的分母是**全库图片数**（本机 122 万），原样写进状态行会把整行撑破；阈值那两个
    * 换行规则与渲染端 `compactCount` 刻意保持一致 —— 同为「怎么把大数说小」的约定，
    * 两端给出不同写法会让用户以为是两个不同的数字。
    */
@@ -181,11 +181,11 @@
         const previous = lastState;
         const finished =
           previous &&
-          !state.busy &&
-          (previous.busy || previous.indexed !== state.indexed || previous.people !== state.people);
+          !state.running &&
+          (previous.running || previous.indexed !== state.indexed || previous.people !== state.people);
         // 索引进行中：人物总数变化 = 有新分组出现，顺手增量拉一次已识别结果，
         // 让「人物」页在索引跑完之前就能显示，而不是停在一句「索引处理中」。
-        const liveChanged = previous && state.busy && previous.people !== state.people;
+        const liveChanged = previous && state.running && previous.people !== state.people;
         lastState = state;
         // 引导只讲「这个面板能做的事」（模型 / 索引 / 增量更新），且每行最多一句：
         // 它当初是「后台任务」清单里的一行，旁边是「缩略图补全」这类同样只有一行说明的任务。
@@ -193,10 +193,10 @@
         // 「人物」视图的动作，本面板既没有列表也没有命名入口，用户读完只能在本页找一个
         // 不存在的按钮。跨页的那一步改由下方的「前往人物页」按钮承载，编号一并去掉
         // （同一位置一次只显示一句，看不到三步全貌，编号只会暗示后面还有更多步骤）。
-        // 「索引跑完但零人物」这一支原先还会补一句解释，让人去核对照片里是否有清晰正脸、
+        // 「索引跑完但零人物」这一支原先还会补一句解释，让人去核对图片里是否有清晰正脸、
         // 或到下方的「识别设置」调整参数后重建索引。那一整句已删除：它把结果归因到用户的
-        // 照片质量，而零结果的常见成因在索引本身（模型没跑通、目录没扫全），这句话反而让人
-        // 先去怀疑自己的照片；且「识别设置」当时还是个默认收起的 <details>，指路也指不准。
+        // 图片质量，而零结果的常见成因在索引本身（模型没跑通、目录没扫全），这句话反而让人
+        // 先去怀疑自己的图片；且「识别设置」当时还是个默认收起的 <details>，指路也指不准。
         // 该状态现在只留 stateLine 的计数，引导整格收起——与同清单里的其它任务行一致。
         const indexed = (state.indexed || 0) > 0;
         const peopleCount = state.people || 0;
@@ -215,9 +215,9 @@
               '先下载并校验模型（约 39 MB），再建立人脸索引。',
               'Download and verify the models (~39 MB) first, then build the face index.',
             );
-          else if (state.busy)
+          else if (state.running)
             text = t(
-              '正在后台处理。可以关闭此窗口；停止后再次更新会跳过已完成的照片。',
+              '正在后台处理。可以关闭此窗口；停止后再次更新会跳过已完成的图片。',
               'Processing in the background. You can close this dialog; updating after stopping skips completed photos.',
             );
           else if (state.phase === 'cancelled')
@@ -252,7 +252,7 @@
                 : t(
                     '索引已就绪，已分组 ' +
                       peopleCount +
-                      ' 位人物。导入新照片后，点「建立 / 更新人脸索引」做增量更新。',
+                      ' 位人物。导入新图片后，点「建立 / 更新人脸索引」做增量更新。',
                     'Index ready with ' +
                       peopleCount +
                       ' people. After importing photos, build / update to index the new ones.',
@@ -277,7 +277,7 @@
             text = '';
           else
             text = t(
-              '模型已就绪，点「建立 / 更新人脸索引」开始。若还没有照片，请先到「媒体库」添加并扫描目录。',
+              '模型已就绪，点「建立 / 更新人脸索引」开始。若还没有图片，请先到「媒体库」添加并扫描目录。',
               'Models ready. Build / update the face index to start. If you have no photos yet, add and scan folders under Library first.',
             );
           guide.textContent = text;
@@ -288,11 +288,11 @@
         // 「前往人物页」只在真有可命名的人物时出现：索引跑完但零人脸时点进去只会看到空页面。
         if (goPeopleButton) goPeopleButton.hidden = !(indexed && peopleCount > 0);
         if (progressBar) {
-          progressBar.hidden = !state.busy;
+          progressBar.hidden = !state.running;
           if (state.phase === 'downloading' && state.file) progressBar.value = state.percent || 0;
           else progressBar.removeAttribute('value');
         }
-        if (settingsFields) settingsFields.disabled = !!state.busy || !settingsLoaded;
+        if (settingsFields) settingsFields.disabled = !!state.running || !settingsLoaded;
         if (stateLine)
           stateLine.textContent =
             t(...(phaseNames[state.phase] || phaseNames.complete)) +
@@ -307,7 +307,7 @@
               : String(state.indexed || 0)) +
             ' · ' +
             t('本轮完成 ', 'Processed ') +
-            (state.processed || 0) +
+            (state.done || 0) +
             ' · ' +
             t('失败 ', 'Failed ') +
             (state.failed || 0) +
@@ -322,15 +322,15 @@
             (state.faces || 0) +
             (state.file ? ' · ' + state.file + ' ' + state.percent + '%' : '');
         taskButtons.forEach((item) => {
-          item.disabled = state.busy;
+          item.disabled = state.running;
         });
-        if (buildButton) buildButton.disabled = state.busy || !state.ready;
-        if (stopButton) stopButton.disabled = !state.busy;
+        if (buildButton) buildButton.disabled = state.running || !state.ready;
+        if (stopButton) stopButton.disabled = !state.running;
         if (state.error) errorLine.textContent = explain(state.error);
         if (finished && !detail && !panel) pendingNavigation = () => groups();
         else if (liveChanged && !detail && !panel && !pendingNavigation)
           pendingNavigation = () => groups();
-        if (panel && !state.busy && !settingsLoaded && loadPreferences)
+        if (panel && !state.running && !settingsLoaded && loadPreferences)
           pendingNavigation = loadPreferences;
       });
     }
@@ -426,12 +426,12 @@
         domainsLabel.hidden = mode !== 'scoped';
         if (mode === 'folder')
           hint.textContent = t(
-            '同一个文件夹里的脸都归为一个人物，人物名取自文件夹名。层级表示「根目录往下数第几层」—— 照片在 K:\\COS\\116\\某图包\\ 里时，层级 1 归到「116」，层级 2 会归到「某图包」。这个模式不比对特征，只认目录；所以一个文件夹里若真有两个人，它也会并成一个。',
+            '同一个文件夹里的脸都归为一个人物，人物名取自文件夹名。层级表示「根目录往下数第几层」—— 图片在 K:\\COS\\116\\某图包\\ 里时，层级 1 归到「116」，层级 2 会归到「某图包」。这个模式不比对特征，只认目录；所以一个文件夹里若真有两个人，它也会并成一个。',
             'Every face in one folder becomes one person, named after the folder. Depth counts levels below the root folder. This mode trusts your folder layout and does not compare faces, so two people sharing one folder are merged into one.',
           );
         else if (mode === 'scoped')
           hint.textContent = t(
-            '目录只当边界：同一个域里才互相比较特征，跨域绝不合并。目录就是一个人时结果和「按文件夹」一样；一个目录里有多个人时会自动拆开（拆出来的组没有名字，等你命名）。同一个人的照片分散在多个目录时，在上面的「域分组」里把它们写成一行（如 116, 117）就并进同一个域。「层级」决定边界划在根目录往下第几层 —— 边界之下的更深子目录会并回边界这一层，同一层里直接散放的照片也留在这一层，不会被塞进它的某个子目录。代价：同一个人的照片若分别放在两个目录、又没圈进同一个域，会被拆成两个人。',
+            '目录只当边界：同一个域里才互相比较特征，跨域绝不合并。目录就是一个人时结果和「按文件夹」一样；一个目录里有多个人时会自动拆开（拆出来的组没有名字，等你命名）。同一个人的图片分散在多个目录时，在上面的「域分组」里把它们写成一行（如 116, 117）就并进同一个域。「层级」决定边界划在根目录往下第几层 —— 边界之下的更深子目录会并回边界这一层，同一层里直接散放的图片也留在这一层，不会被塞进它的某个子目录。代价：同一个人的图片若分别放在两个目录、又没圈进同一个域，会被拆成两个人。',
             'Folders act as boundaries: faces are compared only inside the same domain, never across. If a folder is one person the result matches “By folder”; if a folder holds several people they are split apart automatically (the split groups stay unnamed). To keep one person spread over several folders together, list those folder names on one line above (e.g. 116, 117). “Depth” picks the level below the root the boundary is drawn at — deeper subfolders under it collapse back into it, and photos sitting loose at that level stay there instead of being pushed into a subfolder. Cost: if one person appears in two folders that are not grouped into the same domain, they become two people.',
           );
         else
@@ -517,10 +517,10 @@
             fallback.checked = value.thumbnailFallback;
             syncGrouping();
             settingsLoaded = true;
-            settingsFields.disabled = !!(lastState && lastState.busy);
+            settingsFields.disabled = !!(lastState && lastState.running);
           });
         };
-        if (!lastState || !lastState.busy) load();
+        if (!lastState || !lastState.running) load();
       };
       // 加载时机改由 refresh() 的状态回调负责（panel 模式下「面板可见即加载」），
       // 不再依赖 <details> 的 toggle 事件。
@@ -553,12 +553,12 @@
       generation++;
       detail = null;
       void call('groups', { after }, (data) => {
-        const indexing = !!(lastState && lastState.busy);
+        const indexing = !!(lastState && lastState.running);
         controls.replaceChildren();
         navigation.replaceChildren();
         if (!data.items.length) {
           // 「还没有识别到人物」与「索引是上一代识别器建的」在数据上都是 0 条，但指向的动作
-          // 完全不同：前者让人以为从没建过（甚至以为照片有问题），后者才指向「重建索引」。
+          // 完全不同：前者让人以为从没建过（甚至以为图片有问题），后者才指向「重建索引」。
           const stale = Number(lastState && lastState.staleScans) || 0;
           renderMessage(
             indexing
@@ -622,7 +622,7 @@
         controls.append(
           back,
           node('h3', personName(person) + ' #' + person.id, 'people-detail-title'),
-          node('span', data.items.length + t(' 张照片', ' photos'), 'people-detail-count'),
+          node('span', data.items.length + t(' 张图片', ' photos'), 'people-detail-count'),
         );
         if (options.manage) {
           const renameRow = node('div', '', 'people-tool-row');
@@ -656,7 +656,7 @@
                 !target.value ||
                 !global.confirm(
                   t(
-                    '将此组并入人物 #' + target.value + '？照片不会删除。',
+                    '将此组并入人物 #' + target.value + '？图片不会删除。',
                     'Merge this group into person #' + target.value + '? Photos are not deleted.',
                   ),
                 )
@@ -685,7 +685,7 @@
           controls.append(tools, renameRow, mergeRow);
         }
         if (!data.items.length)
-          renderMessage(t('这一组已经没有照片了。', 'No current photos in this group.'));
+          renderMessage(t('这一组已经没有图片了。', 'No current photos in this group.'));
         else content.className = 'people-grid people-photo-grid';
         data.items.forEach((photo) => {
           const card = node('section', '', 'people-card people-photo');
@@ -734,7 +734,7 @@
         });
         if (after) navigation.append(button(t('回到第一页', 'First page'), () => photos(person)));
         if (data.next)
-          navigation.append(button(t('更多照片', 'More photos'), () => photos(person, data.next)));
+          navigation.append(button(t('更多图片', 'More photos'), () => photos(person, data.next)));
       });
     }
     function open() {
@@ -816,7 +816,7 @@
           stopButton.disabled = true;
           toolbar.append(install, buildButton, stopButton);
         }
-        // 静态说明（「在本机检测并分组人脸，不上传照片…」）已删除：这一块当时是
+        // 静态说明（「在本机检测并分组人脸，不上传图片…」）已删除：这一块当时是
         // 「后台任务」清单里的一行，同清单其它行只有一行说明，这里再放一段解释
         // 只会把行撑高；动态状态由 guide（状态引导）与 stateLine 承担。
         children.push(guide, goPeopleButton, toolbar, progressBar, stateLine);

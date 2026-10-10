@@ -1,8 +1,8 @@
 'use strict';
 /**
- * AI 内容标签回归：零样本分类链路（词表向量 × 图片向量 → 下标数组 → 面板胶囊）。
+ * 主题标签回归：零样本分类链路（词表向量 × 图片向量 → 下标数组 → 面板胶囊）。
  *
- * 背景（2026-10-05）：照片信息面板加「AI 标签」。做法**不引入任何新模型** —— SigLIP2 是
+ * 背景（2026-10-05）：照片信息面板加「主题标签」。做法**不引入任何新模型** —— SigLIP2 是
  * 双编码器，「零样本分类」本来就是它的原生能力：把候选标签编码成文本向量，与库里已有的
  * 图片向量算余弦，取超过阈值的 top-N。图片向量在搜图索引里、词向量有磁盘缓存，所以边际成本
  * 只是算术（本机 7374 张全量重算 1.8 秒）。
@@ -43,6 +43,17 @@ const RUN_REGRESSIONS = 'scripts/run-regressions.js';
 
 function read(rel) {
   return fs.readFileSync(path.join(ROOT, rel), 'utf8');
+}
+
+/**
+ * 结构断言一律读**剥掉注释**的源码（元规则③：注释里的说明文字会替代码作证）。
+ * 本文件里踩过两次：`semantic-tags.js` 的注释里写着「为什么不复用 IndexStore」，
+ * 与 `IndexStore` 的代码检查撞在一起 ⇒ 引用被摘掉了断言照样红/照样绿。
+ */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
 }
 
 const errors = [];
@@ -348,9 +359,17 @@ async function run() {
       '🔴 主进程侧只读打开索引库（两个写入者会互相拿 SQLITE_BUSY）',
       read(SEMANTIC_TAGS).includes('readonly: true'),
     );
+    // ⚠️ 判据必须**精确到那个模块**：`IndexStore` 定义在 `src/ai/index-store.js`（会 ATTACH 主库），
+    //    而 `src/ai/tag-index-store.js` 是**另一个**模块 —— 里面只有常量 / DDL / 纯函数，
+    //    既没有 ATTACH 也没有顶层副作用（`new Database` 全在类方法里）。
+    //    早先这里写的是 `!src.includes('index-store')`，2026-10-09 因为「两处展示线共用同一个常量」
+    //    在 semantic-tags.js 里 `require('../ai/tag-index-store')` ⇒ 子串命中 `tag-index-store` ⇒ **假红**。
+    //    改法不是放宽，是**把判据收准 + 剥注释**：`IndexStore` 与 `index-store` 仍然一个都不许出现。
+    const semanticSrc = stripComments(read(SEMANTIC_TAGS)).replace(/tag-index-store/g, '');
     check(
       'SemanticTags 不复用 IndexStore（那个会 ATTACH 主库，主进程已有主库连接）',
-      !read(SEMANTIC_TAGS).includes('index-store'),
+      !/index-store|IndexStore/.test(semanticSrc),
+      semanticSrc.split('\n').filter((l) => /index-store|IndexStore/.test(l)).join(' | '),
     );
   } finally {
     try {
@@ -427,7 +446,7 @@ async function run() {
 
   // ---------------------------------------------------------------------- 输出
 
-  process.stdout.write('[photo-tags-regression] AI 内容标签链路契约\n');
+  process.stdout.write('[photo-tags-regression] 主题标签链路契约\n');
   for (const line of notes) process.stdout.write(line + '\n');
   if (errors.length) {
     process.stdout.write('\n');

@@ -28,6 +28,12 @@
  *      ⚠️ 这条只对 `ui-events.js` 成立：`app.js:4327`（预览信息面板）与
  *      `shortcut-settings.js`（录制 UI）里的 `e.key` 是**局部交互**，不是注册表动作，
  *      对它们做同样断言会假红。
+ *   5. 🔴 **注册表对 ≠ 接线对**（本轮新增）：动作在 ACTIONS 表里存在且 well-formed，
+ *      只证明「设置页能画出这一行」；**按下去有没有人接**是另一条线，此前零覆盖。
+ *      两条断言：① 每个 `typeof onX === 'function'` 的 `onX` 必须在自己的作用域链上有声明；
+ *      ② `bindKeyboardShortcuts` 从 `options` 上读的每个键，`app.js` 调用点都得喂进来。
+ *      漏任一侧的症状**一模一样**：`typeof` 读到 `undefined`、守卫永假、键被吃掉而什么也不发生
+ *      （不抛异常、不写日志）。见下方 §4.1 的实测背景。
  *
  * 判定口径同其它静态守护：宁可漏报不误报。
  */
@@ -40,6 +46,7 @@ const ROOT = path.join(__dirname, '..');
 const SHORTCUTS = 'src/renderer/shortcuts.js';
 const SHORTCUT_SETTINGS = 'src/renderer/shortcut-settings.js';
 const EVENTS = 'src/renderer/ui-events.js';
+const APP = 'src/renderer/app.js';
 const SETTINGS = 'src/renderer/settings.js';
 const MAIN = 'src/main.js';
 const I18N = 'src/renderer/i18n.js';
@@ -214,17 +221,19 @@ function commentFree(rel) {
 
 const fxMain = commentFree(MAIN);
 const fxEvents = commentFree(EVENTS);
+const fxApp = commentFree(APP);
 const fxSettings = commentFree(SETTINGS);
 const fxPanel = commentFree(SHORTCUT_SETTINGS);
-const downgraded = [fxMain, fxEvents, fxSettings, fxPanel].filter((f) => !f.viaAcorn);
+const downgraded = [fxMain, fxEvents, fxApp, fxSettings, fxPanel].filter((f) => !f.viaAcorn);
 check(
-  '夹具自证：四个源文件都走 acorn 剥离注释（没降级到会认错正则的那条路）',
+  '夹具自证：五个源文件都走 acorn 剥离注释（没降级到会认错正则的那条路）',
   downgraded.length === 0,
   downgraded.map((f) => f.err).join(' | '),
 );
 
 const mainCode = fxMain.code;
 const eventsCode = fxEvents.code;
+const appCode = fxApp.code;
 const settingsCode = fxSettings.code;
 const panelCode = fxPanel.code;
 
@@ -510,6 +519,262 @@ check(
   eventsCode.includes("actionFor(e, 'preview')"),
   '',
 );
+
+// ── 4.1 🔴 「注册表对 ≠ 接线对」：handler 引用的回调必须有来源 ────────────────────
+//
+// 实测背景（2026-10-10）：给 `nav.randomPage`（Alt+R）加 handler 时，
+// `bindKeyboardShortcuts` 的局部变量表漏了 `var onGoToRandomPage = options.onGoToRandomPage;`。
+// JS 里 `typeof 未声明标识符` **合法且恒为 `'undefined'`**（不抛 ReferenceError）
+// ⇒ 守卫永假 ⇒ 走 `e.preventDefault(); return;`，键被吃掉、什么也不发生。
+// 顺带查出同一批里另外两条**更早**就断了的接线（HEAD 上就断，非本轮引入）：
+// `global.addFolder`（onHandleAddFolder）与 `global.devtools`（onToggleDevTools）——
+// 两条都在 ui-events 侧声明齐了，但 `app.js` 的调用点从没喂过。
+// 三个动作在注册表断言下**全绿**，一条都不会红 —— 本文件自己的头注释早就写过
+// 「标题栏菜单里写着 Ctrl+O / F11 / F12，实际没有任何人监听」，这就是同一件事又发生了一次。
+//
+// ⚠️ ② 只对 `bindKeyboardShortcuts` 断言，不铺开到全部 14 个 `bind*`：
+// 实测对全部 bind* 做「used ⊆ provided」会误报 —— `bindMobileSidebar` 的
+// `closeAfterDesktopWidth`（`options.x !== false` 是**带默认值的可选项**，不喂是设计），
+// `bindSettingsDelegates` 的 `previewBindings` / `onPersistPreviewDisplay`
+// （孤儿分支：全仓只有 ui-events.js 自己提到这两个名字，是死代码而非接线断）。
+// 快捷键这条路上每个 options 都是「纯回调、无默认值」⇒ 约束成立且零误报。
+{
+  const parseScript = (code) =>
+    acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+
+  /** 把一个绑定模式里的名字收进 names（只处理最常见的几种形态） */
+  function patternNames(pat, names) {
+    if (!pat) return;
+    if (pat.type === 'Identifier') names.add(pat.name);
+    else if (pat.type === 'ObjectPattern') {
+      for (const p of pat.properties) patternNames(p.value || p.argument, names);
+    } else if (pat.type === 'ArrayPattern') {
+      for (const p of pat.elements) patternNames(p, names);
+    } else if (pat.type === 'AssignmentPattern') patternNames(pat.left, names);
+    else if (pat.type === 'RestElement') patternNames(pat.argument, names);
+  }
+
+  /** 收集一个作用域里被提升的 var / 函数声明名（**不**进入嵌套函数体） */
+  function hoistNames(node) {
+    const names = new Set();
+    const stack = [node];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur.type !== 'string') continue;
+      if (cur.type === 'FunctionDeclaration' && cur.id) names.add(cur.id.name);
+      if (cur !== node && /Function/.test(cur.type)) continue;
+      if (cur.type === 'VariableDeclaration' && cur.kind === 'var') {
+        for (const d of cur.declarations) patternNames(d.id, names);
+      }
+      for (const k in cur) {
+        if (k === 'type' || k === 'start' || k === 'end' || k === 'loc') continue;
+        const v = cur[k];
+        if (Array.isArray(v)) {
+          for (const c of v) if (c && typeof c.type === 'string') stack.push(c);
+        } else if (v && typeof v.type === 'string') stack.push(v);
+      }
+    }
+    return names;
+  }
+
+  /** 引擎/宿主自带的全局，出现在 `typeof X === 'function'` 里是**有意探测**，不算漏声明 */
+  const HOST_GLOBALS = new Set([
+    'ResizeObserver',
+    'IntersectionObserver',
+    'MutationObserver',
+    'requestAnimationFrame',
+    'cancelAnimationFrame',
+    'structuredClone',
+    'fetch',
+  ]);
+
+  /** 找出所有 `typeof <ident>` 的 <ident>，逐个判断它在不在自己的作用域链上 */
+  function scopeUndeclared(code) {
+    const ast = parseScript(code);
+    const found = [];
+    const scopes = [hoistNames(ast)];
+    (function walk(node) {
+      if (!node || typeof node.type !== 'string') return;
+      if (/Function/.test(node.type)) {
+        const local = hoistNames(node.body || node);
+        for (const p of node.params || []) patternNames(p, local);
+        if (node.type === 'FunctionExpression' && node.id) local.add(node.id.name);
+        scopes.push(local);
+        for (const p of node.params || []) walk(p);
+        walk(node.body);
+        scopes.pop();
+        return;
+      }
+      if (
+        node.type === 'UnaryExpression' &&
+        node.operator === 'typeof' &&
+        node.argument &&
+        node.argument.type === 'Identifier'
+      ) {
+        const name = node.argument.name;
+        found.push({ name: name, declared: HOST_GLOBALS.has(name) || scopes.some((s) => s.has(name)) });
+      }
+      for (const k in node) {
+        if (k === 'type' || k === 'start' || k === 'end' || k === 'loc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) {
+          for (const c of v) walk(c);
+        } else if (v && typeof v.type === 'string') walk(v);
+      }
+    })(ast);
+    return {
+      total: found.length,
+      undeclared: [...new Set(found.filter((f) => !f.declared).map((f) => f.name))].sort(),
+    };
+  }
+
+  // 阳性对照：同一套解析在合成源码上必须能分清「已声明」与「漏声明」。
+  // 少了它，解析一旦退化成「什么都算已声明」，下面那条就是恒真的假绿。
+  const probe = scopeUndeclared(
+    '(function () { function f(options) { var onA = options.onA;' +
+      " if (typeof onA === 'function') onA();" +
+      " if (typeof onB === 'function') onB();" +
+      " if (typeof ResizeObserver === 'function') new ResizeObserver();" +
+      ' } })();',
+  );
+  check(
+    '阳性对照：作用域解析能分清「已声明」「宿主全局」「漏声明」三种 typeof 守卫',
+    probe.total === 3 && probe.undeclared.join(',') === 'onB',
+    JSON.stringify(probe),
+  );
+
+  const uiGuards = scopeUndeclared(eventsCode);
+  check(
+    '夹具自证：ui-events.js 里真的抽到了 typeof 守卫（抽不到 = 下面那条恒真）',
+    uiGuards.total >= 100,
+    String(uiGuards.total),
+  );
+  check(
+    "🔴 ui-events.js 每个 `typeof onX === 'function'` 的 onX 都在自己的作用域链上有声明" +
+      '（漏声明 ⇒ typeof 恒 undefined / 守卫永假 / 键被吃掉而什么也不发生）',
+    uiGuards.undeclared.length === 0,
+    uiGuards.undeclared.join(', '),
+  );
+
+  // 另一端：`bindKeyboardShortcuts` 从 options 读的每个键，调用点都得真喂进来。
+  // 只补声明不补调用点 = 局部变量恒 undefined，症状与上一条**一模一样**（仍然静默）。
+  {
+    const bindFn = (function find(node) {
+      if (!node || typeof node.type !== 'string') return null;
+      if (
+        node.type === 'FunctionDeclaration' &&
+        node.id &&
+        node.id.name === 'bindKeyboardShortcuts'
+      ) {
+        return node;
+      }
+      for (const k in node) {
+        if (k === 'type' || k === 'start' || k === 'end' || k === 'loc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) {
+          for (const c of v) {
+            const hit = find(c);
+            if (hit) return hit;
+          }
+        } else if (v && typeof v.type === 'string') {
+          const hit = find(v);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    })(parseScript(eventsCode));
+    check('夹具自证：切出了 bindKeyboardShortcuts 的函数节点', !!bindFn);
+
+    const usedKeys = new Set();
+    if (bindFn) {
+      (function walk(node) {
+        if (!node || typeof node.type !== 'string') return;
+        if (
+          node.type === 'MemberExpression' &&
+          !node.computed &&
+          node.object &&
+          node.object.type === 'Identifier' &&
+          node.object.name === 'options' &&
+          node.property &&
+          node.property.type === 'Identifier'
+        ) {
+          usedKeys.add(node.property.name);
+        }
+        for (const k in node) {
+          if (k === 'type' || k === 'start' || k === 'end' || k === 'loc') continue;
+          const v = node[k];
+          if (Array.isArray(v)) {
+            for (const c of v) walk(c);
+          } else if (v && typeof v.type === 'string') walk(v);
+        }
+      })(bindFn);
+    }
+
+    // 调用点：`app.js` 里 `uiEvents.bindKeyboardShortcuts({ … })` 的**顶层**键
+    const callAt = appCode.indexOf('uiEvents.bindKeyboardShortcuts(');
+    let providedKeys = null;
+    let objLen = 0;
+    if (callAt >= 0) {
+      const open = appCode.indexOf('{', callAt);
+      // 花括号配对（跳过字符串字面量，否则串里的 `}` 会提前收尾）
+      let depth = 0;
+      let quote = null;
+      let end = -1;
+      for (let i = open; i < appCode.length; i++) {
+        const c = appCode[i];
+        if (quote) {
+          if (c === '\\') {
+            i++;
+            continue;
+          }
+          if (c === quote) quote = null;
+          continue;
+        }
+        if (c === '"' || c === "'" || c === '`') {
+          quote = c;
+          continue;
+        }
+        if (c === '{') depth++;
+        else if (c === '}') {
+          depth--;
+          if (depth === 0) {
+            end = i + 1;
+            break;
+          }
+        }
+      }
+      if (open >= 0 && end > 0) {
+        const objText = appCode.slice(open, end);
+        objLen = objText.length;
+        try {
+          const lit = parseScript('void (' + objText + ')').body[0].expression.argument;
+          providedKeys = new Set();
+          for (const p of lit.properties) {
+            if (!p.key) continue; // SpreadElement
+            if (p.key.type === 'Identifier') providedKeys.add(p.key.name);
+            else if (p.key.type === 'Literal') providedKeys.add(String(p.key.value));
+          }
+        } catch (e) {
+          providedKeys = null;
+        }
+      }
+    }
+
+    check(
+      '夹具自证：抽到了 ui-events 侧的 options 读取与 app.js 侧的调用点对象',
+      usedKeys.size >= 20 && !!providedKeys && objLen > 500,
+      'used=' + usedKeys.size + ' objLen=' + objLen + ' provided=' + (providedKeys ? providedKeys.size : 'null'),
+    );
+    const unfed = providedKeys ? [...usedKeys].filter((k) => !providedKeys.has(k)).sort() : [];
+    check(
+      '🔴 bindKeyboardShortcuts 从 options 读的每个键，app.js 调用点都得喂进来' +
+        '（只补声明不补调用点 ⇒ 局部变量恒 undefined，症状同样是「按键被吃掉、什么也不发生」）',
+      !!providedKeys && unfed.length === 0,
+      unfed.join(', '),
+    );
+    // 反向刻意**不**断言：调用点多喂一个键无害（两边各自演进时不该互相绊倒）。
+  }
+}
 
 check(
   '🔴 main.js 不认识任何动作 id（22 个逐个找）—— 主进程只校验形态，白名单硬抄必然漂移',

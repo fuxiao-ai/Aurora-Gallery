@@ -669,10 +669,10 @@ check(
 }
 
 check(
-  '🔴 任务面板 DOM 有副行容器（#thumbProgressDetail），且初始文案与 i18n 一致',
-  htmlSrc.includes('id="thumbProgressDetail"') &&
-    htmlSrc.includes('id="thumbProgressFill"') &&
-    htmlSrc.includes('id="thumbProgressEta"'),
+  '🔴 任务面板 DOM 有副行容器（#taskThumbDetail），且初始文案与 i18n 一致',
+  htmlSrc.includes('id="taskThumbDetail"') &&
+    htmlSrc.includes('id="taskThumbFill"') &&
+    htmlSrc.includes('id="taskThumbEta"'),
 );
 
 {
@@ -773,10 +773,20 @@ for (const key of [
     'task.thumbCountNoTotal',
     'task.thumbDetailThumbs',
     'task.thumbDetailPending',
+    'task.thumbDetailSized',
     'task.thumbDetailExif',
     'task.thumbDetailDhash',
     'task.thumbDetailHash',
     'task.thumbDetailFailed',
+    // 重建那一节（同一块面板、另一条任务）—— 2026-10-08 一并纳入：
+    // 在此之前它的键**一条都没被守**，正是「英文界面露中文」最容易漏的那一半。
+    // ⚠️ 唯独**不能**加 `task.thumbRebuildCount`：它的值就是 `'{done} / {total}（{pct}%）'`，
+    //    纯数值模板、天然一个汉字都没有 ⇒ 会被下面「中文词条必须含中文」那条判据判红。
+    //    那不是漏翻，是这条判据的适用范围（只对**带文字**的模板有效）。
+    'task.thumbRebuildEnqueueing',
+    'task.thumbRebuildTarget',
+    'task.thumbRebuildDetailRebuilt',
+    'task.thumbRebuildDetailPending',
     'task.etaPrefix',
     'task.etaDays',
     'task.etaHours',

@@ -135,7 +135,7 @@
           void onPersistPreviewDisplay();
         }
       }
-      // 「照片信息」面板的字段勾选框：既没有 id 也不是上面那张绑定表里的成员，
+      // 「图片信息」面板的字段勾选框：既没有 id 也不是上面那张绑定表里的成员，
       // 靠 data-info-field 认领（字段清单由注册表生成，不可能逐个写死 id）。
       if (
         el &&
@@ -250,10 +250,13 @@
     // 所以它不带 .nav-tab —— 那样会被 bindNavTabs 当成视图走 onShowTabContent。
     bindClick('topbarHomeBtn', options.onOpenHomePage);
     bindClick('taskPanelToggleBtn', options.onToggleTaskPanelCollapse);
-    bindClick('pauseResumeScanBtn', options.onPauseResumeScan);
-    bindClick('cancelScanBtn', options.onCancelScan);
-    bindClick('taskCancelThumbBtn', options.onCancelThumbnailBackfill);
-    bindClick('taskCancelDupHashBtn', options.onCancelDuplicateHashDetection);
+    bindClick('taskScanPause', options.onPauseResumeScan);
+    bindClick('taskScanCancel', options.onCancelScan);
+    bindClick('taskThumbStop', options.onCancelThumbnailBackfill);
+    // 顶栏的「停止重建」——与设置页那个按钮同一个处理器（停止 = 置取消标志，
+    // 任务在批次边界自行收尾，见 `cancel-thumbnail-rebuild` 的注释）。
+    bindClick('taskThumbRebuildStop', options.onCancelThumbnailRebuild);
+    bindClick('taskDupHashStop', options.onCancelDuplicateHashDetection);
     // 底栏右侧那三个控件都是下拉，走 change：选中即提交（与设置页那三份同语义）。
     bindSelectChange('browseGridStyleSelect', options.onBrowseGridStyleChange);
     bindSelectChange('browsePageSizeSelect', options.onBrowsePageSizeChange);
@@ -262,6 +265,8 @@
     bindClick('thumbBackfillStartBtn', options.onStartThumbnailBackfill);
     bindClick('thumbBackfillCancelBtn', options.onCancelThumbnailBackfill);
     bindClick('thumbBackfillExportFailedBtn', options.onExportThumbnailBackfillFailedPaths);
+    bindClick('thumbRebuildStartBtn', options.onStartThumbnailRebuild);
+    bindClick('thumbRebuildCancelBtn', options.onCancelThumbnailRebuild);
     bindClick('duplicateHashStartBtn', options.onStartDuplicateHashDetection);
     bindClick('duplicateHashCancelBtn', options.onCancelDuplicateHashDetection);
     bindClick('gotoSimilarBtn', options.onGotoSimilar);
@@ -269,6 +274,8 @@
     bindClick('maintenanceRebuildThumbFlagsBtn', options.onRunMaintenanceRebuildThumbFlags);
     bindClick('maintenanceOptimizeBtn', options.onRunMaintenanceOptimize);
     bindClick('maintenanceOpenDbFolderBtn', options.onOpenDatabaseFolder);
+    bindClick('dataDirMigrateBtn', options.onMigrateDataDir);
+    bindClick('dataDirOpenBtn', options.onOpenDatabaseFolder);
     bindClick('maintenanceBackupDbBtn', options.onRunMaintenanceBackup);
     bindClick('saveWebPasswordBtn', options.onSaveWebPassword);
     bindClick('slideshowToggleBtn', options.onToggleSlideshow);
@@ -277,7 +284,12 @@
     bindClick('previewMinimizeBtn', options.onMinimizePreview);
     bindClick('previewMaximizeBtn', options.onPreviewWindowMaximize);
     bindClick('previewRotateBtn', options.onCyclePreviewRotate);
+    bindClick('previewFlipBtn', options.onPreviewEditFlip);
+    bindClick('previewCropBtn', options.onPreviewEditCrop);
+    bindClick('previewEditSaveBtn', options.onPreviewEditSave);
+    bindClick('previewEditDiscardBtn', options.onPreviewEditDiscard);
     bindClick('previewFavoriteBtn', options.onPreviewToggleFavorite);
+    bindClick('previewLiveBtn', options.onPreviewToggleLive);
     bindClick('previewFindSimilarBtn', options.onPreviewFindSimilar);
     bindClick('previewShowInFolderBtn', options.onPreviewShowInFolder);
     bindClick('previewOpenExternalBtn', options.onPreviewOpenExternal);
@@ -293,7 +305,7 @@
     bindClick('closeChoiceCancelBtn', function () {
       if (typeof options.onSubmitCloseChoice === 'function') options.onSubmitCloseChoice('cancel');
     });
-    // 照片信息面板字段：三个批量动作都直接改勾选框再走同一条持久化路径
+    // 图片信息面板字段：三个批量动作都直接改勾选框再走同一条持久化路径
     bindClick('settingsInfoFieldsSelectAllBtn', function () {
       if (typeof options.onSetAllInfoPanelFieldsChecked === 'function')
         options.onSetAllInfoPanelFieldsChecked(true);
@@ -495,7 +507,10 @@
         }
 
         var prevTab = state.currentTab;
-        if (prevTab === 'folders' || prevTab === 'dates') {
+        // 离开这三个浏览页之前先存浏览记忆。判据必须与 `rememberBrowsePosition`
+        // 同步（那边也认这三个）—— 少一个 tab，症状是「从首页/设置页回来位置丢了」，
+        // 而看起来完全像浏览记忆本身坏了。
+        if (prevTab === 'folders' || prevTab === 'dates' || prevTab === 'tags') {
           if (typeof onSaveBrowseTabMemory === 'function') onSaveBrowseTabMemory(prevTab);
         }
 
@@ -753,8 +768,32 @@
         'wheel',
         function (e) {
           if (!dom.previewOverlay.classList.contains('active')) return;
+          var zooming = e.ctrlKey || e.metaKey;
+          /**
+           * 🔴 浮层内的**可滚动面板**（图片信息 / 字幕设置）必须先吃掉滚轮。
+           *
+           * 这两个面板是 `overflow-y: auto` 的滚动容器，但它们是 overlay 的**后代** ——
+           * 滚轮事件冒泡到这里时如果不分目标，就会「滚面板 = 换了一张图，而面板一动不动」
+           * （内容比视口长时尤其像卡死）。这里**不 preventDefault、也不切图**，把滚动交还给面板。
+           *
+           * 面板滚到上/下边界后仍旧落下去切换图片 —— 与浏览器 scroll-chaining 的直觉一致，
+           * 否则用户在面板上想把长列表滚到底时会突然发现自己换了图。
+           * Ctrl/⌘ + 滚轮永远走缩放，不受面板影响（带修饰键的意图与滚动无关）。
+           */
+          if (!zooming) {
+            var host =
+              e.target && e.target.closest
+                ? e.target.closest('.preview-info-panel, .preview-subtitle-settings-panel')
+                : null;
+            if (host) {
+              var down = e.deltaY > 0;
+              var atTop = host.scrollTop <= 0;
+              var atBottom = host.scrollTop + host.clientHeight >= host.scrollHeight - 1;
+              if (down ? !atBottom : !atTop) return;
+            }
+          }
           e.preventDefault();
-          if (e.ctrlKey || e.metaKey) {
+          if (zooming) {
             var delta = e.deltaY > 0 ? -0.15 : 0.15;
             if (typeof onApplyZoom === 'function') onApplyZoom(delta);
           } else if (typeof onNavigatePreview === 'function') {
@@ -932,12 +971,24 @@
     var onApplyZoom = options.onApplyZoom;
     var onOpenPreview = options.onOpenPreview;
     var onCyclePreviewRotate = options.onCyclePreviewRotate;
+    var onPreviewEditSave = options.onPreviewEditSave;
     var onPreviewOpenExternal = options.onPreviewOpenExternal;
     var onPreviewFindSimilar = options.onPreviewFindSimilar;
     var onToggleChromeCollapsed = options.onToggleChromeCollapsed;
     var onHandleAddFolder = options.onHandleAddFolder;
     var onToggleDevTools = options.onToggleDevTools;
     var onOpenHomePage = options.onOpenHomePage;
+    // 随机跳页（`nav.randomPage`，默认 Alt+R）。⚠️ 这一行曾经**漏了**：
+    // handler 里写着 `typeof onGoToRandomPage === 'function'`，但本函数没声明它 ——
+    // JS 里 `typeof 未声明标识符` 合法且恒 `'undefined'`，于是守卫永假、
+    // `preventDefault(); return;` 之后什么也不发生（不报错、不打日志）。
+    // 现状由 `shortcut-contract-regression.js` §4.1 那条作用域断言钉住。
+    var onGoToRandomPage = options.onGoToRandomPage;
+    // 组织元数据（标记 / 评分）。两个回调各带一个业务参数 ——
+    // 8 个动作共用一个回调，而不是 8 个回调：动作之间的区别只是参数，
+    // 拆成 8 份会让「以后加一档 6 星」变成改三处（注册表 + i18n + 这里）。
+    var onPreviewSetFlag = options.onPreviewSetFlag;
+    var onPreviewSetRating = options.onPreviewSetRating;
 
     // 键位判定统一交给注册表（`src/renderer/shortcuts.js`）。这里**只保留「动作 → 做什么」**，
     // 不再出现任何 `e.key === '...'` 字面量 —— 否则设置页改了键、这里不生效，
@@ -1010,6 +1061,12 @@
             onCyclePreviewRotate();
           }
           return true;
+        case 'preview.editSave':
+          if (typeof onPreviewEditSave === 'function') {
+            e.preventDefault();
+            onPreviewEditSave();
+          }
+          return true;
         case 'preview.zoomIn':
           if (typeof onApplyZoom === 'function') onApplyZoom(0.25);
           return true;
@@ -1029,6 +1086,44 @@
           if (typeof onPreviewOpenExternal === 'function') {
             e.preventDefault();
             onPreviewOpenExternal();
+          }
+          return true;
+        // ── 组织元数据：冲片是**盲操作**，所以这一组键的语义必须能不看屏幕也说得清 ──
+        //
+        // 🔴 标记是**幂等设值**，不是切换：连按两下 X 的结果与按一下相同
+        //    （「标为否」），而不会第二下把第一下清掉。冲片时用户左手一路按着过片，
+        //    眼睛盯的是图片不是按钮 —— 一旦做成切换，「以为没按上、又按一次」就会
+        //    静默清掉上一张的标记，而他当时已经在看下一张了。
+        //    取消标记是**独立动作**（`preview.flagClear`）。
+        case 'preview.flagPick':
+          if (typeof onPreviewSetFlag === 'function') {
+            e.preventDefault();
+            onPreviewSetFlag('pick');
+          }
+          return true;
+        case 'preview.flagReject':
+          if (typeof onPreviewSetFlag === 'function') {
+            e.preventDefault();
+            onPreviewSetFlag('reject');
+          }
+          return true;
+        case 'preview.flagClear':
+          if (typeof onPreviewSetFlag === 'function') {
+            e.preventDefault();
+            onPreviewSetFlag('none');
+          }
+          return true;
+        // 评分：数字键就是星数。**再按一次同一颗星 = 取消**（回到 0）——
+        // 这是与 `preview.zoomReset` 抢 `0` 的替代方案（那个键位已经归零缩放/旋转）。
+        // 判据放在 `org-meta-ui.js#setRating`（那才看得到当前值），这里只报「按了第几颗」。
+        case 'preview.rating1':
+        case 'preview.rating2':
+        case 'preview.rating3':
+        case 'preview.rating4':
+        case 'preview.rating5':
+          if (typeof onPreviewSetRating === 'function') {
+            e.preventDefault();
+            onPreviewSetRating(Number(action.charAt(action.length - 1)));
           }
           return true;
         default:
@@ -1056,6 +1151,13 @@
       if (sr.matches('nav.home', e)) {
         e.preventDefault();
         if (typeof onOpenHomePage === 'function') onOpenHomePage();
+        return;
+      }
+      // 随机跳页：与底栏 #randomPageBtn 调同一个 onGoToRandomPage（唯一真相源）；
+      // totalPages<=1 / AI 视图等不适用场景由 goToRandomPage 与按钮自身显隐兜底。
+      if (sr.matches('nav.randomPage', e)) {
+        e.preventDefault();
+        if (typeof onGoToRandomPage === 'function') onGoToRandomPage();
         return;
       }
       if (sr.matches('global.compactChrome', e)) {

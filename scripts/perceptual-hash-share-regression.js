@@ -47,6 +47,8 @@ const MAIN = path.join(ROOT, 'src', 'main.js');
 const DB = path.join(ROOT, 'src', 'database.js');
 const HASH = path.join(ROOT, 'src', 'main', 'perceptual-hash.js');
 const FILE_HASH = path.join(ROOT, 'src', 'main', 'file-hash.js');
+/** 缩略图「缩放 + 编码」的唯一出口 —— 旋转那一刀 2026-10-07 从 main.js 收进了这里。 */
+const THUMB_FMT = path.join(ROOT, 'src', 'main', 'thumb-format.js');
 
 let failed = 0;
 function check(name, ok, detail) {
@@ -141,7 +143,26 @@ console.log('\n[1] 哈希核心只有一份');
 console.log('\n[2] processOne 取 dHash 的位置');
 {
   const mainSrc = stripComments(read(MAIN));
-  check('夹具自证：main.js 剥注释后不再含那句提示性说明', !mainSrc.includes('否则带 EXIF 方向的照片'));
+  // 🔴 夹具自证必须指向**那句话真正所在**的文件，否则恒真。
+  //
+  // 2026-10-08 复核实测：这里原来只有一条
+  //   `check('夹具自证：main.js 剥注释后不再含那句提示性说明', !mainSrc.includes('否则带 EXIF 方向的图片'))`
+  // —— **两个方向同时失效**，它不红、不报错、也不写日志（典型的「假牙」）：
+  //   ① 「旋转那一刀」2026-10-07 已从 `main.js` 收进 `src/main/perceptual-hash.js`，
+  //      那句话现在住在 `HASH` 里，`main.js` 根本没有 ⇒ 目标选错了文件；
+  //   ② 就算选对文件，先 `stripComments` 再断言「不含这句**注释**」也是恒真的 ——
+  //      剥注释这一步已经把它抹成空格了，源码怎么写都为真。
+  // ⇒ 拆成两条各有牙的（形状照抄本文件 §1 的第 113 行那条）：
+  //    · 第 1 条读 `HASH` 剥注释 —— stripComments 真坏掉时它会红（证明剥注释有效）；
+  //    · 第 2 条读**未剥**的 `main.js` —— 那句说明被贴回 main.js 时它会红。
+  check(
+    '夹具自证：acorn 确实剥掉了注释（指向真正含这句的 perceptual-hash.js，而不是 main.js）',
+    !stripComments(read(HASH)).includes('否则带 EXIF 方向的图片'),
+  );
+  check(
+    '夹具自证：那句说明只许留在 perceptual-hash.js，不许贴回 main.js（贴回去会误导「位算法在那边」）',
+    !read(MAIN).includes('否则带 EXIF 方向的图片'),
+  );
 
   const oneBody = bodyOf(mainSrc, 'async function processOne(row) {');
   check('夹具自证：取到了 processOne 的函数体', oneBody.length > 0);
@@ -158,26 +179,106 @@ console.log('\n[2] processOne 取 dHash 的位置');
     oneBody.includes('dhashDecodeUsed'),
   );
 
-  // 顺序：取 dHash 必须早于 `.rotate()`
-  // ⚠️ 锚点只钉到 `loadSharp()(` 为止，**不要**把入参也写进锚点：2026-10-06 起这里可能传入
-  //    `sharedBuf || row.file_path`（共用一次读盘），写死入参会让这条断言在**没有任何真实回归**的
-  //    情况下变红 —— 假红和假绿一样坏。位置关系（dHash 早于 .rotate()）才是它要守的东西。
-  const iInst = oneBody.indexOf('var instance = loadSharp()(');
-  const iDhash = oneBody.indexOf('computeDhashFromPipeline(instance)');
-  const iRotate = oneBody.indexOf('.rotate()');
+  // -------------------------------------------------- 2a. 第二趟也必须共用同一个实例
+  //
+  // 2026-10-07：第二趟（`skipThumbnail`，已有缩略图只补元数据的那一批）原本是
+  // 「建实例读文件头」+「`computeDhash(row.file_path)` 再重新打开整图解码」= **同一份字节读两遍**。
+  // 而这一支恰恰行数最多（真库实测第二支候选 1,044,733 行）⇒ 多余的那次读盘被乘在这个量级上。
+  // 真机 30 张（0.1~50 MB）实测 18,740ms → 5,551ms，**省 70%**。
+  //
+  // 🔴 必须钉住的两条：
+  //   ① 建实例的**条件要把 `needDhash` 一起算进来** —— 只写 `(needSize || needExif)` 时，
+  //      「只缺 dHash」的行根本拿不到实例 ⇒ 读两遍照旧，**不报错、不写日志、静态也全绿**
+  //      （这是本轮差点漏掉的假绿）。
+  //   ② 「已经打开过实例」这件事也要落到第二趟的 dHash 上，别让这条优化只活在注释里。
+  const skipBranch = sliceBetween(mainSrc, 'if (skipThumbnail) {', '} else {');
+  check('夹具自证：取到了 skipThumbnail 分支', skipBranch.length > 0);
   check(
-    '夹具自证：三个锚点都找得到（否则下面的顺序断言会假绿）',
-    iInst >= 0 && iDhash >= 0 && iRotate >= 0,
-    `inst=${iInst} dhash=${iDhash} rotate=${iRotate}`,
+    '🔴 第二趟的建实例条件必须含 needDhash（只看 needSize||needExif ⇒ 「只缺 dHash」的行读两遍）',
+    /if \(needSize \|\| needExif \|\| needDhash\)/.test(skipBranch),
   );
   check(
-    '🔴 dHash 取在 .rotate() 之前（dHash 不旋转；挪到后面会让带 EXIF 方向的照片全换一套位）',
-    iInst >= 0 && iDhash > iInst && iRotate > iDhash,
-    `inst=${iInst} dhash=${iDhash} rotate=${iRotate}`,
+    '🔴 第二趟把同一个实例交给 computeDhashFromPipeline（不再按路径重新打开）',
+    /computeDhashFromPipeline\(siSkip\.instance\)/.test(skipBranch),
+  );
+  check(
+    '🔴 第二趟仍然置 dhashDecodeUsed（下面靠它与结果一起判要不要退回按路径）',
+    /dhashDecodeUsed = true/.test(skipBranch),
+  );
+  check(
+    '🔴 建实例在读头与取 dHash **之前**（两个产物同一次打开）',
+    skipBranch.indexOf('createSharpInput(') <
+      skipBranch.indexOf('computeDhashFromPipeline(siSkip.instance)') &&
+      skipBranch.indexOf('computeDhashFromPipeline(siSkip.instance)') >= 0,
+  );
+  check(
+    '🔴 回落判据是「先看结果、再按路径」（只认标志位 ⇒ pipeline 算出 null 的行连老路都不给走）',
+    /dhashDecodeUsed && dhashFromDecode/.test(oneBody),
+  );
+
+  // 顺序：取 dHash 必须早于「旋转那一刀」
+  // ⚠️ 锚点在 2026-10-06 换了形态，两个坑一次踩全：
+  //    ① **不要把入参写进锚点** —— 这里可能传 `sharedBuf || row.file_path`（共用一次读盘），
+  //       写死入参会让断言在**没有任何真实回归**的情况下变红，假红和假绿一样坏。
+  //    ② **更不要钉具体实现调用**（原锚点 `var instance = loadSharp()(`）：接线一旦收进
+  //       `src/main/sharp-input.js`，调用点统一变成 `await createSharpInput(...)`，
+  //       锚点就整体失效 —— 本轮真的红了 4 条，而契约（同一实例、顺序不变）完好无损。
+  //    ⇒ 钉「**建实例这件事发生在哪里**」，不钉它是怎么建的。
+  //
+  // 🔴 2026-10-07 **第三次**踩同一个坑：`rotate()` 被收进 `resizeThumb()`
+  //    （缩放+编码的唯一出口，见 `thumb-format.js`），processOne 里再也没有 `.rotate()` 字面量
+  //    ⇒ 锚点再次整体失效（`rotate=-1`）。这次不再「换个名字接着钉实现调用」，而是钉
+  //    **行为**：旋转可能由 `.rotate()` 直接写出，也可能由 `resizeThumb()` 代劳，取两者中更早的那个。
+  //    判据不变 —— dHash 必须取在**任何旋转发生之前**。
+  //    旋转本身也有独立守护（见下方 [2c] 那组：`resizeThumb` 必须先转再缩）。
+  const iInst = oneBody.indexOf('await createSharpInput(');
+  const iDhash = oneBody.indexOf('computeDhashFromPipeline(instance)');
+  const iRotateDirect = oneBody.indexOf('.rotate()');
+  const iRotateViaThumb = oneBody.indexOf('resizeThumb(');
+  const iRotate = [iRotateDirect, iRotateViaThumb]
+    .filter((i) => i >= 0)
+    .reduce((a, b) => Math.min(a, b), Infinity);
+  check(
+    '夹具自证：四个锚点都找得到（否则下面的顺序断言会假绿）',
+    iInst >= 0 && iDhash >= 0 && iRotate !== Infinity,
+    `inst=${iInst} dhash=${iDhash} rotate=${iRotateDirect} resizeThumb=${iRotateViaThumb}`,
+  );
+  check(
+    '🔴 dHash 取在旋转之前（dHash 不旋转；挪到后面会让带 EXIF 方向的照片全换一套位）',
+    iInst >= 0 && iDhash > iInst && iRotate !== Infinity && iRotate > iDhash,
+    `inst=${iInst} dhash=${iDhash} rotate=${iRotateDirect} resizeThumb=${iRotateViaThumb}`,
   );
   check(
     '🔴 needDhash 只算一次（不许在缩略图分支里重算一遍谓词）',
     (oneBody.match(/var needDhash =/g) || []).length === 1,
+  );
+
+  // 🔴 旋转的**承重墙现在在 `thumb-format.js#resizeThumb()` 里**（2026-10-07 收敛）：
+  //    processOne 只负责「先算 dHash、再调 resizeThumb」，顺序对不对取决于两处 ——
+  //    上面钉了调用点，这里钉被调用的那一刀本身。
+  //    ① `.rotate()` 必须在 `.resize()` **之前**（EXIF 方向先摆正再缩放，反了会按未旋转的长边缩放）；
+  //    ② 缩略图这条路上 `.rotate()` 只许出现在这一个函数的返回值里 ——
+  //       多一处 = 又出现「两条路各自旋转」的分叉。
+  const thumbFmtSrc = stripComments(read(THUMB_FMT));
+  // ⚠️ `thumb-format.js` 里 `resizeThumb` 是**顶层**函数（闭合括号在 0 列），
+  //    与 main.js 里那些嵌在 `app.whenReady` 回调里的（`'\n  }'`）不同 ⇒ 必须显式传 tail。
+  const resizeBody = bodyOf(
+    thumbFmtSrc,
+    'function resizeThumb(instance, size, quality) {',
+    '\n}',
+  );
+  check('夹具自证：取到了 thumb-format.js#resizeThumb', resizeBody.length > 0);
+  const rRot = resizeBody.indexOf('.rotate()');
+  const rRes = resizeBody.indexOf('.resize(');
+  check(
+    '🔴 resizeThumb 先 .rotate() 再 .resize()（顺序反了：按未旋转的长边缩放）',
+    rRot >= 0 && rRes >= 0 && rRot < rRes,
+    `rotate=${rRot} resize=${rRes}`,
+  );
+  check(
+    '🔴 缩略图算子只有 resizeThumb 一处旋转点（多一处 = 两条路各转一次）',
+    (thumbFmtSrc.match(/\.rotate\(\)/g) || []).length === 1,
+    'rotate() 出现 ' + (thumbFmtSrc.match(/\.rotate\(\)/g) || []).length + ' 次',
   );
 }
 
@@ -199,8 +300,11 @@ console.log('\n[2b] 缩略图补全顺带算查重指纹');
       /var THUMB_SHARED_READ_MAX_BYTES = \d+ \* 1024 \* 1024;/.test(mainSrc),
   );
   check(
-    '🔴 尺寸读取与缩略图解码都把**同一份 Buffer** 交给 sharp（`sharedBuf || row.file_path` ×2）',
-    (oneBody.match(/loadSharp\(\)\(sharedBuf \|\| row\.file_path/g) || []).length === 2,
+    '🔴 尺寸读取与缩略图解码都把**同一份 Buffer** 交给 sharp（两处调用点各一次）',
+    // ⚠️ 锚点从 `loadSharp()(sharedBuf || row.file_path` 改为入口本身：
+    //    入参形态收进了 bridge（`createSharpInput(filePath, buf)`），这里只该关心
+    //    「两处都把自己的 sharedBuf 递进去了」——数的是**传参**，不是实现名。
+    (oneBody.match(/createSharpInput\(row\.file_path, sharedBuf \|\| null\)/g) || []).length === 2,
   );
   check(
     '🔴 有 sharedBuf 就对内存算 SHA，没有才回流式（两条路都必须留着）',
@@ -212,13 +316,20 @@ console.log('\n[2b] 缩略图补全顺带算查重指纹');
     oneBody.includes('db.updatePhotoHash(row.id, digest, row.date_modified, row.file_size)'),
   );
   check(
-    '🔴 顺序：读盘必须**紧挨在** sharp 打开文件之前（放后面 = sharp 已按路径读过一遍，共享读取白做）',
-    /sharedBuf = await tryReadShared\(row\.file_path\);\s*\n\s*var instance = loadSharp\(\)\(sharedBuf \|\| row\.file_path/.test(
+    '🔴 顺序：读盘必须**紧挨在**建 sharp 实例之前（放后面 = sharp 已按路径读过一遍，共享读取白做）',
+    // `\s*` 是**故意**的：允许换行与（已被剥成空白的）注释，但**不允许夹带别的语句**。
+    // 这正是契约本身 —— 「两份读盘之间不能再插一次读盘」。
+    /sharedBuf = await tryReadShared\(row\.file_path\);\s*var si\w* = await createSharpInput\(row\.file_path, sharedBuf \|\| null\)/.test(
       oneBody,
     ),
   );
 
-  const helper = bodyOf(mainSrc, 'async function tryReadShared(filePath) {');
+  // ⚠️ 必须显式给结束标记：`bodyOf` 的默认值是 `'\n  }'`（**2 空格缩进**的闭合括号）。
+  //    2026-10-08 `tryReadShared` 从「补全函数内部」提到**模块作用域**（重跑那一趟也要用它），
+  //    闭合括号随之变成 `\n}` —— 用默认值会切在 `\n  } catch (eRead) {` 那一行上，
+  //    于是 `catch` 与 `return null` 全被切掉，这条断言**假红**（看着像函数不满足契约，
+  //    其实只是提取器把结尾认错了）。凡是被提到模块作用域的函数，取函数体都要显式给 tail。
+  const helper = bodyOf(mainSrc, 'async function tryReadShared(filePath) {', '\n}');
   check('夹具自证：取到了 tryReadShared 的函数体', helper.length > 0);
   check(
     '🔴 读不到时返回 null 而**不抛**（抛出去 = 把「文件已不在磁盘」记成一次缩略图失败）',
@@ -291,6 +402,38 @@ async function makeFixtures(dir) {
     .jpeg({ quality: 90 })
     .toFile(exif);
   return { base, exif };
+}
+
+/**
+ * 大图夹具：**尺寸**才是这一组的判据 —— 要大到 libvips 会启用 `shrink-on-load`
+ * （JPEG 的 DCT 域缩放），才能覆盖「两条路打开方式不同」那条真正的分歧路径。
+ * 像素刻意做成斜向低频梯度 + 几处硬边：9×8 的差值模式对缩放误差敏感。
+ */
+async function makeBigFixtures(dir) {
+  const out = [];
+  for (const [w, h, quality, name] of [
+    [4000, 3000, 92, 'big.jpg'],
+    [6000, 4000, 70, 'big-lowq.jpg'],
+    [3000, 3000, 90, 'big.png'],
+  ]) {
+    const raw = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        let v = Math.round(((x * 0.7 + y * 0.3) / (w + h)) * 255);
+        if ((x ^ y) % 997 < 3) v = 255 - v; // 稀疏硬边：缩放路径一变就容易被放大成不同的位
+        raw[i] = v;
+        raw[i + 1] = Math.round(v * 0.5) + 20;
+        raw[i + 2] = 255 - v;
+      }
+    }
+    const src = sharp(raw, { raw: { width: w, height: h, channels: 3 } });
+    const file = path.join(dir, name);
+    if (name.endsWith('.png')) await src.png({ compressionLevel: 6 }).toFile(file);
+    else await src.jpeg({ quality: quality }).toFile(file);
+    out.push([name + ' ' + w + '×' + h, file]);
+  }
+  return out;
 }
 
 (async () => {
@@ -413,6 +556,39 @@ async function makeFixtures(dir) {
         .then(() => false)
         .catch(() => true),
     );
+
+    // ------------------------------------------------------------ 3c. **大图**才有的一条塌陷路径
+    //
+    // 🔴 为什么 240×180 的合成图**不够用**（2026-10-07 补）：
+    //    两条路的**打开方式不同** —— `computeDhash` 用 `{ sequentialRead: true }`，
+    //    `createSharpInput` 用 `{ failOnError: false }`。小图上两者都走「整图解完再 resize」，
+    //    逐位相同是**平凡**的；而 libvips 对**大图**会启用 `shrink-on-load`（JPEG 的 DCT 域缩放），
+    //    那正是「同样是 9×8、中间却在另一条 jointed 路径上出结果」的高危区间。
+    //    ⇒ 不验大图，「共用一次解码」这个前提就只是自我认证。
+    //    真机 30 张 0.1~50 MB 实测：29/30 逐位相同，另 1 张**只有 pipeline 那条路算得出**（动图）。
+    //
+    //    ⇒ 断言写成「**更强的那一路**」：按路径算得出时，pipeline 必须给出**同一个值**；
+    //      pipeline 算得出而按路径算不出是允许的（它只会多补不会少补）。反过来则必须 FAIL。
+    console.log('\n[3c] 大图：shrink-on-load 那条路也不能算出另一套位');
+    const bigOnes = await makeBigFixtures(tmp);
+    for (const [label, file] of bigOnes) {
+      const siBig = await require(path.join(ROOT, 'src', 'main', 'sharp-input.js')).createSharpInput(
+        file,
+        null,
+      );
+      const byPathBig = await computeDhash(file);
+      const byPipeBig = await computeDhashFromPipeline(siBig.instance);
+      check(
+        `🔴 ${label}：pipeline 与按路径逐位相同`,
+        !!byPathBig && byPathBig === byPipeBig,
+        `path=${byPathBig} pipeline=${byPipeBig}`,
+      );
+      check(
+        `🔴 ${label}：pipeline 不能比按路径**弱**（按路径算得出时它必须算得出）`,
+        !(byPathBig && !byPipeBig),
+        `path=${byPathBig} pipeline=${byPipeBig}`,
+      );
+    }
   } catch (e) {
     failed++;
     console.log('  \u2717 运行时异常: ' + (e && e.stack ? e.stack : String(e)));

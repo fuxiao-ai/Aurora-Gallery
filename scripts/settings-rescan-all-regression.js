@@ -333,6 +333,20 @@ function loadRenderer() {
       },
     }),
   };
+  // 标签导航页的界面层。⚠️ 这是**替身**，不是实现：替身表是显式列举的，
+  // 产品每新增一个顶层挂载，这里就得补一桩，否则守护崩在「读 undefined 的 mount」上
+  // —— 而那是**夹具**崩了，不是产品坏了（症状一样是红，归因完全不同）。
+  win.RendererTagNavUI = {
+    mount: () => ({
+      enter() {},
+      renderSidebar() {},
+      renderBrowseCards() {},
+      refreshLocale() {},
+      selectTag() {},
+      selectNode() {},
+      displayName: (tag) => tag,
+    }),
+  };
 
   // --- 真实 app.js ---
   vm.runInContext(stripInit(read('src/renderer/app.js')), ctx, { filename: 'renderer/app.js' });

@@ -12,18 +12,91 @@ const {
 } = require('./main/exif-meta');
 // `getPhotos` 的 total 记忆化（住在 worker 进程里，桌面端与网页端共用同一份）。
 const photosTotalCache = require('./photos-total-cache');
+// 「媒体档索引 hint」与「伴生视频排除条件」的唯一真相源（谓词、索引名都在那边）。
+// 🔴 这里**只消费**、不许自己拼索引名或谓词：部分索引的匹配是**逐字**的，抄一份就等着静默失效。
+//    依赖方向是单向的（`db-heavy-read` 只 require `stats-agg-cache` / `path`，不 require 本文件），
+//    所以放在模块顶部是安全的、没有循环 require。
+const heavy = require('./db-heavy-read');
 
 /**
- * 缩略图编码格式白名单。
+ * 「文件名包含」那条路钉的索引名（DDL 在本文件的 `createCoreSchema`）。
  *
- * 写入端（扫描 / 回填 / 网页端按需生成）在生成时把**实际用的编码**传进来，这里收口校验，
- * 免得一个手误的字符串变成将来迁移判断不掉的脏数据 —— 迁移的判据是
- * `thumb_format <> 'webp'`，写进去一个 `'webP'` 会让那一行**永远被认为需要重生成**。
- *
- * 🔴 加 WebP 时要同步改三处：① 本白名单加 `'webp'`；② 各生成点的编码调用改成 `.webp()`；
- *    ③ 响应头的 `Content-Type` —— `web-server.js` / `main.js` 里硬编码了 8 处 `image/jpeg`。
+ * 写成常量是因为它同时出现在两处：DDL 与 `searchPhotos({ nameOnly })` 的 `INDEXED BY`。
+ * 🔴 `INDEXED BY` 指向**不存在**的索引是直接抛 `no such index`（不是静默降级），
+ *    所以加 hint 前一律过 `heavy.hasIndex()` 闸门 —— 夹具/半建成库上少一条索引不该让
+ *    「搜文件名」整条功能报错。这条纪律与 `db-heavy-read#mediaCountIndexHint` 同源。
  */
-var THUMB_FORMAT_WHITELIST = ['jpeg', 'webp'];
+const NAME_LIKE_INDEX = 'idx_photos_name';
+
+/**
+ * 把用户输入变成 LIKE **字面量**：`%` / `_` / `\` 一律当普通字符（配 `ESCAPE '\'` 使用）。
+ *
+ * 不转义的话「搜 50%」等于「搜 50 + 任意后缀」，而 Windows 路径里到处是 `\` —— 一半的
+ * 关键词搜索会静默答非所问。**唯一真相源**：`searchFolders` 与 `searchPhotos` 的
+ * `nameOnly` 分支都从这里取，各写一份必然漂移。
+ *
+ * ⚠️ 调用方若还要做「分隔符归一」（`/` → `\`），**必须归一在前、转义在后** ——
+ *    归一化插进去的那个 `\` 自己就是转义符，顺序反了会被这一步吃掉。
+ */
+function escapeLikeLiteral(value) {
+  return String(value == null ? '' : value).replace(/[\\%_]/g, function (ch) {
+    return '\\' + ch;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 组织元数据（评分 / 标记 / 用户标签）的取值域与归一 —— 2026-10-09
+//
+// 🔴 **实现在 `./main/org-meta-filter.js`**，这里只是取回来用。
+//    理由：同一份判据还要被 `db-heavy-read.js`（读 Worker 的执行体）用到，而那个模块
+//    **不能** require 本文件（本文件反过来 require 它，成环）。所以判据住在叶子模块，
+//    两边都从那里取 —— 与 `photo-list-columns.js` 同一种结构。
+//    **别把归一函数挪回本文件**：那等于把那条循环 require 又打开一次，而循环 require
+//    的症状是「有时拿得到、有时是空对象」，取决于谁先被加载。这不是理论风险：
+//    `database.js#getDatePhotos` 就是委托给 `db-heavy-read.js` 的。
+//
+//    ⚠️ 老库上「列加没加」与「表建没建」是两件事：加列在 `ensurePhotosOrgMetaColumns()`，
+//    建表在 `ensureOrgTagSchema()`，两个都在 `init()` 里被无条件调用。
+// ─────────────────────────────────────────────────────────────────────────────
+const {
+  RATING_MIN,
+  RATING_MAX,
+  FLAG_VALUES,
+  normalizeRating,
+  normalizeFlag,
+  normalizeTagName,
+  normalizeTagDisplayName,
+  pushOrgMetaConditions,
+  hasOrgMetaFilter,
+} = require('./main/org-meta-filter');
+// 取值域常量在本文件里没有直接引用点（写入走上面两个归一函数、筛选走
+// `pushOrgMetaConditions`），留着 `void` 是为了让「唯一真相源的入口就在这个文件里」
+// 这件事看得见 —— 读到 `normalizeFlag()` 时不必先跳去别处才知道取值域有几个值。
+void RATING_MIN;
+void RATING_MAX;
+void FLAG_VALUES;
+
+// 缩略图编码格式的白名单与 MIME 映射**只有一份**，在 `./main/thumb-format`：
+// 写入端收口归一化（脏字符串会让迁移判据 `thumb_format <> 'webp'` 永远为真），
+// 服务端按同一份表把 `thumb_format` 翻成响应头。各抄一份 = 迟早出现
+// 「字节是 WebP、头写着 JPEG」这种不报错、只是不解码的静默失效。
+const { normalizeThumbFormat } = require('./main/thumb-format');
+
+// 「缩略图全量重跑」的队列表 / 取批 SQL / 规格谓词**只有一份**，在 `./main/thumb-regen-queue`：
+// 登记、取批、计数三处如果各写一份谓词，就会出现「登记按新口径、计数按旧口径」——
+// 两个数谁也不等于谁，而且都不报错（见该模块头部的约定）。
+const thumbRegenQueue = require('./main/thumb-regen-queue');
+// 「按 id 列表过滤/删除」的唯一安全形状（`json_each` 单参数，不展开 `?,?,…`）。
+const { toIdListJson } = require('./main/sql-id-list');
+// 图片「列表行」的列清单**只有一份**，在 `./main/photo-list-columns`：
+// 15 处 SQL 各抄一份的做法加一列就漏一处，而漏掉的症状是静默的（字段在 SQL 那层丢掉 →
+// JS 侧 undefined → 消费端回落硬编码）。`thumb_size` / `thumb_format` 正是被漏掉过的那两列，
+// 而浏览层的缓存键需要它们（见该模块头部）。
+const {
+  photoListColumns,
+  folderCoverColumns,
+  folderCoverRow,
+} = require('./main/photo-list-columns');
 
 /**
  * 连接级 PRAGMA 的唯一真相源（`cache_size` / `mmap_size`）。
@@ -94,12 +167,6 @@ function applyReadConnectionPragmas(conn) {
   conn.pragma('mmap_size = ' + DB_MMAP_SIZE_BYTES);
 }
 
-/** 归一化：不在白名单里的一律返回 `''`（未知），而不是原样落库。 */
-function normalizeThumbFormat(value) {
-  var format = value ? String(value).trim().toLowerCase() : '';
-  return THUMB_FORMAT_WHITELIST.indexOf(format) >= 0 ? format : '';
-}
-
 /**
  * 扫描收尾阶段「按 id 区间分批」的批大小。
  *
@@ -121,7 +188,7 @@ function yieldToEventLoop() {
 }
 
 /**
- * 扫描写入的照片列清单 —— `getInsertStmt()`（新增）与 `getUpdateFileFactsStmt()`
+ * 扫描写入的图片列清单 —— `getInsertStmt()`（新增）与 `getUpdateFileFactsStmt()`
  * （同路径文件内容变更）**共用同一份顺序**。
  *
  * 🔴 这是一份**单一真相源**：两条语句的参数顺序必须逐位一致，散着写两份字符串一定会漂移，
@@ -201,7 +268,7 @@ var EXIF_NUMERIC_TYPES = { int: 1, number: 1, gpsAltitude: 1, dmsLat: 1, dmsLon:
  * 把 `extractExifFields()` 的值按字段类型**再归一化一次**再绑进 SQLite。
  *
  * 🔴 为什么不能直接绑：better-sqlite3 对 `undefined`、数组、Buffer 会**抛**，
- *    而这条语句跑在补全任务的热路径上（每张照片一次），抛出会被上层的 `try/catch` 吞掉 ⇒
+ *    而这条语句跑在补全任务的热路径上（每张图片一次），抛出会被上层的 `try/catch` 吞掉 ⇒
  *    症状是「批量回填静默零写入」，没有日志、也不中断任务。
  *    这里对非文本类型拿到数组/Buffer 一律放弃该字段（宁可空着，也不写垃圾或炸掉整行）。
  */
@@ -366,6 +433,40 @@ class PhotoDatabase {
   }
 
   /**
+   * 「这行是 Live Photo 的**伴生视频**」的谓词。
+   *
+   * 🔴 全项目只允许这一份：桌面端浏览列表（`_pushMediaTypeCondition`）、预览作用域
+   *    （`_buildPreviewScopeWhere`）、根目录统计（`root_folder_stats_cache.video_count`）
+   *    三处必须共用。各写一份 = 漂移 = 某一端「总数说 12 个视频、列表只列出 9 个」
+   *    这种没人报的 bug。
+   *
+   * ⚠️ 只写 `live_still_id > 0`，**不要**包 `COALESCE(live_still_id, 0) > 0`：
+   *    NULL 与 `> 0` 比较在 SQL 里得 NULL（不匹配），而那个语义正好是
+   *    「还没探查过 ⇒ 先当普通视频看待」，是我们想要的。包上 COALESCE 表面上
+   *    结果一样，却会掩盖「尚未探查」这个状态 —— 而
+   *    `SELECT COUNT(*) FROM photos WHERE live_still_id IS NULL` 是排查
+   *    「配对任务到底跑没跑」的唯一读数。
+   */
+  _sqlLiveStillIsMotionExpr() {
+    return 'live_still_id > 0';
+  }
+
+  /**
+   * `_sqlLiveStillIsMotionExpr()` 的**取反**。
+   *
+   * 🔴 必须单独有一个方法、**不能**写成 `'NOT (' + _sqlLiveStillIsMotionExpr() + ')'`：
+   *    SQL 是三值逻辑，`NOT (NULL > 0)` 求值为 **NULL**（不是 TRUE）⇒ 谓词不匹配。
+   *    而 `live_still_id` 为 NULL 的行是**绝大多数**（全库只有「探查过的 mov」才非 NULL：
+   *    图片、png、mp4、未探查的 mov 全是 NULL）。
+   *    症状在「所有媒体」档最明显：图片会**整批消失**，只剩视频 —— 而「视频」档
+   *    看起来完全正常（那个档本来就只要视频）。2026-10-06 的端到端夹具实测抓到了它。
+   *    ⇒ 取反一律用 `COALESCE(live_still_id, 0) = 0`。
+   */
+  _sqlNotLiveStillIsMotionExpr() {
+    return 'COALESCE(live_still_id, 0) = 0';
+  }
+
+  /**
    * 「补全任务待处理」的统一谓词 —— 缩略图 / dHash / 原图尺寸 / 拍摄参数四者任一缺失即命中。
    *
    * 🔴 必须与 `src/main.js#runRowsWithThumbConcurrency` 的处理逻辑**同源**：那个任务在拿到候选行后
@@ -430,6 +531,31 @@ class PhotoDatabase {
   }
 
   /**
+   * 「补全还有活可干」的**核心谓词**（只看「缺什么」，不看失败标记 / `date_modified`）。
+   *
+   * 🔴 它的**唯一消费者**是第二趟取批：`getPhotosMissingThumbnailsBefore()` 把它**逐字**当成
+   *    一个**逻辑冗余**的合取项放进 WHERE，好让规划器能用上部分索引
+   *    `idx_photos_backfill_pending`（索引的 WHERE 就是这一串）。
+   *
+   * 为什么必须冗余一份、而不是只建索引：SQLite 用部分索引的条件是「查询的 WHERE **蕴含**
+   * 索引的 WHERE」。`_sqlBackfillPendingExpr()` 是个「四支 OR + 逐支 residual（失败标记 /
+   * `date_modified`）」的形状，规划器证不出它蕴含本串（夹具实测：索引存在、WHERE 不动时
+   * 计划**仍是** `SEARCH photos USING INTEGER PRIMARY KEY (rowid<?)`）。把本串当成一棵
+   * **与索引 WHERE 完全相同**的子树显式合取进去，蕴含就退化成一次表达式树相等比较。
+   *
+   * ⚠️ 语义零变化的前提是 `_sqlBackfillPendingExpr() ⟹ 本串`。这条由
+   *    `scripts/thumb-backfill-metadata-fetch-regression.js` 用活代码逐字断言
+   *    （不是靠这段注释）—— 两边任一改动而没同步，加进 WHERE 就不再是冗余项，而是**改口径**。
+   *
+   * ⚠️ 实现（含「后三支被 `IMAGE_TYPE_PRED` 门住、第一支不许门」的理由）在
+   *    `src/db-heavy-read.js#BACKFILL_PENDING_CORE_PRED` —— 那边是唯一真相源
+   *    （`src/main/deferred-indexes.js` 的索引 DDL 也取同一份）。
+   */
+  _sqlBackfillPendingCoreExpr() {
+    return heavy.BACKFILL_PENDING_CORE_PRED;
+  }
+
+  /**
    * 「这一行**还缺缩略图**，而且值得再试一次」的判据 —— 候选谓词的第一支。
    *
    * 🔴 为什么不直接写 `has_thumbnail = 0`（2026-10-06 修正）：
@@ -466,7 +592,7 @@ class PhotoDatabase {
    *
    * ⚠️ NULL 必须**两侧都兜**：`date_modified` 在老数据上可能是 NULL，写成裸的
    *    `col <> date_modified` 会得到 NULL（当假处理）⇒ **那些行被永久排除**，
-   *    而它们正是最需要补的老照片。用 `IFNULL(..., '')` 把「两边都空」判成**相等**。
+   *    而它们正是最需要补的老图片。用 `IFNULL(..., '')` 把「两边都空」判成**相等**。
    *    唯一的真牙是「盖章时有日期、之后 `date_modified` 被清成 NULL」——
    *    裸比较得 NULL（永久排除）vs 有 IFNULL 得真（回来重试）。
    *
@@ -484,12 +610,12 @@ class PhotoDatabase {
    * 「拍摄参数还没读过（或读过的是旧口径）」的判据。
    *
    * 🔴 判**标记列**，不判内容列有没有值：截图 / 网图 / PNG 本来就没有 EXIF，
-   *    用 `camera_make IS NULL` 判会让这几类照片永远留在候选集里 —— 每轮被取出来、
+   *    用 `camera_make IS NULL` 判会让这几类图片永远留在候选集里 —— 每轮被取出来、
    *    读完文件头、写回一堆 null，却永远不算「已补」。见 `ensurePhotosExifColumn()`。
    *
    * 🔴 第二个判据 `exif_ver` 管「看过**第几版**」。`exif_mtime` 是**二元**标记（看过就再也不看），
    *    只靠它的话，扩一次字段会让**已经跑过的行永久缺新列** —— 不报错、不写日志，
-   *    只是那些照片在面板上永远少几行。版本号在 `src/main/exif-meta.js#EXIF_SCHEMA_VERSION` 单点维护。
+   *    只是那些图片在面板上永远少几行。版本号在 `src/main/exif-meta.js#EXIF_SCHEMA_VERSION` 单点维护。
    */
   _sqlNeedsExifExpr() {
     return '(exif_mtime IS NULL OR IFNULL(exif_ver, 0) < ' + EXIF_SCHEMA_VERSION + ')';
@@ -537,13 +663,93 @@ class PhotoDatabase {
     );
   }
 
-  _pushMediaTypeCondition(conditions, mediaType) {
+  /**
+   * 注入「媒体类型」条件（`all` / `image` / `video`）。
+   *
+   * 🔴 Live Photo 的伴生视频**不算一个独立的媒体项** —— 它依附于那张图片
+   *    （iOS / Google Photos 的「所有图片」视图里，一张 Live Photo 只占一个位置）。
+   *    所以 `all` 与 `video` 两档都要把它排除；`image` 档天然不涉及（伴生视频的扩展名是视频，
+   *    永远落不到图片侧）。「看这段动态」的唯一入口是预览里的实况按钮
+   *    （由图片行的 `live_motion_id` 驱动），不靠它在列表里露脸。
+   *
+   * ## `all` 档的排除条件必须**自适应**（2026-10-06 治本，**别退回直接写 COALESCE**）
+   *
+   * 曾经写成 `COALESCE(live_still_id, 0) = 0`，那是个**灾难**：`all` 是四个调用方里唯一
+   * **没有别的限定条件**的档（`root_id` / `folder_path` / FTS 谓词全缺席），于是它被直接压在
+   * 整张 `photos` 表上；而它匹配 **99.9999%** 的行 —— 真库实测分布：`live_still_id` 为 NULL
+   * **1,652,026** 行、= 0 **4,553** 行、> 0 只有 **1** 行。`live_still_id` 又排在缩略图 BLOB
+   * **之后**且**不在任何索引里** ⇒ 规划器只能放弃覆盖索引、逐行回表去读它：
+   *
+   *    | `SELECT COUNT(*) FROM photos …` | 结果 | 耗时 | 计划 |
+   *    | --- | ---: | ---: | --- |
+   *    | 无 WHERE | 1,656,580 | **478 ms** | `SCAN photos USING COVERING INDEX idx_photos_hasThumb` |
+   *    | `WHERE COALESCE(live_still_id,0)=0` | 1,656,579 | **105,954 ms** | `SCAN photos`（回表） |
+   *
+   *    这一步挂在 `getPhotos()` 的**第一步**（COUNT 先算 totalPages，`photosTotalCache`
+   *    首次必然未命中）⇒「所有文件」入口要等近两分钟才出结果，前端先超时 ⇒
+   *    `loadPhotos` 的 catch 接管 ⇒ 界面上就是「图片加载失败」（2026-10-06 用户报告）。
+   *    现象**只**出现在这一个档，三档差异正好解释得通：`image` 档早退不带谓词、
+   *    `video` 档有部分索引 `idx_photos_agg_root_folder_video` 把它先筛到 2.6 万行再算。
+   *
+   * ## 治本写法：换谓词形状 + 让索引来兜
+   *
+   * 条件改成 `id NOT IN (SELECT id FROM photos WHERE live_still_id > 0)`
+   * （由 `db-heavy-read.js#liveCompanionExcludeCondition` 提供，本文件**不自己拼**）：
+   *  · 子查询被**部分索引** `idx_photos_live_companion`（`WHERE live_still_id > 0`，
+   *    真库上只有 **1 个条目**、**1 页**）兜住 ⇒ 子查询本身微秒级；
+   *  · 外层仍是 `SCAN photos USING COVERING INDEX …`（**不回表**）+ `CREATE BLOOM FILTER`。
+   *  结果值与 `COALESCE` 写法**逐个相同**。`scripts/read-latency-regression.js` 钉住这一点。
+   *
+   * 🔴 **索引就绪之前一律不加**（`liveCompanionExcludeCondition` 返回 `null` ⇒ 这里 `push` 都不做）。
+   *    这不是「先凑合」——实测过：**没有那条索引时，`NOT IN` 写法与 `COALESCE` 一样慢**
+   *    （带内联 BLOB 的夹具上 231 ms vs 231 ms；索引就绪后 `NOT IN` 是 4 ms）。
+   *    因为子查询自己会退化成 `SCAN photos` 回表。所以自适应闸门是**必需**的，不是优化：
+   *    宁可多显示 1 行（那张伴生 MOV 露出来），也绝不回到 106 秒。
+   *
+   * @param {string[]} conditions 收集器（会被就地 push）
+   * @param {string} [mediaType] `'all'` / `'image'` / `'video'`
+   * @param {{ preserveLiveCompanion?: boolean }} [options]
+   *    `preserveLiveCompanion: true` ⇒ `all` 档**刻意不排**伴生视频。目前只有一个调用方需要它
+   *    （`searchPhotos`），理由写在那边的调用点上。
+   */
+  _pushMediaTypeCondition(conditions, mediaType, options) {
     var m = String(mediaType || 'all').toLowerCase();
     if (m === 'image') {
       conditions.push(this._sqlFileTypeIsImageExpr());
-    } else if (m === 'video') {
-      conditions.push(this._sqlFileTypeIsVideoExpr());
+      return;
     }
+    if (m === 'video') {
+      conditions.push(this._sqlNotLiveStillIsMotionExpr());
+      conditions.push(this._sqlFileTypeIsVideoExpr());
+      return;
+    }
+    // `all`（含任何未知值）：索引就绪才加；未就绪时返回 null ⇒ 刻意不加。
+    if (options && options.preserveLiveCompanion) return;
+    var exclude = heavy.liveCompanionExcludeCondition(this.db);
+    if (exclude) conditions.push(exclude);
+  }
+
+  /**
+   * 把组织元数据（评分 / 标记 / 标签）三个筛选维度推进条件收集器。
+   *
+   * 🔴 实现在 `./main/org-meta-filter.js`（叶子模块），本方法只是把它挂到实例上 ——
+   *    为的是与 `_pushMediaTypeCondition` 对称，好让 `main.js` / `db-heavy-read.js`
+   *    这些「手上只有 db 对象」的地方能直接调 `db._pushOrgMetaConditions(...)`。
+   *
+   * ## 为什么是**共用一份**而不是各查询各写一份
+   *
+   * 用同一套判据的地方有六处：`getPhotos`（总览）、`getFolderPhotos`（目录页）、
+   * `runGetDatePhotos`（日期页）、`searchPhotos`（搜图页）、`fetchTagNavPhotoRows`
+   * （标签导航页）、`_buildPreviewScopeWhere`（预览作用域/邻图）。
+   * 各写一份必然漂移，而漂移的症状是「列表筛出来的和预览翻页翻到的不是同一批图」——
+   * 只在翻到页边界或按「上一张/下一张」时才看得出来，且完全不报错。
+   *
+   * ⚠️ 判据细节（`!= null` 而非 truthy、标签 AND 语义、`photos.id` 前缀）全部写在
+   *    那个叶子模块的文件头注释里，改之前先读那里。契约见
+   *    `docs/contracts/org-metadata.md`「筛选作用域」章。
+   */
+  _pushOrgMetaConditions(conditions, params, options) {
+    pushOrgMetaConditions(conditions, params, options);
   }
 
   createCoreSchema() {
@@ -599,7 +805,32 @@ class PhotoDatabase {
         -- 与 thumb_fail_mtime 完全同构：记「失败当时该行的 date_modified」⇒ 文件被替换后
         --   date_modified 一变就自动回到候选集（自愈，不依赖重新扫描）。
         header_fail_mtime TEXT,
+        -- Live Photo 配对两列（2026-10-06 新增）。三态语义**别混**，见
+        -- ensurePhotosLivePhotoColumns() 的长注释：
+        --   live_still_id（**视频行**上）NULL = 还没探查过 / 0 = 探查过、不是伴生 / >0 = 伴生视频，值为图片 id
+        --   live_motion_id（**图片行**上）0 = 无伴生视频（存量默认值）/ >0 = 有，值为 MOV 的 id
+        live_still_id INTEGER,
+        live_motion_id INTEGER DEFAULT 0,
         is_favorite INTEGER DEFAULT 0,
+        -- 派生来源（2026-10-09 新增）：0 = 原始文件；>0 = 由该 id 派生（目前只有裁剪副本）。
+        -- 为什么需要这一列：裁剪产物会作为一个**正常行**进 photos 表（用户要能在图库里看到它），
+        --   而扫描器、统计口径、重复检测、AI 索引都会看见它 —— 没有来源标记时，
+        --   「这张是哪来的」只能靠文件名猜；删原图时也无从判断要不要连带处理派生件。
+        -- 语义与 live_motion_id 同构：0 表示「非派生」。迁移见 ensurePhotosDerivedColumn()。
+        derived_from INTEGER DEFAULT 0,
+        -- 组织元数据两列（2026-10-09 新增）。取值域与语义：
+        --   rating：0 = 未评分 / 1-5 = 星级。刻意用 0 而不是 NULL 表示「未评分」
+        --     （与 is_favorite 的 0/1 同风格，排序与筛选都不必处理 NULL 分支）。
+        --   flag：三态 none / pick / reject，默认 none。
+        -- 🔴 取消标记必须**幂等**（清标记不管当前是什么态都归 none），不许做成
+        --    「再按一次同一个键 = 取消」的 toggle：冲片是盲操作，用户分不清
+        --    「刚才那下按上了没有」，toggle 会误清已经标好的行。
+        --    理由、快捷键取舍（左手区 Z/X/C）与完整契约见 docs/contracts/org-metadata.md。
+        -- ⚠️ 老库由 ensurePhotosOrgMetaColumns() 补列（O(1)）；索引走 PHASE5_INDEXES
+        --    在后台建 —— 这两列在表末尾，百万行库上建索引要整表回扫，几十秒起，
+        --    绝不许进启动路径。
+        rating INTEGER DEFAULT 0,
+        flag TEXT DEFAULT 'none',
         camera_make TEXT,
         camera_model TEXT,
         lens_model TEXT,
@@ -612,11 +843,11 @@ class PhotoDatabase {
         -- 拍摄参数（EXIF）回填的「已检查」标记：记的是**读取当时**该行的 date_modified。
         -- 🔴 非 NULL = 这行已经试过读文件头 —— **不代表读到了 EXIF**（截图 / 网图 / PNG 本就没有）。
         --    候选谓词判的必须是这一列，不是「camera_make IS NULL」：后者会让本来就没有 EXIF
-        --    的照片永远留在候选集里，任务永不收敛（与 dhash 对视频那类死行同一个坑）。
+        --    的图片永远留在候选集里，任务永不收敛（与 dhash 对视频那类死行同一个坑）。
         exif_mtime TEXT,
         -- EXIF 里的**真实拍摄时间**。🔴 刻意与 date_taken 分成两列、且**不参与排序**：
         --    date_taken 现全库等于 date_modified（文件落盘时间），是排序默认列 + 日期分组
-        --    + idx_photos_date 的唯一输入；而真实拍摄时间只有 ~23% 的照片取得到，
+        --    + idx_photos_date 的唯一输入；而真实拍摄时间只有 ~23% 的图片取得到，
         --    覆盖过去会让时间线变成「23% 真 + 77% 原样」的混合口径（同一天拍的分落两处）。
         --    原委见 src/main/exif-meta.js 里 formatExifDate 上方的长注释。
         exif_date_taken TEXT,
@@ -634,10 +865,25 @@ class PhotoDatabase {
       CREATE INDEX IF NOT EXISTS idx_photos_root ON photos(root_id);
       CREATE INDEX IF NOT EXISTS idx_photos_root_date_mod ON photos(root_id, date_modified);
       CREATE INDEX IF NOT EXISTS idx_photos_root_folder ON photos(root_id, folder_path);
-      CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(file_name);
+      CREATE INDEX IF NOT EXISTS ${NAME_LIKE_INDEX} ON photos(file_name);
       CREATE INDEX IF NOT EXISTS idx_photos_type ON photos(file_type);
       CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(is_favorite);
       CREATE INDEX IF NOT EXISTS idx_photos_hasThumb ON photos(has_thumbnail);
+      -- ⚠️ 组织元数据两个筛选维度（rating / flag）的索引**刻意不在这里建**，尽管这里是
+      --    新库的唯一入口 —— 也不在 ensurePhotosOrgMetaColumns() 里建。两个理由：
+      --      ① 这两列是后加的，cid 排在 thumbnail（内联 BLOB）**之后**，建索引要整表回扫
+      --         ⇒ 百万行库上几十秒到几分钟，且长时间独占写库闸门；
+      --      ② scripts/maintenance-regression.js 有一条**显式登记清单**逐条断言
+      --         「这条建索引语句只许出现在 deferred-index-worker.js 或
+      --         main/deferred-indexes.js 里」，在别的 src/ 文件里出现就算红。
+      --    所以它们登记在 src/main/deferred-indexes.js 的 PHASE5_INDEXES，由延迟索引
+      --    worker 在首窗后台建（新库是空表，worker 一跑就是 O(1)）。见那个文件的开头。
+      --    ⚠️ 本段在模板字符串里，注释中**不能出现反引号**（会当场截断 SQL）。
+
+      -- ⚠️ 组织元数据的两张表（tags / photo_tags）**刻意不在这里建**，尽管这里是新库
+      --    的唯一入口：老库走不到 createCoreSchema（init 只在表缺失时调它），
+      --    所以 DDL 只许有一份、放在 ensureOrgTagSchema() 里由 init() 无条件调用。
+      --    写两份的后果是「改一处忘另一处」，而症状是老库上 no such table（表没建出来）。
     `);
   }
 
@@ -671,12 +917,156 @@ class PhotoDatabase {
     // 一旦列还没加上（老库首次启动），那几条语句会直接 `no such column` 全部失败。
     // ALTER TABLE ADD COLUMN 带常量 DEFAULT 是 O(1)，不会拖慢启动。
     this.ensurePhotosThumbnailMetaColumns();
+    // 缩略图**全量重跑**的两张表（队列表 + 单行 meta）也在这里同步建：
+    // 「待重跑多少张」是设置页随时会读的读数，老库上若表还没建，就是用户点开设置页
+    // 报 `no such table`（而不是启动时炸，启动日志里看不出来）。
+    // 两张表都是 O(1) 的 `CREATE TABLE IF NOT EXISTS`（队列表只可能有一条主键，
+    // 空表就是 1 页），不拖慢百万级库的启动。
+    this.ensureThumbRegenSchema();
     // `exif_mtime` 同理必须在这里同步加：`_sqlBackfillPendingExpr()` 引用了它，
     // 而那个谓词会被「待补数」这类随时可调的只读查询用到（不像 dhash / file_hash
     // 只在补全任务开跑前才被碰）。老库上少这一列 = 启动后第一次点开就 no such column。
     this.ensurePhotosExifColumn();
+    // Live Photo 配对两列同理必须在这里**同步**加：判「这行还是不是待探查的伴生视频」
+    // 的谓词会被 mediaType=video 的列表查询与统计引用（随时可调），老库上少这一列 =
+    // 用户点开就 `no such column`，而且**不是启动时炸**，启动日志里看不出来。
+    this.ensurePhotosLivePhotoColumns();
+    // `derived_from`（图片编辑的裁剪副本来源）同理必须在这里**同步**加：编辑是用户
+    // 随时会触发的操作，老库上少这一列 ⇒ 第一次裁剪就 `no such column`，
+    // 而且**不是启动时炸**，启动日志里看不出来。带常量 DEFAULT 的 ADD COLUMN 是 O(1)。
+    this.ensurePhotosDerivedColumn();
+    // 组织元数据两列（`rating` / `flag`）同理必须**在这里同步加**：它们是预览工具条、
+    // 网格角标、筛选栏随时会读的列，老库上少任一列 ⇒ 用户点开就 `no such column`，
+    // 而且**不是启动时炸**（启动日志里看不出来）。带常量 DEFAULT 的 ADD COLUMN 是 O(1)。
+    // ⚠️ 它们的索引**不在这里**建，见 PHASE5_INDEXES。
+    this.ensurePhotosOrgMetaColumns();
+    // tags / photo_tags 两张表同样在这里同步建：`CREATE TABLE IF NOT EXISTS` 是 O(1)，
+    // 而「有哪些标签」是筛选栏与设置页随时会读的读数（老库上少这两张表 = 点开就报错）。
+    this.ensureOrgTagSchema();
     // ensurePhotosIsFavoriteColumn: 首窗后延时调度，避免大库 PRAGMA/CREATE INDEX 阻塞启动
     // 孤立行清理见 deleteOrphanPhotosWithoutRoot，由 main 在首窗后异步写入
+  }
+
+  /**
+   * 确保 photos 表有 `derived_from` 列（图片编辑：裁剪副本的来源）。
+   *
+   * 语义：`0` = 原始文件；`>0` = 由该 id 派生（与 `live_motion_id` 的 0 = 无 同构）。
+   *
+   * ⚠️ 必须与缩略图那两列一样在 `init()` 里**同步**加，不能像 is_favorite 那样延时：
+   *    编辑是用户随时会触发的操作，老库上少这一列 ⇒ 第一次裁剪就 `no such column`，
+   *    而且**不是启动时炸**（启动日志里看不出来）。
+   */
+  ensurePhotosDerivedColumn() {
+    if (!this.hasTable('photos')) return;
+    if (this._photosDerivedColumnDone) return;
+    try {
+      var pragma = this.db.prepare('PRAGMA table_info(photos)').all();
+      for (var i = 0; i < pragma.length; i++) {
+        if (pragma[i].name === 'derived_from') {
+          this._photosDerivedColumnDone = true;
+          return;
+        }
+      }
+      this.db.exec('ALTER TABLE photos ADD COLUMN derived_from INTEGER DEFAULT 0;');
+      this._photosDerivedColumnDone = true;
+      logger.log('[db migration] added missing derived_from column to photos table');
+    } catch (e) {
+      logger.error(
+        '[db migration] ensurePhotosDerivedColumn failed: ' + (e && e.message ? e.message : e),
+      );
+    }
+  }
+
+  /**
+   * 确保 photos 表有组织元数据两列：`rating`（0-5）与 `flag`（none/pick/reject）。
+   *
+   * ⚠️ 必须与缩略图那几列一样在 `init()` 里**同步**加，不能像 is_favorite 那样延时：
+   *    这两列是预览工具条、网格角标、筛选栏**随时会读**的列，老库上少任一列 ⇒
+   *    用户点开就 `no such column`，而且**不是启动时炸**（启动日志里看不出来）。
+   *    带常量 DEFAULT 的 ADD COLUMN 是 O(1)，不拖慢启动。
+   *
+   * 🔴 索引**刻意不在这里建**（`idx_photos_rating` / `idx_photos_flag` 在
+   *    `src/main/deferred-indexes.js#PHASE5_INDEXES`）：这两列是后加的，cid 排在
+   *    `thumbnail`（内联 BLOB）之后，建索引要整表回扫 ⇒ 百万行库上几十秒起，
+   *    且长时间独占写库闸门。新库在空表上由 `createCoreSchema` 直接建（O(1)）。
+   *    ⚠️ 这也是 `scripts/maintenance-regression.js` 那条「延迟索引不许出现在启动路径」
+   *    白名单的成立前提：本函数里**不许**出现 CREATE INDEX 语句。
+   */
+  ensurePhotosOrgMetaColumns() {
+    if (!this.hasTable('photos')) return;
+    if (this._photosOrgMetaDone) return;
+    try {
+      if (!this.hasPhotosColumn('rating')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN rating INTEGER DEFAULT 0;');
+        logger.log('[db migration] added missing rating column to photos table');
+      }
+      if (!this.hasPhotosColumn('flag')) {
+        this.db.exec("ALTER TABLE photos ADD COLUMN flag TEXT DEFAULT 'none';");
+        logger.log('[db migration] added missing flag column to photos table');
+      }
+      this._photosOrgMetaDone = true;
+    } catch (e) {
+      logger.error(
+        '[db migration] ensurePhotosOrgMetaColumns failed: ' + (e && e.message ? e.message : e),
+      );
+    }
+  }
+
+  /**
+   * 确保 `tags` / `photo_tags` 两张表存在（用户自定义标签，2026-10-09）。
+   *
+   * ## 为什么 DDL 只在这里、不在 createCoreSchema
+   *
+   * 老库（已有 `photos`）**走不到** `createCoreSchema` —— `init()` 只在核心表缺失时才调它。
+   * 把 DDL 写在那边等于「新库建得出、老库永远建不出来」，症状是老库上第一次点开标签
+   * 就 `no such table`（不是启动时炸，启动日志里看不出来）。只写在这里是安全的：
+   * `init()` **无条件**调用本函数，新库同样走这条路。
+   *
+   * ## 🔴 与 AI 自动标签刻意分立（别合并）
+   *
+   * AI 画面标签住在**另一个库**（`ai-search/tag-index.sqlite` 的 `tag_vocab` / `photo_tag`），
+   * 是只读的推断结果、词表固定 5813 项、由 JoyTag 模型产出。这里是**用户自己写的**：
+   * 可增删改、进主库、随数据库备份走。两者共表或共用一个「标签」概念，界面上就会把
+   * 「AI 说这张图里有校服」和「我标它为客户 A」混成同一件事 —— 语义完全不同。
+   *
+   * ## 列语义
+   *
+   * · `name` 用户看到的原文；`normalized_name` 归一后的键（trim + 折叠内部空白 + 转小写），
+   *   UNIQUE 建在归一列上 ⇒ 「 客户A 」「客户a」「客户A 」判为同一个标签。
+   *   🔴 归一规则的唯一实现处是 `normalizeTagName()`，别在别处再写一遍 trim/lower。
+   * · `photo_tags` 用两列联合主键天然去重（同一标签不会重复挂到同一张图上）。
+   *   主键索引服务「按图查标签」，`idx_photo_tags_tag` 服务「按标签查图」。
+   *
+   * ⚠️ `ON DELETE CASCADE` **是真生效的**（不是装饰）：`open()` 里设了
+   *    `PRAGMA foreign_keys = ON`（见该处）。所以删 `photos` 行时 `photo_tags`
+   *    的关联会由 SQLite 自动清理，删除路径**不必**也不该再手写一遍清理 ——
+   *    写两遍会让「级联失效」这种故障被第二遍掩盖，从而在别处（如 tags 计数）才暴露。
+   *    同理删 `tags` 行时它的全部关联也会跟着走。
+   */
+  ensureOrgTagSchema() {
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          normalized_name TEXT NOT NULL UNIQUE,
+          created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS photo_tags (
+          photo_id INTEGER NOT NULL,
+          tag_id INTEGER NOT NULL,
+          created_at TEXT DEFAULT (datetime('now', 'localtime')),
+          PRIMARY KEY (photo_id, tag_id),
+          FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+          FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag_id);
+      `);
+    } catch (e) {
+      logger.error('[db migration] ensureOrgTagSchema failed: ' + (e && e.message ? e.message : e));
+    }
   }
 
   /**
@@ -809,10 +1199,76 @@ class PhotoDatabase {
   }
 
   /**
+   * 确保 photos 表有 Live Photo 配对两列。
+   *
+   * ## 为什么需要它们
+   *
+   * iPhone 的 Live Photo 是**一对文件**：`IMG_1234.HEIC`（静帧）+ `IMG_1234.MOV`（约 3 秒）。
+   * 没有这两列时，扫描器会把伴生 MOV 当成一个**独立视频**收进来 ⇒ 同一张图片在库里
+   * 出现两次（图片列表一次、视频列表一次），视频总数也被灌水。
+   *
+   * ## 三态语义（🔴 别混，NULL 与 0 的区别是承重的）
+   *
+   *   `live_still_id` —— 记在**视频行**上：
+   *     `NULL` = 还没探查过
+   *     `0`    = 探查过，**不是**伴生视频
+   *     `> 0`  = 是伴生视频，值是配对图片的 `photos.id`
+   *   `live_motion_id` —— 记在**图片行**上：
+   *     `0`    = 无伴生视频（也是存量默认值）
+   *     `> 0`  = 有伴生视频，值是那段 MOV 的 `photos.id`
+   *
+   * 🔴 为什么 `live_still_id` 非要区分 NULL 与 0：只判「= 0」会让配对任务每一轮
+   *    把全部 MOV 重新读一遍盘（真库有 4554 个，单次探查实测 3~23 ms，其中还有
+   *    GB 级文件），而**绝大多数视频永远也不会**是 Live Photo。这与 `exif_mtime` /
+   *    `thumb_fail_mtime` 是同一套「已检查标记」思路。
+   *
+   * 🔴 为什么判据不能是文件名配对：真库实测「同目录同 basename 的 图片 + 视频」
+   *    有 **5677 对**，其中体积比 > 300% 的就有 **4525 对** —— 那是写真集
+   *    「封面图 + 正片」的标准形态，按文件名判伴生会**凭空藏掉用户几千个视频**。
+   *    唯一可靠判据是 Apple 写进 MOV 的 `com.apple.quicktime.content.identifier`，
+   *    详见 `src/main/live-photo.js` 头注释。
+   *
+   * `ALTER TABLE ADD COLUMN` 带常量 DEFAULT 是 O(1)（只改 schema、不重写数据），
+   * 所以放在 `init()` 里同步调用也不拖慢百万级库的启动。存量行**刻意不回填**：
+   * `live_still_id` 留 NULL 正好表示「还没探查过」，正是配对任务要的起点。
+   *
+   * @returns {{added: string[]}}
+   */
+  ensurePhotosLivePhotoColumns() {
+    if (!this.hasTable('photos')) return { added: [] };
+    var added = [];
+    try {
+      if (!this.hasPhotosColumn('live_motion_id')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN live_motion_id INTEGER DEFAULT 0;');
+        added.push('live_motion_id');
+      }
+      // ⚠️ 这一列**刻意不带 DEFAULT**：DEFAULT 0 会把「还没查过」一次性抹成
+      //    「查过、不是伴生」，配对任务就再也不认领存量行了（且没有别的列能区分）。
+      if (!this.hasPhotosColumn('live_still_id')) {
+        this.db.exec('ALTER TABLE photos ADD COLUMN live_still_id INTEGER;');
+        added.push('live_still_id');
+      }
+      if (added.length) {
+        logger.log('[db migration] added missing live photo columns: ' + added.join(', '));
+      }
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      // 主进程 / scan-worker / web-server 各持一个 Database 实例，启动早期可能同时跑这里。
+      // 后到的那个会撞 `duplicate column name` —— 那是幂等命中，不是故障。
+      if (/duplicate column name/i.test(message)) {
+        logger.log('[db migration] live photo columns already added by another connection');
+        return { added: added };
+      }
+      logger.error('[db migration] ensure live photo columns failed:', message);
+    }
+    return { added: added };
+  }
+
+  /**
    * 确保 photos 表有 `exif_mtime` 列 —— 拍摄参数回填的「已检查」标记。
    *
    * 🔴 为什么必须有这一列：判「这行还要不要读 EXIF」**不能**看内容列有没有值。
-   *    `camera_make IS NULL` 对「截图 / 网图 / PNG」恒为真，而这些照片**永远也不会有 EXIF**
+   *    `camera_make IS NULL` 对「截图 / 网图 / PNG」恒为真，而这些图片**永远也不会有 EXIF**
    *    ⇒ 它们会一轮一轮被取出来、处理完又原样留下，任务**永不收敛**（与 `_sqlBackfillPendingExpr`
    *    里视频那类死行是同一个坑）。标记列把「本来就没有」和「还没看过」彻底分开。
    *
@@ -891,7 +1347,18 @@ class PhotoDatabase {
       .all();
   }
 
-  /** 待重生成的缩略图张数：档位不等于目标、或格式不等于目标的行。 */
+  /**
+   * 待重生成的缩略图张数：档位不等于目标、或格式不等于目标的行。
+   *
+   * 🔴 谓词从 `thumb-regen-queue#SPEC_MISMATCH_PRED` 取、**行集判据与登记 SQL 逐字同源**
+   *    （同一个 `has_thumbnail = 1`）。过去这里写的是 `thumbnail IS NOT NULL`，
+   *    与登记的 `has_thumbnail = 1` 是**两个集合**：库里有标志位与 BLOB 不一致的行
+   *    （`openHomePage` 那条口径注释记过这个三态），于是「预计要重跑 N 张」与实际处理的张数
+   *    对不上 —— 不报错，只是数字永远差一点。
+   *
+   * ⚠️ 无索引，扫整张表：12 GB 的库上是**几十秒级**的只读查询。只允许从维护入口 /
+   *    回归脚本调用，**不要**放到首屏或每次进设置页时跑（设置页的读数是队列的行数，O(页)）。
+   */
   countThumbnailsNeedingRegen(targetSize, targetFormat) {
     if (!this.hasPhotosColumn('thumb_size') || !this.hasPhotosColumn('thumb_format')) return 0;
     var size = parseInt(targetSize, 10) || 0;
@@ -899,11 +1366,266 @@ class PhotoDatabase {
     var row = this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM photos
-         WHERE thumbnail IS NOT NULL
-           AND (thumb_size <> ? OR thumb_format <> ?)`,
+         WHERE has_thumbnail = 1 AND (${thumbRegenQueue.SPEC_MISMATCH_PRED})`,
       )
       .get(size, format);
     return row ? Number(row.n) || 0 : 0;
+  }
+
+  /**
+   * 建「全量重跑」的两张表（队列表 + 单行 meta）。幂等、O(1)，在 `init()` 里同步调用。
+   */
+  ensureThumbRegenSchema() {
+    try {
+      for (var i = 0; i < thumbRegenQueue.DDL.length; i++) {
+        this.db.exec(thumbRegenQueue.DDL[i]);
+      }
+      // 单行 meta 的兜底插入：`INSERT OR IGNORE` 只在缺行时写一条全默认值，
+      // 之后所有写入都是 UPDATE（不做 UPSERT —— 两个连接并发建库时 UPSERT 可能覆盖，
+      // 而这个「覆盖」会丢掉正在跑的进度）。
+      this.db
+        .prepare(`INSERT OR IGNORE INTO ${thumbRegenQueue.META_TABLE} (k) VALUES (1)`)
+        .run();
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      logger.error('[db migration] ensure thumb regen schema failed:', message);
+    }
+  }
+
+  /** 单行 meta（目标规格 / 阶段 / 游标 / 累计计数）。缺行时返回全默认值，不返回 null。 */
+  thumbRegenMeta() {
+    try {
+      var row = this.db
+        .prepare(`SELECT * FROM ${thumbRegenQueue.META_TABLE} WHERE k = 1`)
+        .get();
+      if (!row) return null;
+      return {
+        signature: String(row.signature || ''),
+        phase: String(row.phase || ''),
+        enqueueCursor: Number(row.enqueueCursor) || 0,
+        targetSize: Number(row.targetSize) || 0,
+        targetFormat: String(row.targetFormat || ''),
+        total: Number(row.total) || 0,
+        done: Number(row.done) || 0,
+        failed: Number(row.failed) || 0,
+        missing: Number(row.missing) || 0,
+        updatedAt: Number(row.updatedAt) || 0,
+      };
+    } catch (e) {
+      logger.warn('[thumb-regen] meta read failed:', e && e.message ? e.message : e);
+      return null;
+    }
+  }
+
+  /**
+   * 写 meta（只更新传进来的字段）。
+   *
+   * ⚠️ 用「白名单字段 + 逐字段 UPDATE」而不是 UPSERT：调用方只关心自己那几个字段，
+   *    整行覆盖会把并发写的另一个字段（比如 `enqueueCursor` 与 `done`）抹回旧值。
+   */
+  thumbRegenWriteMeta(patch) {
+    var keys = Object.keys(patch || {});
+    if (!keys.length) return;
+    var allowed = {
+      signature: 1,
+      phase: 1,
+      enqueueCursor: 1,
+      targetSize: 1,
+      targetFormat: 1,
+      total: 1,
+      done: 1,
+      failed: 1,
+      missing: 1,
+      updatedAt: 1,
+    };
+    var sets = [];
+    var values = [];
+    for (var i = 0; i < keys.length; i++) {
+      if (!allowed[keys[i]]) continue;
+      // ⚠️ `undefined` 必须**跳过**而不是绑进去：better-sqlite3 遇到 undefined 直接抛
+      //    （不是写 NULL），而调用方很自然会写 `signature: reset ? sig : undefined`。
+      if (patch[keys[i]] === undefined) continue;
+      sets.push(keys[i] + ' = ?');
+      values.push(patch[keys[i]]);
+    }
+    if (!sets.length) return;
+    sets.push('updatedAt = ?');
+    values.push(Number(patch.updatedAt) || Date.now());
+    values.push(1);
+    this.db
+      .prepare(`UPDATE ${thumbRegenQueue.META_TABLE} SET ${sets.join(', ')} WHERE k = ?`)
+      .run(values);
+  }
+
+  /** 队列里还剩多少行（O(队列页数)，与全库行数无关）。 */
+  thumbRegenCount() {
+    try {
+      var row = this.db.prepare(thumbRegenQueue.COUNT_SQL).get();
+      return row ? Number(row.n) || 0 : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /**
+   * 登记**一块** id 区间：`(idFrom, idTo]`，倒序推进（与后台任务方向统一 = 主键倒序）。
+   *
+   * 一个事务里做三件事（顺序固定，缺一即留下不一致状态）：
+   *   ① 若 `resetSignature` 非空（= 旧队列作废）⇒ 清空队列 + 重置 meta；
+   *   ② 把区间内「规格与目标不符」的行放进队列；
+   *   ③ 落盘游标 / 累计张数 / 阶段。
+   *
+   * 🔴 阶段推进也在这里：扫到 `idFrom <= 0`（全库扫完）时**同一个事务**里把阶段置 `draining`。
+   *    分成两次写的话，崩在中间就是「全库扫完了、阶段还是 enqueueing」⇒
+   *    下次启动从 `enqueueCursor = 0` 重扫一遍全库（几十秒到几分钟的白扫，而且不报错）。
+   *
+   * @param {number} idFrom 闭区间下界（0 表示已扫到库底）
+   * @param {number} idTo 开区间上界
+   * @param {number} targetSize 目标档位
+   * @param {string} targetFormat 目标编码格式
+   * @param {string} [resetSignature] 非空 = 先清空重置，并把身份串写成它
+   * @param {number} [totalBefore] 本块之前已累计的登记张数（重置时忽略，从 0 起算）
+   * @returns {{inserted: number, total: number, phase: string}}
+   */
+  thumbRegenEnqueueChunk(idFrom, idTo, targetSize, targetFormat, resetSignature, totalBefore) {
+    var self = this;
+    var out = { inserted: 0, total: 0, phase: 'enqueueing' };
+    var from = Number(idFrom) || 0;
+    var to = Number(idTo) || 0;
+    var size = parseInt(targetSize, 10) || 0;
+    var format = String(targetFormat || '');
+    var tx = this.db.transaction(function () {
+      var before = Number(totalBefore) || 0;
+      if (resetSignature) {
+        self.db.exec(thumbRegenQueue.CLEAR_SQL);
+        before = 0;
+      }
+      var info = self.db
+        .prepare(thumbRegenQueue.ENQUEUE_SQL)
+        .run(from, to, size, format);
+      out.inserted = info && Number(info.changes) ? Number(info.changes) : 0;
+      out.total = before + out.inserted;
+      out.phase = from <= 0 ? 'draining' : 'enqueueing';
+      var patch = {
+        signature: resetSignature || undefined,
+        phase: out.phase,
+        enqueueCursor: from,
+        targetSize: size,
+        targetFormat: format,
+        total: out.total,
+        updatedAt: Date.now(),
+      };
+      if (resetSignature) {
+        // 新队列的 done / failed 必须归零：不清就是「新队列背着旧队列的进度」——
+        // 分母从 0 起、分子几百万人，进度条一上来就是 100%。
+        patch.done = 0;
+        patch.failed = 0;
+      }
+      self.thumbRegenWriteMeta(patch);
+    });
+    tx();
+    return out;
+  }
+
+  /**
+   * 抽干**一批**之后的收口：删掉这一批 + 累加记账 + 推进阶段。**同一个事务**。
+   *
+   * 🔴 删除的判据是**这一批的 id 列表**，不是「`id <= 本批最小 id`」。队列是**稀疏**的
+   *    （只有规格不符的行在里面），游标内含会连带删掉「比本批最小 id 更小、但还没取过」的行 ——
+   *    `done` 照样加满，那批行却**再也不会被重跑**（静默少做，且进度条显示已完成）。
+   *    开工前用「游标内含」在夹具上验证过，正是被本仓的 `thumbnail-regen-regression` 抓住的。
+   * ⚠️ id 列表走 `json_each`（`main/sql-id-list.js`），不展开成 `?,?,…`：
+   *    批大小是常量（50），超限不可能发生，但项目里那条「禁 `IN (?,?,…)` 展开全部 id」的红线
+   *    是因为展开写法**迟早**会被用到「全部 id」上 —— 这里从一开始就不给那个形状。
+   * 🔴 `done` 用**实际删除行数**累加（不是批大小）：这样它与队列的真实消耗永远一致，
+   *    不会出现「进度条走完、队列还剩一堆」这种要专门去对账的状态。
+   *
+   * @param {number[]} ids 本批真正取出来并处理过的 id
+   * @param {{failed?: number, missing?: number}} delta 本批的失败 / 已消失张数
+   * @returns {{deleted: number, done: number, failed: number, missing: number, total: number, remaining: number, phase: string}}
+   */
+  thumbRegenFinishBatch(ids, delta) {
+    var self = this;
+    var out = { deleted: 0, done: 0, failed: 0, missing: 0, total: 0, remaining: 0, phase: '' };
+    var failAdd = Math.max(0, Number(delta && delta.failed) || 0);
+    var missAdd = Math.max(0, Number(delta && delta.missing) || 0);
+    var json = toIdListJson(ids);
+    var tx = this.db.transaction(function () {
+      var info = self.db.prepare(thumbRegenQueue.DELETE_BATCH_SQL).run(json);
+      out.deleted = info && Number(info.changes) ? Number(info.changes) : 0;
+      var meta = self.thumbRegenMeta() || {};
+      out.total = Number(meta.total) || 0;
+      out.done = (Number(meta.done) || 0) + out.deleted;
+      out.failed = (Number(meta.failed) || 0) + failAdd;
+      out.missing = (Number(meta.missing) || 0) + missAdd;
+      out.remaining = Math.max(0, out.total - out.done);
+      out.phase = out.remaining > 0 ? 'draining' : 'done';
+      self.thumbRegenWriteMeta({
+        done: out.done,
+        failed: out.failed,
+        missing: out.missing,
+        // 队列抽干 ⇒ 阶段直接推到 `done`（设置页据此说「已完成」而不是「还有 N 张」）
+        phase: out.phase,
+        updatedAt: Date.now(),
+      });
+    });
+    tx();
+    return out;
+  }
+
+  /**
+   * 队列已空时的收口：把 `done` 对齐 `total` 并把阶段置 `done`。
+   *
+   * 正常路径下 `done === total`（`done` 按实际删除行数累加），这一步只是把**任何**历史漂移
+   * （外部改库 / 早期版本写的行）抹平。少了它，界面会永远停在「还有 N 张待重建」
+   * 而任务其实已经结束 —— 静默的假读数。
+   */
+  thumbRegenMarkDrained() {
+    var self = this;
+    var out = { total: 0, done: 0, failed: 0 };
+    var tx = this.db.transaction(function () {
+      var meta = self.thumbRegenMeta() || {};
+      out.total = Number(meta.total) || 0;
+      out.done = out.total;
+      out.failed = Number(meta.failed) || 0;
+      self.thumbRegenWriteMeta({
+        done: out.done,
+        phase: 'done',
+        enqueueCursor: 0,
+        updatedAt: Date.now(),
+      });
+    });
+    tx();
+    return out;
+  }
+
+  /**
+   * 取一批待重跑的行（**倒序**；`LEFT JOIN` 保证 `photos` 里已消失的行也能被取出来）。
+   *
+   * @param {number} cursor 游标（内含）
+   * @param {number} limit 批大小
+   */
+  thumbRegenFetchBatch(cursor, limit) {
+    return this.db
+      .prepare(thumbRegenQueue.FETCH_SQL)
+      .all(Number(cursor) || 0, Math.max(1, parseInt(limit, 10) || 1));
+  }
+
+  /**
+   * 删掉「本批已处理过」的行（`id <= 游标`，游标 = 本批最小 id）。
+   *
+   * ⚠️ 为什么要用「游标内含」而不是「id 列表」：批内每个 id 都要拼进 SQL，
+   *    而项目有一条红线是「禁 `WHERE id IN (?,?,…)` 展开全部 id」（上限 32766 个 `?`，
+   *    见 `src/main/sql-id-list.js`）。走游标就只有一句、与批大小无关。
+   * 🔴 前提是**调用方必须处理完整批**才允许删（失败的行也记账后删除）——
+   *    中途 break 掉再删，就会把没处理的行一起「记成已完成」，队列再也补不回来。
+   * @returns {number} 实际删除的行数（= 本批在队列里的行数，`done` 的累加依据）
+   */
+  thumbRegenDeleteDrained(cursor) {
+    var info = this.db
+      .prepare(thumbRegenQueue.DELETE_DRAINED_SQL)
+      .run(Number(cursor) || 0);
+    return info && Number(info.changes) ? Number(info.changes) : 0;
   }
 
   /**
@@ -1104,7 +1826,8 @@ class PhotoDatabase {
     options = options || {};
     var yieldFn = typeof options.yieldFn === 'function' ? options.yieldFn : yieldToEventLoop;
     this.ensureRootFolderStatsCacheSchema();
-    var heavy = require('./db-heavy-read');
+    // `heavy` 是模块顶部那一份（不再就地 require —— 就地声明会**遮蔽**它，读代码时
+    // 分不清这一处用的是哪个绑定）。
     if (typeof heavy.runAggregateStatsForSingleRoot !== 'function') return;
     var exists = this.db.prepare('SELECT 1 AS x FROM root_folders WHERE id = ? LIMIT 1').get(rid);
     if (!exists) return;
@@ -1144,7 +1867,7 @@ class PhotoDatabase {
   }
 
   /**
-   * 删除 root_id 已不存在的照片行（历史脏数据）。大库时略耗时，宜在窗口出现后调用。
+   * 删除 root_id 已不存在的图片行（历史脏数据）。大库时略耗时，宜在窗口出现后调用。
    */
   deleteOrphanPhotosWithoutRoot() {
     this.db.exec(`
@@ -1284,14 +2007,17 @@ class PhotoDatabase {
       .all(lim, off);
   }
 
-  /** 获取指定 dHash 的所有照片 */
+  /** 获取指定 dHash 的所有图片 */
   getPhotosByDhash(dhash) {
     this.ensureDhashSchema();
     var h = dhash != null ? String(dhash) : '';
     if (!h) return [];
     return this.db
       .prepare(
-        `SELECT id, file_name, file_path, folder_path, file_size, date_modified, has_thumbnail, file_type
+        // 与 `getPhotosByFileHash` 同一条约定：窄投影可以，但缩略图规格两列不能少
+        // （这一侧的行会直接拼成 `thumb://<id>?v=…`）。
+        `SELECT id, file_name, file_path, folder_path, file_size, date_modified,
+                has_thumbnail, thumb_size, thumb_format, file_type
          FROM photos
          WHERE dhash = ?
          ORDER BY id ASC`,
@@ -1299,7 +2025,7 @@ class PhotoDatabase {
       .all(h);
   }
 
-  /** 存量补充：有缩略图但无 dHash 的照片数量 */
+  /** 存量补充：有缩略图但无 dHash 的图片数量 */
   getDhashBackfillPhotoCount() {
     this.ensureDhashSchema();
     var row = this.db
@@ -1331,7 +2057,7 @@ class PhotoDatabase {
   /**
    * 按 id **倒序**分批拉取「仍无哈希」的图片行（供主进程 runDuplicateHashDetection）。
    *
-   * 🔴 **方向刻意是倒序的**（2026-10-05，与缩略图补全同一条策略）：用户导入新照片之后最想做的
+   * 🔴 **方向刻意是倒序的**（2026-10-05，与缩略图补全同一条策略）：用户导入新图片之后最想做的
    *    就是查重，而「刚加入的」正是 id 最大的那批；升序会让新导入的排在全部历史积压之后。
    *    查询写法与理由同 `getPhotosMissingThumbnailsBefore()`：两个方向都走主键区间扫描，
    *    一次完整跑的代价相同，倒序只是把有用的行提前。
@@ -1427,7 +2153,7 @@ class PhotoDatabase {
       .all(mc, lim, off);
   }
 
-  /** 所有「重复组」内的照片总数（每组内多张都计入） */
+  /** 所有「重复组」内的图片总数（每组内多张都计入） */
   getDuplicatePhotoCountByHash(minCount) {
     this.ensureDuplicateHashSchema();
     var mc = Math.max(2, parseInt(minCount, 10) || 2);
@@ -1453,7 +2179,11 @@ class PhotoDatabase {
     if (!h) return [];
     return this.db
       .prepare(
-        `SELECT id, file_name, file_path, folder_path, file_size, date_modified, has_thumbnail, file_type
+        // 列清单窄是**刻意的**（重复项行只画「一张缩略图 + 文件名 + 路径 + 大小」）。
+        // 但 `thumb_size` / `thumb_format` 不能少：重复项那一侧的 `<img>` 用的是
+        // 缩略图缓存键（`renderer/utils.js#thumbCacheVersion`），少了规格就永远命中旧缓存。
+        `SELECT id, file_name, file_path, folder_path, file_size, date_modified,
+                has_thumbnail, thumb_size, thumb_format, file_type
          FROM photos
          WHERE file_hash = ?
          ORDER BY id ASC`,
@@ -1476,7 +2206,7 @@ class PhotoDatabase {
      * 用户看到的是「扫描完成，0 张」。
      *
      * ⚠️ 线上 worker 场景碰不到它（`scan-worker` 用新连接，`last_insert_rowid` 初始为 0，
-     * 恰好是 falsy），但**同一个连接里先插过照片、再登记根目录**就会中招 ——
+     * 恰好是 falsy），但**同一个连接里先插过图片、再登记根目录**就会中招 ——
      * `scripts/scan-incremental-update-regression.js` 钉了这条（真跑：插一行 photos
      * 再重复 addRootFolder，第二次必须仍返回同一个 id）。
      */
@@ -1556,6 +2286,213 @@ class PhotoDatabase {
     return { is_favorite: next };
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 组织元数据：评分 / 标记 / 用户标签（2026-10-09）
+  //
+  // 三个维度与「收藏」的关系：收藏是**累积**语义（我喜欢的，长期不动），
+  // 这三者是**工作流**语义（这一批我要哪些、这张够不够好、这张归哪个项目）。
+  // 不要因为「都是用户写的标记」就把它们并成一个概念 —— 界面上是三个独立控件。
+  // 完整契约见 `docs/contracts/org-metadata.md`。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * 设置评分（0 = 取消评分，1-5 = 星级）。
+   *
+   * 归一在 `normalizeRating()`（取值域的唯一定义处），越界值**夹取**而不抛错 ——
+   * 理由写在那个函数上。返回 `null` 只在「这一行不存在」时发生（界面据此判断丢弃回包）。
+   */
+  setPhotoRating(photoId, rating) {
+    const id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return null;
+    const value = normalizeRating(rating);
+    const info = this.db.prepare('UPDATE photos SET rating = ? WHERE id = ?').run(value, id);
+    if (!info.changes) return null;
+    return { id: id, rating: value };
+  }
+
+  /**
+   * 设置标记（'none' / 'pick' / 'reject'）。
+   *
+   * 🔴 本方法**幂等**：传什么就是什么，无论当前是什么态。刻意**不做**「传同一个值就翻转」
+   *    那种 toggle —— 冲片是盲操作（左手一路按 X 过片），toggle 会让「以为没按上、
+   *    其实按上了」的再按一次把已经标好的行清掉，而用户当时正在看下一张，
+   *    根本不知道上一张的标记没了。取消标记是**独立动作**（传 'none'），
+   *    对应独立的键位与按钮。
+   */
+  setPhotoFlag(photoId, flag) {
+    const id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return null;
+    const value = normalizeFlag(flag);
+    const info = this.db.prepare('UPDATE photos SET flag = ? WHERE id = ?').run(value, id);
+    if (!info.changes) return null;
+    return { id: id, flag: value };
+  }
+
+  /** 取某张图的全部标签（按名字不区分大小写排序，界面直接用）。 */
+  getPhotoTags(photoId) {
+    const id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return [];
+    try {
+      return this.db
+        .prepare(
+          `SELECT t.id AS id, t.name AS name
+             FROM photo_tags pt
+             JOIN tags t ON t.id = pt.tag_id
+            WHERE pt.photo_id = ?
+            ORDER BY t.name COLLATE NOCASE ASC`,
+        )
+        .all(id);
+    } catch (e) {
+      // 表还没建出来（老库首次启动、迁移尚未跑完）不许把预览打挂 —— 与 tag-nav 的
+      // 「库不存在一律空结构、绝不抛」同一种取向。
+      return [];
+    }
+  }
+
+  /**
+   * **全量替换**某张图的标签集合。返回替换后的完整集合。
+   *
+   * ## 为什么是全量替换而不是 add/remove
+   *
+   * 界面上标签是一组 chip，用户回车提交时手上就是完整的最终集合。拆成 diff 会让
+   * 桌面端与网页端各写一套增删逻辑，而那一套必然在「同一个标签被快速连按两次」时
+   * 分叉（第二下的 remove 打在第一下刚 add 出来的行上，结果取决于到达顺序）。
+   * 全量替换天然没有这个问题：后到的提交整体覆盖先到的。
+   *
+   * ## 行为
+   *
+   * · 不存在的标签**自动创建** —— 用户打一个新标签不该先去别处建它。
+   * · 归一后为空的项直接丢弃（用户敲了个空格又回车）。
+   * · 按归一键去重，保留**第一次出现的原文写法**（「客户A」在前就不会被「客户a」覆盖）。
+   * · 整体一个事务：半途失败留下「删了一半」比整个失败更难收拾。
+   * · **不清理**「已无人使用」的标签：那会让用户刚建好、还没挂图的标签凭空消失。
+   *   回收交给显式的 `deleteTag()`，标签列表里带使用计数，用户看得到哪些是 0 张。
+   */
+  setPhotoTags(photoId, names) {
+    const id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return null;
+    // 🔴 行不存在 ⇒ 返回 null，**与 `setPhotoRating` / `setPhotoFlag` 一致**
+    //    （两个调用方都有对应的分支：`main.js` 回「图片记录不存在」、`web-server.js` 回 404）。
+    //
+    //    绝不能用「让外键报错」来代替这一次检查：`photo_tags.photo_id` 上的外键是**真开着**的
+    //    （`better-sqlite3` 默认 `foreign_keys = 1`，`open()` 里又显式设了一次），
+    //    所以往不存在的 id 上挂标签会抛 `FOREIGN KEY constraint failed` ——
+    //    后果是上面那两个 `if (!result)` 分支**永不可达**，而用户拿到一句英文数据库错误
+    //    （评分的路径同一情形给的是「图片记录不存在」）。2026-10-09 由
+    //    `scripts/org-metadata-regression.js` 的真库夹具抓出。
+    //
+    //    另两个 setter 用 `info.changes` 判存在（更便宜，写入本身必然改行）；
+    //    这里不行：一张图**本来就可能没有任何标签**，`changes === 0` 是合法结果，
+    //    分不出「这张图没标签」与「这张图不存在」。所以只能显式查一次主键。
+    if (!this.db.prepare('SELECT 1 FROM photos WHERE id = ?').get(id)) return null;
+    const list = Array.isArray(names) ? names : [];
+    // 归一 + 去重：Map 的 key 是归一键，value 是保留的显示名。
+    const wanted = new Map();
+    for (const raw of list) {
+      const name = normalizeTagDisplayName(raw);
+      if (!name) continue;
+      const key = normalizeTagName(name);
+      if (!key || wanted.has(key)) continue;
+      wanted.set(key, name);
+    }
+
+    const run = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM photo_tags WHERE photo_id = ?').run(id);
+      const findTag = this.db.prepare('SELECT id FROM tags WHERE normalized_name = ?');
+      const insertTag = this.db.prepare('INSERT INTO tags (name, normalized_name) VALUES (?, ?)');
+      const link = this.db.prepare(
+        'INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)',
+      );
+      for (const entry of wanted) {
+        const key = entry[0];
+        const name = entry[1];
+        let row = findTag.get(key);
+        if (!row) {
+          insertTag.run(name, key);
+          // 🔴 回查而不是用 `lastInsertRowid`：本工程明令禁用它（见扫描写入那组契约）。
+          //    UNIQUE 索引上的定点查询，成本可忽略。
+          row = findTag.get(key);
+        }
+        if (row) link.run(id, row.id);
+      }
+    });
+    run();
+    return { id: id, tags: this.getPhotoTags(id) };
+  }
+
+  /**
+   * 列出全部标签 + 各自被多少张照片使用（按使用量降序）。
+   *
+   * ⚠️ 计数用 `LEFT JOIN` + 聚合，**不要**写成「取在用的 tag_id 再去查」那种子查询：
+   *    那样「0 张照片的标签」会被整个漏掉 —— 而用户恰恰需要看到它们才能决定删不删。
+   */
+  listTags() {
+    try {
+      return this.db
+        .prepare(
+          `SELECT t.id AS id, t.name AS name, COUNT(pt.photo_id) AS photo_count
+             FROM tags t
+             LEFT JOIN photo_tags pt ON pt.tag_id = t.id
+            GROUP BY t.id, t.name
+            ORDER BY photo_count DESC, t.name COLLATE NOCASE ASC`,
+        )
+        .all();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * 重命名标签。归一后与别的标签撞名时**合并**到那个既有标签上（关联搬过去再删掉自己）。
+   *
+   * 🔴 合并而不是报错，是用户最自然的预期：「客户A」改名成「客户a」不该被拒绝说
+   *    「已存在」—— 在他眼里那本来就是同一个标签（而且界面上的 chip 长得一模一样）。
+   *    返回的 `id` 可能是**目标标签**的 id，调用方必须以返回值为准刷新列表。
+   */
+  renameTag(tagId, newName) {
+    const id = parseInt(tagId, 10);
+    if (!isFinite(id) || id <= 0) return null;
+    const name = normalizeTagDisplayName(newName);
+    const key = normalizeTagName(name);
+    if (!key) return null;
+    const run = this.db.transaction(() => {
+      const target = this.db.prepare('SELECT id FROM tags WHERE normalized_name = ?').get(key);
+      if (target && Number(target.id) === id) {
+        this.db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(name, id);
+        return id;
+      }
+      if (target) {
+        // 撞名 ⇒ 把本标签的全部关联搬到目标上（OR IGNORE 天然去重），再删掉本标签。
+        this.db
+          .prepare('UPDATE OR IGNORE photo_tags SET tag_id = ? WHERE tag_id = ?')
+          .run(target.id, id);
+        this.db.prepare('DELETE FROM photo_tags WHERE tag_id = ?').run(id);
+        this.db.prepare('DELETE FROM tags WHERE id = ?').run(id);
+        return Number(target.id);
+      }
+      this.db
+        .prepare('UPDATE tags SET name = ?, normalized_name = ? WHERE id = ?')
+        .run(name, key, id);
+      return id;
+    });
+    const outId = run();
+    return { id: outId, name: name };
+  }
+
+  /**
+   * 删除标签（连同它在 `photo_tags` 里的全部关联）。
+   *
+   * ⚠️ 关联**不手写删除**：`PRAGMA foreign_keys = ON` 是真开着的（见 `open()`），
+   *    `photo_tags.tag_id` 上的 `ON DELETE CASCADE` 会处理。手写一遍会让「级联失效」
+   *    这类故障被第二遍掩盖，从而只在别处（标签计数）才暴露。
+   */
+  deleteTag(tagId) {
+    const id = parseInt(tagId, 10);
+    if (!isFinite(id) || id <= 0) return false;
+    const info = this.db.prepare('DELETE FROM tags WHERE id = ?').run(id);
+    return info.changes > 0;
+  }
+
   getPhotos(options = {}) {
     const {
       sortBy = 'date_taken',
@@ -1569,7 +2506,16 @@ class PhotoDatabase {
     } = options;
     const offset = (page - 1) * pageSize;
 
-    const allowedSort = ['date_taken', 'date_modified', 'file_name', 'file_size', 'folder_path'];
+    // `rating` 进排序白名单（2026-10-09）：按评分浏览是评分功能的主要用法之一
+    // （「5 星的排前面看一遍」）。`rating` 有索引 ⇒ 退化成索引序扫描，不必临时排序。
+    const allowedSort = [
+      'date_taken',
+      'date_modified',
+      'file_name',
+      'file_size',
+      'folder_path',
+      'rating',
+    ];
     const order = allowedSort.includes(sortBy) ? sortBy : 'date_taken';
     const dir = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
@@ -1584,6 +2530,9 @@ class PhotoDatabase {
       conditions.push('is_favorite = 1');
     }
     this._pushMediaTypeCondition(conditions, mediaType);
+    // 组织元数据三个筛选维度（评分 / 标记 / 标签）。与 `_buildPreviewScopeWhere`
+    // 共用同一个收集器 ⇒ 预览里「上一张/下一张」的集合与浏览列表**必然一致**。
+    this._pushOrgMetaConditions(conditions, params, options);
 
     const whereClause = 'WHERE 1=1' + (conditions.length ? ' AND ' + conditions.join(' AND ') : '');
 
@@ -1596,7 +2545,7 @@ class PhotoDatabase {
     //    ⚠️ hint 刻意**不进** `photosTotalCache` 的键：那个键的不变量是「同一条 SQL + 同一组
     //    参数 ⇒ 同一个数」，而 hint 只改执行计划、不改结果值；并进键反而会把同一份计数
     //    按索引状态拆成两条、白占条目。
-    const countIndexHint = require('./db-heavy-read').mediaCountIndexHint(
+    const countIndexHint = heavy.mediaCountIndexHint(
       this.db,
       rootId,
       mediaType,
@@ -1615,11 +2564,8 @@ class PhotoDatabase {
       totalCount = Number(totalRow.count) || 0;
       photosTotalCache.set(whereClause, params, totalCount);
     }
-    const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
+    // 列清单唯一真相源（含 thumb_size / thumb_format —— 浏览层的缓存键要用）
+    const photoCols = photoListColumns({ lite: lite });
     const photos = this.db
       .prepare(
         `SELECT ${photoCols}
@@ -1688,7 +2634,7 @@ class PhotoDatabase {
       if (d) {
         // 范围查询替代 date(date_taken) = ?，让索引生效
         where.push('date_taken >= ? AND date_taken < ?');
-        params.push(d, require('./db-heavy-read').nextCalendarDate(d));
+        params.push(d, heavy.nextCalendarDate(d));
       }
     } else if (view === 'search') {
       var q = options.q ? String(options.q) : '';
@@ -1710,14 +2656,35 @@ class PhotoDatabase {
     }
 
     if (media === 'image') {
-      where.push(
-        "lower(replace(file_type, '.', '')) NOT IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')",
-      );
+      where.push(this._sqlFileTypeIsImageExpr());
     } else if (media === 'video') {
-      where.push(
-        "lower(replace(file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')",
-      );
+      // 🔴 与 `_pushMediaTypeCondition` **同一套判据**（含 Live Photo 伴生视频的排除）。
+      //    这里原先硬编码了第二份扩展名清单 —— 与 `_sqlFileTypeIsVideoExpr()` 逐字相同，
+      //    但两份各自演化：任何一边增删格式（上一轮加 `.tga` 那批时就差点漏掉这里）
+      //    都会让「预览里上一张/下一张」的集合与「浏览列表」分叉。
+      where.push(this._sqlNotLiveStillIsMotionExpr());
+      where.push(this._sqlFileTypeIsVideoExpr());
+    } else if (view !== 'search') {
+      // `all` 档：🔴 判据不是「哪个档」，而是「**产出当前列表的那个函数**加了什么」——
+      //    本函数存在的唯一理由就是让预览作用域与列表集合一致，否则出现
+      //    「列表里有这张卡、预览却跳不到它」（`app.js` 的上一张/下一张会当场露馅）。
+      //      · 列表来自 `getPhotos` / `getFolderPhotos`（root / folder / date / all 视图）
+      //        ⇒ 那边会排伴生视频 ⇒ 这里跟着排；
+      //      · 列表来自 `searchPhotos`（`view === 'search'`）⇒ 那边**刻意不排**
+      //        （理由见那边的调用点）⇒ 这里也必须不排。
+      //    两边的排除条件都来自同一个 `heavy.liveCompanionExcludeCondition`、
+      //    走同一个「索引就绪才排」的闸门 ⇒ 状态天然同步，不会一边加一边不加。
+      var liveExclude = heavy.liveCompanionExcludeCondition(this.db);
+      if (liveExclude) where.push(liveExclude);
     }
+
+    // 组织元数据三维度（评分 / 标记 / 标签）：与 `getPhotos` **共用同一个收集器**
+    // ⇒ 预览里「上一张 / 下一张」翻到的集合与浏览列表筛出来的必然一致。
+    // 这是本函数存在的唯一理由的又一处应用（同一段道理，见上面 liveExclude 的注释）：
+    // 一旦这里漏加，症状是「列表筛出 5 张、预览却能翻到第 6 张」——
+    // 只在按左右键翻到边界时才看得出来，而且不报错。
+    // 🔴 新增筛选维度时，`getPhotos` 与这里必须**同时**接上同一个收集器。
+    this._pushOrgMetaConditions(where, params, options);
 
     return {
       whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
@@ -1781,8 +2748,7 @@ class PhotoDatabase {
     var total = cntRow && cntRow.c != null ? Number(cntRow.c) : 0;
     if (!isFinite(total) || total <= 0) return [];
     var n = Math.min(limit, total);
-    var cols =
-      'id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite';
+    var cols = photoListColumns();
     // 两段式：内层只排 id（走覆盖索引，不读胖行），外层按主键取列表列。见方法注释里的实测表。
     var sql =
       'SELECT ' +
@@ -1836,8 +2802,7 @@ class PhotoDatabase {
       var randWhereSql = whereSql ? whereSql + ' AND ' : 'WHERE ';
       // 拆成两段查询，避免 (a OR b) 干扰优化器，且第二段仅按 id 排序
       var randSql1 = `
-        SELECT id, file_name, file_path, folder_path, file_size, file_type,
-               width, height, date_taken, date_modified, has_thumbnail, is_favorite
+        SELECT ${photoListColumns()}
         FROM photos
         ${randWhereSql} (${scoreExpr} > ?)
         ORDER BY ${scoreExpr} ASC, id ASC
@@ -1846,8 +2811,7 @@ class PhotoDatabase {
       var randRow = this.db.prepare(randSql1).get(...params, currentScore);
       if (!randRow) {
         var randSql2 = `
-          SELECT id, file_name, file_path, folder_path, file_size, file_type,
-                 width, height, date_taken, date_modified, has_thumbnail, is_favorite
+          SELECT ${photoListColumns()}
           FROM photos
           ${randWhereSql} (${scoreExpr} = ? AND id > ?)
           ORDER BY id ASC
@@ -1863,8 +2827,7 @@ class PhotoDatabase {
         minScoreRow && minScoreRow.m != null && minScoreRow.m !== '' ? minScoreRow.m : null;
       if (minScore == null) return null;
       var randWrapPickSql = `
-        SELECT id, file_name, file_path, folder_path, file_size, file_type,
-               width, height, date_taken, date_modified, has_thumbnail, is_favorite
+        SELECT ${photoListColumns()}
         FROM photos
         ${randWhereSql} (${scoreExpr} = ?)
         ORDER BY id ASC
@@ -1882,8 +2845,7 @@ class PhotoDatabase {
         OR (${orderExpr} = ? AND COALESCE(file_name, '') = ? AND id ${cmpOp} ?)
       )`;
     var rowSql = `
-      SELECT id, file_name, file_path, folder_path, file_size, file_type,
-             width, height, date_taken, date_modified, has_thumbnail, is_favorite
+      SELECT ${photoListColumns()}
       FROM photos
       ${nextWhereSql}
       ORDER BY ${orderExpr} ${sortDir}, COALESCE(file_name, '') ${sortDir}, id ${sortDir}
@@ -1903,8 +2865,7 @@ class PhotoDatabase {
     if (seqRow) return seqRow;
 
     var seqWrapSql = `
-      SELECT id, file_name, file_path, folder_path, file_size, file_type,
-             width, height, date_taken, date_modified, has_thumbnail, is_favorite
+      SELECT ${photoListColumns()}
       FROM photos
       ${whereSql}
       ORDER BY ${orderExpr} ${wrapDir}, COALESCE(file_name, '') ${wrapDir}, id ${wrapDir}
@@ -1926,7 +2887,8 @@ class PhotoDatabase {
     } = options;
     const offset = (page - 1) * pageSize;
     const dir = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    const allowedSort = ['date_taken', 'date_modified', 'file_name', 'file_size'];
+    // `rating` 与 `getPhotos` 的白名单保持一致（2026-10-09）：目录页也能按评分排。
+    const allowedSort = ['date_taken', 'date_modified', 'file_name', 'file_size', 'rating'];
     const order = allowedSort.includes(sortBy) ? sortBy : 'file_name';
 
     // 标准化路径：统一使用反斜杠（Windows）
@@ -1938,15 +2900,32 @@ class PhotoDatabase {
 
     const mediaConds = [];
     this._pushMediaTypeCondition(mediaConds, mediaType);
-    const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
+    // 🔴 **`join(' AND ')`，不是 `mediaConds[0]`**（2026-10-06 修）。
+    //    `_pushMediaTypeCondition` 在 `video` 档会 push **两条**（排除伴生视频 + 视频扩展名），
+    //    只取第一条 = 丢掉 `file_type` 谓词 = 「视频」档把**图片也列出来**。
+    //    实测（夹具 6 jpg + 4 mp4 + 1 mov + 1 伴生 MOV）：本函数 `video` 档返回 11 行（应为 5），
+    //    而同参数的 `getPhotos`（用 `join(' AND ')`）正确返回 5 —— 两处不一致正是这个 `[0]`。
+    //    改为 `join` 对 `image` 档是恒等变换（那是单条），所以没有副作用。
+    const mediaSql = mediaConds.length ? ' AND ' + mediaConds.join(' AND ') : '';
+
+    // 组织元数据筛选（2026-10-09）：与 `getPhotos` **同一个条件收集器**。
+    // 🔴 不补这一处的症状是「总览页筛了、点进目录却没筛」—— 用户以为自己看的是
+    //    「仅 5 星」，其实目录页给的是全部。不报错、不写日志，纯粹静默不一致。
+    //    作用域口径见 `docs/contracts/org-metadata.md`「筛选作用域」章。
+    const orgConds = [];
+    const orgParams = [];
+    this._pushOrgMetaConditions(orgConds, orgParams, options);
+    const orgSql = orgConds.length ? ' AND ' + orgConds.join(' AND ') : '';
+    // 绑定顺序必须与 SQL 里占位符出现顺序一致：路径两条 → 收藏 → 组织元数据。
+    const bindArgs = pathBindArgs.concat(orgParams);
 
     const baseWhereSql = incDesc ? '(folder_path = ? OR folder_path GLOB ?)' : 'folder_path = ?';
     const whereSql = favoritesOnly
-      ? `${baseWhereSql} AND is_favorite = 1${mediaSql}`
-      : `${baseWhereSql}${mediaSql}`;
+      ? `${baseWhereSql} AND is_favorite = 1${mediaSql}${orgSql}`
+      : `${baseWhereSql}${mediaSql}${orgSql}`;
     const total = this.db
       .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
-      .get(...pathBindArgs);
+      .get(...bindArgs);
     const video = this.db
       .prepare(
         `SELECT COUNT(*) as count
@@ -1955,12 +2934,9 @@ class PhotoDatabase {
            AND lower(replace(file_type, '.', '')) IN
              ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')`,
       )
-      .get(...pathBindArgs);
-    const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
+      .get(...bindArgs);
+    // 列清单唯一真相源（含 thumb_size / thumb_format —— 浏览层的缓存键要用）
+    const photoCols = photoListColumns({ lite: lite });
     const photos = this.db
       .prepare(
         `SELECT ${photoCols}
@@ -1968,7 +2944,7 @@ class PhotoDatabase {
        ORDER BY ${order} ${dir}
        LIMIT ? OFFSET ?`,
       )
-      .all(...pathBindArgs, pageSize, offset);
+      .all(...bindArgs, pageSize, offset);
     this.applyNaturalNameTieSort(photos, order, dir);
 
     // 将 better-sqlite3 row 对象转为纯 JS 对象，避免 IPC 克隆失败
@@ -2025,15 +3001,30 @@ class PhotoDatabase {
     return result;
   }
 
+  /**
+   * 取某行的缩略图 BLOB **连同它的编码格式**。
+   *
+   * 🔴 `format` 不是可有可无的附加信息，它是**服务端唯一能知道该回哪个 `Content-Type` 的来源**：
+   *    两个服务层（桌面 `thumb://` 协议、网页端 `/thumb/:id`、安卓端走同一条）都只能从库里的
+   *    `thumb_format` 派生响应头。这里少带一个字段 ⇒ 那两处就只能硬编码 `image/jpeg` ⇒
+   *    库里一旦出现 WebP 行，发出去的就是「字节是 WebP、头写着 JPEG」，浏览器**不报错、
+   *    只是不解码**（页面上一片空白，最难查的一类）。
+   *    ⇒ 改这条 SELECT 的列清单时把它当契约改，守护见 `thumbnail-spec-regression` 第 4 组。
+   *
+   * ⚠️ `format` 可能是 `''`（未知：本列引入之前的存量行）或白名单外的脏值，调用端**一律**
+   *    过 `thumbMimeType()`，不要自己比字符串 —— 存量行实测全是 JPEG，回落是 `image/jpeg`。
+   *
+   * @returns {{thumbnail: Buffer, format: string}|null}
+   */
   getThumbnail(photoId) {
     var photo = this.db
-      .prepare('SELECT thumbnail, has_thumbnail FROM photos WHERE id = ?')
+      .prepare('SELECT thumbnail, has_thumbnail, thumb_format FROM photos WHERE id = ?')
       .get(photoId);
 
     if (!photo) return null;
 
     if (photo.has_thumbnail && photo.thumbnail) {
-      return { thumbnail: photo.thumbnail };
+      return { thumbnail: photo.thumbnail, format: normalizeThumbFormat(photo.thumb_format) };
     }
     return null;
   }
@@ -2046,7 +3037,7 @@ class PhotoDatabase {
   }
 
   /**
-   * 「还缺缩略图」的照片数 —— 补全进度的**副指标**（「预览图 +N / 共 M」里的 M）。
+   * 「还缺缩略图」的图片数 —— 补全进度的**副指标**（「预览图 +N / 共 M」里的 M）。
    *
    * 🔴 它**刻意不与** `getMissingThumbnailCount()` 同源，两者回答的是两个问题：
    *    - `getMissingThumbnailCount()` / `estimatePendingCandidateCount()` = **任务候选集**
@@ -2059,7 +3050,7 @@ class PhotoDatabase {
    *    当初的推理是「用户等的是图 ⇒ 分母就该是缩略图」，并预测进度条会停在 22%。
    *    实测把两个前提都推翻了 ——
    *      ① 候选集约 156 万行里，真正缺缩略图的只有 **339,913**；
-   *      ② 补全按 id **倒序**走（最新入库优先），而缺缩略图的行**几乎全压在低位老照片**上：
+   *      ② 补全按 id **倒序**走（最新入库优先），而缺缩略图的行**几乎全压在低位老图片**上：
    *         `id 1,900,000~1,999,999` 只有 **10 行**缺，`1,600,000~1,899,999` 才是那 33.9 万。
    *    于是任务从 `MAX(id)` 往下走的**头 2 万行里缺缩略图的是 0 行** ⇒ 分子恒 0、
    *    分母 339,913 ⇒ 进度条在 **0%** 上趴了十几分钟一动不动，用户看到的是「卡住了」。
@@ -2073,7 +3064,7 @@ class PhotoDatabase {
    *    `EXPLAIN` 证据钉在 `scripts/thumb-backfill-progress-regression.js`。
    *
    * ⚠️ 语义是**快照**：调用方（`runThumbnailBackfill`）在任务开始时取一次当副指标的 M，
-   *    跑动期间不再刷新 —— 并发入库的新照片不在里面，所以分子可能反超分母，两个方向都由调用方夹住。
+   *    跑动期间不再刷新 —— 并发入库的新图片不在里面，所以分子可能反超分母，两个方向都由调用方夹住。
    * ⚠️ `has_thumbnail IS NULL` 的行两边都不计入（`_sqlBackfillPendingExpr()` 同样只判 `= 0`）。
    *
    * ⚠️ **刻意含「已盖章失败」的行**（2026-10-06 补记）：谓词只有 `has_thumbnail = 0` 一列，
@@ -2149,7 +3140,7 @@ class PhotoDatabase {
    * —— 即**最新入库的优先补**。
    *
    * 🔴 **方向刻意是倒序的**（2026-10-05）：补全的可见收益只落在「用户刚导入、正在翻看」的
-   *    那批照片上，而它们正是 id 最大的那批。升序会让刚导入的照片排在**全部历史积压之后**，
+   *    那批图片上，而它们正是 id 最大的那批。升序会让刚导入的图片排在**全部历史积压之后**，
    *    用户扫完一个新目录却要等老行全部补完才看到图。本机真实库（1,656,594 行，
    *    id ∈ [324737, 1981503]，待补 1,556,474 行）实测首批 100 行：升序 **269ms**
    *    （低位区间命中率仅 ~7%，每命中 1 行要跳十几行）、倒序 **2ms**（高位区间几乎 100% 命中）。
@@ -2190,12 +3181,25 @@ class PhotoDatabase {
    *    代价只是一次索引命中，可接受。见 `_sqlBackfillPendingExpr()` 的注释。
    */
   getPhotosMissingThumbnailsBefore(beforeId, limit) {
+    // 🔴 WHERE 里那个 `_sqlBackfillPendingCoreExpr()` 是**逻辑冗余**的（`_sqlBackfillPendingExpr()`
+    //    蕴含它）—— 它的唯一作用是让规划器能用上部分索引 `idx_photos_backfill_pending`。
+    //
+    //    不做这一步的代价（真库实测，2026-10-07）：计划是 `SEARCH photos USING INTEGER PRIMARY KEY
+    //    (rowid<?)` ⇒ **谓词完全用不上索引**，代价 = 游标到第一个命中行的**距离**而不是批大小。
+    //    真库 id 1,181,504 以上 80 万行「候选 = 0」（早补完了），而本趟每轮都从 `MAX(id)+1`
+    //    起手 ⇒ **每轮白扫 75.7 万行回表 = 159,601 ms，跑在主进程 ⇒ 界面卡死两分半**
+    //    （`eventLoop.maxDelayMs = 159699`）。加上这个合取项后，倒序扫的是**部分索引**：
+    //    收敛区里它一个条目都没有 ⇒ 零回表、凑满即停。
+    //
+    //    ⚠️ 这一串必须与索引 WHERE **逐字相同**（同一份常量 ⇒ 天然相同），
+    //       差一个字符就是静默退回上面那个全表扫。
+    //    ⚠️ 它**不是**闸门：无论索引在不在，加上它结果都一样（逻辑冗余）⇒ 不需要 `hasIndex` 判。
     return this.db
       .prepare(
         `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height,
                 file_hash, exif_mtime, exif_ver
        FROM photos
-       WHERE id < ? AND ${this._sqlBackfillPendingExpr()}
+       WHERE id < ? AND ${this._sqlBackfillPendingCoreExpr()} AND ${this._sqlBackfillPendingExpr()}
        ORDER BY id DESC
        LIMIT ?`,
       )
@@ -2224,13 +3228,28 @@ class PhotoDatabase {
    * `needSize` / `needDhash` / `needExif` / `needHash` 全靠这几个字段做决定，少取一列
    * 就会让对应判据**永远走兜底分支**（不报错，静默做错事）。这也是第二趟能直接复用
    * 同一个 `processOne` 的原因。
+   *
+   * 🔴 **本方法必须 `INDEXED BY idx_photos_missing_thumb`**（2026-10-07 加）。
+   *    上面那个 WHERE（`has_thumbnail = 0 AND <失败标记可重试>`）同时蕴含第二趟新索引
+   *    `idx_photos_backfill_pending` 的核心谓词（后者的第一支就是 `has_thumbnail = 0`）
+   *    ⇒ 那条索引一建出来，规划器就可以合法地改用它。而两者条目数差三个数量级：
+   *    真库实测 `idx_photos_missing_thumb` 条目 ≈ **0**（缩略图早补齐了）、新索引条目 ≈ **86 万**
+   *    ⇒ 改用它 = 逐行回表 86 万次（外推 ~200 s），而现在是 **8 ms**。
+   *    这是「新增部分索引把既有查询带偏」的典型形态：**不报错、不写日志，只是突然慢 2 万倍**。
+   *    ⚠️ 走 `heavy.hasIndex()` 判存在才加 hint：`INDEXED BY` 指向不存在的索引是**报错**
+   *    （`no query solution`），不是变慢；而这条索引由启动期 worker 建，起手那几秒可能还没有。
+   *    反向对照（钉住之后第一趟仍走这条索引、且新索引不会把它带偏）见
+   *    `scripts/thumb-backfill-metadata-fetch-regression.js`。
    */
   getPhotosLackingThumbnailBefore(beforeId, limit) {
+    var pin = heavy.hasIndex(this.db, heavy.MISSING_THUMB_INDEX)
+      ? ' INDEXED BY ' + heavy.MISSING_THUMB_INDEX
+      : '';
     return this.db
       .prepare(
         `SELECT id, file_path, file_size, date_modified, has_thumbnail, dhash, width, height,
                 file_hash, exif_mtime, exif_ver
-       FROM photos
+       FROM photos${pin}
        WHERE id < ? AND ${this._sqlNeedsThumbnailExpr()}
        ORDER BY id DESC
        LIMIT ?`,
@@ -2273,6 +3292,52 @@ class PhotoDatabase {
          WHERE id = ?`,
       )
       .run(thumbnailBuffer, size, format, photoId);
+  }
+
+  /**
+   * 写入一次「文件被编辑过」之后的文件级元数据。
+   *
+   * 🔴 `date_modified` 必须与扫描器写入的格式**逐字一致**
+   *    （`scanner.js#formatMtimeFromDate` ⇒ `YYYY-MM-DD HH:MM:SS`）。
+   *    它不只用于排序 / 日期分组：`thumb_fail_mtime` / `header_fail_mtime` / `exif_mtime` /
+   *    `dhash_mtime` 四列记账时间戳**都拿它做判据**。格式差一个字符（例如带毫秒），
+   *    那些「这行处理过了」的标记就永远不等于 `date_modified` ⇒ 后台补全会把这行
+   *    **无限重试**，而且不报错、不写日志。
+   *
+   * 刻意**只管文件级两列**：尺寸走 `updatePhotoDimensions`、dHash 走 `updatePhotoDhash`、
+   * 缩略图走 `updatePhotoThumbnail` —— 各自都已存在。合并成一条宽 UPDATE 会让
+   * 「谁负责哪一列」变模糊，而漏一列的后果是静默的。
+   */
+  updatePhotoFileMeta(photoId, spec) {
+    var id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return { changes: 0 };
+    var s = spec || {};
+    var size = Number(s.fileSize);
+    return this.db
+      .prepare('UPDATE photos SET file_size = ?, date_modified = ? WHERE id = ?')
+      .run(
+        Number.isFinite(size) && size >= 0 ? size : 0,
+        s.dateModified != null ? String(s.dateModified) : null,
+        id,
+      );
+  }
+
+  /** 按 `file_path` 回查 id（`INSERT OR IGNORE` 之后取新行 id 用，禁 `lastInsertRowid`）。 */
+  getPhotoIdByFilePath(filePath) {
+    var row = this.db
+      .prepare('SELECT id FROM photos WHERE file_path = ?')
+      .get(String(filePath || ''));
+    return row && row.id != null ? Number(row.id) : 0;
+  }
+
+  /** 标记「这一行是由 `sourceId` 派生的」（裁剪副本）。 */
+  markPhotoDerived(photoId, sourceId) {
+    var id = parseInt(photoId, 10);
+    var src = parseInt(sourceId, 10);
+    if (!isFinite(id) || id <= 0) return { changes: 0 };
+    return this.db
+      .prepare('UPDATE photos SET derived_from = ? WHERE id = ?')
+      .run(isFinite(src) && src > 0 ? src : 0, id);
   }
 
   /**
@@ -2341,7 +3406,7 @@ class PhotoDatabase {
    *    混用，而且第二批还会与第一批重叠几百行（`lastId` 是那批里最小的 id）。
    *    现在统一成「从最新往老扫」，`beforeId` 是**排他上界**，传 0 / 不传 = 不限（从 MAX(id) 开始）。
    *
-   * 语义上也本该如此：**刚导入 / 刚被搬走的照片最容易失效**，用户点「清理无效记录」先想看到的就是它们。
+   * 语义上也本该如此：**刚导入 / 刚被搬走的图片最容易失效**，用户点「清理无效记录」先想看到的就是它们。
    */
   cleanupMissingFiles(options = {}) {
     var batchSize = parseInt(options && options.batchSize, 10);
@@ -2556,7 +3621,9 @@ class PhotoDatabase {
 
     var pickOrder = this._folderCoverPickOrderBySql();
     var sqlCover =
-      'SELECT id, file_name, has_thumbnail FROM photos ' +
+      'SELECT ' +
+      folderCoverColumns() +
+      ' FROM photos ' +
       whereSql +
       ' AND folder_path = ? ORDER BY ' +
       pickOrder +
@@ -2573,13 +3640,15 @@ class PhotoDatabase {
       var paramsCount = baseParams.concat([child]);
       var cover = stmtCover.get.apply(stmtCover, baseParams.concat([child]));
       var countRow = stmtCount.get.apply(stmtCount, paramsCount);
-      out.push({
-        folder_path: child,
-        folder_photo_count: countRow ? Number(countRow.c) || 0 : 0,
-        id: cover ? cover.id : null,
-        has_thumbnail: cover ? !!cover.has_thumbnail : false,
-        file_name: cover && cover.file_name != null ? cover.file_name : '',
-      });
+      out.push(
+        Object.assign(
+          {
+            folder_path: child,
+            folder_photo_count: countRow ? Number(countRow.c) || 0 : 0,
+          },
+          folderCoverRow(cover),
+        ),
+      );
     }
     return out;
   }
@@ -2702,17 +3771,42 @@ class PhotoDatabase {
   }
 
   /**
-   * 预览页「照片信息」面板的数据源。字段覆盖面由 `src/web/js/photo-info-fields.js`
+   * 图片编辑（旋转 / 翻转 / 裁剪）需要的那一组列。
+   *
+   * 🔴 **刻意不复用 `getFullPhoto()`**：那个方法只查 `file_path / file_name / width / height`
+   *    （预览原图只需要这四列），**拿不到 `id` / `root_id` / `date_taken` / `file_type`**。
+   *    而编辑要做三件事都依赖它们：把派生数据写回**同一行**（要 id）、清**那个根目录**的
+   *    缓存（要 root_id）、让裁剪副本的 `date_taken` 跟随原图（要 date_taken）。
+   *
+   *    拿不到 id 的后果是**完全静默**的：所有 UPDATE 影响 0 行、`insertPhoto` 因
+   *    `root_id` 为 NULL 撞 NOT NULL 被 `INSERT OR IGNORE` 吞掉 —— 不抛错、不写日志，
+   *    界面上只表现为「编辑完没变化」。这条是实测踩出来的（`.workbuddy/tmp/photo-edit-integration-probe.js`）。
+   */
+  getPhotoForEdit(photoId) {
+    var id = parseInt(photoId, 10);
+    if (!isFinite(id) || id <= 0) return null;
+    var row = this.db
+      .prepare(
+        `SELECT id, root_id, file_path, folder_path, file_name, file_type,
+                date_taken, date_modified, width, height
+           FROM photos WHERE id = ?`,
+      )
+      .get(id);
+    return row || null;
+  }
+
+  /**
+   * 预览页「图片信息」面板的数据源。字段覆盖面由 `src/web/js/photo-info-fields.js`
    * 的注册表决定 —— 面板要显示什么，这里就得先查出来，两者一起改。
    *
    * `media_kind` 直接复用本类的视频扩展名集合（`_sqlFileTypeIsVideoExpr()`），
    * 不再在 JS 侧维护第二份扩展名清单，否则「仅视频」筛出来的和面板写的不一致。
-   * `root_path` 走 LEFT JOIN：照片的 root_id 理论上必定命中，但外键没开强制，
+   * `root_path` 走 LEFT JOIN：图片的 root_id 理论上必定命中，但外键没开强制，
    * 兜底成 NULL 而不是把整条记录丢掉。
    *
    * 🔴 这里**只带面板用得到的列**：`photos` 现在有 58 个拍摄参数列，但只有注册表里
    *    `panel: true` 的那批（见 `src/main/exif-meta.js#EXIF_PANEL_KEYS`）会被显示 ——
-   *    其余 27 列（与已有列重复的派生值、技术标定值）**刻意不查**，否则每打开一张照片
+   *    其余 27 列（与已有列重复的派生值、技术标定值）**刻意不查**，否则每打开一张图片
    *    都要为它们多传一次 IPC 载荷，而界面一个字节都用不上。
    */
   getPhotoInfo(photoId) {
@@ -2771,12 +3865,12 @@ class PhotoDatabase {
    *    （`SCAN_INVALIDATED_ON_CONTENT_CHANGE`）把这组列连同标记一起置空。
    *
    * 🔴 字段为 `null` 的含义是「**文件里没有这一项**」，不是「没读到」，所以照样要写 ——
-   *    只写非空字段会让「没有 EXIF 的照片」永远无法被标记为已看。
+   *    只写非空字段会让「没有 EXIF 的图片」永远无法被标记为已看。
    *    （调用方只在**文件头读成功**时才调这里：读失败是「没看到文件」，不能标记。）
    *
    * 🔴 这里写的是 `exif_date_taken`（真实拍摄时间），**不是** `date_taken`。
    *    `date_taken` 是排序默认列 + 日期分组 + `idx_photos_date` 的唯一输入，
-   *    而真实拍摄时间只有 ~23% 的照片取得到 ⇒ 覆盖它会把时间线变成
+   *    而真实拍摄时间只有 ~23% 的图片取得到 ⇒ 覆盖它会把时间线变成
    *    「23% 真 + 77% 原样」的混合口径。原委见 `src/main/exif-meta.js#formatExifDate`。
    *    ⚠️ 因此这个 UPDATE **绝不许**把 `date_taken` 写进去（守护有断言钉这一条）。
    *
@@ -2805,7 +3899,7 @@ class PhotoDatabase {
   /**
    * `updatePhotoExif` 的预编译语句（**缓存**，不是每次 `prepare`）。
    *
-   * 🔴 为什么必须缓存：补全任务对**每一张**照片都要调一次 `updatePhotoExif`
+   * 🔴 为什么必须缓存：补全任务对**每一张**图片都要调一次 `updatePhotoExif`
    *    （真库 163 万张），而这条 SQL 现在有 60 个占位符 —— 每次重新 `prepare` 都要重新编译，
    *    在热路径上是纯浪费。列集合由 `EXIF_METADATA_COLUMNS` 单点决定，建好后不会变。
    */
@@ -2831,18 +3925,138 @@ class PhotoDatabase {
   }
 
   searchPhotos(query, options = {}) {
-    const { page = 1, pageSize = 100, favoritesOnly, mediaType, lite = false } = options;
+    const {
+      page = 1,
+      pageSize = 100,
+      favoritesOnly,
+      mediaType,
+      lite = false,
+      nameOnly = false,
+    } = options;
     const offset = (page - 1) * pageSize;
 
     const mediaConds = [];
-    this._pushMediaTypeCondition(mediaConds, mediaType);
-    const mediaSql = mediaConds.length ? ' AND ' + mediaConds[0] : '';
+    // 🔴 `preserveLiveCompanion: true` —— `all` 档**刻意不排**伴生视频，**别"顺手补上"**。
+    //    代价不是性能而是**功能**：`hasExtraFilter`（见下）的判据是
+    //    `!!favoritesOnly || mediaConds.length > 0`，一旦 `all` 档也 push 一条，
+    //    无筛选搜索就会被判成「有附加筛选」，于是**两条经过标定的优化同时失效**：
+    //      · P0-2：total 从「直接问 `photos_fts`（真库 79.5 ms）」退回
+    //        「`photos.id IN (SELECT rowid FROM photos_fts …)` + 回表（25,759.7 ms）」= **324×**；
+    //      · P0-3：取一页从「索引序 141.2 ms」退回「物化后临时排序 32,428.3 ms」= **230×**。
+    //    而收益只是「搜索结果里少显示 1 行」。并且语义上搜索本就该「搜什么显示什么」——
+    //    用户搜那个 MOV 的文件名时，把它显示出来才是对的。
+    //    ⚠️ `_buildPreviewScopeWhere` 在 `view === 'search'` 时同样不排（两边判据必须一致）。
+    this._pushMediaTypeCondition(mediaConds, mediaType, { preserveLiveCompanion: true });
+    // 🔴 **`join(' AND ')`，不是 `mediaConds[0]`**（2026-10-06 修）。
+    //    `video` 档会 push 两条，只取第一条 = 丢掉 `file_type` 谓词 = 「视频」档不过滤视频。
+    //    实测：`searchPhotos('IMG', { mediaType: 'video' })` 返回 6 张 jpg（应为 0）。
+    const mediaSql = mediaConds.length ? ' AND ' + mediaConds.join(' AND ') : '';
 
-    const photoCols = lite
-      ? `id, file_name, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`
-      : `id, file_name, file_path, folder_path, file_size, file_type,
-              width, height, date_taken, date_modified, has_thumbnail, is_favorite`;
+    // 组织元数据筛选（2026-10-09）。
+    //
+    // 🔴 **搜图页必须认它**，哪怕本函数的索引标定会被打断。理由是作用域：
+    //    渲染端的 `fetchPhotosPage()` 在**顶部建一次** `options` 再分发给所有视图
+    //    （`getPhotos` / `getFolderPhotos` / `getDatePhotos` / `searchPhotos` / 标签导航），
+    //    而筛选栏是**全局**的。搜图页静默忽略 ⇒ 用户看到筛选栏写着「仅 5 星」、
+    //    搜索框里却列着 3 星的图，且不报错。这与下面 `nameOnly` 那条注释的结论一致：
+    //    **静默忽略调用方的筛选条件比慢更糟**。
+    //
+    // ⚠️ 代价与 `favoritesOnly` 完全同构：`rating` / `flag` 不在 `idx_photos_name` 里，
+    //    带它们只能放弃那条覆盖索引 hint（退回全表扫）。冲片时「只搜自己标过 5 星的那批」
+    //    本来就是少数操作，而筛出来是错的会让人不再信任筛选本身。
+    const orgConds = [];
+    const orgParams = [];
+    this._pushOrgMetaConditions(orgConds, orgParams, options);
+    const orgSql = orgConds.length ? ' AND ' + orgConds.join(' AND ') : '';
+    const hasOrgFilter = hasOrgMetaFilter(options);
+
+    // 列清单唯一真相源（含 thumb_size / thumb_format —— 浏览层的缓存键要用）
+    const photoCols = photoListColumns({ lite: lite });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // `nameOnly`：文件名**包含**关键词（真子串）。搜图页「关键词」档的「文件」分组。
+    // ══════════════════════════════════════════════════════════════════════════
+    //
+    // ## 为什么不能复用下面那条 FTS 路
+    //
+    // FTS5 只做**分词前缀**匹配，而 `unicode61` 把一整串汉字切成**一个** token ⇒
+    // `file_name:"日子"*` 匹配不到 `海边的日子_001.jpg`、`"图片"*` 匹配不到
+    // `微信图片_20240101.jpg`（夹具实测，两条都是空）。而这一档的用户语义就是
+    // 「文件名里**包含**这几个字」，所以必须是 `%kw%`。这也正是本档要与
+    // 浏览页搜索（FTS 分词）分开报数的原因：同一句话在两处的命中集本来就不同。
+    //
+    // ## 为什么必须钉 `INDEXED BY idx_photos_name`
+    //
+    // 1,200,000 行夹具实测（同一条语句的三种形态）：
+    //
+    //   | 取一页的写法 | 稀疏命中 | 中等 | 稠密（75 万命中） | **零命中** |
+    //   | --- | ---: | ---: | ---: | ---: |
+    //   | `INDEXED BY idx_photos_name` + `ORDER BY file_name` | 185 ms | 100 ms | **1 ms** | 265 ms |
+    //   | `INDEXED BY idx_photos_name` + `ORDER BY date_taken` | 884 ms | 407 ms | 2,734 ms | 316 ms |
+    //   | **不加 hint** + `ORDER BY date_taken` | 27 ms | 28 ms | 1 ms | **11,522 ms** 🔴 |
+    //
+    //   · 不加 hint 时规划器改走 `idx_photos_date` 倒序过滤：命中**稠密**时它最快，但每走一行
+    //     都要回表读 `file_name` ⇒ 命中**稀疏或为 0** 时要把整条日期索引走完。
+    //     **11,522 ms** 就是这么来的，而且它只在用户搜了个查不到的词时才出现。
+    //   · `ORDER BY date_taken` 配覆盖索引则要 `USE TEMP B-TREE FOR ORDER BY`，把整个命中集
+    //     排一遍 ⇒ 命中越多越亏（75 万命中 2,734 ms）。
+    //   · 钉住覆盖索引后：`file_name` 就在索引里，LIKE 在**索引上**判定、不回表；
+    //     `ORDER BY file_name` 由索引序直接满足（计划无 TEMP B-TREE）⇒ **1~265 ms，且不随
+    //     命中密度变化**。这是它相对上面两条的关键性质：上界可控。
+    //
+    //   ⚠️ 刻意接受的代价：**排序是文件名，不是拍摄时间**。按时间排必须先拿到整个命中集
+    //      （上面两行就是它的两种代价）。文件名搜索按名字排也符合直觉 —— 相邻名字挨在一起。
+    //
+    //   ⚠️ 命中数（`total`）另走一条**纯覆盖索引**扫描（只碰 `file_name` 一列），
+    //      实测 170~223 ms 且同样不随密度变化；结果进 `photosTotalCache`，
+    //      于是「更多」翻页不会再重算同一个数。
+    //
+    //   ⚠️ `favoritesOnly` / `mediaType` 的列不在 `idx_photos_name` 里，带它们只能放弃索引
+    //      hint（退回全表扫）。搜图页没有这两个控件，所以实践中走不到；留着是因为
+    //      **静默忽略调用方的筛选条件比慢更糟**。组织元数据（`orgSql`）同理。
+    if (nameOnly) {
+      const q = String(query == null ? '' : query).trim();
+      if (!q) return { photos: [], total: 0, page, pageSize, totalPages: 0 };
+      const extraSql = (favoritesOnly ? ' AND is_favorite = 1' : '') + mediaSql + orgSql;
+      const nameWhere = `file_name LIKE ? ESCAPE '\\'${extraSql}`;
+      // 覆盖索引只在「没有别的列参与筛选」且**索引真的在**时才钉（见 `NAME_LIKE_INDEX` 注释）。
+      const hint =
+        !extraSql && heavy.hasIndex(this.db, NAME_LIKE_INDEX)
+          ? ` INDEXED BY ${NAME_LIKE_INDEX}`
+          : '';
+      const nameLike = '%' + escapeLikeLiteral(q) + '%';
+      const countSql =
+        `SELECT COUNT(*) AS count FROM photos${hint} WHERE ${nameWhere}`;
+      // 🔴 缓存参数必须带上 `orgParams`：`whereSql` 里是 `rating = ?` 这种**占位符**，
+      //    「rating=5」与「rating=1」的 SQL 文本**完全相同** ⇒ 只按文本做键会让两个不同的
+      //    筛选共用同一个 total。而 `photos-total-cache` 的不变量是
+      //    「同一条 SQL + 同一组参数 ⇒ 同一个数」，漏参数就破坏了它。
+      const countParams = [nameLike].concat(orgParams);
+      const cached = photosTotalCache.get('NAME|' + countSql, countParams);
+      let nameTotal;
+      if (cached != null) {
+        nameTotal = cached;
+      } else {
+        nameTotal = Number(this.db.prepare(countSql).get(...countParams).count) || 0;
+        photosTotalCache.set('NAME|' + countSql, countParams, nameTotal);
+      }
+      const namePhotos = nameTotal
+        ? this.db
+            .prepare(
+              `SELECT ${photoCols} FROM photos${hint} WHERE ${nameWhere}
+               ORDER BY file_name
+               LIMIT ? OFFSET ?`,
+            )
+            .all(...countParams, pageSize, offset)
+        : [];
+      return {
+        photos: namePhotos,
+        total: nameTotal,
+        page,
+        pageSize,
+        totalPages: Math.ceil(nameTotal / pageSize),
+      };
+    }
 
     // FTS5 primary path
     if (this.isFtsIndexReady()) {
@@ -2852,13 +4066,14 @@ class PhotoDatabase {
       }
       const ftsSub = `photos.id IN (SELECT rowid FROM photos_fts WHERE photos_fts MATCH ?)`;
       const whereSql = favoritesOnly
-        ? `${ftsSub} AND is_favorite = 1${mediaSql}`
-        : `${ftsSub}${mediaSql}`;
+        ? `${ftsSub} AND is_favorite = 1${mediaSql}${orgSql}`
+        : `${ftsSub}${mediaSql}${orgSql}`;
       /**
        * 有没有「FTS 之外」的筛选。它决定两件事，见下。
-       * `mediaConds` 非空 ⇔ 请求了 image / video 档。
+       * `mediaConds` 非空 ⇔ 请求了 image / video 档；`hasOrgFilter` ⇔ 请求了
+       * 评分 / 标记 / 标签筛选（判据与 `pushOrgMetaConditions` 同源，见该函数）。
        */
-      const hasExtraFilter = !!favoritesOnly || mediaConds.length > 0;
+      const hasExtraFilter = !!favoritesOnly || mediaConds.length > 0 || hasOrgFilter;
 
       // ── P0-2：total 直接问 FTS（真库 25,759.7 ms → 79.5 ms，324×）
       //
@@ -2876,10 +4091,15 @@ class PhotoDatabase {
       //    机械断言（同一组词、两种写法必须逐个相等），夹具上跑，守住它。
       //
       // ⚠️ total 也走 `photosTotalCache`：它只随命中集变化、**翻页时根本不变**，
-      //    而与 `getPhotos` 共用同一套 TTL / 显式清空（搜完图去删照片，清空会一起生效）。
+      //    而与 `getPhotos` 共用同一套 TTL / 显式清空（搜完图去删图片，清空会一起生效）。
       //    键前缀 `SEARCH|` 把这里的键空间与 `getPhotos` 的分开，两组不变量互不干扰。
       const totalCacheKey = 'SEARCH|' + whereSql;
-      const totalCacheParams = [ftsQuery];
+      // 🔴 `orgParams` 必须进参数列表：`whereSql` 里是 `rating = ?` / `flag = ?` 占位符，
+      //    不同的筛选**值**对应**完全相同的 SQL 文本** ⇒ 只按文本做键会把
+      //    「仅 5 星」与「仅 1 星」的 total 混成同一个。不变量是
+      //    「同一条 SQL + 同一组参数 ⇒ 同一个数」，漏参数就破坏了它，
+      //    而症状是「筛选一开就显示别人那一档的张数」，不报错。
+      const totalCacheParams = [ftsQuery].concat(orgParams);
       const cachedSearchTotal = photosTotalCache.get(totalCacheKey, totalCacheParams);
       let totalCount;
       if (cachedSearchTotal != null) {
@@ -2888,7 +4108,7 @@ class PhotoDatabase {
         const countSql = hasExtraFilter
           ? `SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`
           : `SELECT COUNT(*) as count FROM photos_fts WHERE photos_fts MATCH ?`;
-        totalCount = Number(this.db.prepare(countSql).get(ftsQuery).count) || 0;
+        totalCount = Number(this.db.prepare(countSql).get(...totalCacheParams).count) || 0;
         photosTotalCache.set(totalCacheKey, totalCacheParams, totalCount);
       }
 
@@ -2910,7 +4130,7 @@ class PhotoDatabase {
       const indexOrderUsable =
         !hasExtraFilter &&
         totalCount >= SEARCH_INDEX_ORDER_MIN_HITS &&
-        require('./db-heavy-read').hasIndex(this.db, SEARCH_INDEX_ORDER_INDEX);
+        heavy.hasIndex(this.db, SEARCH_INDEX_ORDER_INDEX);
       const pageSql = indexOrderUsable
         ? `SELECT ${photoCols}
            FROM photos INDEXED BY ${SEARCH_INDEX_ORDER_INDEX}
@@ -2921,7 +4141,7 @@ class PhotoDatabase {
            FROM photos WHERE ${whereSql}
            ORDER BY date_taken DESC
            LIMIT ? OFFSET ?`;
-      const photos = this.db.prepare(pageSql).all(ftsQuery, pageSize, offset);
+      const photos = this.db.prepare(pageSql).all(...totalCacheParams, pageSize, offset);
       return {
         photos,
         total: totalCount,
@@ -2935,11 +4155,14 @@ class PhotoDatabase {
     const searchTerm = `%${query}%`;
     const namePathOr = '(file_name LIKE ? OR folder_path LIKE ?)';
     const whereSql = favoritesOnly
-      ? `${namePathOr} AND is_favorite = 1${mediaSql}`
-      : `${namePathOr}${mediaSql}`;
+      ? `${namePathOr} AND is_favorite = 1${mediaSql}${orgSql}`
+      : `${namePathOr}${mediaSql}${orgSql}`;
+    // 绑定顺序 = 占位符出现顺序：两个 LIKE 词 → `is_favorite = 1`（字面量、不占参）
+    // → 媒体档（字面量、不占参）→ 组织元数据参数。
+    const fbParams = [searchTerm, searchTerm].concat(orgParams);
     const total = this.db
       .prepare(`SELECT COUNT(*) as count FROM photos WHERE ${whereSql}`)
-      .get(searchTerm, searchTerm);
+      .get(...fbParams);
     const photos = this.db
       .prepare(
         `SELECT ${photoCols}
@@ -2947,7 +4170,7 @@ class PhotoDatabase {
        ORDER BY date_taken DESC
        LIMIT ? OFFSET ?`,
       )
-      .all(searchTerm, searchTerm, pageSize, offset);
+      .all(...fbParams, pageSize, offset);
 
     return {
       photos,
@@ -2956,6 +4179,126 @@ class PhotoDatabase {
       pageSize,
       totalPages: Math.ceil(total.count / pageSize),
     };
+  }
+
+  /**
+   * 关键词搜**目录**：按目录路径做子串匹配（大小写不敏感），返回命中的目录、每个目录的
+   * 图片数与一张封面。与 `searchPhotos` 是两件事：那边返回**图片**（FTS 分词命中
+   * `file_name` / `folder_path`），这边返回**目录** —— 搜图页「关键词」档的
+   * 「文件夹」分组就是它。
+   *
+   * ## 为什么用 LIKE 扫 `idx_photos_folder`，而不是 FTS / 媒体档谓词
+   *
+   * 夹具（108,000 行 / 74 MB / 36,000 目录）+ 真库外推实测：
+   *
+   *    | 写法 | 计划 | 108k 行 |
+   *    | --- | --- | ---: |
+   *    | `folder_path LIKE ? GROUP BY folder_path` | `SCAN photos USING COVERING INDEX idx_photos_folder` | **27~49 ms** |
+   *
+   *   · **覆盖索引**是关键：只碰 `folder_path` 一列 ⇒ 1,656,580 行也**不回表**（BLOB 不进内存），
+   *     外推真库 ≈ 0.4~0.8 s，且**没有** `USE TEMP B-TREE FOR GROUP BY`（索引本身按
+   *     `folder_path` 有序，分组顺着扫就成）。
+   *   · 🔴 **别往这条 WHERE 上再加任何别的列**（`file_type` / `live_still_id` 都行）：
+   *     它们都不在 `idx_photos_folder` 里 ⇒ 规划器放弃覆盖索引、逐行回表去读，
+   *     这就是 `COALESCE(live_still_id,0)=0` 那次 **105,954 ms** 的同一类坑。
+   *     所以 `all` 档**刻意不排**伴生视频（多算一行，换来不回表），媒体档过滤也**不做** ——
+   *     搜图页本来就没有媒体档控件（`ai-views.js#applyToolbar` 把它收起来了）。
+   *   · 不走 FTS：命中的是**目录**而不是行，`photos.id IN (SELECT rowid FROM photos_fts …)`
+   *     要把几十万 rowid 物化再回表（实测 25,759 ms 那条路）。
+   *
+   * ## 排序
+   *
+   * 「目录名（末段）命中」排在「路径中间某层命中」之前，同档内按图片数降序 —— 都在内存里排，
+   * 因为 `GROUP BY` 的结果最多是**目录数**（真库 ~3 万），不是行数。
+   *
+   * @param {string} query 用户输入的关键词
+   * @param {{ limit?: number }} [options]
+   * @returns {{ folders: Array<{folder_path:string, folder_photo_count:number, id:number|null, file_name:string, has_thumbnail:boolean}>, total: number }}
+   */
+  searchFolders(query, options = {}) {
+    var q = String(query || '').trim();
+    if (!q) return { folders: [], total: 0 };
+    var limit = Math.max(1, Math.min(60, parseInt(options.limit, 10) || 12));
+    // 顺序不能反：**先**把用户输入的分隔符归一到库里用的那一种，**再**转义 LIKE 元字符。
+    // 反过来的话，归一化插进去的那个 `\` 会被后面的转义吃掉（它自己就是转义符），
+    // 于是搜「2024/05」实际去匹配「202405」—— 一个不报错的静默错。
+    var sep = this._folderPathSeparator();
+    var normalized = sep === '\\' ? q.replace(/\//g, '\\') : q.replace(/\\/g, '/');
+    // 用户输入里的 `%` / `_` / `\` 一律当普通字符：不转义的话搜「50%」等于搜「50」+任意后缀。
+    var escaped = escapeLikeLiteral(normalized);
+    var needle = normalized;
+    var like = '%' + escaped + '%';
+    var rows = this.db
+      .prepare(
+        `SELECT folder_path, COUNT(*) AS photo_count
+         FROM photos
+         WHERE folder_path LIKE ? ESCAPE '\\'
+         GROUP BY folder_path`,
+      )
+      .all(like);
+    var needleLow = needle.toLowerCase();
+    var scored = rows.map(function (row) {
+      var p = String(row.folder_path || '');
+      var parts = p.split(/[\\/]+/);
+      var leaf = String(parts[parts.length - 1] || '');
+      return {
+        folder_path: p,
+        photo_count: Number(row.photo_count) || 0,
+        rank: leaf.toLowerCase().indexOf(needleLow) >= 0 ? 0 : 1,
+      };
+    });
+    scored.sort(function (a, b) {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (b.photo_count !== a.photo_count) return b.photo_count - a.photo_count;
+      return a.folder_path < b.folder_path ? -1 : a.folder_path > b.folder_path ? 1 : 0;
+    });
+    var total = scored.length;
+    var page = scored.slice(0, limit);
+    // 封面：每个目录一条**定点**查询（`folder_path = ?` 走索引区间扫描，只回表该目录那几行）。
+    // 与 `getImmediateSubfolderCovers` 共用 `_folderCoverPickOrderBySql()` —— 各写一份就会出现
+    // 「搜图页的目录封面和目录浏览里的不是同一张」。
+    var pickOrder = this._folderCoverPickOrderBySql();
+    var coverStmt = this.db.prepare(
+      'SELECT ' +
+        folderCoverColumns() +
+        ' FROM photos WHERE folder_path = ? ORDER BY ' +
+        pickOrder +
+        ' LIMIT 1',
+    );
+    var folders = page.map(function (row) {
+      var cover = coverStmt.get(row.folder_path);
+      return Object.assign(
+        { folder_path: row.folder_path, folder_photo_count: row.photo_count },
+        folderCoverRow(cover),
+      );
+    });
+    return { folders: folders, total: total };
+  }
+
+  /**
+   * 库里 `folder_path` 用的是哪种分隔符（`\` 还是 `/`）。
+   *
+   * 用户的输入两边都可能（`2024/05` 与 `2024\05` 是同一个意思），而 LIKE 没法一次性匹配两种；
+   * 用 `REPLACE(folder_path,'\','/')` 又能把**索引**搞没（列上套了表达式 ⇒ 回表）。
+   * ⇒ 探一下库里真实用的那一种，再把用户输入归一到它。结果按实例缓存：分隔符不会中途变。
+   *
+   * 探针本身是覆盖索引上的 `LIMIT 1`（夹具实测 0.1 ms），不是全表扫。
+   */
+  _folderPathSeparator() {
+    if (this._folderSep) return this._folderSep;
+    var sep = '/';
+    try {
+      var row = this.db
+        .prepare(
+          "SELECT folder_path FROM photos WHERE folder_path LIKE '%' || char(92) || '%' LIMIT 1",
+        )
+        .get();
+      if (row && String(row.folder_path || '').indexOf('\\') >= 0) sep = '\\';
+    } catch (e) {
+      sep = '/';
+    }
+    this._folderSep = sep;
+    return this._folderSep;
   }
 
   // === Batch insert helpers for scanner ===
@@ -3092,7 +4435,7 @@ class PhotoDatabase {
    *
    * 🔴 **为什么必须有这条路径**：`getInsertStmt()` 是 `INSERT OR IGNORE`，同路径已存在时
    * `changes === 0`，新的 `file_size` / `date_modified` 连同本次读到的元数据**全被丢弃**，
-   * 于是下一轮扫描仍然判定它「已变更」⇒ **候选集永不收敛**；就地替换过的照片还会一直
+   * 于是下一轮扫描仍然判定它「已变更」⇒ **候选集永不收敛**；就地替换过的图片还会一直
    * 保留旧缩略图与旧指纹。全工程过去**没有任何** `UPDATE photos SET file_size / date_modified`。
    *
    * 参数顺序与 `getInsertStmt()` **逐位相同**（`SCAN_WRITE_COLUMNS`），只少了 `file_path`

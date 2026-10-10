@@ -1,0 +1,20 @@
+{
+ "generatedAt": "2026-10-07T10:43:15.549Z",
+ "labelFile": {
+  "sha256": "32b1963a234af848643b2bbf47d8eff1f1c7889406810c57b980f41b2b9e01d0",
+  "lines": 5813,
+  "bytes": 76752
+ },
+ "vocab": {
+  "fingerprint": "tv1:1db414e0",
+  "terms": 324,
+  "supported": 293,
+  "unsupported": 31,
+  "tagsReferenced": 386
+ },
+ "pool": {
+  "selectable": 5620,
+  "excluded": 193,
+  "chineseNamed": 370
+ }
+}

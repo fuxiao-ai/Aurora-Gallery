@@ -3,7 +3,11 @@
 // 🔴 缓存策略是 cache-first：`index.html` / `js/app.js` 一旦被缓存，改磁盘文件**不会**
 // 让已装过 PWA 的设备看到新版本。所以每次改到 SHELL_ASSETS 里的资源，都要把这里 +1
 // （activate 会清掉旧 cache，install 会重新预缓存），否则改动只在新设备上生效。
-var CACHE_NAME = 'aurora-gallery-shell-v46';
+// ⚠️ 这里每条必须与 `index.html` 里**逐字相同**（含 `?v=`）—— `caches.match(req)` 是按
+//    完整 URL（含 query）做键的，写成 `/js/app.js` 而页面请求 `/js/app.js?v=<N>` 就永远
+//    匹配不上：预缓存那条是死条目，该文件只能靠运行时 `cache.put` 补上（首屏离线就缺它）。
+//    两侧一致性由 `scripts/web-asset-route-regression.js` 第 ⑦ 组逐项对账。
+var CACHE_NAME = 'aurora-gallery-shell-v66';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -11,18 +15,19 @@ var SHELL_ASSETS = [
   '/apple-touch-icon.png?v=5',
   '/app-icon-192.png?v=5',
   '/app-icon-512.png?v=5',
-  '/app-icon.svg',
   '/playback-strategy.js',
   '/hls-attach.js',
-  '/js/web-theme-shared.js',
-  '/js/app.js',
+  '/js/web-theme-shared.js?v=9',
+  '/js/app.js?v=10',
   '/js/photo-info-fields.js?v=1',
   '/settings-page.css?v=1',
   '/js/settings-page.js?v=1',
-  '/js/photo-compare.js?v=1',
-  '/photo-compare.css?v=1',
-  '/js/ai-views.js?v=1',
-  '/ai-web-views.css?v=1',
+  '/js/photo-compare.js?v=3',
+  '/photo-compare.css?v=2',
+  '/js/ai-views.js?v=3',
+  '/ai-web-views.css?v=2',
+  '/js/tag-nav.js?v=3',
+  '/tag-nav.css?v=2',
 ];
 
 self.addEventListener('install', function (event) {

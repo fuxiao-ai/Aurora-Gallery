@@ -22,6 +22,35 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+// 🔴 桩必须接**真 i18n 包**，不能「直接返回第三参兜底串」：
+//    `changeBrowsePageSize` 从 2026-10-08 起把失败提示改走
+//    `tUiFmt('settings.pageSizeFailFmt', …)`（见 `app.js` 的 catch）。返回兜底串的桩
+//    虽然能让下面那两条中文断言继续绿，却把两个真坏法**整个盖住**：
+//      ① 键写错 / 英文包漏了这条 ⇒ `I18n.t()` 静默回落中文 ⇒ 英文界面弹中文；
+//      ② 英文模板漏了 `{err}` ⇒ 文案说得出「失败」却说不出「为什么」。
+//    ⚠️ 这正是本守护最初报 `ReferenceError: tUiFmt is not defined` 的根因 ——
+//       沙箱里根本没提供这个助手（同族：`browse-grid-style-regression.js` 也一并补）。
+global.document = { documentElement: { setAttribute() {} }, querySelectorAll: () => [] };
+global.window = global.window || {};
+require('../src/renderer/i18n.js');
+const I18n = global.window.I18n;
+
+/**
+ * 按 locale 取**真词条**。
+ * 键在两包都不存在时 `I18n.t()` 会**原样返回键** ⇒ 这里直接判红，
+ * 而不是退回兜底串把「键写错」伪装成「看起来正常」。
+ */
+function i18nText(locale, key) {
+  const previous = I18n.getLocale();
+  I18n.setLocale(locale, { skipMainSync: true });
+  const value = I18n.t(key);
+  I18n.setLocale(previous, { skipMainSync: true });
+  if (value == null || value === key) {
+    throw new Error('i18n 键不存在：' + key + '（locale=' + locale + '）');
+  }
+  return String(value);
+}
+
 function extractFunction(source, name) {
   const start = source.search(new RegExp('^(?:async )?function ' + name + '\\(', 'm'));
   assert.ok(start >= 0, '源码里找不到 ' + name);
@@ -92,6 +121,19 @@ function makeHarness() {
       },
     },
     appAlert: (message) => log.alerts.push(String(message)),
+    // 真包取词桩（见文件头）。`__locale` 是用例开关，默认中文。
+    // ⚠️ **刻意不用第三参兜底串**：键缺失要判红，不能被兜底串兜过去。
+    // ⚠️ 插值逻辑与 `app.js#tUiFmt` 同构 —— 拿**该语言的模板**去填 `{err}`，
+    //    所以英文用例顺手就把「英文模板也必须带 `{err}`」钉住了。
+    __locale: 'zh-CN',
+    tUi: (key) => i18nText(context.__locale || 'zh-CN', key),
+    tUiFmt: (key, map) => {
+      let text = i18nText(context.__locale || 'zh-CN', key);
+      for (const name of Object.keys(map || {})) {
+        text = text.split('{' + name + '}').join(String(map[name]));
+      }
+      return text;
+    },
     loadPhotos: () => log.loads.push(context.state.page),
     applyCardSize() {},
     snapBrowseCardBasis: (n) => n,
@@ -220,6 +262,38 @@ async function run() {
 
     await h.context.changeBrowsePageSize('200');
     assert.equal(h.context.state.pageSize, 200, '回滚后还能再试');
+  }
+
+  // ---------- 同一处失败在**英文界面**下的形态 ----------
+  // 2026-10-08 起这条提示走 `tUiFmt('settings.pageSizeFailFmt', { err }, '切换每页显示张数失败：{err}')`。
+  // 中文那两条断言（上面）测不出切语言的坏法，所以这里把 locale 拨到 en 再走一遍同一个 catch：
+  //   · 键没进英文包 ⇒ `I18n.t()` 静默回落中文 ⇒ 中文断言照样绿，用户却看到中文；
+  //   · 英文模板漏 `{err}` ⇒ 文案说得出「失败」却说不出「为什么」（中文那两条同样测不到）。
+  // ⚠️ **刻意不钉英文措辞**：期望串从**真包**派生 ⇒ 以后改英文文案不用改这个守护。
+  //    但三种坏法照样红：用错键（字面量不等）、英文缺这条（回落中文 ⇒ 中文断言红）、
+  //    模板没 `{err}`（`/settings locked/` 红）。
+  {
+    const h = makeHarness();
+    h.context.__locale = 'en';
+    h.context.syncPageSizeControl();
+    h.context.__failNextWrite = new Error('settings locked');
+    await h.context.changeBrowsePageSize('200');
+    assert.equal(h.log.alerts.length, 1, '英文界面同样要点出失败，不能静默');
+    const expected = i18nText('en', 'settings.pageSizeFailFmt')
+      .split('{err}')
+      .join('settings locked');
+    assert.equal(
+      h.log.alerts[0],
+      expected,
+      '英文界面要弹英文模板（期望从真包派生，实得：' + h.log.alerts[0] + '）',
+    );
+    assert.match(h.log.alerts[0], /settings locked/, '英文模板里也必须带 {err}，否则说不出原因');
+    assert.ok(
+      !/[\u3400-\u9fff]/.test(h.log.alerts[0]),
+      '英文界面不许露中文（含回落中文包的情形），实际：' + h.log.alerts[0],
+    );
+    assert.equal(h.context.state.pageSize, 100, '英文路径同样要回滚');
+    assert.equal(shown(h), 100, '英文路径下拉也要一起回滚');
   }
 
   // ---------- 设置页改了每页张数：底栏下拉跟着走 ----------

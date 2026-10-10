@@ -27,6 +27,11 @@ const Database = require('./database');
 const dbReadWorkerPool = require('./db-read-worker-pool');
 const { runDatabaseMaintenance } = require('./main/database-maintenance');
 const maintenanceGuard = require('./main/maintenance-guard');
+/**
+ * 图库数据目录（默认 userData，可整份迁到别的盘）的位置判定与迁移执行。
+ * 纯逻辑（体检 / 复制 / 校验）都在 `src/main/data-dir.js`，这里只管编排与 IPC。
+ */
+const dataDirLib = require('./main/data-dir');
 const { createDbWriteQueue, PRIORITY } = require('./main/db-write-queue');
 /**
  * 查重指纹（SHA-256）的两条入口。抽成独立模块是为了让回归脚本能**真跑**着验证
@@ -40,13 +45,32 @@ const { extractExifFields, hasAnyExifField } = require('./main/exif-meta');
  * 与 FTS 共用同一个开关，把开机期的正常点击误报成「数据库维护进行中」。
  */
 const { aiIndexCanRun } = require('./main/ai-index-gate');
+// 任务进度百分比的唯一来源（边界规则见 `docs/contracts/background-tasks.md` §1.1）。
+const { computePct } = require('./main/progress-pct');
+/**
+ * 任务**预计剩余时间**的唯一来源（口径见 `docs/contracts/background-tasks.md` §7）。
+ * ⚠️ 2026-10-08 从本文件搬出去的：原先 `estimateEtaSeconds` / `…Smoothed` 就住在这里，
+ *    而人脸 / 搜图那两个任务的 `startedAt` 在 worker 里、够不着 ⇒ 它们只能另报速率，
+ *    同一个面板里出现两种读法。搬进独立模块后两条口径并排放，且 `status()` 能 require 到。
+ */
+const {
+  estimateEtaSecondsSmoothed,
+} = require('./main/eta');
+/**
+ * 「这台机器有没有可用的 GPU 加速」的**唯一探测与唯一记录处**。
+ *
+ * 判据只有一条：真的建一个 dml 会话并跑出正确数值（细节在 `main/gpu-probe.js` 里）。
+ * 别在别处再推断一次 —— `process.platform` / 包里有没有 DirectML.dll / `listSupportedBackends()`
+ * 三条都会在纯 CPU 机器上给出「可用」，而差异要到几个月后有人抱怨「换了显卡没变快」时才暴露。
+ */
+const { createGpuProbe } = require('./main/gpu-probe');
 /**
  * 用户交互抢占信号：搜图查询进行中时，后台长任务在批次边界停下让位。
  * 与内嵌网页 API 共用同一份单例（同进程），所以网页端搜图也会让后台任务让位。
  */
 const { interactionPreempt } = require('./main/interaction-preempt');
 /**
- * 照片信息面板的字段注册表：与渲染端 / 网页端**同一份**。
+ * 图片信息面板的字段注册表：与渲染端 / 网页端**同一份**。
  * 主进程只取它的 id 白名单与默认集做设置项校验 —— 于是「设置页能勾的」与
  * 「面板能画的」不可能对不上（曾经这类双份硬编码清单漂过好几次）。
  */
@@ -67,6 +91,10 @@ const PHOTO_INFO_FIELDS = require('./web/js/photo-info-fields.js');
 const DB_WRITE_QUIET_TASKS = {
   'thumbnail-backfill': true,
   'dup-hash': true,
+  // 「全量重跑」同样是高频批次任务（登记每 4 万行一次、抽干每 50 张一次）⇒ 同上静默。
+  // 它自己每批都有 logger 输出（`[runThumbnailRebuild]`），现场不缺。
+  'thumb-regen': true,
+  'thumb-regen-enqueue': true,
   // 扫描（T2 起占一次闸门、租约粒度 = 整次扫描）：时长无上界，一条 db-write.start/done
   // 跨度可能是几十分钟，混进启动阶段埋点会把「某阶段耗时」算成天文数字。
   scan: true,
@@ -89,8 +117,37 @@ const logger = require('./main/logger');
 const similarDetection = require('./main/similar-detection');
 const { idListPredicate, toIdListJson } = require('./main/sql-id-list');
 const { computeDhash, computeDhashFromPipeline, getDhashBuckets } = require('./main/perceptual-hash');
+const { createPhotoEditService } = require('./main/photo-edit-service');
+// 缩略图格式 → 响应头 MIME：唯一真相源（白名单与「生成端编码格式」都在那边，`database.js` 共用同一份）。
+// 🔴 `thumb://` 的响应头**必须**由「这一行实际存的格式」派生，不许硬编码 `image/jpeg`：
+//    库里一旦出现 WebP 行，硬编码的头会让浏览器静默不解码（不报错，只是空白）。
+const {
+  thumbMimeType,
+  resizeThumb,
+  normalizeThumbSize,
+  THUMB_ENCODE_FORMAT,
+  THUMB_DEFAULT_SIZE,
+  THUMB_DEFAULT_QUALITY,
+} = require('./main/thumb-format');
+// 「缩略图全量重跑」的队列表 / 取批 SQL / 规格谓词：唯一真相源（`database.js` 共用同一份）。
+// 🔴 取批 SQL **不带规格谓词**这条约定写在该模块头部，改它之前先读那段。
+const thumbRegenQueue = require('./main/thumb-regen-queue');
+// 图片「列表行」的列清单唯一真相源（含 `thumb_size` / `thumb_format` —— 浏览层的缓存键要用）。
+// 本文件里只有「按 id 批量取行」那一处列表查询，但它照样得从唯一源取：
+// 抄一份就是下一次「加列漏一处」的起点，而漏了的症状是静默的。见 `photo-list-columns.js`。
+const { photoListColumns } = require('./main/photo-list-columns');
 /** 搜图匹配阈值的范围与默认值：唯一定义处（src/ai/index-store.js），设置默认值从它取。 */
 const { MATCH_THRESHOLD_RANGE } = require('./ai/index-store');
+/**
+ * tag 检索路（M4）的查询线与可调范围：唯一定义处 `src/ai/tag-index-store.js`。
+ * ⚠️ 与 `MATCH_THRESHOLD_RANGE` **必须是两份** —— 量纲不同（CLIP 是基线差 0.01–0.15，
+ *    tag 是标签概率 0.2–0.95），共用一个区间就会「为了压住 tag 的误报把 CLIP 砍没」。
+ *
+ * `TAG_DISPLAY_RANGE` / `clampDisplayMinScore` 是**展示线**（读侧分数线）的可调范围与夹取：
+ * 它管的是标签导航页与照片信息面板「哪些行算结论」，与上面的查询线是两件事，
+ * 但**共用同一把尺子**（标签概率）⇒ 范围常量也放在同一个文件里，避免第二次口径分裂。
+ */
+const { TAG_ROUTE_RANGE, TAG_DISPLAY_RANGE, clampDisplayMinScore } = require('./ai/tag-index-store');
 // 随包内置模型（`models/`）的播种层：只读 fs/path/crypto，不碰 electron 与原生模块，
 // 因此可以在主进程顶部直接引，不会给启动加任何重量。
 const bundledModels = require('./ai/bundled-models');
@@ -124,6 +181,21 @@ function loadSharp() {
     sharpModule = require('sharp');
   }
   return sharpModule;
+}
+
+/**
+ * 「libvips 读不了的输入 → sharp 实例」的接线。**与网页端共用同一份**
+ * （`src/main/sharp-input.js`）—— 两端各写一份必然漂移，而漂移的症状是
+ * 「桌面端出得了图、网页端破图」，两端都"看起来正常"，只是少了一部分图片。
+ *
+ * 延迟加载：这条路径只有真的遇到 libvips 读不了的格式才会走到。
+ */
+var sharpInputModule = null;
+function loadSharpInput() {
+  if (!sharpInputModule) {
+    sharpInputModule = require('./main/sharp-input');
+  }
+  return sharpInputModule;
 }
 
 // Face recognition removed
@@ -197,57 +269,18 @@ function formatTrashFailureError(err) {
   return raw || '移入回收站失败';
 }
 
-/** 各任务 ETA 平滑状态（新任务 startedAt 变化时重置） */
-var etaSmoothByKey = Object.create(null);
-
 /**
- * 根据已开始耗时与完成量估算剩余秒数；不足数据时返回 null。
- * 平均速度 = done / elapsed（件/毫秒），剩余毫秒 = remaining / rate，须除以 1000 才是秒（此前误把毫秒当秒）。
+ * ⚠️ 各任务的 ETA 求值**已搬到 `src/main/eta.js`**（2026-10-08）。
+ *
+ * 为什么搬：这套算法原先就地住在这个文件里，于是**只有主进程手上拿着 `startedAt` 的任务**
+ * 用得上它；人脸 / 搜图的 `startedAt` 在 worker 里 ⇒ 它们改报 `ratePerMinute`，
+ * 同一个后台任务面板里就出现了两种读法（契约 §7）。搬出去之后 `main/semantic-search.js#status()`
+ * 也能 require 到它（那边派生 ETA），而且「由耗时反推」与「由速率反推」并排放在一起，
+ * 两条口径的差别一眼能看见 —— 留在两个文件里迟早各写一份。
+ *
+ * 这里只 require `estimateEtaSecondsSmoothed`（下面五处调用点用的都是它）。
+ * `estimateEtaSeconds` 本文件**没有**直接调用点（原先只有平滑版内部在用），所以不必引进来。
  */
-function estimateEtaSeconds(startedAt, done, total) {
-  if (!startedAt || total <= 0) return null;
-  var remaining = total - done;
-  if (remaining <= 0) return 0;
-  if (done < 1) return null;
-  var elapsed = Date.now() - startedAt;
-  if (elapsed < 800) return null;
-  // 前段波动大：至少完成 3 件，或已运行 5s 再估（二者满足其一）
-  if (done < 3 && elapsed < 5000) return null;
-  var rate = done / elapsed;
-  if (rate <= 0) return null;
-  var etaMs = remaining / rate;
-  var sec = Math.ceil(etaMs / 1000);
-  return Math.max(1, sec);
-}
-
-/**
- * 对 ETA 做指数平滑，减少 UI 轮询时的抖动；taskKey 区分目录扫描/缩略图等。
- */
-function estimateEtaSecondsSmoothed(taskKey, startedAt, done, total) {
-  if (!taskKey) return estimateEtaSeconds(startedAt, done, total);
-  if (!startedAt) {
-    delete etaSmoothByKey[taskKey];
-    return null;
-  }
-  var raw = estimateEtaSeconds(startedAt, done, total);
-  if (raw == null) {
-    delete etaSmoothByKey[taskKey];
-    return null;
-  }
-  if (raw === 0) {
-    delete etaSmoothByKey[taskKey];
-    return 0;
-  }
-  var st = etaSmoothByKey[taskKey];
-  if (!st || st.startedAt !== startedAt) {
-    etaSmoothByKey[taskKey] = { startedAt: startedAt, eta: raw };
-    return raw;
-  }
-  var blended = Math.round(0.38 * raw + 0.62 * st.eta);
-  if (blended < 1) blended = 1;
-  etaSmoothByKey[taskKey].eta = blended;
-  return blended;
-}
 
 var mainWindow;
 var tray = null;
@@ -282,7 +315,7 @@ var SCAN_PHASE_LABELS = {
   start: '启动扫描线程',
   enumerate: '枚举文件',
   partition: '比对文件变更',
-  'scan-files': '写入照片记录',
+  'scan-files': '写入图片记录',
   'cleanup-stale': '清理失效记录',
   'refresh-stats': '重算目录统计',
   cancel: '响应取消',
@@ -323,7 +356,7 @@ var THUMB_BACKFILL_CONCURRENCY_MAX = 8;
  *    `idx_photos_hasThumb`，本机实测**中位 14.0 ms**（8.0~14.6 ms，8 次）⇒
  *    占空比 14 ms / 5 s = **0.28%**；而读池本身占用率才 0.016%，加这点没关系。
  *    ⚠️ 原注释写「本机 150 ms、外接机械盘上会慢几个数量级」是**当时的估计、不是实测**，
- *    而且前提也不成立：**库在 `LOCALAPPDATA`（系统盘），只有照片在 `K:` / `G:` 外接盘**
+ *    而且前提也不成立：**库在 `LOCALAPPDATA`（系统盘），只有图片在 `K:` / `G:` 外接盘**
  *    ⇒ 这个计数读的是本地库、根本不碰那块外接盘。所以「为了不抢外接盘而取 30 s」
  *    这条理由站不住（30 s 的真实后果是：读数每跳只降约 300 张 / 占 28.7 万基数的 0.1%，
  *    看着像卡住）。⚠️ 若将来把 UserData 挪到外接盘或网络路径，这条必须重新量。
@@ -372,7 +405,7 @@ var thumbnailBackfill = {
    *    偏差有上界（最坏一个周期内新增的入库行数）。
    *
    * 🔴 **不是**主进度条的分母（主分母是 `pendingTotal`）。见 `countPhotosLackingThumbnail()`：
-   *    曾经拿它当分母，结果因为「倒序走 + 缺缩略图的行几乎全在低位老照片上」，
+   *    曾经拿它当分母，结果因为「倒序走 + 缺缩略图的行几乎全在低位老图片上」，
    *    进度条在 0% 上趴了十几分钟不动。这条历史不能因为改了刷新方式就丢掉。
    * @type {number|null}
    */
@@ -444,14 +477,127 @@ var thumbnailBackfill = {
   /** @type {string[]} */
   failedPathsLastRun: [],
 };
+/**
+ * 「缩略图全量重跑」任务状态 —— 与 `thumbnailBackfill` **完全分开**的一份。
+ *
+ * 为什么不给补全加一个参数（三条理由，都是「合起来会静默错」那一类）：
+ *   ① **候选集来源不同**。补全取「还没有缩略图的行」（`_sqlNeedsThumbnailExpr()`），
+ *      重跑取**队列**（登记时按规格筛出来的行）。两边的取批代价特征还相反：
+ *      补全走部分索引（真库实测 8 ms），重跑走队列表主键（代价 ∝ 批大小）。
+ *   ② **进度口径不同**。补全的分母是**抽样估计**（候选谓词要扫全表，80~95 s）
+ *      ⇒ UI 必须写「约」；重跑的分母是**精确值**（登记时 `INSERT` 的行数累加）
+ *      ⇒ 写「约」反而是在说实话的地方含糊。
+ *   ③ **准入互斥**。两者都要把整文件读一遍、抢同一块盘（本机 K:/G: 是外接机械盘），
+ *      同时跑只会互相拖慢，谁先谁后交给用户决定。
+ *
+ * ⚠️ `total` / `done` / `failed` 三个计数**持久化**在 `thumb_regen_meta` 单行里：
+ *    它们是「这条队列」的累计值，不是「本次进程」的值 —— 关掉应用再打开接着跑，
+ *    进度条必须接着走，而不是从 0 重新数（分母重数会让百分比突然掉回去）。
+ */
+var thumbnailRebuild = {
+  running: false,
+  cancelled: false,
+  /**
+   * `'enqueueing'` = 正在登记（还没扫完全库的 id 空间）
+   * `'draining'`   = 正在抽干队列里的行
+   * `''`           = 未运行
+   * @type {'enqueueing'|'draining'|''}
+   */
+  phase: '',
+  /** 本轮登记进队列的累计张数（= 进度分母），持久化 */
+  total: 0,
+  /** 已抽干的张数（= 进度分子），持久化；含失败与「这行已不在库里」两类 */
+  done: 0,
+  /**
+   * 🔴 **本次进程起手时 `done` 的快照** —— 只为把 ETA 的分子分母拉回同一口径。
+   * `done` 是**跨重启累计**（存在 `thumb_regen_meta` 里），`startedAt` 却是本次进程的起手时刻
+   * ⇒ 直接拿这两个算速率 = 「整条队列的累计完成量 ÷ 本次跑了多久」（2026-10-08 真库实测：
+   * 重启续跑 21 分钟、`done` 38.7 万 ⇒ 速率被放大成 **305 张/秒**，而实测 17 张/秒
+   * ⇒ 界面显示「预计剩余约 1 小时 9 分」，真实约 **20.7 小时**）。
+   * 用这个快照把分子换成「这一趟真正做的量」后，remaining 不变、速率回到真值。
+   * 与五个顺手产出计数同款：**本次进程口径、不持久化**。
+   */
+  doneAtStart: 0,
+  /**
+   * 同上，给 `failed` / `missing` 各留一份起手快照 —— 界面要报「**本次**重出多少、**本次**失败多少」。
+   * 这三个数全是**跨重启累计**的（存在 meta 里），而副行另外五项（尺寸 / 拍摄信息 / 视觉指纹 /
+   * 查重指纹 + 队列剩余）分别是本次与队列口径 ⇒ **同一条副行里不能一半累计、一半本次**。
+   * 🔴 2026-10-08 用户指出：「已完成的不是这一次跑的」—— 首版把累计 `done` 当本次产出报，
+   * 现场是「本次起了 21 分钟、界面报『已重出 387,250』」，其中 37 万是上一个进程做的。
+   * 累计口径的正确去处是**主行的 `done / total`**（那是总账），以及空闲态的设置页文案。
+   */
+  failedAtStart: 0,
+  missingAtStart: 0,
+  failed: 0,
+  /** 登记阶段**已扫过的行数**（id 区间宽度累计）：让「还在登记」那段时间有东西可看 */
+  scanned: 0,
+  /** 抽干阶段「队列里有、`photos` 里已经没有了」的张数 */
+  missing: 0,
+  /**
+   * 下面五个是**顺手产出**的计数（2026-10-08 并入）：
+   * 重跑本来就要把原图完整读一遍 + 解一次码，而补全那边的四样（原图尺寸 / 拍摄参数 /
+   * dHash / 查重指纹）**吃的是同一次读盘与同一次解码** ⇒ 白并过来。
+   * 不并的代价是同一批字节被读两遍：补全第二支在真库上还欠 **857,372 行**（2026-10-08 实测），
+   * 而原图在 K:/G: 外接机械盘上，读盘就是这里的主导成本。
+   * ⚠️ 它们**只统计本轮真的写进库的行数**（判据同补全：写成功了才自增），
+   *    不是「看过的行数」—— 后者会让界面把「这行早就有值、跳过了」也算成产出。
+   */
+  sized: 0,
+  exifChecked: 0,
+  exifFilled: 0,
+  dhashed: 0,
+  hashed: 0,
+  currentFile: '',
+  /** @type {number} */
+  startedAt: 0,
+  /** 本轮的目标规格（起手时取一次快照；跑到一半改设置**不会**改这一轮的目标，见 `runThumbnailRebuild`） */
+  targetSize: 0,
+  targetFormat: '',
+  runToken: 0,
+  /** @type {string[]} */
+  failedPaths: [],
+  /** @type {string[]} */
+  failedPathsLastRun: [],
+};
+/** 登记阶段一次扫多少个 id 区间宽度 —— 决定单次持写锁的时长上界（真库 4 万行约 5~10 s） */
+var THUMB_REGEN_ENQUEUE_CHUNK = 40000;
+/** 抽干阶段的批大小 */
+var THUMB_REGEN_DRAIN_BATCH = 50;
 var autoBackfillScheduled = false;
 var autoDuplicateHashScheduled = false;
 var autoDuplicateHashRetryTimer = null;
 var sqliteDbPath = '';
+/**
+ * 图库数据目录（photos.db / ai-search / face-index / catalog-cache.db 落在哪）。
+ * 默认等于 Electron 的 userData；设置页可以把它整份迁到别的盘，位置记在 settings.json。
+ */
+var libraryDataDir = '';
+/**
+ * 迁移一次的状态机。`running` 期间界面禁用「迁移」按钮，并且**不许再有任务去碰数据库**
+ * —— 迁移前要先关掉全部连接，中途被别的任务重新打开会让「复制的是静态快照」这条前提失效。
+ */
+var dataDirMigration = { running: false, phase: '', copiedBytes: 0, totalBytes: 0, current: '' };
+/**
+ * 设置了 dataDir 但用不了（盘没插 / 权限不足）时回退到默认位置的**原因**，空串表示没回退。
+ * 🔴 它必须能被界面读到：回退后库多半是空的，用户第一反应是「我的图片没了」，
+ *    不把原因说出来就是一次静默失效。
+ *
+ * 这里放的是**给用户看的一句话**（「Z:\xxx 打不开」）；原始报错另存 `dataDirFallbackDetail`。
+ * 两者分开是有意的：正文里塞 `EPERM: operation not permitted, mkdir 'Z:\...'`
+ * 只会让人以为出了大事，而排查时又确实需要原文 —— 所以一句进正文、原文挂悬停。
+ */
+var dataDirFallbackReason = '';
+var dataDirFallbackDetail = '';
 var semanticSearch = null;
-/** 照片信息面板读「AI 内容标签」的只读通道（标签在搜图索引库里，不在 photos 表）。 */
+/** 图片信息面板读「主题标签」的只读通道（标签在搜图索引库里，不在 photos 表）。 */
 var semanticTags = null;
+/** 图片信息面板读「画面标签」（JoyTag）的只读通道（标签在 tag 索引库里，同样跨不了主库）。 */
+var joyTagTags = null;
+/** 「标签导航页」的数据服务（`main/tag-nav.js`）。同样惰性只读、读不到降级空结构。 */
+var tagNav = null;
 var faceService = null;
+/** 启动期 GPU 能力探测器（每次启动探一次，结论落盘到搜图 AI 目录）。 */
+var gpuProbe = null;
 /**
  * 有维护任务在跑（**两种语义的或集**，供「界面显示优化中 / 长任务避让 / 禁止退出」使用）。
  *
@@ -481,36 +627,47 @@ function maintenanceBusy() {
     scanQueue.length > 0 ||
     isFolderScanRunning() ||
     thumbnailBackfill.running ||
+    // 全量重跑同样在按批写库（每批几十行 UPDATE），维护任务撞上它必然等锁
+    thumbnailRebuild.running ||
     duplicateHashTask.running ||
     invalidCleanupTask.running ||
     startupInvalidCleanupTask.running
   );
 }
-/** 当前挡着库的是谁：给界面一句能行动的话，而不是笼统的「后台任务进行中」。 */
+/**
+ * 当前挡着库的是谁：给界面一句能行动的话，而不是笼统的「后台任务进行中」。
+ *
+ * 🔴 这里返回的每一句都会被拼进 `maintenanceBusyMessage()` 的「正在……，请等它完成后再试」，
+ *    所以**必须是动词开头的短语**（「正在扫描目录」读得通，「正在目录扫描」读不通）。
+ *    另外别再出现「数据库迁移」这种词：图库数据搬家（设置页那个功能）也叫迁移，
+ *    两边撞名之后，用户看到「数据库迁移」根本不知道说的是哪件事。
+ */
 function dbWriteBusyLabel() {
   var name = dbWriteQueue.busyName();
   if (!name) return '';
-  if (name === 'thumbnail-fix') return '数据库迁移（缩略图标记）';
-  if (name === 'deferred-index') return '数据库索引补齐';
-  if (name === 'fts-index') return '文件名索引重建';
-  if (name === 'invalid-cleanup') return '清理失效文件记录';
+  if (name === 'thumbnail-fix') return '校正缩略图记录';
+  if (name === 'deferred-index') return '补齐数据库索引';
+  if (name === 'fts-index') return '重建文件名索引';
+  if (name === 'invalid-cleanup') return '清理失效记录';
   // 回填 / 重复哈希现在是**按批次**占写锁的，批间会放开让别的任务过，
   // 所以它们也会出现在 busyName() 里（过去这两个任务压根不进队）。
-  if (name === 'thumbnail-backfill') return '缩略图补全';
-  if (name === 'dup-hash') return '重复文件比对';
+  if (name === 'thumbnail-backfill') return '补全缩略图';
+  if (name === 'dup-hash') return '比对重复文件';
+  // 全量重跑的两个票据名（登记 / 抽干）都报同一句 —— 它们对用户是同一件事
+  if (name === 'thumb-regen' || name === 'thumb-regen-enqueue') return '重建全部缩略图';
   // 扫描（T2 起）也占闸门：它是最长的一个占用者，报出名字比笼统的「后台任务」有用得多
-  if (name === 'scan') return '目录扫描';
+  if (name === 'scan') return '扫描目录';
   // 手动维护这两条一直漏了映射 → 界面会直接显示英文任务名
-  if (name === 'maintenance-rebuild-thumbnail-flags') return '重建缩略图标记';
-  if (name === 'maintenance-optimize-database') return '优化数据库（VACUUM）';
+  if (name === 'maintenance-rebuild-thumbnail-flags') return '重建缩略图记录';
+  if (name === 'maintenance-optimize-database') return '整理数据库';
   return name;
 }
 /** 维护被挡时的文案：能让用户知道在等谁、等的是什么，比笼统的 busy 有用得多。 */
 function maintenanceBusyMessage() {
   var label = dbWriteBusyLabel();
   // 不再写「启动期」：T2 起扫描、手动维护也走同一条队列，被挡住的未必是启动期任务
-  if (label) return '后台任务进行中（' + label + '），请等它跑完再试';
-  return '后台任务进行中，请稍后再试';
+  if (label) return '正在' + label + '，请等它完成后再试';
+  return '图库正在处理其他任务，请稍后再试';
 }
 function aiIndexTaskBusy() {
   return maintenanceGuard.aiIndexBusy([semanticSearch, faceService], function (error) {
@@ -539,8 +696,8 @@ function vacuumSpaceEstimate() {
 /** VACUUM 的临时库可能落地的两处位置，各自可用空间（-1 表示未知）。 */
 function vacuumSpacePlaces() {
   return [
-    { label: '数据库所在分区', free: maintenanceGuard.freeDiskBytes(path.dirname(sqliteDbPath)) },
-    { label: '系统临时目录', free: maintenanceGuard.freeDiskBytes(os.tmpdir()) },
+    { label: '图库数据所在磁盘', free: maintenanceGuard.freeDiskBytes(path.dirname(sqliteDbPath)) },
+    { label: '系统临时文件夹', free: maintenanceGuard.freeDiskBytes(os.tmpdir()) },
   ];
 }
 /** 磁盘不够就直说差多少，而不是让它跑到一半 I/O 失败。返回空串表示放行。 */
@@ -559,10 +716,10 @@ function vacuumSpaceSummary() {
     })
     .join('、');
 }
-/** 空洞少到可忽略时直说：这次优化基本只是重建统计信息，别为了几 MB 重写整库。 */
+/** 空洞少到可忽略时直说：这次整理基本只是刷新统计信息，别为了几 MB 重写整库。 */
 function vacuumReclaimHint(estimate) {
   if (!estimate || estimate.reclaimable * 100 >= estimate.fileSize) return '';
-  return '（几乎没有空洞，本次优化的主要收益是重建统计信息）';
+  return '（几乎回收不出空间，这次整理主要是刷新查询统计信息）';
 }
 async function performMaintenance(operation) {
   try {
@@ -580,11 +737,19 @@ async function performMaintenance(operation) {
     maintenanceResult = {
       operation,
       status: 'failed',
-      error: locked ? '数据库被其他程序占用，请关闭后重试（' + raw + '）' : raw,
+      error: locked
+        ? '数据库被其他程序占用，暂时无法维护。请关闭占用它的程序（或另一个图库窗口）后重试。\n\n（' +
+          raw +
+          '）'
+        : raw,
     };
     logger.error('Database maintenance failed:', error);
     if (operation !== 'ensureFtsIndex' && mainWindow && !mainWindow.isDestroyed()) {
-      void dialog.showMessageBox(mainWindow, { type: 'error', message: maintenanceResult.error });
+      void alertInApp({
+        variant: 'error',
+        title: '数据库维护没有完成',
+        message: maintenanceResult.error,
+      });
     }
   } finally {
     db.db.pragma('busy_timeout = 8000');
@@ -595,6 +760,623 @@ async function performMaintenance(operation) {
     emitBackgroundTasksChangedThrottled(true);
   }
 }
+/* ============ 主进程发起的提示 / 确认：一律交给渲染端画 ============ */
+
+/**
+ * 主进程没有界面，它自己弹的 `dialog.showMessageBox` 是**系统**外观 —— 暗色主题下白底、
+ * 亮色主题下灰底，跟应用里其它弹窗（`#appDialogOverlay`，见 `styles.css` 的那一套
+ * `--bg-card` / `--accent` 变量）是两套东西。所以提示统一走
+ * 「主进程发请求 → 渲染端画 → 回传结果」；**只有渲染端用不了**（窗口没起、页面崩了、
+ * 20 秒没人应答）才回落到系统弹窗 —— 那时候宁可难看，也不能一声不响。
+ *
+ * 🔴 每个请求带 id，超时与应答都必须**结算**：等在这里的调用方是「清理无效记录」
+ *    这类确认框，悬挂就等于「点了按钮永远没反应」。
+ */
+var appDialogSeq = 0;
+var pendingAppDialogs = new Map();
+var APP_DIALOG_TIMEOUT_MS = 20000;
+
+function resolveAppDialog(id, result) {
+  var pending = pendingAppDialogs.get(id);
+  if (!pending) return;
+  pendingAppDialogs.delete(id);
+  clearTimeout(pending.timer);
+  pending.resolve(result);
+}
+
+function askInAppDialog(options) {
+  var opts = options || {};
+  var mode = opts.type === 'confirm' ? 'confirm' : 'alert';
+  return new Promise(function (resolve) {
+    var wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    if (!wc) {
+      resolve({ available: false, confirmed: false });
+      return;
+    }
+    /**
+     * 窗口收在托盘里时，画在窗口内的弹窗等于「提示了但看不见」（系统弹窗不会这样）。
+     * 所以发之前先把窗口叫出来 —— 反正接下来就是要用户看一句话或者点一下。
+     */
+    try {
+      if (!mainWindow.isVisible()) showMainWindow();
+    } catch (e) {
+      void e;
+    }
+    var id = ++appDialogSeq;
+    var timer = setTimeout(function () {
+      logger.warn('[dialog] 渲染端未应答，回落系统弹窗：' + (opts.title || ''));
+      resolveAppDialog(id, { available: false, confirmed: false });
+    }, APP_DIALOG_TIMEOUT_MS);
+    pendingAppDialogs.set(id, { resolve: resolve, timer: timer, mode: mode });
+    try {
+      wc.send('app-dialog-request', {
+        id: id,
+        type: mode,
+        title: opts.title || '',
+        message: opts.message || '',
+        okText: opts.okText || '',
+        cancelText: opts.cancelText || '',
+        // 有 i18n 键就让渲染端按当前语言渲染（主进程不该自己拼界面文案）；
+        // 没有就用手传的原文（沿用它的是既有那些中文硬编码串）。
+        i18n: opts.i18n || null,
+      });
+    } catch (e) {
+      void e;
+      resolveAppDialog(id, { available: false, confirmed: false });
+    }
+  });
+}
+
+/** 确认框：渲染端能画就用主题弹窗，画不了才回落系统弹窗。返回 true = 用户确认。 */
+async function confirmInApp(options) {
+  var opts = options || {};
+  var res = await askInAppDialog(Object.assign({}, opts, { type: 'confirm' }));
+  if (res.available) return res.confirmed === true;
+  var picked = dialog.showMessageBoxSync(mainWindow, {
+    type: 'warning',
+    buttons: ['取消', opts.okText || '确认'],
+    defaultId: 0,
+    cancelId: 0,
+    title: opts.title || '请确认',
+    message: opts.message || '',
+  });
+  return picked === 1;
+}
+
+/** 提示框：同上，不需要结果。用 `void alertInApp(...)` 调用即可。 */
+async function alertInApp(options) {
+  var opts = options || {};
+  var res = await askInAppDialog(Object.assign({}, opts, { type: 'alert' }));
+  if (res.available) return;
+  void dialog.showMessageBox(mainWindow, {
+    type: opts.variant === 'error' ? 'error' : 'info',
+    title: opts.title || '提示',
+    message: opts.message || '',
+  });
+}
+
+/* ==================== 数据目录（图库数据落在哪 / 怎么迁走） ==================== */
+
+/**
+ * 当前**实际生效**的数据目录。没解析过（启动早期）时退回 userData，调用方拿到的永远是
+ * 一个可用路径，不会出现「空串拼出一个相对路径」这种静默落到当前工作目录的事故。
+ */
+function currentDataDir() {
+  if (libraryDataDir) return libraryDataDir;
+  try {
+    return app.getPath('userData');
+  } catch (e) {
+    void e;
+    return '';
+  }
+}
+
+/**
+ * 启动时把 settings.json 里的 `dataDir` 变成「真的能用」的目录。
+ *
+ * 🔴 **回退必须留痕**：配了 D 盘而 D 盘没插，最省事的做法是悄悄用回 C 盘默认位置，
+ *    但那样界面会打开一个**空图库** —— 用户看到的是「图片全没了」，而这只是盘没插。
+ *    所以回退时写 `dataDirFallbackReason`，首窗出来后弹一次，并在设置页常驻显示。
+ */
+function resolveDataDirPath(userDataPath) {
+  var configured = String((settings && settings[dataDirLib.SETTING_KEY]) || '').trim();
+  if (!configured) {
+    dataDirFallbackReason = '';
+    dataDirFallbackDetail = '';
+    return userDataPath;
+  }
+  var resolved = dataDirLib.normalizeDirPath(configured);
+  try {
+    fs.mkdirSync(resolved, { recursive: true });
+    // 真的写一个字节再删：macOS/Windows 上「目录存在」不等于「可写」，
+    // 而不可写会在几分钟后的第一次写库时才炸，那时现场已经不好认了。
+    var probe = path.join(resolved, '.writetest');
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+    dataDirFallbackReason = '';
+    dataDirFallbackDetail = '';
+    return resolved;
+  } catch (e) {
+    // 面向用户的那句：只说「哪个位置、打不开」，不搬错误码。
+    // 用「无法访问」而不是再说一次「打不开」：这句会被塞进设置页那句
+    // 「你指定的位置这次打不开……（{reason}）」的括号里，重复用词会读成复读机。
+    dataDirFallbackReason = '无法访问 ' + resolved;
+    dataDirFallbackDetail = (e && e.message ? e.message : String(e)) || '';
+    logger.warn(
+      '[data-dir] 已配置的数据目录不可用（' +
+        resolved +
+        '）：' +
+        dataDirFallbackDetail +
+        ' → 本次回退到默认位置 ' +
+        userDataPath,
+    );
+    return userDataPath;
+  }
+}
+
+/** 给界面的一句「现在在哪、多大、还剩多少」。 */
+function describeDataDir() {
+  var dir = currentDataDir();
+  var entries = dataDirLib.listEntries(dir);
+  var total = dataDirLib.totalBytes(entries);
+  var configured = String((settings && settings[dataDirLib.SETTING_KEY]) || '').trim();
+  return {
+    success: true,
+    dataDir: dir,
+    defaultDataDir: app.getPath('userData'),
+    configuredDataDir: configured,
+    isCustom: !!configured && !dataDirLib.isSameDir(configured, app.getPath('userData')),
+    dbPath: sqliteDbPath || path.join(dir, 'photos.db'),
+    entries: entries,
+    totalBytes: total,
+    dbFileBytes: (function () {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].name === 'photos.db') return Number(entries[i].bytes) || 0;
+      }
+      return 0;
+    })(),
+    freeBytes: maintenanceGuard.freeDiskBytes(dir),
+    migrating: dataDirMigration.running,
+    fallbackReason: dataDirFallbackReason || '',
+    fallbackDetail: dataDirFallbackDetail || '',
+  };
+}
+
+function emitDataDirProgress(patch) {
+  dataDirMigration = Object.assign({}, dataDirMigration, patch || {});
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('data-dir-migrate-progress', {
+        running: dataDirMigration.running,
+        phase: dataDirMigration.phase,
+        copiedBytes: dataDirMigration.copiedBytes,
+        totalBytes: dataDirMigration.totalBytes,
+        current: dataDirMigration.current,
+        // 校验阶段的**已耗时**。⚠️ 这个字段必须显式列在这里：`emitDataDirProgress` 是白名单
+        //    拼装的（不是整份透传），漏了它 = 校验那几分钟里界面一个字都不动 —— 用户报的
+        //    「卡死」有一半就是这个观感（另一半是主线程真的被占住，见 `verifyCopiedLibrary`）。
+        verifyMs: Number(dataDirMigration.verifyMs) || 0,
+        percent:
+          dataDirMigration.totalBytes > 0
+            ? Math.min(100, Math.round((dataDirMigration.copiedBytes / dataDirMigration.totalBytes) * 100))
+            : 0,
+      });
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
+/**
+ * 迁移前把**所有**还握着数据库的东西放开。
+ *
+ * 复制 19 GB 要几分钟，这段时间库必须是静态的 —— 否则「复制的是某一时刻的快照」这条
+ * 前提不成立，副本可能半新半旧。名单照抄 `before-quit` 那一套（那是本工程唯一一处
+ * 已经把所有持有者列全的地方），再加 `db` / `catalogCache` 两个连接。
+ */
+function releaseRuntimeHandlesForMigration() {
+  try {
+    if (webServer && typeof webServer.stop === 'function') webServer.stop();
+  } catch (e) {
+    void e;
+  }
+  try {
+    stopCloudflareTunnelInternal();
+  } catch (e) {
+    void e;
+  }
+  try {
+    if (semanticSearch) semanticSearch.dispose();
+  } catch (e) {
+    void e;
+  }
+  try {
+    if (semanticTags) semanticTags.close();
+  } catch (e) {
+    void e;
+  }
+  try {
+    if (faceService) faceService.dispose();
+  } catch (e) {
+    void e;
+  }
+  try {
+    dbReadWorkerPool.terminate();
+  } catch (e) {
+    void e;
+  }
+  try {
+    if (catalogCache && typeof catalogCache.close === 'function') catalogCache.close();
+  } catch (e) {
+    void e;
+  }
+  try {
+    if (db && typeof db.close === 'function') {
+      // 先把 WAL 收进主库再关：干净关闭理论上也会做，但那是「理论」——
+      // 真漏了的话，我们复制的 photos.db 会缺最后一次提交，而副本校验不一定抓得到。
+      try {
+        db.db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch (e2) {
+        void e2;
+      }
+      db.close();
+    }
+  } catch (e) {
+    void e;
+  }
+}
+
+/**
+ * 迁移要**独占整个库**，所以先把「失效记录清理」让开。
+ *
+ * 🔴 **为什么必须让，而不是「等它跑完」**：这个清理要**扫完整个库**。启动那一趟是
+ *    每批 400 行、批间 450 ms（`START_DELAY_MS` / `STEP_DELAY_MS` / `BATCH_SIZE`），
+ *    在 1,656,580 行的库上量级是**几十分钟到几小时**；而它整段都举着 `maintenanceBusy()`
+ *    这把闸门 ⇒「等它跑完再迁移」实际上等于「今天别迁了」。用户报的就是这个
+ *    （点迁移 → 「迁移没有完成。／正在清理失效记录，请等它完成后再试」）。
+ *    它本身是**开机自检**、幂等、可续跑（下次启动从头再来一遍），中断没有任何副作用 ——
+ *    迁移完应用会重启，重启后它照样跑。所以「迁移时不清理失效」是安全的取舍。
+ *
+ * **停的是批次边界**：在途那一批会跑完（它的写库票据还在队列里），所以紧接着的第一次
+ * 迁移尝试**可能仍撞到写锁** —— 界面那边按 `code: 'BUSY'` 自动重试兜住，不是失败。
+ *
+ * @returns {Array<{label: string, scope: string}>} 被暂停的任务，给界面如实说明用
+ */
+function pauseInvalidCleanupForMigration() {
+  var paused = [];
+  if (startupInvalidCleanupTask.running) {
+    startupInvalidCleanupTask.running = false;
+    if (startupInvalidCleanupTask.timer) {
+      clearTimeout(startupInvalidCleanupTask.timer);
+      startupInvalidCleanupTask.timer = null;
+    }
+    startupStageLog('invalid-cleanup.paused', 'for=data-dir-migration');
+    paused.push({ label: '清理失效记录', scope: 'startup' });
+  }
+  // 手动那一次也停：它同样举着闸门，而且续跑语义与自动那次一致（再点一次重来一遍）。
+  if (invalidCleanupTask.running) {
+    invalidCleanupTask.cancelled = true;
+    paused.push({ label: '清理失效记录', scope: 'manual' });
+  }
+  if (paused.length) {
+    logger.warn('[data-dir] 迁移要独占库，已暂停失效记录清理（这一趟作废，之后可重新开始）');
+    emitBackgroundTasksChangedThrottled(true);
+  }
+  return paused;
+}
+
+/**
+ * 校验副本能不能当主库用 —— 在**独立线程**里跑，不冻界面。
+ *
+ * 🔴 **为什么不能就地同步跑**：唯一能查结构的一道是 `PRAGMA quick_check`，它要读完整个库。
+ *    真库实测（18,345,889,792 字节 / 4,478,977 页）**318,948 ms ≈ 5 分 19 秒**；同步跑在主进程里，
+ *    这 5 分钟主线程一点动不了、进度事件一条都发不出去 ⇒ 窗口被系统标成「无响应」，
+ *    用户看到的就是「**正在检查新位置的数据时卡死**」。它不是死锁 —— 换成 worker 之后
+ *    界面全程可动、秒数在走，同样的 5 分钟就变成「在做事」。
+ *
+ * 判定本身不在这个文件里：worker 只取数，`dataDirLib#judgeCopy` 是**判据唯一源**
+ * （同步那条路 `verifySqliteFile` 也调它，两边不会漂移）。
+ *
+ * 三条兜底都是「宁可说不知道，也不许把坏库放过去」：
+ *  · worker 起不来 ⇒ 退回主进程同步校验（界面会冻，但结论是对的），并 warn 留痕；
+ *  · worker 抛错 / 没留结果就退出 ⇒ 返回失败，**不返回 ok**；
+ *  · 超过 `VERIFY_TIMEOUT_MS` 还没结果 ⇒ 判超时失败（quick_check 是纯 I/O、没有中间进度可判，
+ *    所以这个上限只做「有个头」的兜底，给得很宽；真库 18 GB 量级实测 5.3 分钟）。
+ *
+ * @param {string} dbFile 副本里的 photos.db
+ * @param {number|null} expectPhotoCount 源库行数（对照用，null = 不参与校验）
+ * @returns {Promise<{ok: boolean, code?: string, error?: string, photoCount?: number}>}
+ */
+var VERIFY_TIMEOUT_MS = 20 * 60 * 1000;
+function verifyCopiedLibrary(dbFile, expectPhotoCount) {
+  return new Promise(function (resolve) {
+    var Worker = require('worker_threads').Worker;
+    var t0 = Date.now();
+    var worker;
+    try {
+      worker = new Worker(path.join(__dirname, 'workers', 'db-verify-worker.js'), {
+        workerData: { dbPath: dbFile, expectPhotoCount: expectPhotoCount },
+      });
+    } catch (eSpawn) {
+      logger.warn(
+        '[data-dir] 校验 worker 起不来，退回主进程同步校验（界面会短暂无响应）：',
+        eSpawn && eSpawn.message ? eSpawn.message : String(eSpawn),
+      );
+      resolve(dataDirLib.verifySqliteFile(dbFile, expectPhotoCount));
+      return;
+    }
+
+    var settled = false;
+    var heartbeat = null;
+    var killer = null;
+    function done(result) {
+      if (settled) return;
+      settled = true;
+      if (heartbeat) clearInterval(heartbeat);
+      if (killer) clearTimeout(killer);
+      try {
+        worker.terminate();
+      } catch (eT) {
+        void eT;
+      }
+      resolve(result);
+    }
+
+    // 心跳：光有一句「正在检查…」放 5 分钟，用户没法区分「在做事」和「死了」。
+    // 秒数在走 = 它一直在读盘；真卡住了也能看出来走了多久。
+    heartbeat = setInterval(function () {
+      emitDataDirProgress({ phase: 'verify', verifyMs: Date.now() - t0 });
+    }, 3000);
+
+    killer = setTimeout(function () {
+      logger.warn('[data-dir] 副本校验超时（' + Math.round(VERIFY_TIMEOUT_MS / 60000) + ' 分钟）');
+      done({
+        ok: false,
+        code: 'TIMEOUT',
+        error:
+          '检查新位置的数据超过了 ' +
+          Math.round(VERIFY_TIMEOUT_MS / 60000) +
+          ' 分钟还没结束，这次没有切换过去 —— 图库数据没有变动，仍在原位置。',
+      });
+    }, VERIFY_TIMEOUT_MS);
+
+    worker.on('message', function (msg) {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.__phase) {
+        // 128 KB 页头一读完就知道「文件有没有被截断」，这条只用于留痕
+        if (msg.__phase === 'judge.started') {
+          longTaskStageLog(
+            'data-dir.verify.judge-start',
+            'headerMs=' + msg.headerMs + ' bytes=' + msg.fileSize,
+          );
+        }
+        return;
+      }
+      // 无论是「通过」还是「没通过」，结论都从这一条消息来（worker 取数 + judgeCopy 判定）
+      longTaskStageLog(
+        'data-dir.verify.done',
+        JSON.stringify({
+          ok: !!msg.ok,
+          code: msg.code || '',
+          photoCount: msg.photoCount,
+          headerMs: msg.headerMs,
+          quickCheckMs: msg.quickCheckMs,
+          countMs: msg.countMs,
+          elapsedMs: msg.elapsedMs,
+        }),
+      );
+      done(msg);
+    });
+    worker.on('error', function (eErr) {
+      logger.error('[data-dir] 校验 worker 出错：', eErr && eErr.message ? eErr.message : String(eErr));
+      done({
+        ok: false,
+        code: 'VERIFY_FAILED',
+        error: '检查新位置的数据时出错：' + (eErr && eErr.message ? eErr.message : String(eErr)),
+      });
+    });
+    worker.on('exit', function (code) {
+      // 没留结果就退出了 ⇒ 不能当成通过（worker 自己的路径都会先 post 再 exit）
+      if (settled) return;
+      logger.error('[data-dir] 校验 worker 提前退出，code=' + code);
+      done({
+        ok: false,
+        code: 'VERIFY_FAILED',
+        error: '检查新位置的数据时进程提前结束（事件码 ' + code + '），这次没有切换过去。',
+      });
+    });
+  });
+}
+
+/**
+ * 一次完整的迁移：体检 → 放手 → 复制 → 校验 → 改设置 → 删旧 → 重启。
+ *
+ * 🔴 **失败也要重启**：走到「放手」之后，这个进程已经没有可用的数据库连接了，
+ *    留在原地就是一个看起来正常、点什么都没反应的壳。所以无论成功失败都会重启，
+ *    设置没改 ⇒ 重启后回到原来的库（复制失败不会丢数据，因为旧文件只在成功后才删）。
+ */
+async function runDataDirMigration(targetDir, removeSource) {
+  var fromDir = currentDataDir();
+  // 🔴 「被闸门挡住」必须带一个**可判定的 code**：这类拒绝是**暂时**的，调用方该重试而不是
+  //    报错，而重试的判据如果钉在文案上（「后台任务进行中」），文案一改就静默失效 ——
+  //    实测就这么中过一次：`maintenanceBusyMessage()` 换了说法，端到端探针的重试循环
+  //    突然不再重试，7 项断言一起红，看着像迁移坏了。判据要么是 code，要么是结构化字段。
+  if (dataDirMigration.running)
+    return { success: false, code: 'BUSY', error: '正在迁移图库数据，请稍候' };
+  var check = dataDirLib.validateTarget(fromDir, targetDir);
+  if (!check.ok) return { success: false, code: check.code, error: check.error };
+  // 先让「失效记录清理」让开（它可能还要跑几十分钟以上），再看闸门。
+  var pausedTasks = pauseInvalidCleanupForMigration();
+  /**
+   * 🔴 **暂停是一次「已经发生的副作用」，所以每个出口都要带上它** —— 不只是成功那条。
+   *    用户看不到自己的后台任务被悄悄改期：清理被停了却报「迁移失败」，他会以为
+   *    什么都没发生，下次启动发现「清理又从头开始了」也找不到原因。这里用一层包装
+   *    而不是在 5 个 return 上各写一遍，就是为了**新增出口时不可能漏**。
+   */
+  function withPaused(result) {
+    if (pausedTasks && pausedTasks.length) result.pausedTasks = pausedTasks;
+    return result;
+  }
+
+  if (maintenanceBusy())
+    return withPaused({
+      success: false,
+      code: 'BUSY',
+      error: maintenanceBusyMessage(),
+    });
+
+  var plan = dataDirLib.planMigration(fromDir, targetDir);
+  if (!plan.ok) return withPaused({ success: false, code: plan.code || '', error: plan.error });
+  if (!plan.entries.length)
+    return withPaused({
+      success: false,
+      code: 'NO_DATA',
+      error: '当前的位置里没有找到图库数据，无法迁移',
+    });
+  if (plan.shortageBytes > 0) {
+    return withPaused({
+      success: false,
+      code: 'SPACE',
+      error:
+        '目标磁盘空间不够：需要 ' +
+        maintenanceGuard.formatBytes(plan.needBytes) +
+        '，现在只有 ' +
+        (plan.freeBytes >= 0 ? maintenanceGuard.formatBytes(plan.freeBytes) : '未知') +
+        '（还差 ' +
+        maintenanceGuard.formatBytes(plan.shortageBytes) +
+        '）。请换一个空间更大的位置，或先清理一些文件。',
+    });
+  }
+
+  dataDirMigration.running = true;
+  emitDataDirProgress({ phase: 'prepare', copiedBytes: 0, totalBytes: plan.totalBytes, current: '' });
+  emitBackgroundTasksChangedThrottled(true);
+
+  /**
+   * 迁移前记下主库的行数，给副本当对照。
+   * ⚠️ 刻意**不用** `db.getStats()`：那是走重读 worker 的聚合统计（带缓存、为界面服务），
+   *    在大库上一次几秒到几十秒，而且它算的是「含视频的图片数」等一堆派生口径 ——
+   *    这里要的只是「副本有没有少搬内容」，一行 COUNT(*) 足够。
+   */
+  var expectedCount = null;
+  try {
+    if (db && db.db) {
+      var row = db.db.prepare('SELECT COUNT(*) AS n FROM photos').get();
+      expectedCount = Number(row && row.n) || null;
+    }
+  } catch (e) {
+    void e;
+  }
+
+  var handlesReleased = false;
+  try {
+    emitDataDirProgress({ phase: 'release', current: '正在关闭数据库连接…' });
+    releaseRuntimeHandlesForMigration();
+    handlesReleased = true;
+
+    /**
+     * 🔴 **关库之后必须重新盘点一次**：体检（plan）是在库还开着的时候量的，那时 `photos.db-wal`
+     *    存在；`releaseRuntimeHandlesForMigration()` 里的 `wal_checkpoint(TRUNCATE)` 会把 WAL
+     *    收进主库并删掉那个文件 ⇒ 拿体检时的清单去复制，第一条就撞 ENOENT（18 GB 搬到一半才炸，
+     *    或者更糟：先炸在最后一个文件上）。反向也一样 —— 关库动作本身不该改变清单。
+     */
+    var copyEntries = dataDirLib.listEntries(fromDir);
+    var copyTotal = dataDirLib.totalBytes(copyEntries);
+    if (!copyEntries.length) {
+      throw new Error('关闭数据库后，原位置的数据文件不见了 —— 可能在迁移开始前被移动或删除');
+    }
+
+    emitDataDirProgress({ phase: 'copy', current: copyEntries[0].name });
+    var copied = await dataDirLib.copyDataDir({
+      fromDir: fromDir,
+      toDir: targetDir,
+      entries: copyEntries,
+      totalBytes: copyTotal,
+      onProgress: function (p) {
+        emitDataDirProgress({
+          phase: 'copy',
+          copiedBytes: p.copiedBytes,
+          totalBytes: p.totalBytes,
+          current: p.current,
+        });
+      },
+    });
+
+    emitDataDirProgress({ phase: 'verify', verifyMs: 0, current: '正在校验副本…' });
+    // ⚠️ 必须是 await 的 worker 版：同步版会把这 5 分钟全占在主线程上（用户报的「卡死」）
+    var verify = await verifyCopiedLibrary(path.join(targetDir, 'photos.db'), expectedCount);
+    if (!verify.ok) {
+      // 校验没过就**不许**改设置：宁可白复制一次，也不能把用户指向一个坏库。
+      throw new Error(verify.error);
+    }
+
+    settings[dataDirLib.SETTING_KEY] = targetDir;
+    ensureSettingsShape();
+    saveSettings();
+
+    var removal = { removed: [], failed: [] };
+    if (removeSource) {
+      emitDataDirProgress({ phase: 'cleanup', current: '正在清理旧位置…' });
+      // 删的必须是**真正搬过去的那份**清单（= 关库后重新盘点的），不是体检时的清单。
+      removal = await dataDirLib.removeSourceEntries(fromDir, copyEntries, function (fullPath) {
+        return shell.trashItem(fullPath);
+      });
+      /**
+       * 🔴 回收站**放不下**大文件是常态（实测 426 MB 的库就报 `Operation was aborted`，
+       *    真实库是 18 GB 量级），而且进了回收站也**不释放**空间（要等清空）。
+       *    用户就是为了腾空间才迁的 ⇒ 回收站失败就改为直接删除，两种方式分开记账，
+       *    界面据此说清楚「到底是进了回收站还是直接删了」。
+       */
+      if (removal.failed.length) {
+        var retryEntries = removal.failed.map(function (f) {
+          return { name: f.name };
+        });
+        logger.warn(
+          '[data-dir] 回收站放不下，改为直接删除：' +
+            retryEntries
+              .map(function (e) {
+                return e.name;
+              })
+              .join('、'),
+        );
+        var retried = await dataDirLib.removeSourceEntries(fromDir, retryEntries, null);
+        removal.removedPermanently = retried.removed;
+        removal.failed = retried.failed;
+        if (retried.failed.length) {
+          logger.warn(
+            '[data-dir] 直接删除也失败了（旧位置仍占空间）：' +
+              retried.failed
+                .map(function (f) {
+                  return f.name + ' → ' + f.error;
+                })
+                .join('；'),
+          );
+        }
+      }
+    }
+
+    emitDataDirProgress({ phase: 'done', current: '', running: false });
+    return withPaused({
+      success: true,
+      dataDir: targetDir,
+      copiedBytes: copied.copiedBytes,
+      photoCount: verify.photoCount,
+      removed: removal.removed || [],
+      removedPermanently: removal.removedPermanently || [],
+      removeFailed: removal.failed || [],
+      restartRequired: true,
+    });
+  } catch (e) {
+    var message = e && e.message ? e.message : String(e);
+    logger.error('[data-dir] migration failed:', message);
+    emitDataDirProgress({ phase: 'failed', current: message, running: false });
+    return withPaused({ success: false, error: message, restartRequired: handlesReleased });
+  } finally {
+    dataDirMigration.running = false;
+    emitBackgroundTasksChangedThrottled(true);
+  }
+}
+
 var tunnelTask = {
   enabled: false,
   running: false,
@@ -779,6 +1561,13 @@ function resolveRootIdByPath(rootPath) {
 }
 var invalidCleanupTask = {
   running: false,
+  /**
+   * 🔴 **必须每次开跑前复位**：这个标志是批间循环的退出条件（见 `runInvalidCleanupBatch` 的
+   * 调用处），一旦被置为 `true` 而下次启动前不复位，第二次点「清理失效记录」会**一批都不做
+   * 就立刻结束** —— 界面上是「点了没反应」，日志里什么都没有。它原先只被读、从没被写过
+   * （即永远的 `undefined`），为了给迁移让路才第一次真的会置位。
+   */
+  cancelled: false,
   checked: 0,
   deleted: 0,
   total: 0,
@@ -852,11 +1641,11 @@ function isVideoPath(p) {
 }
 
 function buildVideoPlaceholderThumbnail(opts) {
-  return getVideoFrameThumb().buildVideoPlaceholderJpeg(opts);
+  return getVideoFrameThumb().buildVideoPlaceholderThumb(opts);
 }
 
 function extractVideoThumbnailWithFfmpeg(filePath, opts) {
-  return getVideoFrameThumb().extractVideoFrameJpeg(
+  return getVideoFrameThumb().extractVideoFrameThumb(
     filePath,
     Object.assign({}, opts, { ffmpegPath: getFfmpegStaticPath() }),
   );
@@ -954,7 +1743,7 @@ var UI_TEXTURE_ALLOWED = [
  * 逐项一致（`theme-regression` 断言）。
  *
  * 这是**第五个正交维度**：把「界面框架」那几张面（标题栏 / 顶栏 / 工具栏 / 侧栏 / 图标栏 /
- * 内容区 / 分页条 / 设置页）的底色按一个 alpha 乘子掺进 transparent，**照片与照片卡片一律不动**。
+ * 内容区 / 分页条 / 设置页）的底色按一个 alpha 乘子掺进 transparent，**图片与图片卡片一律不动**。
  * 与 `uiTexture` 同惯例：`opaque` 档**不设属性**（= 不设 `data-opacity`）→ 默认外观逐字节不变，
  * CSS 侧一律带 `html[data-opacity]` 闸门。
  *
@@ -1087,7 +1876,7 @@ function createDefaultSettings() {
      * 缩略图补全**同时处理张数**（1–8）。
      *
      * 🔴 默认 3 → 4（2026-10-06），依据是**两轮实测**（`.workbuddy/tmp/thumb-concurrency-probe.log`
-     *    与 `thumb-concurrency-cold.log`；16 核机器、24 / 80 张真实照片、只读不写库）：
+     *    与 `thumb-concurrency-cold.log`；16 核机器、24 / 80 张真实图片、只读不写库）：
      *
      *     | 并发 | 热读（页缓存命中） | 冷读（外接盘、文件未缓存） |
      *     | ---: | ---: | ---: |
@@ -1140,8 +1929,12 @@ function createDefaultSettings() {
     subtitleFontWeight: 'medium',
     subtitleBgOpacity: 'none',
     subtitleColor: 'white',
-    thumbSize: 256,
-    thumbQuality: 75,
+    // 缩略图档位/画质：默认 512 / 75（2026-10-07 从 256 升档）。
+    // ⚠️ 改这里只影响**之后新生成**的缩略图；存量要靠「重建全部缩略图」那个任务回填，
+    //    所以两者之间会长期混档（`thumb_size` / `thumb_format` 逐行不同）——
+    //    服务端按行派生 Content-Type 正是为了这一天。
+    thumbSize: THUMB_DEFAULT_SIZE,
+    thumbQuality: THUMB_DEFAULT_QUALITY,
     /** 关闭主窗口：ask 弹出选择 | tray 直接托盘 | quit 直接退出 */
     windowCloseBehavior: 'ask',
     /** 预览底部主行显示项（管理设置中可关） */
@@ -1151,7 +1944,7 @@ function createDefaultSettings() {
     previewShowDimensions: true,
     previewShowPosition: true,
     /**
-     * 预览页「照片信息」面板显示哪些字段。
+     * 预览页「图片信息」面板显示哪些字段。
      * 字段 id 的**唯一真相源** = `src/web/js/photo-info-fields.js`，这里只存「启用集」。
      * 默认值取注册表的默认集，不在这里抄一份 id 列表（抄一份就会漂）。
      */
@@ -1188,6 +1981,54 @@ function createDefaultSettings() {
      */
     aiSearchMatchThreshold: MATCH_THRESHOLD_RANGE.default,
     /**
+     * tag 检索层总开关（M4）。
+     *
+     * 默认**开**：tag 路的收益正是「预选词/词表词点下去更准」，而它在没有索引的机器上
+     * 会自己降级成纯 CLIP（`tag.reason = 'NO_INDEX'`）—— 「默认开」不会让任何人变差。
+     * 关掉它只有一个理由：用户觉得融合后的排序不如纯 CLIP。
+     */
+    aiSearchTagEnabled: true,
+    /**
+     * tag 路自己的查询线（标签概率口径，0.55 起算命中）。
+     *
+     * 与 `aiSearchMatchThreshold` **刻意分开**：两者量纲不同（基线差 vs 概率），
+     * 共用一个滑杆必然出现「为了压住一边的误报把另一边砍没了」。
+     * 范围与默认值同源 `TAG_ROUTE_RANGE`，不许在这里写字面量。
+     */
+    aiSearchTagThreshold: TAG_ROUTE_RANGE.default,
+    /**
+     * **标签展示线**（读侧分数线，只影响「标签怎么显示」，不影响任何检索）。
+     *
+     * 管两处：标签导航页的「某标签有哪些图 / 卡片上的 N 张」与照片信息面板的「画面标签」。
+     * 低于这条线的 `photo_tag` 行**不当结论显示** —— 实测 15..29 那段占倒排行的 61%，
+     * 抽 top1 肉眼核对时 `blue_sky` 0.22（图里没有天空）、`cat` 0.21（图里没有猫）全落在那里。
+     *
+     * 与 `aiSearchTagThreshold`（查询线）**刻意分开**：查询线管「搜得到什么」，
+     * 展示线管「看到的算不算数」，两者既不同量级也不同用途（理由与实测见
+     * `src/ai/tag-index-store.js#DISPLAY_MIN_SCORE`）。范围同源 `TAG_DISPLAY_RANGE`，
+     * 不许在这里写字面量；越界由 `ensureSettingsShape()` 用 `clampDisplayMinScore()` 收口。
+     *
+     * ## 为什么做成设置项
+     *
+     * 默认 0.35 是**一次实测**的取舍（保留 30.9% 行 / 41.3% 标签 / 每张图仍有 ≥1 个标签），
+     * 但不同库的噪声水平不一样：拍得糊的库 0.35 仍会漏噪声，拍得干净的库 0.35 又砍得太狠。
+     * 硬编码等于把这个取舍替所有用户做了，而这是一个**纯口味**参数。
+     *
+     * ## 改完怎么生效（用户原话「调了怎么生效」）
+     *
+     * ① `update-settings` 把值写进内存的 `settings` 并 `saveSettings()` 落盘；
+     * ② 两个读侧服务（`TagNav` / `JoyTagTags`）**不缓存这个值** —— 构造函数拿到的是一个
+     *    getter（`function () { return settings.aiTagDisplayThreshold; }`），每次查询现取
+     *    ⇒ **下一次取数就生效，不需要重启**（也不需要重建索引：分数线只影响读哪几行）；
+     * ③ 界面上**已经画出来**的数字不会自己重画（标签页的子类计数有渲染层缓存），
+     *    所以渲染端在写成功后会调 `tagNavUi.invalidateCounts()` 让缓存失效，见
+     *    `src/renderer/app.js#tagLayer.write`。
+     *
+     * 🔴 老配置没有这个键 ⇒ 走默认 0.35（`Object.assign(createDefaultSettings(), parsed)`，
+     *    缺键由默认形状补），不会退化成「什么都显示」。
+     */
+    aiTagDisplayThreshold: TAG_DISPLAY_RANGE.default,
+    /**
      * 快捷键覆盖表 `{ 动作id: 绑定串 }`。
      *
      * **空对象 = 全部用默认键**（不是「全部禁用」）：动作与默认键的**唯一真相源**
@@ -1204,9 +2045,43 @@ var settings = createDefaultSettings();
 /**
  * 搜图检索要带上的参数。阈值由设置在渲染进程侧改、主进程侧读，因此这里总是取当前值。
  * 传 undefined 时 IndexStore 会用它自己的默认值（两者同源，见 src/ai/index-store.js）。
+ *
+ * 两个 tag 键：
+ *   · `tagEnabled` —— 用户开关（默认开）。worker 侧只**认 `false` 为关**（`=== false`），
+ *     所以缺键等于开，老客户端/老设置不会因为少一个键把 tag 路静默关掉；
+ *   · `tagThreshold` —— tag 路自己的查询线。越界由 worker 夹到 `TAG_ROUTE_RANGE` 内。
+ *
+ * ⚠️ 预选词（`ai-search-suggest`）的**常规路径已经不经过这里**（2026-10-09 起改走主进程只读 SQL，
+ *    见 `suggestTermsFromTags()`）；只有它的**老契约形状**（`candidates`：给一组指定的词打分）
+ *    仍会落进 worker 的 `suggest` 分支，而那个分支只做向量打分、不读这两个 tag 键。
+ *    多带的两个键在那边是**未被消费**的，不会造成分叉 —— 但别反过来以为 suggest 有了 tag 能力。
+ *    要给它加，得先在 worker 的 `suggest` 分支里真做出来。
  */
 function searchMatchOptions() {
-  return { threshold: Number(settings.aiSearchMatchThreshold) };
+  return {
+    threshold: Number(settings.aiSearchMatchThreshold),
+    tagEnabled: settings.aiSearchTagEnabled !== false,
+    tagThreshold: Number(settings.aiSearchTagThreshold),
+  };
+}
+
+/**
+ * 预选词的**常规路径**：主进程直接把 `embeddings.tags` 转置成「词 → 命中张数」。
+ *
+ * 不起 worker、不载任何模型 —— 答案（每张图 top-3 标签的词表下标）在建索引 / 补标签时就写进库了。
+ * 实测 **48 ms**（老路 4 s、冷启 17 s，分解与理由见 `SemanticTags.suggestTerms` 的注释）。
+ *
+ * 🔴 **`hits` 不是张数**（准确含义见同一个注释）：它只用来「挡掉 0 命中」与排序。
+ * 桌面端与网页端都走这一个函数，形状 `{sampled, terms:[{text,hits}]}` 与 worker 那条路**逐字段一致**，
+ * 所以渲染层不需要知道这次是谁答的（也不需要改）。
+ *
+ * ⚠️ 不是异步的，但**调用方仍要用 `withPreempt()` 包住**：预选词与搜图一样是用户交互
+ * （进搜图页就会自动要一次），后台长任务该在批次边界让位。
+ */
+function suggestTermsFromTags(request) {
+  if (!semanticTags) return { sampled: 0, terms: [] };
+  var scope = request && typeof request === 'object' ? request : {};
+  return semanticTags.suggestTerms(scope.lang ? String(scope.lang) : '', scope.limit);
 }
 
 /** 供 IPC 返回，避免渲染进程持有主进程对象引用、并保证可结构化克隆 */
@@ -1271,6 +2146,86 @@ function normalizeShortcutsSetting() {
  * ⚠️ 绝不包含：`webPassword`（只出 `hasWebPassword` 布尔）、任何隧道凭据、
  * 任何本机绝对路径（目录清单网页端另有 `/api/root-folders`）。
  */
+/**
+ * 标签导航页：某个标签下的照片**行**（本地与网页端共用这一个实现）。
+ *
+ * ## 为什么在这里组合，而不是让 `TagNav` 自己取行
+ *
+ * 数据在两个库：`photo_id` 来自 **tag 索引库**（`ai-search/tag-index.sqlite`），
+ * 照片行在**主库**（`photos` 表）。`TagNav` 刻意只碰 tag 库（见 `main/tag-nav.js` 的说明），
+ * 所以这一步在主进程把两半拼起来 —— 而它同时也是**唯一**能同时拿到 `db` 的地方。
+ *
+ * ## 两个口径都复用既有实现，不另写一份
+ *
+ *   - 媒体档过滤走 `db._pushMediaTypeCondition()`（工程里「媒体档」的唯一判据；
+ *     `all` 档排伴生视频靠它内部的索引自适应闸门，自己写 `NOT IN` 会退回全表回表）；
+ *   - 取行用 `photoListColumns()` + `idListPredicate()`（与 `maintenance-get-photos-by-ids`
+ *     同一套，`json_each` 而不是展开 `IN (?,?,…)`）。
+ *
+ * ## 排序由**索引侧**决定，这里只负责还原
+ *
+ * 顺序（标签置信度降序）在 `rankedPhotoIds` 里定，这里把 `IN (...)` 查出来的行
+ * **按传入 id 顺序重排**回那个顺序 —— SQL 的 `IN` 不保证顺序，不还原就等于换成按主键排。
+ *
+ * ⚠️ 已知取舍：媒体档过滤在取行那一步做，所以 `photos.length` 可能小于 `rankedIds.length`
+ *    （例如「只看视频」档下标签命中的全是图片）。`total` 取的是**索引侧**的总数，
+ *    因此在「视频」档下会偏大。当前索引只覆盖静帧（JoyTag 只跑图片），实际只会出现在
+ *    「视频」这一档；要精确就得把过滤下推到索引侧，而那会让两库的谓词耦合 —— 不值得。
+ */
+function fetchTagNavPhotoRows(tag, options) {
+  var opt = options || {};
+  var page = Math.max(1, parseInt(opt.page, 10) || 1);
+  var pageSize = Math.min(Math.max(1, parseInt(opt.pageSize, 10) || 120), 200);
+  var empty = { photos: [], total: 0, page: page, pageSize: pageSize, totalPages: 1 };
+  if (!tagNav || !db || !tag) return empty;
+
+  var ranked = tagNav.rankedPhotoIds(tag, page, pageSize);
+  var totalPages = Math.max(1, Math.ceil(ranked.total / pageSize));
+  if (!ranked.ids.length) {
+    return { photos: [], total: ranked.total, page: page, pageSize: pageSize, totalPages: totalPages };
+  }
+
+  var conds = [];
+  var condParams = [];
+  db._pushMediaTypeCondition(conds, opt.mediaType);
+  // 组织元数据筛选（2026-10-09）：渲染端的 `options` 是全局建一次、分发给所有视图的
+  // （`app.js#fetchPhotosPage`），所以这一页同样会收到 `rating` / `flag` / `tagIds`。
+  // 不认的症状是「筛选栏写着仅 5 星、标签页却给全部」—— 与 mediaType 当初漏掉时同一类。
+  // ⚠️ 已知取舍（沿用 mediaType 那条）：过滤是在**取行那一步**做的，而 `total` 来自
+  //    索引侧 ⇒ 筛选生效时 `photos.length` 会小于 `total`，分页数会偏大。要精确就得把
+  //    谓词下推到索引侧，而那会让两个库的判据耦合 —— 不值得（见本函数上面的注释）。
+  db._pushOrgMetaConditions(conds, condParams, opt);
+  var where = conds.length ? ' AND ' + conds.join(' AND ') : '';
+  var sql =
+    'SELECT ' +
+    photoListColumns({ lite: !!opt.lite }) +
+    ' FROM photos WHERE ' +
+    idListPredicate('id') +
+    where;
+
+  var rows;
+  try {
+    rows = db.prepare(sql).all(toIdListJson(ranked.ids), ...condParams);
+  } catch (e) {
+    logger.warn('get-tag-nav-photos query failed:', e && e.message ? e.message : e);
+    return { photos: [], total: 0, page: page, pageSize: pageSize, totalPages: 1 };
+  }
+
+  var byId = new Map();
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    // `photo_id` 与 `id` 都给：列表渲染历史上两个名字都用过，少给一个就会在那条路径上变 undefined。
+    row.photo_id = row.id;
+    byId.set(row.id, row);
+  }
+  var photos = [];
+  for (var j = 0; j < ranked.ids.length; j++) {
+    var hit = byId.get(ranked.ids[j]);
+    if (hit) photos.push(hit);
+  }
+  return { photos: photos, total: ranked.total, page: page, pageSize: pageSize, totalPages: totalPages };
+}
+
 function buildWebSettingsSnapshot() {
   try {
     reloadSettingsFromDiskSilently();
@@ -1306,6 +2261,15 @@ function buildWebSettingsSnapshot() {
     thumbBackfillConcurrency: s.thumbBackfillConcurrency,
     similarThreshold: s.similarThreshold,
     aiSearchMatchThreshold: s.aiSearchMatchThreshold,
+    // tag 检索层（M4）。⚠️ 这份快照是**白名单**（`cloneSettingsForIpc` 是整份克隆，无需在此维护），
+    // 所以两个键必须在这里显式列出：漏了就是网页端设置页永远显示「标签检索关着」，
+    // 而实际搜图是开着的 —— 典型的「后端做了、界面看不到」。
+    aiSearchTagEnabled: s.aiSearchTagEnabled,
+    aiSearchTagThreshold: s.aiSearchTagThreshold,
+    // 标签**展示线**（读侧分数线）。网页端设置页现在不消费这份快照（2026-10-06 起只剩
+    // 「这台设备自己的浏览偏好」），但白名单**成对维护**：将来任何客户端要显示 tag 三兄弟，
+    // 少列一个就是「桌面端显示 0.35、那边显示 undefined」这种最难查的静默不一致。
+    aiTagDisplayThreshold: s.aiTagDisplayThreshold,
     // 外观与行为
     themeStyle: s.themeStyle,
     theme: s.theme,
@@ -1335,10 +2299,12 @@ function buildWebSettingsSnapshot() {
 function ensureSettingsShape() {
   reconcileThemeStyleSettings();
   normalizeShortcutsSetting();
-  var sz = parseInt(settings.thumbSize, 10);
-  if ([128, 192, 256, 320].indexOf(sz) < 0) settings.thumbSize = 256;
+  // 缩略图档位：域的唯一真相源在 `./main/thumb-format#THUMB_SIZE_CHOICES`。
+  // 🔴 这里不做「非法值 → 默认档」的静默回落，靠调用方给的值本来就该在域内；
+  //    真要落错（老配置里手写过 512、或将来删档），回落到当前默认档而不是写死的 256。
+  settings.thumbSize = normalizeThumbSize(settings.thumbSize);
   var q = parseInt(settings.thumbQuality, 10);
-  if (isNaN(q)) settings.thumbQuality = 75;
+  if (isNaN(q)) settings.thumbQuality = THUMB_DEFAULT_QUALITY;
   else settings.thumbQuality = Math.max(50, Math.min(95, q));
   var wcb = settings.windowCloseBehavior;
   if (['ask', 'tray', 'quit'].indexOf(wcb) < 0) settings.windowCloseBehavior = 'ask';
@@ -1389,6 +2355,31 @@ function ensureSettingsShape() {
     MATCH_THRESHOLD_RANGE.min,
     Math.min(MATCH_THRESHOLD_RANGE.max, matchThreshold),
   );
+  /**
+   * tag 检索层（M4）。两件事都必须在这里做：
+   *   · **布尔归一**：老配置里没有这个键，`undefined !== false` 恰好等于「开」，
+   *     但写进 JSON 再读回来可能变成字符串 `"false"`（手工改过配置文件）—— 那是**真值**，
+   *     等于开关永远打不开、也永远关不掉。统一成布尔；
+   *   · **夹取**：与 `aiSearchMatchThreshold` 同款。越界值（含 NaN）回默认值，
+   *     否则 NaN 会一路传到 SQL 比较里、把查询变成「一张都不返回」。
+   */
+  if (typeof settings.aiSearchTagEnabled !== 'boolean') settings.aiSearchTagEnabled = true;
+  var tagThreshold = Number(settings.aiSearchTagThreshold);
+  if (!isFinite(tagThreshold)) tagThreshold = TAG_ROUTE_RANGE.default;
+  settings.aiSearchTagThreshold = Math.max(
+    TAG_ROUTE_RANGE.min,
+    Math.min(TAG_ROUTE_RANGE.max, tagThreshold),
+  );
+  /**
+   * 标签展示线（读侧分数线）。夹取**必须与上面同款**，但理由更强：这个值不经过 worker
+   * 就**直接被拼进 SQL 的 `score >= ?`**（`tag-nav.js` / `semantic-tags.js`），
+   * 没有一个下游会再兜一次。越界/NaN 穿过去，症状是「标签页整片空白 0 张」
+   * 或「61% 的噪声行全冒出来」，而两者都不报错、也不写日志。
+   *
+   * ⚠️ 与 `aiSearchTagThreshold` **各夹一次、用各自的 range**：两条线量纲相同但语义不同
+   *    （能不能搜到 vs 该不该显示），共用一个 clamp 就会在「谁该被谁管」上分叉。
+   */
+  settings.aiTagDisplayThreshold = clampDisplayMinScore(settings.aiTagDisplayThreshold);
   var previewBoolKeys = [
     'previewShowFileName',
     'previewShowDateTaken',
@@ -1401,7 +2392,7 @@ function ensureSettingsShape() {
     if (typeof settings[pk] !== 'boolean') settings[pk] = true;
   }
 
-  // 照片信息面板的启用字段集：未知 id 丢掉、去重、按注册表顺序重排。
+  // 图片信息面板的启用字段集：未知 id 丢掉、去重、按注册表顺序重排。
   // ⚠️ 空数组是**合法值**（用户可以把字段全关掉），必须原样保留 ——
   //    别写成 `if (!settings.infoPanelFields.length) 回默认`，那会让「全关」变成关不掉。
   //    非数组（含老版本 settings.json 里根本没有这个键）才回落默认集。
@@ -1536,9 +2527,45 @@ function getScanOptions() {
 function getThumbOptions() {
   ensureSettingsShape();
   return {
-    size: parseInt(settings.thumbSize, 10) || 256,
-    quality: parseInt(settings.thumbQuality, 10) || 75,
+    size: normalizeThumbSize(settings.thumbSize),
+    quality: parseInt(settings.thumbQuality, 10) || THUMB_DEFAULT_QUALITY,
   };
+}
+
+/** 图片编辑服务（桌面 IPC 与内嵌网页端**共用同一个实例**）。惰性创建，见下。 */
+var photoEditService = null;
+
+/**
+ * 取（必要时创建）图片编辑服务。
+ *
+ * 🔴 桌面端与网页端**必须共用同一个实例**：服务内部的编辑是**全局串行**的（见
+ *    `photo-edit-service.js` 里那条注释），两端各建一个实例就等于两条互不知情的队列，
+ *    「桌面在转、手机同时在裁同一张」会互相覆盖。
+ *
+ * 🔴 缩略图档位必须传 `getThumbOptions`（而不是就地读 `settings`）：
+ *    与服务内其他调用点用**同一份**档位解析，网页端那条路也走同一个函数，
+ *    否则编辑后重算的缩略图会和库里的档位不一致 ⇒ 被重跑任务反复当成「待重生成」。
+ */
+function getPhotoEditService() {
+  if (!photoEditService) {
+    photoEditService = createPhotoEditService({
+      db: db,
+      getThumbOptions: getThumbOptions,
+      videoExtensions: VIDEO_EXTENSIONS,
+      invalidateForRoot: function (rootId) {
+        invalidateCatalogCacheForRootSafe(rootId);
+      },
+      invalidateDerivedGroups: function () {
+        // 像素 / 尺寸 / 指纹都变了 ⇒ 「重复」「相似」两个分组缓存必须作废。
+        clearDuplicateHashGroupsCache('photo-edit');
+        clearSimilarDhashGroupsCache('photo-edit');
+      },
+      logWarn: function (msg) {
+        console.warn('[photo-edit] ' + msg);
+      },
+    });
+  }
+  return photoEditService;
 }
 
 function isFolderScanRunning() {
@@ -2019,6 +3046,10 @@ async function processScanQueue() {
   if (hasSuccessfulScan) {
     scheduleAutoThumbnailBackfill();
     scheduleAutoDuplicateHashDetection();
+    // 扫描刚往库里塞了新文件 —— 可能包含新的 Live Photo 对（含它们的伴生 MOV）。
+    // 先让补图/查重排上（它们各自的延迟与本项独立），本项幂等地只认领
+    // `live_still_id IS NULL` 的 MOV，因此重复触发是安全的。
+    scheduleLivePhotoPairing(800);
   }
 }
 
@@ -2076,7 +3107,7 @@ function getThumbnailBackfillProgress() {
   /** 主分母：候选集规模的**抽样估计值**（约数） */
   var total = thumbnailBackfill.pendingTotal;
   var hasTotal = total != null && total > 0;
-  // 分母是**起始快照**：并发入库的新照片不在里面，分子可能反超。两头都夹住，
+  // 分母是**起始快照**：并发入库的新图片不在里面，分子可能反超。两头都夹住，
   // 否则会显示「107%」和负的剩余时间。
   var denom = hasTotal ? Math.max(Number(total), processed) : 0;
   var pct = denom > 0 ? Math.min(100, Math.round((processed / denom) * 100)) : 0;
@@ -2100,8 +3131,6 @@ function getThumbnailBackfillProgress() {
     total: hasTotal ? denom : null,
     /** 本轮**已处理的行数**（主分子）。任务真正在做的事由它体现 */
     done: processed,
-    /** 同 `done`；语义更直白的别名，给不方便读 `done` 的消费方 */
-    processed: processed,
     /**
      * ⚠️ 分母未就绪时它恒为 0，**不代表没进展** —— 只给不方便读 `phase` 的消费方兜底，
      *    UI 一律以 `phase` 为准。
@@ -2116,7 +3145,7 @@ function getThumbnailBackfillProgress() {
      *    在此之前它是「每 5 s 才跳一次的精确值」（注释里曾写「30 s」，早已过时），
      *    用户拿它对比旁边三个累加器就会认为这个数坏了。
      *
-     * 🔴 它**刻意不做主口径**：补全按 id 倒序走，而缺缩略图的行几乎全压在低位老照片上
+     * 🔴 它**刻意不做主口径**：补全按 id 倒序走，而缺缩略图的行几乎全压在低位老图片上
      *    （本机真实库：`id 1,900,000~1,999,999` 只有 10 行缺、`1,600,000~1,899,999` 才有 33.9 万）
      *    ⇒ 任务头几万行一张图都不出，拿它当分母会让进度条在 0% 上趴十几分钟。
      *    详见 `database.js#countPhotosLackingThumbnail()`。
@@ -2297,6 +3326,12 @@ function getInvalidCleanupTaskProgress() {
     deleted: Number(invalidCleanupTask.deleted) || 0,
     total: total,
     done: checked,
+    /**
+     * 🔴 百分比由**主进程**给，渲染端不再自己除（`docs/contracts/background-tasks.md` §1.1）。
+     * `total` 起手是 0、之后才异步取到全库行数 ⇒ 靠 `computePct` 把那段画成 0%，
+     * 而不是渲染端以前那种「没有总数就画满」——那会让条子先满、再掉回 0%，看着像倒退。
+     */
+    pct: computePct(checked, total),
     currentFile: invalidCleanupTask.currentFile || '',
     etaSeconds: estimateEtaSecondsSmoothed(
       'invalidCleanup',
@@ -2372,7 +3407,7 @@ function getEffectiveThumbBackfillConcurrency() {
  *
  * 为什么要合并成一次：`metadata()` 只读文件头（不解码像素），几乎是零成本，而
  * 「原图尺寸」与「拍摄参数」本来就装在同一段 EXIF/头部字节里 —— 分两次调用就是同一个文件
- * 被打开两次。补全任务本来就为这两个目的各要读一次，合并后**每张照片只开一次文件**。
+ * 被打开两次。补全任务本来就为这两个目的各要读一次，合并后**每张图片只开一次文件**。
  *
  * 🔴 返回值有三态，调用方**必须**区分：
  *   · `null`  —— 连文件头都读不到（文件已不在磁盘 / 损坏 / sharp 不认这个格式）。
@@ -2402,6 +3437,58 @@ async function readHeaderMeta(instance) {
 }
 
 /**
+ * 用 sharp 包一个「能读这个文件」的实例（libvips 读不了的格式先在共用模块里解成像素）。
+ *
+ * 抽出来是因为主进程里**两处**都要用：缩略图分支与「已有缩略图、只补尺寸/EXIF」的
+ * `skipThumbnail` 分支。各写一份必然漂移 —— 而漂移的症状是
+ * 「同一张图，走哪条分支决定读不读得到尺寸」。
+ *
+ * ⚠️ 实现（哪些扩展名抢跑、抠出来的东西怎么喂 sharp）**唯一来源**
+ *    `src/main/sharp-input.js`，网页端用的是同一份。
+ *
+ * @returns {Promise<{instance:*, own:(object|null)}>}
+ */
+function createSharpInput(filePath, buf) {
+  return loadSharpInput().createSharpInput(filePath, buf);
+}
+
+/**
+ * 把「自己解出来的拍摄参数」并进 `header`。
+ * 只有 `own.exif` 存在（老式 RAW 走容器 IFD）才需要 —— 内嵌预览段本身不带 APP1/EXIF。
+ * ⚠️ 判据用 `!hasAnyExifField(...)` 而不是 `!header.exif`：后者可能是**空字段对象**。
+ */
+function mergeOwnExif(header, own) {
+  if (!own || !own.exif) return header;
+  if (!header) return { width: own.width || 0, height: own.height || 0, exif: own.exif };
+  if (!hasAnyExifField(header.exif)) header.exif = own.exif;
+  return header;
+}
+
+/**
+ * 共享读取：把整个文件读进内存，供 sharp 解码与 SHA-256 **共用同一份字节**。
+ *
+ * 🔴 **两个调用方**（补全 `runRowsWithThumbConcurrency` 与重跑 `regenerateRowsWithConcurrency`）
+ *    共用这一份实现 —— 它原来写在补全那个函数**内部**，2026-10-08 重跑也要用，
+ *    于是提到模块作用域。提出来而不是抄一份，理由与 `pushFailedPath` 那类一样：
+ *    这个函数的契约（**读不到时返回 null 而不抛**）是「文件读不到就不许盖失败章」
+ *    那条红线的落点，各写一份迟早漂开，而漂开的后果不对称（多盖一次 = 把整个图库的
+ *    补全永久挡在候选集外且不自愈）。
+ *
+ * 🔴 读不到时返回 `null` 而**不抛**：调用方会退回「按路径」，由那条路去决定要不要记失败。
+ *    直接抛会把「文件已不在磁盘上」记成一次**缩略图失败**，而失败清单是给用户导出核对的
+ *    —— 那些行本来就该由 `invalid-cleanup` 删掉，不该混进「缩略图生成失败」里。
+ *    （与查重那边 `kind: 'missing'` 记 `skippedMissing` 而不是 `failed` 同一个口径。）
+ */
+async function tryReadShared(filePath) {
+  try {
+    return await fs.promises.readFile(filePath);
+  } catch (eRead) {
+    void eRead;
+    return null;
+  }
+}
+
+/**
  * 对一批待补全记录做有限并发处理（共享队列 + N 个 worker 协程）。
  */
 async function runRowsWithThumbConcurrency(rows, yieldEvery) {
@@ -2409,23 +3496,6 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
   if (n === 0) return;
   var conc = Math.min(getEffectiveThumbBackfillConcurrency(), n);
   var next = 0;
-
-  /**
-   * 共享读取：把整个文件读进内存，供 sharp 解码与 SHA-256 **共用同一份字节**。
-   *
-   * 🔴 读不到时返回 `null` 而**不抛**：调用方会退回「按路径」，由那条路去决定要不要记失败。
-   *    直接抛会把「文件已不在磁盘上」记成一次**缩略图失败**，而失败清单是给用户导出核对的
-   *    —— 那些行本来就该由 `invalid-cleanup` 删掉，不该混进「缩略图生成失败」里。
-   *    （与查重那边 `kind: 'missing'` 记 `skippedMissing` 而不是 `failed` 同一个口径。）
-   */
-  async function tryReadShared(filePath) {
-    try {
-      return await fs.promises.readFile(filePath);
-    } catch (eRead) {
-      void eRead;
-      return null;
-    }
-  }
 
   /**
    * 把一条路径记进「失败清单」（用户可导出核对）。
@@ -2590,11 +3660,31 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
         // 这一行也可能只需要 SHA-256（缩略图与 dHash 都在、只缺指纹的那部分）：
         // 照样只读一次，不必让查重任务回头把同一个文件再读一遍。
         if (shareRead) sharedBuf = await tryReadShared(row.file_path);
-        if (needSize || needExif) {
-          headerTried = true;
-          header = await readHeaderMeta(
-            loadSharp()(sharedBuf || row.file_path, { failOnError: false }),
-          );
+        // 🔴 文件头与 dHash **共用同一个 sharp 实例**（2026-10-07）。
+        //
+        //    旧写法在这里建实例**只为了读头**，下面 `needDhash` 又调 `computeDhash(row.file_path)`
+        //    按路径**重新打开**文件并整图解码 —— 同一份字节读**两遍**。
+        //    而这一支恰恰是补全里行数最多的那一大批（真库实测第二支候选 **1,044,733** 行，
+        //    几乎全部 `has_thumbnail = 1`），「多余的那次读盘」被乘在这个量级上。
+        //    真机 30 张（0.1 MB~50 MB，含 GIF / PNG）实测：18,740 ms → 5,551 ms，**省 70%**。
+        //
+        //    ⚠️ 建实例的**条件必须把 `needDhash` 一起算进来**：只写 `(needSize || needExif)` 时，
+        //       「只缺 dHash、尺寸和 EXIF 都齐了」的行根本拿不到实例 ⇒ 优化等于没做，
+        //       而且不报错、不写日志，只是「读了两遍」照旧（本趟里这类行占多数）。
+        //    ⚠️ 顺序沿用缩略图分支那一条：**先读头再取 dHash**，且两者都不上 `.rotate()`
+        //       —— dHash 历来不旋转，两条路必须是同一套位。
+        if (needSize || needExif || needDhash) {
+          // 这一支也可能碰上 libvips 读不了的格式（例如 .bmp 那批历史遗留缩略图），
+          // 走同一个入口 ⇒ 尺寸 / 拍摄参数照样能补上。
+          var siSkip = await createSharpInput(row.file_path, sharedBuf || null);
+          if (needSize || needExif) {
+            headerTried = true;
+            header = mergeOwnExif(await readHeaderMeta(siSkip.instance), siSkip.own);
+          }
+          if (needDhash) {
+            dhashFromDecode = await computeDhashFromPipeline(siSkip.instance);
+            dhashDecodeUsed = true;
+          }
         }
       } else {
         // 🔴 缩略图生成**单独一层 try**（2026-10-06）：它失败不许把下面几件事一起带走。
@@ -2619,25 +3709,32 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
             //    下面三样产物（原图尺寸 / dHash / 缩略图）与「按路径解码」必须逐位相同 ——
             //    同一段字节、同一组算子，回归脚本对两条路做逐位比对。
             if (shareRead) sharedBuf = await tryReadShared(row.file_path);
-            var instance = loadSharp()(sharedBuf || row.file_path, { failOnError: false });
+            // 🔴 libvips 读不了的格式（bmp / ico / pnm / tga / qoi / dib、老式 CR2）先自己
+            //    解成像素再包成 sharp 实例 —— 这样下面「尺寸 / dHash / 缩略图」三样
+            //    **一行都不用改**（它们本来就只认一个 sharp 实例），也就不会出现
+            //    「两条路算出不同结果」。
+            var si = await createSharpInput(row.file_path, sharedBuf || null);
+            var instance = si.instance;
             if (needSize || needExif) {
               headerTried = true;
-              header = await readHeaderMeta(instance);
+              header = mergeOwnExif(await readHeaderMeta(instance), si.own);
             }
             // 🔴 dHash 必须取在 `.rotate()` **之前**：dHash 历来是不旋转的（旧路径
-            //    `computeDhash(row.file_path)` 就没有 `.rotate()`），带 EXIF 方向的照片
+            //    `computeDhash(row.file_path)` 就没有 `.rotate()`），带 EXIF 方向的图片
             //    一旦先旋转再算，位会全变 —— 而 dHash 是相似聚类的输入，位差会翻面。
             if (needDhash) {
               dhashFromDecode = await computeDhashFromPipeline(instance);
               dhashDecodeUsed = true;
             }
-            thumb = await instance
-              .rotate()
-              .resize(topts.size, topts.size, { fit: 'inside', withoutEnlargement: true })
-              .jpeg({ quality: topts.quality })
-              .toBuffer();
+            // 🔴 「缩放 + 编码」收在 `resizeThumb()` 里（`rotate()` 也在那边）：格式换了只改
+            //    `thumb-format.js#THUMB_ENCODE_FORMAT` 一处，记录进库的 `thumb_format`
+            //    与下面写库时用的值是同一个常量，不会出现「字节是 A、记录写着 B」。
+            thumb = await resizeThumb(instance, topts.size, topts.quality);
           }
-          db.updatePhotoThumbnail(row.id, thumb, { size: topts.size, format: 'jpeg' });
+          db.updatePhotoThumbnail(row.id, thumb, {
+            size: topts.size,
+            format: THUMB_ENCODE_FORMAT,
+          });
           thumbnailBackfill.success++;
           // 进度条的**分子**：只有真写出了缩略图的行才计入。上面 `skipThumbnail` 那一支
           // （早就有图、只是来补尺寸 / 指纹 / 拍摄参数的）**不计** —— 计入就会让分子追上
@@ -2678,9 +3775,17 @@ async function runRowsWithThumbConcurrency(rows, yieldEvery) {
       // 同步计算 dHash（仅图片，文件系统缓存大概率还热着）
       if (needDhash) {
         try {
-          // 缩略图分支已经解过一次码 ⇒ 直接用它的结果；否则（已有缩略图、还缺 dHash 的那一大批）
-          // 才回落到「按路径重新打开并解码」。
-          var dhash = dhashDecodeUsed ? dhashFromDecode : await computeDhash(row.file_path);
+          // 缩略图分支已经把这个文件解码过 ⇒ 直接用它的结果；第二趟（`skipThumbnail`）
+          // 也复用了 `siSkip` 那一个实例，同样白用那次解码。
+          //
+          // ⚠️ 判据必须**同时**看标志位与结果：`dhashDecodeUsed` 只说明「试过了」，
+          //    结果可能是 `null`（解码失败）。只认标志位 ⇒ 那些行连「按路径再试一次」的机会都没有，
+          //    直接被记成永久失败。真机实测就有这样的样本：某张动图在「已开实例的 pipeline」上算不出、
+          //    在 `computeDhash(row.file_path)` 那条路上算得出。⇒ 必须**先看结果**，空了再退回老路。
+          var dhash =
+            dhashDecodeUsed && dhashFromDecode
+              ? dhashFromDecode
+              : await computeDhash(row.file_path);
           if (dhash) {
             db.updatePhotoDhash(
               row.id,
@@ -2792,6 +3897,9 @@ function thumbnailBackfillBlockReason() {
   // 同时跑只会互相拖慢；谁先谁后交给用户决定。
   if (duplicateHashTask.running) return '重复文件比对进行中，请稍后再试';
   if (thumbnailBackfill.running) return '补全已在进行中';
+  // 与「全量重跑」**双向**互斥（那边也挡这里）：两者都要读完整文件、抢同一块盘。
+  // 单向挡会留下「先起重跑、再起补全」的窗口。
+  if (thumbnailRebuild.running) return '缩略图重建进行中，请稍后再试';
   return '';
 }
 
@@ -3091,10 +4199,624 @@ async function runThumbnailBackfill(limit) {
 }
 
 /**
+ * 缩略图**全量重跑**的准入判据 —— **IPC 入口与任务内部共用这一处**。
+ *
+ * 🔴 与 `thumbnailBackfillBlockReason()` 同一条约定（那边的注释记着 2026-10-06 用户报的
+ *    「点了没反应」）：两个入口各写一份判据的下场是「IPC 返回 `{success:true}`、
+ *    任务在 `setTimeout` 里静默 return」—— 界面刷新后显示「未运行」，而拒绝日志还是 info 级。
+ *    所以这里也**只留一份**，且任何拒绝都走 `logger.warn`（生产档 logger 是 warn）。
+ *
+ * ⚠️ 与补全**双向**互斥：这里挡补全，补全那边（`thumbnailBackfillBlockReason`）也挡这里。
+ *    单向挡会留下「先起重跑、再起补全」这个窗口，而两者都要把整文件读一遍、
+ *    抢的是同一块盘（本机 K:/G: 是外接机械盘）。
+ */
+function thumbnailRebuildBlockReason() {
+  if (optimizeTaskRunning) return '数据库维护进行中';
+  if (isFolderScanRunning()) return '扫描进行中，请稍后再试';
+  if (duplicateHashTask.running) return '重复文件比对进行中，请稍后再试';
+  if (thumbnailBackfill.running) return '缩略图补全进行中，请稍后再试';
+  if (thumbnailRebuild.running) return '重建已在进行中';
+  return '';
+}
+
+/**
+ * 本轮的**目标规格快照**（档位 / 画质 / 编码格式）。
+ *
+ * 🔴 起手取一次就固定下来，跑到一半用户又改设置**不改这一轮的目标**：
+ *    改了的话「这一轮到底在追哪个规格」就无解了 —— 队列里一半按新目标筛、一半按旧的，
+ *    续跑时 `isQueueReusable()` 判废 ⇒ 整条队列从头登记，「进度条突然回到 0%」。
+ *    想换目标就再点一次重建（那时会按新目标重新登记，这是有意的）。
+ */
+function getThumbnailRebuildTarget() {
+  var topts = getThumbOptions();
+  return {
+    size: topts.size,
+    quality: topts.quality,
+    format: THUMB_ENCODE_FORMAT,
+    signature: thumbRegenQueue.targetSignature(topts.size, THUMB_ENCODE_FORMAT),
+  };
+}
+
+/** 重跑失败路径的记账（上限与补全同一口径 —— 用户实机 33.9 万缺口，无上限会撑爆内存）。 */
+function pushRegenFailedPath(filePath) {
+  if (thumbnailRebuild.failedPaths.length >= THUMB_BACKFILL_FAILED_PATHS_MAX) return;
+  var p = filePath || '';
+  if (p) thumbnailRebuild.failedPaths.push(p);
+}
+
+/**
+ * 重跑一批：按目标规格**从原图**重新生成缩略图并写库，**并顺手补齐另外四样元数据**。
+ *
+ * 🔴 必须读原图，不能拿库里现有的缩略图重编码：档位是往上换的（256 → 512）时那张图
+ *    本来就只有 256 的像素，放大它只会更糊 —— 而且「看起来跑完了」，用户以为升级成功。
+ *
+ * 🔴 **一趟解码出五样**（2026-10-08 并入）：补全那条路（`runRowsWithThumbConcurrency#processOne`）
+ *    早就是「一次读盘出 缩略图 / 原图尺寸 / 拍摄参数 / dHash / 查重指纹」，
+ *    而重跑此前**只出缩略图那样** ⇒ 同一批字节要被读两遍。真库实测（2026-10-08）：
+ *    补全第二支还欠 **857,372 行**（缺 dHash 531,173 / 缺尺寸 530,641 / 需读 EXIF 857,372），
+ *    而原图在 K:/G: 外接机械盘上 —— 读盘是这里的主导成本，不是 CPU。
+ *    并入之后**判据、写入口、内存闸门全部复用补全那一套**（不另抄一份），
+ *    顺序也照抄（见下面「顺序不能颠倒」那条）。
+ *
+ * ⚠️ 只在**写库票据内部**调用（调用方是 `dbWriteQueue.run('thumb-regen', …)`）：
+ *    与补全同一套契约（每批一次入队 ⇒ 批间让位、批内独占）。
+ * ⚠️ 并发度**沿用**「缩略图补全同时处理张数」那个设置，不复用 `getEffective…` 之外的新旋钮：
+ *    做的是同一件事（读原图 + 解码 + 编码），两个旋钮只会让用户以为能分别调优。
+ * ⚠️ 这里**不碰** `thumb_fail_mtime`：那一列的语义是「试过生成缩略图、失败了」，
+ *    而这批行本来就有缩略图（只是规格旧），盖了章等于把「规格旧」记成「生成失败」，
+ *    语义直接错。失败只记数与路径，用户下次重建还会再试一遍。
+ *    ⇒ 同理，这里的 dHash 算不出来时**也不盖章**（只打 warn）：补全下一轮会照常重试它。
+ *
+ * 🔴 **本函数必须把 `rows` 整批抽干，不许按取消半途退出**（2026-10-08 修）：调用方按
+ *    「本批取到的全部 id」删队列，半途退出会把没轮到的行**连坐删掉** —— `done` 加满、
+ *    规格没换、且永不重跑（真库实测 42 行，落成 3 段连续 id = 三次取消各吃掉一批的尾巴）。
+ *    取消改由**批次边界**承担；唯一允许中途放弃的只有「这一行在 `photos` 里已不存在」，
+ *    那种行由调用方按 `missing` 记账，本来就没有活可干。
+ *
+ * @returns {Promise<{ok: number, failed: number}>}
+ */
+async function regenerateRowsWithConcurrency(rows, target) {
+  var n = rows.length;
+  var out = { ok: 0, failed: 0 };
+  if (!n) return out;
+  var conc = Math.min(getEffectiveThumbBackfillConcurrency(), n);
+  var next = 0;
+  var completed = 0;
+
+  async function worker() {
+    while (true) {
+      // 🔴 **批内不许按取消提前退出**（2026-10-08 修，真库实测漏 42 行）。
+      //    调用方的形状是「先把这一批做完、再按**本批取到的全部 id** 删队列」（见
+      //    `runThumbRegenDrainPass`），所以这里一旦半途 `return`，没轮到的那几行就被
+      //    **连坐删掉**：`done` 照样加满、规格却没换，而且它们已经不在队列里 ⇒
+      //    **再也不会被重跑**（不报错、不写日志、界面照报「已完成」）。
+      //    ⇒ 取消只在**批次边界**生效（外层 `while (!thumbnailRebuild.cancelled)`），
+      //      这也正是 `cancel-thumbnail-rebuild` 那条 IPC 注释所声明的语义。
+      //    ⚠️ 别为了「停止更跟手」把它加回来：代价是永久漏行，比多等一批（50 行）贵得多。
+      var my = next++;
+      if (my >= n) return;
+      var row = rows[my];
+      // LEFT JOIN 的空行（这条 id 在 photos 里已经没有了）不在这里记账，由调用方按 missing 处理
+      if (!row || !row.file_path) continue;
+      thumbnailRebuild.currentFile = row.file_path;
+      var isVideoRow = isVideoPath(row.file_path);
+      // 「这一行还缺什么」的四个门。判据**与补全逐字同源**（尤其 EXIF 那个必须走
+      // `db.photoNeedsExif(row)`：手写 `!(row.exif_mtime && …)` 只判一个标记列，
+      // 而候选谓词判的是两个 —— 漂开就是一条静默死路，见 `processOne` 里的长注释）。
+      var needSize = !isVideoRow && !(row.width > 0 && row.height > 0);
+      var needDhash = !isVideoRow && !(row.dhash && String(row.dhash).trim());
+      var needExif = !isVideoRow && db.photoNeedsExif(row);
+      var needHash = !isVideoRow && !(row.file_hash && String(row.file_hash).trim());
+      // 共享读取 = 整份进内存；超大 / 大小未知的文件退回「查重指纹各读各的」老路径
+      //（闸门与补全同一个常量，理由见 `THUMB_SHARED_READ_MAX_BYTES` 的注释）
+      var sharedBuf = null;
+      var header = null;
+      var dhash = null;
+      try {
+        if (isVideoRow) {
+          var vopts = { size: target.size, quality: target.quality };
+          var vbuf = await extractVideoThumbnailWithFfmpeg(row.file_path, vopts);
+          // 抽帧失败退回占位图（与补全同一口径：宁可给一张占位图，也不要让这一行停在旧规格）
+          if (!vbuf) vbuf = await buildVideoPlaceholderThumbnail(vopts);
+          db.updatePhotoThumbnail(row.id, vbuf, { size: target.size, format: target.format });
+          out.ok++;
+        } else {
+          // 🔴 libvips 读不了的格式（bmp / ico / pnm / tga / qoi / dib、老式 CR2）走同一个入口，
+          //    否则那批行在重跑里会「每轮都失败」—— 而它们在补全里本来是能出图的。
+          if (needHash && row.file_size > 0 && row.file_size <= THUMB_SHARED_READ_MAX_BYTES) {
+            sharedBuf = await tryReadShared(row.file_path);
+          }
+          var si = await createSharpInput(row.file_path, sharedBuf || null);
+          var instance = si.instance;
+          // 🔴 顺序不能颠倒：先读文件头（`metadata()`，几乎零成本）→ 再算 dHash → **最后**才缩放置换。
+          //    dHash 必须取在 `.rotate()` **之前** —— 它历来是不旋转的（旧路径
+          //    `computeDhash(row.file_path)` 就没有 `.rotate()`），带 EXIF 方向的图片一旦先旋转
+          //    再算，位会全变，而 dHash 是相似聚类的输入，位差会翻面。
+          //    `resizeThumb()` 内部会 `rotate()`（见 `thumb-format.js`），所以缩放在最后。
+          if (needSize || needExif) {
+            header = mergeOwnExif(await readHeaderMeta(instance), si.own);
+          }
+          if (needDhash) {
+            dhash = await computeDhashFromPipeline(instance);
+          }
+          // 🔴 缩略图「缩放 + 编码」这一步单独一层 try：它失败不许把已经到手的
+          //    尺寸 / 拍摄参数 / dHash 一起带走（补全那边为这个坑返工过一次，见 `processOne`）。
+          try {
+            var thumb = await resizeThumb(instance, target.size, target.quality);
+            db.updatePhotoThumbnail(row.id, thumb, { size: target.size, format: target.format });
+            out.ok++;
+          } catch (eThumb) {
+            out.failed++;
+            pushRegenFailedPath(row.file_path);
+            logger.warn(
+              '[thumb-regen] 重生成失败：' +
+                row.file_path +
+                ' — ' +
+                (eThumb && eThumb.message ? eThumb.message : String(eThumb)),
+            );
+          }
+          // —— 四样顺手产出：与补全同序、同写入口。⚠️ 编码失败也照写（到手的就是到手的）。
+          // 原图尺寸：只在拿到正尺寸时写 —— 库里已有真实值时不许被覆盖成 0
+          if (header && header.width > 0 && header.height > 0) {
+            db.updatePhotoDimensions(row.id, header.width, header.height);
+            thumbnailRebuild.sized++;
+          }
+          // 拍摄参数：与尺寸共用**同一次**文件头读盘（`header.exif`），这里不再碰盘。
+          // 🔴 只有**读到了文件头**才写标记：`header === null` 是「没看到文件」，不是
+          //    「看过了、没有 EXIF」—— 判据与补全那处完全一致。
+          if (needExif && header) {
+            db.updatePhotoExif(row.id, header.exif, row.date_modified);
+            thumbnailRebuild.exifChecked++;
+            if (hasAnyExifField(header.exif)) thumbnailRebuild.exifFilled++;
+          }
+          if (needDhash) {
+            if (dhash) {
+              db.updatePhotoDhash(
+                row.id,
+                dhash,
+                getDhashBuckets(dhash),
+                row.date_modified,
+                row.file_size,
+              );
+              thumbnailRebuild.dhashed++;
+            } else {
+              // `computeDhashFromPipeline` 的失败语义是**返回 null、从不抛**（见 `perceptual-hash.js`）
+              // ⇒ 不写这一行日志就完全没有现场。这里**不盖章**，理由见函数头。
+              logger.warn('[thumb-regen] dHash unusable (decode failed) for: ' + row.file_path);
+            }
+          }
+          if (needHash) {
+            try {
+              var digest = sharedBuf
+                ? hashBufferSha256(sharedBuf)
+                : await hashFileSha256(row.file_path, function () {
+                    return thumbnailRebuild.cancelled;
+                  });
+              if (digest) {
+                db.updatePhotoHash(row.id, digest, row.date_modified, row.file_size);
+                thumbnailRebuild.hashed++;
+              }
+            } catch (eHash) {
+              logger.warn(
+                '[thumb-regen] SHA-256 failed: ' +
+                  row.file_path +
+                  ' — ' +
+                  (eHash && eHash.message ? eHash.message : String(eHash)),
+              );
+            }
+          }
+        }
+      } catch (e) {
+        out.failed++;
+        pushRegenFailedPath(row.file_path);
+        // warn 级：失败是这个任务里唯一需要留现场的事件（生产档 info 是静默的）
+        logger.warn(
+          '[thumb-regen] 重生成失败：' +
+            row.file_path +
+            ' — ' +
+            (e && e.message ? e.message : String(e)),
+        );
+      }
+      completed++;
+      if (completed % 8 === 0) {
+        emitBackgroundTasksChangedThrottled(false);
+        await new Promise(function (resolve) {
+          setImmediate(resolve);
+        });
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: conc }, function () {
+      return worker();
+    }),
+  );
+  return out;
+}
+
+/**
+ * 登记阶段：把「规格与目标不符」的行**按 id 区间倒序**放进队列。
+ *
+ * 代价特征：每一个区间是一遍**有界的**区间扫描（块内代价 ∝ 块内行数，与目标值无关）；
+ * 每块一次入队 ⇒ 单次持写锁的时长有上界（真库 4 万行约 5~10 s），用户任务能插在块之间。
+ *
+ * ⚠️ 区间宽度**决定单次持锁时长**，别随手调大：整段一次 `INSERT … SELECT` 就是
+ *    几十秒独占写锁（项目里已有「全表 UPDATE 会独占写锁扫完整个库」那条红线）。
+ * @param {ReturnType<typeof getThumbnailRebuildTarget>} target
+ * @param {boolean} reusable 队列能不能接着用（不能则第一块顺带清空 + 重置）
+ */
+async function runThumbRegenEnqueuePass(target, reusable) {
+  thumbnailRebuild.phase = 'enqueueing';
+  var meta = db.thumbRegenMeta();
+  var savedPhase = reusable ? String((meta && meta.phase) || '') : '';
+  // 🔴 只有「上次的登记确实没走完」才接着扫。`draining` / `done` 说明全库都扫过了 ——
+  //    再扫一遍就是几十万行的白读（而且会把刚抽干的队列重新塞满 ⇒ 无限循环）。
+  if (savedPhase === 'draining' || savedPhase === 'done') return;
+  var cursor = reusable ? Number(meta && meta.enqueueCursor) || 0 : db.getMaxPhotoId() + 1;
+  if (cursor <= 0) cursor = db.getMaxPhotoId() + 1;
+  var total = Number(thumbnailRebuild.total) || 0;
+  var firstChunk = true;
+
+  while (!thumbnailRebuild.cancelled && cursor > 0) {
+    // 交互抢占：用户正在搜图就在这里停下（与补全同一条，且**必须在入队之前**）
+    await interactionPreempt.awaitIdle();
+    var idTo = cursor;
+    var idFrom = Math.max(0, idTo - THUMB_REGEN_ENQUEUE_CHUNK);
+    // 只给第一块带上「作废旧队列」的标记 ⇒ 清空 + 重置 + 首块入库在**同一个事务**里，
+    // 中途崩溃不会留下「队列空了、身份串还是旧的」这种状态（那种状态下 `isQueueReusable`
+    // 会判「可以接着用」，于是去抽干一条空队列、报「重建完成」而其实什么都没做）。
+    var resetSignature = firstChunk && !reusable ? target.signature : '';
+    var chunk = await dbWriteQueue.run(
+      'thumb-regen-enqueue',
+      function () {
+        return db.thumbRegenEnqueueChunk(
+          idFrom,
+          idTo,
+          target.size,
+          target.format,
+          resetSignature,
+          total,
+        );
+      },
+      { priority: PRIORITY.IDLE },
+    );
+    firstChunk = false;
+    if (chunk && Number(chunk.total) >= 0) total = Number(chunk.total) || 0;
+    thumbnailRebuild.total = total;
+    thumbnailRebuild.scanned += idTo - idFrom;
+    cursor = idFrom;
+    emitBackgroundTasksChangedThrottled(false);
+    await yieldForPreviewPlaybackMs(20);
+    await yieldForPreviewPlaybackMs(20);
+  }
+  // 取消 ⇒ 游标已经落盘，下次从断点接着登记（**不要**在这里写任何别的状态）
+  if (thumbnailRebuild.cancelled) return;
+  logger.log(
+    '[runThumbnailRebuild] 登记完成：扫描 ' +
+      thumbnailRebuild.scanned +
+      ' 行，放进队列 ' +
+      total +
+      ' 张',
+  );
+}
+
+/**
+ * 抽干阶段：按主键倒序一批一批地重跑。
+ *
+ * 🔴 取批**没有规格谓词**（`thumb-regen-queue#FETCH_SQL`）：队列本身就是筛选结果。
+ *    一旦有人「顺手」把谓词加回来，代价就从 ∝ 批大小变成 ∝ **游标到第一个命中行的距离**
+ *    —— 尾巴上每批都要从高位扫到底（补全那边真库实测单批 159.6 s，见
+ *    `docs/contracts/thumbnail-backfill.md`）。守护 `thumbnail-regen-regression` 盯着这条形态。
+ */
+async function runThumbRegenDrainPass(target) {
+  thumbnailRebuild.phase = 'draining';
+  var cursor = db.getMaxPhotoId() + 1;
+  while (!thumbnailRebuild.cancelled) {
+    await interactionPreempt.awaitIdle();
+    await yieldForPreviewPlaybackMs(20);
+    var rows = db.thumbRegenFetchBatch(cursor, THUMB_REGEN_DRAIN_BATCH);
+    if (rows.length === 0) break;
+    var lastId = rows[rows.length - 1].id;
+    var batchIds = [];
+    var missing = 0;
+    for (var mi = 0; mi < rows.length; mi++) {
+      batchIds.push(rows[mi].id);
+      if (!rows[mi] || !rows[mi].file_path) missing++;
+    }
+    // const 而非 var：下面的闭包里要引用（块作用域保证每轮捕获到的是本批的值）
+    const batchRows = rows;
+    const batchMissing = missing;
+    const batchIdList = batchIds;
+    var finished = await dbWriteQueue.run(
+      'thumb-regen',
+      async function () {
+        // 🔴 顺序固定：先生成、再删除、最后记账。删除与记账在**同一个事务**里
+        //    （`thumbRegenFinishBatch`），中途崩溃只会「这批重做一遍」，不会出现
+        //    「行已经不在队列里、`done` 没加」那种进度凭空少一截的状态。
+        var res = await regenerateRowsWithConcurrency(batchRows, target);
+        return db.thumbRegenFinishBatch(batchIdList, {
+          failed: res.failed,
+          missing: batchMissing,
+        });
+      },
+      { priority: PRIORITY.IDLE },
+    );
+    // 内存计数以**库里的持久化值**为准（它跨重启累计；内存只负责画界面）
+    if (finished) {
+      thumbnailRebuild.done = Number(finished.done) || thumbnailRebuild.done;
+      thumbnailRebuild.failed = Number(finished.failed) || thumbnailRebuild.failed;
+      thumbnailRebuild.missing += batchMissing;
+    }
+    // 倒序：本批最后一行是**本批最小**的 id。
+    // ⚠️ 游标仍然用「内含」（`id <= cursor`）：本批的行在上一句里已经被删掉了，
+    //    所以重取到它的可能不存在；而队列是**稀疏**的，绝不能拿它当「删除下界」
+    //    （那会连带删掉比它更小、还没取过的行 —— 那批行会永远拿不到重跑，进度条却显示完成）。
+    cursor = lastId;
+    emitBackgroundTasksChangedThrottled(false);
+    await yieldForPreviewPlaybackMs(20);
+    await yieldForPreviewPlaybackMs(20);
+  }
+  if (thumbnailRebuild.cancelled) return;
+  // 队列已空 ⇒ 收口：把 `done` 对齐 `total`（正常路径下两者本来就相等）并把阶段推到 `done`。
+  // 少了这一步，界面会永远停在「还有 N 张待重建」而任务其实已经结束。
+  var final = await dbWriteQueue.run(
+    'thumb-regen',
+    function () {
+      return db.thumbRegenMarkDrained();
+    },
+    { priority: PRIORITY.IDLE },
+  );
+  if (final) {
+    thumbnailRebuild.done = Number(final.done) || thumbnailRebuild.done;
+    thumbnailRebuild.failed = Number(final.failed) || thumbnailRebuild.failed;
+  }
+}
+
+/**
+ * 缩略图**全量重跑**：把库里「规格与当前设置不符」的缩略图重新生成一遍。
+ *
+ * 三个阶段（缺一不可，且每一阶段的进度都落盘，所以**关掉应用再打开能接着跑**）：
+ *   ① 判废 / 重置：目标规格与队列的身份串不一致（用户改了档位）⇒ 清空重登记；
+ *   ② 登记：按 id 区间倒序扫全库，把不符的行放进 `thumb_regen_queue`（游标落盘，可分块续跑）；
+ *   ③ 抽干：按主键倒序一批一批重跑（批内生成 + 删除 + 记账）。
+ *
+ * ⚠️ **刻意不做「启动时自动续跑」**（尽管队列是可续的）：它是一遍全库重编码，
+ *    在机械盘上以小时计，抢的还是用户正在浏览的那块盘。是否继续由用户在设置页点。
+ *    队列与进度都在库里，不会因为没自动跑而丢。
+ */
+async function runThumbnailRebuild() {
+  const blockReason = thumbnailRebuildBlockReason();
+  if (blockReason) {
+    logger.warn('[runThumbnailRebuild] skipped: ' + blockReason);
+    return { started: false, reason: blockReason };
+  }
+  const taskStart = Date.now();
+  const target = getThumbnailRebuildTarget();
+  thumbnailRebuild.running = true;
+  thumbnailRebuild.cancelled = false;
+  thumbnailRebuild.failedPaths = [];
+  thumbnailRebuild.currentFile = '';
+  thumbnailRebuild.startedAt = Date.now();
+  thumbnailRebuild.runToken++;
+  thumbnailRebuild.targetSize = target.size;
+  thumbnailRebuild.targetFormat = target.format;
+  thumbnailRebuild.phase = 'enqueueing';
+  thumbnailRebuild.missing = 0;
+  thumbnailRebuild.scanned = 0;
+  // 顺手产出的计数是**本次进程**的口径（不入 meta）：与补全那五个同款。
+  // ⚠️ 接着上一条队列跑时**也必须归零** —— 它们描述的是「这次跑了多少」，
+  //    不是「这条队列累计补齐了多少」，混起来会让界面把上一轮的产出算进这一轮。
+  thumbnailRebuild.sized = 0;
+  thumbnailRebuild.exifChecked = 0;
+  thumbnailRebuild.exifFilled = 0;
+  thumbnailRebuild.dhashed = 0;
+  thumbnailRebuild.hashed = 0;
+  emitBackgroundTasksChangedThrottled(true);
+  logger.log('[runThumbnailRebuild] 启动，目标 = ' + target.signature);
+
+  try {
+    var meta = db.thumbRegenMeta();
+    var reusable = thumbRegenQueue.isQueueReusable(meta, target.signature);
+    if (reusable) {
+      thumbnailRebuild.total = Number(meta.total) || 0;
+      thumbnailRebuild.done = Number(meta.done) || 0;
+      thumbnailRebuild.failed = Number(meta.failed) || 0;
+      // 🔴 `missing` 也必须从 meta 恢复（2026-10-08）：它**参与**一个界面读数 ——
+      //    重建那节的「已重出」= `done − failed − missing`。不恢复（只靠上面刚归零的内存值）
+      //    就会少减「重启前那部分『行已不在库里』的行」，界面上的产出**偏大**。
+      //    它不影响进度百分比与 ETA，所以错了也不会有人当场发现 —— 正是要在这里钉住。
+      thumbnailRebuild.missing = Number(meta.missing) || 0;
+      logger.log(
+        '[runThumbnailRebuild] 接着上一条队列跑：阶段=' +
+          String(meta.phase || '') +
+          '，total=' +
+          thumbnailRebuild.total +
+          '，done=' +
+          thumbnailRebuild.done,
+      );
+    } else {
+      thumbnailRebuild.total = 0;
+      thumbnailRebuild.done = 0;
+      thumbnailRebuild.failed = 0;
+      logger.log('[runThumbnailRebuild] 队列作废（目标规格变了 / 从未登记），将从全库重新登记');
+    }
+    // 🔴 ETA 的基线必须**在恢复完 `done` 之后**取：它是「本次进程起手时这条队列已经走到哪」。
+    //    只在起手取一次（不是每批更新）—— 更新它就等于把速率算成瞬时值，ETA 会跟着抖。
+    //    三个数一起取：界面要报的「本次重出 / 本次失败」也是同一套差值口径。
+    thumbnailRebuild.doneAtStart = Number(thumbnailRebuild.done) || 0;
+    thumbnailRebuild.failedAtStart = Number(thumbnailRebuild.failed) || 0;
+    thumbnailRebuild.missingAtStart = Number(thumbnailRebuild.missing) || 0;
+
+    // 让出几次事件循环，先让界面把「进行中」画出来（与补全同一手法）
+    await yieldForPreviewPlaybackMs(50);
+
+    await runThumbRegenEnqueuePass(target, reusable);
+    if (thumbnailRebuild.cancelled) {
+      logger.log('[runThumbnailRebuild] 登记阶段被取消，游标已落盘，下次接着登记');
+      return { started: true, cancelled: true };
+    }
+    await runThumbRegenDrainPass(target);
+
+    logger.log('[runThumbnailRebuild] 结束，用时 ' + (Date.now() - taskStart) + ' ms');
+    return { started: true };
+  } finally {
+    thumbnailRebuild.failedPathsLastRun = thumbnailRebuild.failedPaths.slice(
+      0,
+      THUMB_BACKFILL_FAILED_PATHS_MAX,
+    );
+    thumbnailRebuild.failedPaths = [];
+    thumbnailRebuild.running = false;
+    thumbnailRebuild.currentFile = '';
+    thumbnailRebuild.startedAt = 0;
+    thumbnailRebuild.phase = '';
+    emitBackgroundTasksChangedThrottled(true);
+    logger.log(
+      '[runThumbnailRebuild] 收尾：total=' +
+        thumbnailRebuild.total +
+        '，done=' +
+        thumbnailRebuild.done +
+        '，failed=' +
+        thumbnailRebuild.failed +
+        '，missing=' +
+        thumbnailRebuild.missing +
+        '，scanned=' +
+        thumbnailRebuild.scanned,
+    );
+  }
+}
+
+/**
+ * 重跑任务的进度读数（运行期；空闲态的读数见 `getThumbnailRebuildStatus()`）。
+ *
+ * ⚠️ 分母是**精确值**（登记时 `INSERT` 行数累加），不是抽样估计 ⇒ 文案里**不要**写「约」。
+ * 🔴 `pending` 必须夹在 `>= 0`：分子是持久化值、分母也是，两者在「重置队列」那一瞬间
+ *    可能读到一新一旧（例如 total 已归 0、done 还是上一轮的） ⇒ 不夹就会显示负数。
+ */
+function getThumbnailRebuildProgress() {
+  var total = Number(thumbnailRebuild.total) || 0;
+  var done = Number(thumbnailRebuild.done) || 0;
+  var denom = Math.max(total, done);
+  var pending = Math.max(0, total - done);
+  var pct = denom > 0 ? Math.min(100, Math.round((done / denom) * 100)) : 0;
+  /**
+   * 🔴 ETA 的分子分母必须**同一个口径**（2026-10-08 修）：
+   * `done` 跨重启累计、`startedAt` 是本次进程 ⇒ 直接喂进去 = 「整条队列的累计完成量 ÷
+   * 本次跑了多久」。真库实测重启续跑 21 分钟时那是 **305 张/秒**（实测 17）⇒
+   * 界面显示「预计剩余约 1 小时 9 分」，而真实约 **20.7 小时**（差 18 倍）。
+   * 修法：以 `doneAtStart` 为基线，只用**这一趟真正做的量**算速率。
+   * ⚠️ 第三、四个参数仍叫「已完成 / 总量」，但都换算到本次进程的坐标上 ——
+   *    总量 = 本次已完成 + 还没做，两者相减后 remaining 不变（`pending`），速率才是真值。
+   */
+  var sessionDone = Math.max(0, done - (Number(thumbnailRebuild.doneAtStart) || 0));
+  /**
+   * 🔴 「本次进程」口径的三件套（2026-10-08 用户指出「**已完成的不是这一次跑的**」之后补的）。
+   * `done` / `failed` / `missing` 都会跨重启累计 ⇒ 界面把它们直接当「本次重出多少」报，
+   * 报了上一个进程的账。改成各自减去起手快照：
+   *   · `rebuiltThisRun` = 本次抽干的行 − 本次失败 − 本次「行已不在库里」（**真的产出**）
+   *   · `failedThisRun`  与副行那五项产出计数同口径（那五项本来就是本次进程）
+   *   · `doneThisRun` 只作对照（= `done − doneAtStart`，含失败与 missing 两类）
+   * 累计口径仍在 `done` / `failed` / `missing` 里原样保留：**主行的 `done / total` 就是总账**，
+   * 空闲态的设置页文案（`getThumbnailRebuildStatus`）读的也是 meta 里的累计值。
+   */
+  var sessionFailed = Math.max(
+    0,
+    (Number(thumbnailRebuild.failed) || 0) - (Number(thumbnailRebuild.failedAtStart) || 0),
+  );
+  var sessionMissing = Math.max(
+    0,
+    (Number(thumbnailRebuild.missing) || 0) - (Number(thumbnailRebuild.missingAtStart) || 0),
+  );
+  var rebuiltThisRun = Math.max(0, sessionDone - sessionFailed - sessionMissing);
+  var etaSeconds = null;
+  if (thumbnailRebuild.running && total > 0) {
+    etaSeconds = estimateEtaSecondsSmoothed(
+      'thumbRebuild',
+      thumbnailRebuild.startedAt,
+      sessionDone,
+      sessionDone + pending,
+    );
+  }
+  return {
+    running: thumbnailRebuild.running,
+    cancelled: thumbnailRebuild.cancelled,
+    /** `'enqueueing'`（还在登记）| `'draining'`（正在重跑）| `null`（未运行） */
+    phase: thumbnailRebuild.running ? thumbnailRebuild.phase || 'enqueueing' : null,
+    total: total,
+    done: done,
+    failed: Number(thumbnailRebuild.failed) || 0,
+    /**
+     * 登记阶段**已扫过的行数**。它是「还在登记」那段时间的唯一进展读数 ——
+     * 那段时间一张图都还没重生成，只给 `done` 的话界面会一动不动（用户以为卡住了）。
+     */
+    scanned: Number(thumbnailRebuild.scanned) || 0,
+    missing: Number(thumbnailRebuild.missing) || 0,
+    pending: pending,
+    pct: pct,
+    /**
+     * 顺手产出的五项（2026-10-08 并入）。**本次进程**的口径，不持久化。
+     * ⚠️ 它们是**白名单拼装**的字段：漏一个 = 界面收得到事件却永远画不出那一项，
+     *    看起来跟「这项没在补」一模一样。守护对这几个名字有断言。
+     */
+    sized: Number(thumbnailRebuild.sized) || 0,
+    exifChecked: Number(thumbnailRebuild.exifChecked) || 0,
+    exifFilled: Number(thumbnailRebuild.exifFilled) || 0,
+    dhashed: Number(thumbnailRebuild.dhashed) || 0,
+    hashed: Number(thumbnailRebuild.hashed) || 0,
+    /**
+     * 🔴 **本次进程**口径（与上面五项同款）。界面报「本次重出 N」要用 `rebuiltThisRun`，
+     * **不许**拿累计的 `done` 去减 —— 那就是「已完成的不是这一次跑的」。
+     * ⚠️ 与 `done` 一样是白名单拼装：漏一个字段 = 界面那项永远画不出/画错。
+     */
+    doneThisRun: sessionDone,
+    failedThisRun: sessionFailed,
+    rebuiltThisRun: rebuiltThisRun,
+    currentFile: thumbnailRebuild.currentFile,
+    targetSize: Number(thumbnailRebuild.targetSize) || 0,
+    targetFormat: String(thumbnailRebuild.targetFormat || ''),
+    /** 见函数开头那段：**按本次进程的速率**算，不是按整条队列的累计量（2026-10-08 修） */
+    etaSeconds: etaSeconds,
+  };
+}
+
+/**
+ * 设置页用的**空闲态**读数：有没有待办、还差多少、目标是哪个、队列还算不算数。
+ *
+ * 🔴 只读 `thumb_regen_meta` 单行（O(1)），**绝不去数队列**：队列可以有一百多万行，
+ *    `COUNT(*)` 是整条索引的扫描 —— 而设置页每次打开都会读它。
+ *    `total` / `done` 本来就在 meta 里逐批维护，两者之差就是待办数。
+ *
+ * ⚠️ `stale = true` 表示「队列是按**旧**目标登记的」（用户改过档位还没重建）。
+ *    这时 `pending` 是旧队列的残留数，**不代表真实待办**（真实值要扫全库才知道）——
+ *    UI 必须换一句文案，别把旧数当新数画出来。
+ */
+function getThumbnailRebuildStatus() {
+  var target = getThumbnailRebuildTarget();
+  var meta = db ? db.thumbRegenMeta() : null;
+  var total = Number(meta && meta.total) || 0;
+  var done = Number(meta && meta.done) || 0;
+  var stale = !thumbRegenQueue.isQueueReusable(meta, target.signature);
+  return {
+    targetSize: target.size,
+    targetQuality: target.quality,
+    targetFormat: target.format,
+    queueSignature: meta ? String(meta.signature || '') : '',
+    queuePhase: meta ? String(meta.phase || '') : '',
+    stale: stale,
+    total: total,
+    done: done,
+    failed: Number(meta && meta.failed) || 0,
+    pending: stale ? 0 : Math.max(0, total - done),
+    running: thumbnailRebuild.running,
+    progress: getThumbnailRebuildProgress(),
+  };
+}
+
+/**
  * 摘要的两条入口（`hashFileSha256` / `hashBufferSha256`）已抽到 **`src/main/file-hash.js`**。
  *
  * 🔴 抽出去不是为了好看：两条路写的是同一列 `photos.file_hash`，而「重复项」按它分组 ——
- *    摘要一旦不一致，成对的照片会被**静默**分到两个组里。`file-hash.js` 不依赖 electron，
+ *    摘要一旦不一致，成对的图片会被**静默**分到两个组里。`file-hash.js` 不依赖 electron，
  *    回归脚本才能**真跑**着对同一份内容两条路各算一次、逐字符比对（见 `perceptual-hash-share-regression`）。
  *    别把它们搬回本文件 —— 搬回来就再也验不了了。
  */
@@ -3211,6 +4933,8 @@ function getDuplicateHashTaskProgress() {
     cancelled: duplicateHashTask.cancelled,
     total: tot,
     done: d,
+    // 百分比唯一来源（渲染端不再自己除）：见 `docs/contracts/background-tasks.md` §1.1。
+    pct: computePct(d, tot),
     hashed: duplicateHashTask.hashed,
     reused: duplicateHashTask.reused,
     failed: duplicateHashTask.failed,
@@ -3244,6 +4968,11 @@ function duplicateHashBlockReason() {
   if (optimizeTaskRunning) return '数据库维护进行中';
   if (isFolderScanRunning()) return '扫描进行中，请稍后再试';
   if (thumbnailBackfill.running) return '缩略图补全进行中，请稍后再试';
+  // 「全量重跑」与补全是**同一类**占用（逐文件整读 + 抢同一块外接盘），所以拦住补全的
+  // 那条判据也必须拦住它。2026-10-07 漏了这条：重跑跑着时点「开始获取」会照常返回
+  // `{ success: true }`，而 `runDuplicateHashDetection()` 内部立刻 return（返回值被 void 丢弃）
+  // ⇒ 又是那个「点了没反应」。这条由 `thumb-dup-admission-parity-regression` 的三闸行为面钉住。
+  if (thumbnailRebuild.running) return '缩略图重建进行中，请稍后再试';
   if (duplicateHashTask.running) return '重复哈希任务已在运行';
   return '';
 }
@@ -3473,6 +5202,75 @@ function scheduleAutoThumbnailBackfill() {
 }
 
 /**
+ * Live Photo 配对 —— 常驻、幂等、**没有设置开关**。
+ *
+ * 🔴 为什么刻意不做成开关（不像 autoHash / autoThumbBackfill）：它修的是**数据正确性**
+ *    而不是可选的性能优化。不跑，Live Photo 的伴生 MOV 就会作为独立视频混进列表与统计，
+ *    同一张图片在库里出现两次 —— 用户看到的是「一张图片有两个条目」，而他没有任何
+ *    开关可以修。而且它天然幂等：只认领 `live_still_id IS NULL` 的行，首次全量跑完后
+ *    每轮启动只剩「上次之后新导入的 MOV」，通常就是 0 个（不读盘、不写库，毫秒级返回）。
+ *
+ * 优先级 `IDLE`：真库首次有 4554 个候选，要读几千个文件头，必须让用户操作与
+ * 「有终点的」修复类任务先走。放进写闸门的是**按批**提交的小事务（读盘在锁外），
+ * 不会长时间独占写锁。
+ *
+ * 扫描期间主动让路（`shouldStop`）：扫描整段独占写闸门，且此刻库里正有大量行
+ * 处于「刚插入、尚未配对」的中间态 —— 现在去配对等于对一批半成品下结论。
+ */
+var livePhotoPairingScheduled = false;
+var livePhotoPairModule = null;
+
+function loadLivePhotoPair() {
+  if (!livePhotoPairModule) {
+    livePhotoPairModule = require('./main/live-photo-pair');
+  }
+  return livePhotoPairModule;
+}
+
+/**
+ * @param {string} reason 'startup' | 'after-scan'，只用于日志打点
+ */
+async function runLivePhotoPairingTask(reason) {
+  if (!db || !db.db) return null;
+  try {
+    var stats = await loadLivePhotoPair().runLivePhotoPairing({
+      db: db.db,
+      queue: dbWriteQueue,
+      priority: PRIORITY.IDLE,
+      shouldStop: function () {
+        return isFolderScanRunning();
+      },
+    });
+    if (stats && stats.scanned > 0) {
+      startupStageLog(
+        'live-photo-pair.' + String(reason || ''),
+        'scanned=' + stats.scanned + ' matched=' + stats.matched,
+      );
+      // 配对结果改变了「视频档 / 所有档」的集合（伴生视频被排除在外）⇒ 读池里
+      // 记忆化的总数与列表缓存必须失效，否则界面会拿旧数字解释新列表。
+      // 只在真的扫过东西时才失效：常态下本任务 scanned=0，不该动任何缓存。
+      dbReadWorkerPool.invalidateReadCaches();
+    }
+    return stats;
+  } catch (ePair) {
+    logger.error(
+      '[live-photo] pairing failed:',
+      ePair && ePair.message ? ePair.message : String(ePair),
+    );
+    return null;
+  }
+}
+
+function scheduleLivePhotoPairing(delayMs) {
+  if (livePhotoPairingScheduled) return;
+  livePhotoPairingScheduled = true;
+  setTimeout(function () {
+    livePhotoPairingScheduled = false;
+    void runLivePhotoPairingTask('startup');
+  }, typeof delayMs === 'number' ? delayMs : 1200);
+}
+
+/**
  * 自动查重被「扫描忙」推迟的次数。**只用于日志汇总**，不放宽任何抢占逻辑。
  *
  * 🔴 为什么需要它：这个排程每 5 秒会被自己重试一次，过去每次重试都打两条 stage
@@ -3566,7 +5364,7 @@ function scheduleAutoAiIndexOnStartup(kind, delayMs) {
     state.scheduled = false;
     if (state.started) return;
     // 自己已经在跑（可能是用户手动点的）：不重复启动，也不必重试
-    if (service.status().busy) {
+    if (service.status().running) {
       if (!state.reportedBusy) {
         state.reportedBusy = true;
         startupStageLog(label + '.skip', 'already running');
@@ -3800,6 +5598,30 @@ function schedulePostWindowDeferredTasks() {
       );
     }
   }, 250);
+  /**
+   * 启动期 GPU 能力探测（+6s）。
+   *
+   * ## 为什么排在这里、为什么不更早
+   *   ① 它**不是**首屏所需 —— 没有任何界面元素等它，早跑只会和「扫库 + 载缩略图 + 目录树」
+   *      抢 CPU 与磁盘（探测自己也要载 ONNX 运行时、初始化 D3D12 设备）；
+   *   ② 也**不能更晚到「用户点了建索引才跑」** —— 那时探测的两秒会摊进索引任务的启动里，
+   *      而且「有没有 GPU」这个结论本来就应该在动手之前就知道（它是准入信息，不是任务副产品）。
+   *
+   * ## 为什么**不**在「AI 任务正在跑」时跳过（这里改过一次，别改回去）
+   *   本版最初写的是「AI 忙就整轮跳过 + 打一条日志」。那个设计有个**界面说不圆**的洞：
+   *   跳过一次 ⇒ `gpuProbe` 整轮没产出结论 —— 首次启动时那一行永远停在「检测中…」（用户会一直等），
+   *   而非首次启动时它拿着上次的落盘值补一句「本次正在重测」——**本次根本没探**。
+   *   界面是这功能存在的唯一理由（生产档 logger 是 warn，用户不会翻日志），所以不能说假话。
+   *   而省下的代价也不值得：探测是**独立 worker** 里的一个 168 B 卷积（本机整轮 2.4 s，
+   *   挂死另有 60 s 上限），且当前**所有 AI 任务都跑 CPU**（换 EP 属 M5）⇒ 并不存在
+   *   「两个 dml 设备抢」这件事可避。
+   *   ⚠️ 将来若真有任务用上 dml、且实测这 2 秒会打扰它，也**不许**改回静默跳过 ——
+   *   要么把时机挪开，要么给「本次未探测」一个**独立的、界面显示得出来的状态**。
+   */
+  setTimeout(function () {
+    if (!gpuProbe) return;
+    void gpuProbe.ensure();
+  }, 6000);
 }
 
 /** 自动扫描 / 补图 / 人脸等：等侧栏目录树首屏渲染完成后再启动，避免与目录 IPC 抢时序；12s 兜底仍可能触发 */
@@ -4048,6 +5870,10 @@ function runAutoStartupTasksOnce() {
   if (settings.autoThumbBackfillOnStartup) {
     scheduleAutoThumbnailBackfill();
   }
+  // Live Photo 配对：**无开关**（它修的是数据正确性，见 `scheduleLivePhotoPairing`
+  // 的注释）。刻意排在两个 AI 索引之前 —— 它读几千个文件头，而 AI 索引一旦起跑
+  // 就长期占着索引槽位，先让这个「有终点」的任务落地。
+  scheduleLivePhotoPairing(1500);
   // 「跑到底」的两个索引任务（见 scheduleAutoAiIndexOnStartup 的注释）。
   // 刻意排在最后：它们启动后会长时间占着 AI 索引槽位，让前面那些「有终点」的任务先落地。
   if (settings.autoSemanticIndexOnStartup) {
@@ -4503,6 +6329,12 @@ function createWindow(appIcon) {
     winOpts.icon = appIcon;
   }
   mainWindow = new BrowserWindow(winOpts);
+  /* 启动即最大化（2026-10-09）：默认 1400×900 是按 100% 缩放屏定的，高 DPI
+   * （本机 dpr≈1.5，1920 物理宽 ⇒ 逻辑只有 1280）下会被 workArea 压到更小，
+   * 侧栏导航与浏览工具条都展示不全。最大化以 workArea 为上限，任何屏幕上
+   * 都保证完整展示；用户手动还原后按 1400×900 落窗。渲染层本就监听
+   * `window-maximized-change` 同步最大化态（见 preload 同名通道），无需新链路。 */
+  mainWindow.maximize();
 
   mainWindow.webContents.on('render-process-gone', function (event, details) {
     var d = details || {};
@@ -4602,16 +6434,26 @@ app
   .then(function () {
     startupStageLog('app.whenReady');
     var userDataPath = app.getPath('userData');
-    var dbPath = path.join(userDataPath, 'photos.db');
+    /**
+     * 🔴 settings.json 必须**先于**数据库路径解析读到：数据目录存在它里面，
+     *    而 `new Database()` 一进去就按给定路径建/开库 —— 顺序反了等于永远只能用默认位置。
+     *    它本身**刻意留在 userData**（不跟着数据目录走）：迁移后要靠它记住新位置，
+     *    也避免「D 盘没插 → 连配置都读不到」这种连环失效。
+     */
+    settingsFilePath = path.join(userDataPath, 'settings.json');
+    loadSettings();
+    var dataDirPath = resolveDataDirPath(userDataPath);
+    libraryDataDir = dataDirPath;
+    var dbPath = path.join(dataDirPath, 'photos.db');
     startupMetrics.setOutput(path.join(userDataPath, 'startup-performance.json'));
-    var catalogCachePath = path.join(userDataPath, 'catalog-cache.db');
+    var catalogCachePath = path.join(dataDirPath, 'catalog-cache.db');
     sqliteDbPath = dbPath;
     semanticSearch = new (require('./main/semantic-search').SemanticSearch)(
       dbPath,
       path.join(path.dirname(dbPath), 'ai-search'),
       {
         // 搜图是纯只读：索引进行中把请求托给正在跑的索引 worker（它已经载好模型），
-        // 用已落库的向量出结果，于是「边建索引边搜图」成立、结果只覆盖已索引的照片。
+        // 用已落库的向量出结果，于是「边建索引边搜图」成立、结果只覆盖已索引的图片。
         // 不能改成「另起一个 worker」——同一进程里并发载入第二份模型会把进程搞崩（实测）。
         // suggest（预选词打分）与 search 同为只读、同样只需文本编码器，走同一条路。
         concurrentReads: ['search', 'suggest'],
@@ -4625,7 +6467,33 @@ app
       path.join(path.dirname(dbPath), 'face-index'),
     );
     /**
-     * 「AI 内容标签」的读取通道。与搜图索引共用同一个 `ai-search` 目录，但它是
+     * 启动期 GPU 能力探测。**每次启动都重探**（不拿旧文件当结论）：驱动更新、换卡、
+     * 笔记本的独显直连开关都会改变答案，而这些一年要变好几次。旧文件只用于「本次探测
+     * 还没跑完时界面先显示上一次的值」，且会打上 `stale` 标记。
+     *
+     * ⚠️ 探测本身在 worker 里跑（见 gpu-probe.js）：`InferenceSession.create` 的 `async`
+     * 是假的（`setImmediate` 里同步执行 `loadModel`），本机实测 dml 建会话要 **约 2.0 秒**。
+     * 放在这里只是**建探测器**，真正的探测在 `schedulePostWindowDeferredTasks` 里点火。
+     */
+    gpuProbe = createGpuProbe({
+      aiPath: semanticSearch.aiPath,
+      logger: logger,
+    });
+    /**
+     * 探测结论只挂给**搜图**这一个服务。`status()` 的返回值同时喂着桌面端 IPC 与内嵌网页 API ——
+     * 一处挂上，两个运行时一致，不必各自再读一次 `gpu.json`（读两次迟早漂）。
+     *
+     * ⚠️ **刻意不给人脸服务也挂一份**：`face-service.js#status()` 从不读 `this.gpuInfo`，
+     * 挂了也是**无人消费的死接线** —— 读源码的人会以为人脸那条状态里带着 GPU 结论，实际没有
+     * （本工程专门有过这类「后端算了、界面永远看不到」的静默失效）。人脸面板目前没有这一行；
+     * 哪天要有，就**挂上和渲染一起加**，别为了对称先挂着。
+     */
+    var gpuInfo = function () {
+      return gpuProbe ? gpuProbe.current() : null;
+    };
+    semanticSearch.gpuInfo = gpuInfo;
+    /**
+     * 「主题标签」的读取通道。与搜图索引共用同一个 `ai-search` 目录，但它是
      * **独立的只读连接**：标签是索引库里的派生物（见 `src/ai/photo-tags.js`），
      * 而 `getPhotoInfo()` 只连主库、跨不了库。
      *
@@ -4635,12 +6503,44 @@ app
       path.join(path.dirname(dbPath), 'ai-search'),
     );
     /**
-     * 启动后顺手补一次「AI 内容标签」，补完再通知渲染端重画面板。
+     * 「画面标签」（JoyTag）的读取通道 —— 与上面的 `SemanticTags` 平行：
+     * 标签在 **tag 索引库**（`ai-search/tag-index.sqlite`）里，同样跨不了主库连接，
+     * 惰性只读、读不到降级空数组（没建 tag 库的用户零开销）。
+     * 中文映射在通道内做（`ai/tag-zh.js`），桌面与网页两端同源。
+     */
+    joyTagTags = new (require('./main/semantic-tags').JoyTagTags)(
+      path.join(path.dirname(dbPath), 'ai-search'),
+      /**
+       * 展示线（读侧分数线）**按取值器注入，不传数值**：设置页里改一下 `aiTagDisplayThreshold`
+       * 就立刻生效，不需要重启 —— 传数值就得重建这两个服务，而它们各持一条只读连接。
+       * ⚠️ 这里**必须写成读模块级 `settings` 的函数**：`reloadSettingsFromDiskSilently()`
+       *    是 `settings = Object.assign(...)`，**整个对象被换掉**。写成
+       *    `var s = settings; () => s.x` 会永远读到那个已经被丢弃的旧对象 =
+       *    「改了没反应」，而且不报错。
+       */
+      { displayMinScore: function () { return settings.aiTagDisplayThreshold; } },
+    );
+    /**
+     * 「标签导航页」的数据服务（分类树 / 节点下的标签 / 某标签有哪些图）。
+     *
+     * 与 `joyTagTags` 同一类来源（tag 索引库），但职责**刻意切开**：
+     * 本服务只碰 tag 库、只返回有序的 `photo_id`；回主库取照片**行**由下面的 IPC
+     * handler 做（`photoListColumns()` + `idListPredicate()`）。
+     * 这样「tag 库读不到」与「主库读不到」是两种独立故障，各自的降级互不牵连。
+     */
+    tagNav = new (require('./main/tag-nav').TagNav)(
+      path.join(path.dirname(dbPath), 'ai-search'),
+      /** 展示线取值器：与上一条 `joyTagTags` **必须是同一个来源**（同一个设置键），
+       *  否则「卡片写几张」和「面板列着什么」会按两条线算，界面还是看不出来。 */
+      { displayMinScore: function () { return settings.aiTagDisplayThreshold; } },
+    );
+    /**
+     * 启动后顺手补一次「主题标签」，补完再通知渲染端重画面板。
      *
      * ## 为什么必须有这一步
      *
      * 标签只在**建索引时**才算得出来（那一刻图片向量才在手上）。所以升级前就已经索引好的
-     * 那批照片是永远没有标签的 —— 而用户装上新版本后第一件事恰恰是打开照片看标签。
+     * 那批图片是永远没有标签的 —— 而用户装上新版本后第一件事恰恰是打开图片看标签。
      * 补标签是纯点积（不解码图片、不载模型），本机 7374 行实测 **1.8 秒**，
      * 代价低到可以无条件跑。
      *
@@ -4656,7 +6556,7 @@ app
       try {
         if (!semanticSearch || !semanticTags) return;
         if (!semanticTags.conn()) return;
-        if (semanticSearch.status().busy) return;
+        if (semanticSearch.status().running) return;
         void semanticSearch
           .run('tag')
           .then(function (result) {
@@ -4710,7 +6610,7 @@ app
     semanticSearch.beforeRefresh = ensureBundledModels;
     faceService.beforeRefresh = ensureBundledModels;
     // 下载模型与建索引互斥：同时跑会各占一套模型、反复读 photos.db，谁都跑不快。
-    // 只读查询（搜图、人物列表、人物照片）不受这两个开关影响，索引期间照常可用。
+    // 只读查询（搜图、人物列表、人物图片）不受这两个开关影响，索引期间照常可用。
     // 数据库维护期间同样要拦，但**只有独占整库的那两种**（VACUUM / 重建缩略图标记）：它们要
     // 重写整库，索引 worker 一边跑一边写会把维护顶成 `database is locked`。
     // ⚠️ 启动期的 FTS 索引刻意**不算**在这里（见 ai-index-gate.js）：它和 AI 索引走同一条
@@ -4720,13 +6620,13 @@ app
     semanticSearch.canRun = function () {
       return aiIndexCanRun({
         exclusiveMaintenance: exclusiveMaintenanceRunning,
-        peerBusy: faceService.status().busy,
+        peerBusy: faceService.status().running,
       });
     };
     faceService.canRun = function () {
       return aiIndexCanRun({
         exclusiveMaintenance: exclusiveMaintenanceRunning,
-        peerBusy: semanticSearch.status().busy,
+        peerBusy: semanticSearch.status().running,
       });
     };
     // 搜图曾经另有一道闸门（人脸索引在跑时直接拒绝）。现已撤除：
@@ -4734,7 +6634,6 @@ app
     // 会崩的是**同一份 SigLIP2 被并发载入两遍**（内存耗尽），那条路已经由 relay 彻底堵死：
     // 搜图索引在跑时搜索托给同一个 worker，永远不会有第二份 SigLIP2。
     // 加上搜图现在只载文本编码器（textOnly，省掉视觉那约 95 MB），这条路径只会更轻。
-    settingsFilePath = path.join(userDataPath, 'settings.json');
     if (isDev) {
       var dbExists = false;
       var dbSize = 0;
@@ -4778,7 +6677,7 @@ app
         }
       }, 100);
     }
-    loadSettings();
+    // `loadSettings()` 已经在解析数据目录之前跑过一次（见本函数开头），这里不再重复读盘。
 
     /** 内嵌 Web 服务就绪 URL；先占位 Promise，在首窗之后再 require/start，避免拖住 createWindow */
     var webServerReadyResolve;
@@ -4810,7 +6709,9 @@ app
       var cached = db.getThumbnail(photoId);
       if (cached && cached.thumbnail) {
         return new Response(cached.thumbnail, {
-          headers: { 'Content-Type': 'image/jpeg' },
+          // 🔴 按这一行**实际存的格式**派生：`getThumbnail()` 把 `thumb_format` 一起带出来了。
+          //    未知 / 空串（本列引入之前的存量行）回落 `image/jpeg` —— 那批实测全是 JPEG。
+          headers: { 'Content-Type': thumbMimeType(cached.format) },
         });
       }
 
@@ -4826,11 +6727,16 @@ app
           }
         }
         if (vbuf && vbuf.length) {
+          // 这一支是**当场生成**的：写入时记的就是 `THUMB_ENCODE_FORMAT`（抽帧与占位图都走
+          // `resizeThumb()`），响应头取同一个值 —— 「记进库的格式」与「发出去的头」不许各写一份。
           try {
-            db.updatePhotoThumbnail(photoId, vbuf, { size: topts.size, format: 'jpeg' });
+            db.updatePhotoThumbnail(photoId, vbuf, {
+              size: topts.size,
+              format: THUMB_ENCODE_FORMAT,
+            });
           } catch (eUp) {}
           return new Response(vbuf, {
-            headers: { 'Content-Type': 'image/jpeg' },
+            headers: { 'Content-Type': thumbMimeType(THUMB_ENCODE_FORMAT) },
           });
         }
       }
@@ -4860,6 +6766,8 @@ app
               .rotate()
               .jpeg({ quality: 88 })
               .toBuffer();
+            // 这里的 `image/jpeg` 是**对的、且只此一处**：上面刚刚 `.jpeg()` 出这个 Buffer，
+            // 它不是库里的缩略图（那条路走 `thumb://`，头由 `thumbMimeType()` 按行派生）。
             return new Response(rawJpeg, {
               headers: { 'Content-Type': 'image/jpeg' },
             });
@@ -5083,23 +6991,94 @@ app
           previewJpegMaxQueue: 48,
           /** /api/root-folders、/api/stats 等大查询走只读 Worker，避免内嵌网页拖死主进程 */
           sqliteReadPath: dbPath,
+          /**
+           * 网页端改了组织元数据（评分 / 标记 / 标签）之后清读池缓存。
+           *
+           * 🔴 必须注入：读池归主进程管，`web-server.js` 不知道它的存在。不接的后果
+           *    是「筛选栏开了、网页端点一下星，那一档的 total 最多陈旧 5 秒」
+           *    （TTL 兜底）—— 不是错误结果，但桌面端是显式清的，两端口径要一致。
+           *    与上面那组 `getXxx` 的注入同一种「把主进程的能力交出去」的形态。
+           */
+          onOrgMetaWritten: function () {
+            invalidateReadCachesForOrgMeta('web');
+          },
           semanticSearch: semanticSearch,
           faceService: faceService,
+          /**
+           * 图片编辑（旋转 / 翻转 / 裁剪）**与桌面端共用同一个服务实例** ——
+           * 编辑是全局串行的，两端各建一个实例 = 两条队列，会互相覆盖。
+           */
+          photoEdit: getPhotoEditService(),
+          /** 判「视频不可编辑」的扩展名清单，与桌面端同一份 */
+          videoExtensions: VIDEO_EXTENSIONS,
           getBrowseFolderIncludeSubfolders: function () {
             reloadSettingsFromDiskSilently();
             return settings.browseFolderIncludeSubfolders !== false;
+          },
+          /**
+           * 网页端按需生成缩略图时用的档位/画质：**必须**与桌面同一份，
+           * 否则网页端会往库里写一批「永远不合档」的行，重跑任务每轮都把它们算成待重生成。
+           */
+          getThumbOptions: function () {
+            reloadSettingsFromDiskSilently();
+            return getThumbOptions();
           },
           /** 网页端搜图用与桌面同一份阈值：两边共用 sever 上的一套设置。 */
           getAiSearchMatchThreshold: function () {
             return settings.aiSearchMatchThreshold;
           },
-          /** 网页端「照片信息」面板照用桌面端勾好的字段集 */
+          /**
+           * 网页端搜图另加的 tag 检索层开关与查询线（M4）。与桌面走同一个 `settings`，
+           * 所以「桌面关掉 tag 层」和「网页端关掉」是同一件事，不会一边开一边关。
+           * 形状与 `searchMatchOptions()` 的后两个键一致，改一处必须改两处。
+           */
+          getAiSearchTagOptions: function () {
+            return {
+              tagEnabled: settings.aiSearchTagEnabled !== false,
+              tagThreshold: Number(settings.aiSearchTagThreshold),
+            };
+          },
+          /**
+           * 网页端预选词与桌面端**同源同函数**：主进程按 `embeddings.tags` 转置统计，
+           * 只读 SQL、不起 worker、不载模型（理由见 `SemanticTags.suggestTerms`）。
+           *
+           * 之所以做成注入的函数而不是把 `semanticTags` 整个交出去：这正是本文件里
+           * `getPhotoAiTags` / `getTagNavPhotos` 那一批的形态 —— 网页端只该拿到「一个能力」，
+           * 不该拿到一个能开连接、能换语言、能改状态的活对象。
+           */
+          getAiSuggestTerms: function (request) {
+            return suggestTermsFromTags(request);
+          },
+          /** 网页端「图片信息」面板照用桌面端勾好的字段集 */
           getInfoPanelFields: function () {
             return settings.infoPanelFields;
           },
-          /** 网页端「AI 标签」与桌面端同源（同一个只读连接，读数一致） */
+          /** 网页端「主题标签」与桌面端同源（同一个只读连接，读数一致） */
           getPhotoAiTags: function (photoId, locale) {
             return semanticTags ? semanticTags.tagsFor(photoId, locale) : [];
+          },
+          /** 网页端「画面标签」与桌面端同源（同一个只读连接，中文映射在通道内做） */
+          getPhotoJoyTags: function (photoId, locale) {
+            return joyTagTags ? joyTagTags.tagsFor(photoId, locale) : [];
+          },
+          /**
+           * 网页端「标签导航页」与桌面端**同源同函数**（分类树只碰 tag 库；
+           * 取照片行走 `fetchTagNavPhotoRows`，与 IPC 那条是同一个实现）。
+           */
+          getTagNavStatus: function () {
+            return tagNav ? tagNav.status() : { available: false, tags: 0, photos: 0 };
+          },
+          getTagNavTree: function () {
+            return tagNav ? tagNav.tree() : [];
+          },
+          getTagNavNode: function (nodeId, locale) {
+            return tagNav ? tagNav.node(nodeId, locale) : { tags: [], total: 0, indexed: 0 };
+          },
+          getTagNavSearch: function (keyword, locale) {
+            return tagNav ? tagNav.search(keyword, locale) : { tags: [], nodes: [], indexed: 0 };
+          },
+          getTagNavPhotos: function (tag, options) {
+            return fetchTagNavPhotoRows(tag, options);
           },
           /** 网页端「设置」页只需要一份脱敏只读快照（见 buildWebSettingsSnapshot） */
           getSettingsSnapshot: function () {
@@ -5136,6 +7115,33 @@ app
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.once('did-finish-load', function () {
           startupStageLog('window.did-finish-load');
+          /**
+           * 「配了数据目录却没用上」必须让用户看见（原因在 `resolveDataDirPath`）。
+           * 时机挑在 `did-finish-load` **之后**：早于此时渲染端还没注册弹窗请求的监听，
+           * 请求会掉在地上，等 20 秒超时再回落到一个系统弹窗 —— 那正是这次要摆脱的东西。
+           */
+          if (dataDirFallbackReason) {
+            setTimeout(function () {
+              void alertInApp({
+                title: '图库数据位置打不开',
+                i18n: {
+                  titleKey: 'settings.storage.dataDirFallbackTitle',
+                  messageKey: 'settings.storage.dataDirFallbackDialogFmt',
+                  // 弹窗正文里**只放用户能读的那句**：`EPERM: operation not permitted, mkdir ...`
+                  // 摆在对话框里像一份崩溃报告，而排查要的原文另有去处 ——
+                  // 设置页那一行的悬停（`fallbackDetail`）与 `resolveDataDirPath` 的 warn 日志。
+                  params: { reason: dataDirFallbackReason },
+                },
+                message:
+                  '你指定的图库数据位置这次没能打开，本次启动已临时改用默认位置。\n\n' +
+                  '所以图库看起来可能是空的 —— 图片并没有丢。\n\n' +
+                  '如果它是移动硬盘或网络盘，接回来重启应用就能恢复；如果这个位置已经不用了，可以到「设置 → 媒体与存储」里改到新位置。\n\n' +
+                  '（打不开的是：' +
+                  dataDirFallbackReason +
+                  '）',
+              });
+            }, 600);
+          }
           schedulePostWindowDeferredTasks();
           setTimeout(startEmbeddedWebServer, 400);
         });
@@ -5167,6 +7173,14 @@ app
       var stageName = String(stage == null ? '' : stage);
       if (RENDERER_STARTUP_STAGES.indexOf(stageName) < 0) return;
       startupStageLog('renderer.' + stageName);
+    });
+    /**
+     * 主题弹窗的回执（见 `askInAppDialog`）。id 对不上就丢弃 —— 超时后到达的迟到回执
+     * 不能再去结算一个已经回落过系统弹窗的请求（那会让调用方拿到两个答案）。
+     */
+    ipcMain.on('app-dialog-response', (event, payload) => {
+      var p = payload || {};
+      resolveAppDialog(Number(p.id) || 0, { available: true, confirmed: p.confirmed === true });
     });
     ipcMain.on('begin-browse-request', (event, sequence) => {
       browseRequests.begin(event.sender, sequence);
@@ -5232,7 +7246,7 @@ app
     ipcMain.handle('select-folder', async function () {
       var result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openDirectory'],
-        title: '选择照片文件夹',
+        title: '选择图片文件夹',
       });
       if (!result.canceled && result.filePaths.length > 0) {
         return result.filePaths[0];
@@ -5370,6 +7384,53 @@ app
       return { success: true };
     });
 
+    /**
+     * 启动「缩略图全量重建」（把库里规格与当前设置不符的缩略图重跑一遍）。
+     *
+     * 🔴 准入判据与 `runThumbnailRebuild()` 内部**共用同一份**
+     *    （`thumbnailRebuildBlockReason()`）。过去补全那条路两边各写一份，于是
+     *    「IPC 返回 success、任务静默不跑」—— 用户看到「点了没反应」，没有任何现场。
+     * 🔴 **必须立刻返回**：登记阶段要扫全库（真库几十秒起），在 handler 里 await 它
+     *    就是把 IPC 挂住、界面转圈。
+     */
+    ipcMain.handle('start-thumbnail-rebuild', function () {
+      const blocked = thumbnailRebuildBlockReason();
+      if (blocked) {
+        logger.warn('[start-thumbnail-rebuild] rejected: ' + blocked);
+        return { success: false, error: blocked };
+      }
+      setTimeout(() => {
+        runThumbnailRebuild().catch((err) => {
+          logger.error('[start-thumbnail-rebuild] task error:', err);
+          thumbnailRebuild.running = false;
+          emitBackgroundTasksChangedThrottled(true);
+        });
+      }, 0);
+      logger.log('[start-thumbnail-rebuild] IPC done, task scheduled');
+      return { success: true };
+    });
+
+    ipcMain.handle('cancel-thumbnail-rebuild', function () {
+      // ⚠️ 只置标志位：任务在**批次边界**自行收尾（与补全同一条）。
+      //    强杀当前批次会留下「图已重生成、队列没删干净」的中间态。
+      thumbnailRebuild.cancelled = true;
+      emitBackgroundTasksChangedThrottled(false);
+      return { success: true };
+    });
+
+    ipcMain.handle('get-thumbnail-rebuild-progress', function () {
+      return getThumbnailRebuildProgress();
+    });
+
+    /**
+     * 空闲态读数（设置页打开时读一次）：只要 meta 单行，O(1)。
+     * ⚠️ 它**不是** `get-thumbnail-rebuild-progress` 的别名：那个只在运行期有意义，
+     *    这个要在「没跑过任何一次」时也能答出「目标规格是什么、队列算不算数」。
+     */
+    ipcMain.handle('get-thumbnail-rebuild-status', function () {
+      return getThumbnailRebuildStatus();
+    });
+
     ipcMain.handle('maintenance-cleanup-missing-files', async function () {
       if (invalidCleanupTask.running) {
         return { success: false, error: '清理任务已在运行' };
@@ -5380,22 +7441,24 @@ app
       if (maintenanceBusy()) {
         return { success: false, error: maintenanceBusyMessage() };
       }
-      var confirmRes = dialog.showMessageBoxSync(mainWindow, {
-        type: 'warning',
-        buttons: ['取消', '确认清理'],
-        defaultId: 0,
-        cancelId: 0,
-        title: '清理无效记录',
-        message: '即将清理数据库中已不存在的文件记录。',
-        detail: '建议先备份数据库（复制 photos.db）。此操作不可撤销，确认后继续？',
+      var confirmedCleanup = await confirmInApp({
+        title: '清理失效记录',
+        message:
+          '图库里有记录的一部分图片，源文件已经不在磁盘上了（被删除或被移走）。\n\n' +
+          '清理只是把这些记录从图库里移除 —— 图库中不再列出它们，磁盘上的文件一个都不会动。\n\n' +
+          '这一步无法撤销。如果不放心，可以先在「数据库维护」里点「备份数据库」留一份。',
+        okText: '开始清理',
       });
-      if (confirmRes !== 1) {
+      if (!confirmedCleanup) {
         return { success: false, error: '用户取消' };
       }
       if (typeof db.cleanupMissingFilesYielding !== 'function') {
         return { success: false, error: '当前版本不支持分批清理' };
       }
       invalidCleanupTask.running = true;
+      // 复位「已取消」：上一次可能被迁移让路打断过（见 pauseInvalidCleanupForMigration）。
+      // 漏了这一行 = 用户再点一次「清理失效记录」时一批都不做就结束，且不报任何错。
+      invalidCleanupTask.cancelled = false;
       invalidCleanupTask.checked = 0;
       invalidCleanupTask.deleted = 0;
       invalidCleanupTask.total = 0;
@@ -5417,7 +7480,7 @@ app
             }
             var totalChecked = 0;
             var totalDeleted = 0;
-            // 倒序游标（0 = 不限上界）：新记录先查，刚被搬走的照片第一时间清掉
+            // 倒序游标（0 = 不限上界）：新记录先查，刚被搬走的图片第一时间清掉
             var beforeId = 0;
             var chunks = 0;
             var MAX_CHUNKS = 100000;
@@ -5491,27 +7554,24 @@ app
       const shortage = vacuumSpaceShortage();
       if (shortage) return { success: false, error: shortage };
       const estimate = vacuumSpaceEstimate();
-      const confirmation = await dialog.showMessageBox(mainWindow, {
-        type: 'warning',
-        buttons: ['取消', '确认优化'],
-        defaultId: 0,
-        cancelId: 0,
-        title: '优化数据库',
-        message: '即将执行数据库 VACUUM 优化。',
-        detail:
-          '建议先使用备份功能备份数据库。大库可能耗时较长，优化期间请勿关闭应用。' +
+      const optimized = await confirmInApp({
+        title: '整理数据库',
+        message:
+          '将重新整理图库数据库：回收删除记录后留下的零散空间，并刷新查询用的统计信息。\n\n' +
+          '大库可能耗时较长，整理期间请不要关闭应用。' +
           (estimate && estimate.need
-            ? '本次需要额外约 ' +
-              maintenanceGuard.formatBytes(estimate.need) +
-              ' 临时空间，两处都要够：' +
+            ? '整理时要先另存一份临时数据，所以下面两处都要够：' +
               vacuumSpaceSummary() +
-              '。库内可回收约 ' +
+              '。本次需要额外约 ' +
+              maintenanceGuard.formatBytes(estimate.need) +
+              '，库内可回收约 ' +
               maintenanceGuard.formatBytes(estimate.reclaimable) +
               vacuumReclaimHint(estimate) +
               '。'
             : ''),
+        okText: '开始整理',
       });
-      if (confirmation.response !== 1) return { success: false, error: '用户取消' };
+      if (!optimized) return { success: false, error: '用户取消' };
       // 弹窗期间可能有人起了扫描 / 索引，或者磁盘又被别的程序吃掉，所以复查一遍。
       if (maintenanceBusy()) return { success: false, error: maintenanceBusyMessage() };
       const recheck = vacuumSpaceShortage();
@@ -5651,7 +7711,7 @@ app
       return db.getPhotosByFileHash(String(fileHash));
     });
 
-    // ── 相似照片检测（dHash）IPC ──
+    // ── 相似图片检测（dHash）IPC ──
 
     /** 第零层：dHash 精确匹配分组（秒级 SQL） */
     ipcMain.handle('maintenance-get-similar-dhash-groups', async function (event, options) {
@@ -5738,7 +7798,7 @@ app
       };
     });
 
-    /** 按 dHash 获取照片列表 */
+    /** 按 dHash 获取图片列表 */
     ipcMain.handle('maintenance-get-photos-by-dhash', function (event, dhash) {
       if (!dhash) return [];
       if (!db) return [];
@@ -5746,7 +7806,7 @@ app
       return db.getPhotosByDhash(String(dhash));
     });
 
-    /** 第二层：单张照片的跨文件夹相似查询（按需实时） */
+    /** 第二层：单张图片的跨文件夹相似查询（按需实时） */
     ipcMain.handle('maintenance-find-similar-photos', function (event, options) {
       options = options || {};
       if (!db) return [];
@@ -5777,14 +7837,16 @@ app
       }
     });
 
-    /** 批量按 ID 查询照片详情 */
+    /** 批量按 ID 查询图片详情 */
     ipcMain.handle('maintenance-get-photos-by-ids', function (event, ids) {
       if (!db || !Array.isArray(ids) || ids.length === 0) return [];
-      // 调用方是「查找相似照片」的结果回传，长度跟着相似结果走 —— 同样不能展开成
+      // 调用方是「查找相似图片」的结果回传，长度跟着相似结果走 —— 同样不能展开成
       // `IN (?,?,...)`，理由与 similar-detection.js 里那处一致，见 src/main/sql-id-list.js。
       // （旧写法还把同一条 SQL prepare 了两次：一次给 .all、一次给 .apply 的 this。）
       var sql =
-        'SELECT id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite FROM photos WHERE ' +
+        'SELECT ' +
+        photoListColumns({ liveMotion: false }) +
+        ' FROM photos WHERE ' +
         idListPredicate('id');
       var rows = db.prepare(sql).all(toIdListJson(ids));
       var plain = [];
@@ -5808,6 +7870,8 @@ app
       var spTot = sp.total || 0;
       var scanProgress = Object.assign({}, sp, {
         etaSeconds: estimateEtaSecondsSmoothed('folderScan', workerScanStartedAt, spCur, spTot),
+        // 百分比唯一来源（渲染端不再自己除）：见 `docs/contracts/background-tasks.md` §1.1。
+        pct: computePct(spCur, spTot),
       });
       return {
         scan: {
@@ -5816,11 +7880,41 @@ app
           queue: getScanQueueStatus(),
         },
         thumbs: getThumbnailBackfillProgress(),
+        /**
+         * 缩略图**全量重建**的进度。与 `thumbs`（补全）分开报：两者的分子分母口径不同，
+         * 合成一个字段就会让「补了 3 张」与「重跑了 3 张」在界面上分不清。
+         */
+        thumbRebuild: getThumbnailRebuildProgress(),
         invalidCleanup: getInvalidCleanupTaskProgress(),
         duplicateHash: getDuplicateHashTaskProgress(),
         face: faceService ? faceService.status() : {},
         semantic: semanticSearch ? semanticSearch.status() : {},
-        optimizing: optimizeTaskRunning,
+        /**
+         * 🔴 「优化数据库」原先只报一个**裸布尔**（`optimizing`）—— 9 个任务里唯一没有状态
+         *    对象的那个，于是「在跑」这个字段名在它身上与别处不同名（§1.1 点名的第三种写法）。
+         *    包成对象后 `running` 与其余 8 个任务**同名、同位置**，渲染端读法统一成 `!!x.running`，
+         *    不必再为它单写一个特例分支（特例分支正是漂移源）。
+         * ⚠️ 它仍然**没有** `phase` / `total` / `done`：§11 记的「已知例外」（设置页触发、
+         *    时长可控、无停止入口）⇒ 面板只能画「优化中 / 空闲」。
+         */
+        optimize: { running: !!optimizeTaskRunning },
+      };
+    });
+
+    /**
+     * **诊断数据**（不是后台任务）：上次维护的结果、交互抢占状态、写库队列快照。
+     *
+     * 🔴 2026-10-08 从 `get-background-tasks` 拆出来。它们原先和任务混在同一个返回对象里，
+     *    而「后台任务」的判据是「跑得久 + 有进展 + 可中断」（见
+     *    `docs/contracts/background-tasks.md` §0）。混着放的代价不是性能，是**误导后来改的人**：
+     *    加一个新任务时容易顺手往同一处塞第四类字段；排查「任务为什么不开始」时又会以为
+     *    `writeQueue` 本身就是一项任务。
+     *
+     * 拆开是**零风险**的：这三个字段没有渲染端消费者（只有探针单独取用过
+     * `dbWriteQueue.snapshot()` 与 `interactionPreempt.status()`）。
+     */
+    ipcMain.handle('get-diagnostics', function () {
+      return {
         maintenance: maintenanceResult,
         /**
          * 用户交互抢占状态。`active` 为真时后台长任务正在批次边界让位；
@@ -5845,6 +7939,86 @@ app
       } catch (err) {
         return { success: false, error: err.message };
       }
+    });
+
+    /** 设置页那一行「数据库位置」的全部读数（位置 / 体积 / 目标盘余量 / 是否迁移中）。 */
+    ipcMain.handle('get-data-dir-info', function () {
+      try {
+        reloadSettingsFromDiskSilently();
+        return describeDataDir();
+      } catch (err) {
+        return { success: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+
+    ipcMain.handle('select-data-dir', async function (_event, options) {
+      try {
+        var res = await dialog.showOpenDialog(mainWindow, {
+          properties: ['openDirectory'],
+          // 标题由渲染端传（`settings.storage.dataDirPickTitle`）：这是**系统**对话框，
+          // 主进程这边没有 i18n 表，写死中文的话英文界面会弹一个中文标题的框。
+          title: (options && options.title) || '选择图库数据的新位置',
+          defaultPath: currentDataDir(),
+        });
+        if (!res || res.canceled || !res.filePaths || !res.filePaths.length) {
+          return { success: false, cancelled: true };
+        }
+        var picked = res.filePaths[0];
+        // 用户选的是「放到哪个位置」，真正落数据的目录要再套一层以产品命名的文件夹
+        // （选中 `D:\` 时把 19 GB 摊在盘根是最常见的误操作，见 `data-dir.js` 的说明）。
+        // 已经叫 AuroraGallery / 里面已有 photos.db 的两种情况不套，理由在 `resolveTargetDir`。
+        var target = dataDirLib.resolveTargetDir(picked);
+        if (!target.ok) return { success: false, code: target.code, error: target.error };
+        // 选完立刻体检一次：把「目标就是当前位置 / 在当前目录里面」这类错误**在选的时候**
+        // 挡回去，而不是等 19 GB 复制完才说不行；顺带把目标盘余量带回去给确认弹窗用。
+        // ⚠️ 体检的是**最终**目录（含子文件夹），不是用户点中的那个 —— 否则
+        //    「选中当前目录自己」会因为多了一层而误判成合法。
+        var check = dataDirLib.validateTarget(currentDataDir(), target.dir);
+        var plan = check.ok ? dataDirLib.planMigration(currentDataDir(), target.dir) : null;
+        return {
+          success: true,
+          path: target.dir,
+          // 用户实际点中的目录（`path` 可能比它多一层）——界面要如实说明会在哪儿新建文件夹
+          pickedPath: picked,
+          subfolder: !!target.subfolder,
+          valid: check.ok,
+          // `code` 给渲染端用：主进程的 `error` 只有中文，界面上按 code 取本地化文案，
+          // 取不到才退回这句原文。
+          code: check.code || '',
+          error: check.error || '',
+          plan: plan
+            ? {
+                totalBytes: plan.totalBytes,
+                freeBytes: plan.freeBytes,
+                needBytes: plan.needBytes,
+                shortageBytes: plan.shortageBytes,
+              }
+            : null,
+        };
+      } catch (err) {
+        return { success: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+
+    ipcMain.handle('migrate-data-dir', async function (event, payload) {
+      var opts = payload || {};
+      var targetDir = String(opts.targetDir || '').trim();
+      /**
+       * 迁移一旦走到「关闭数据库连接」这一步，本进程就再没有可用的库了 ⇒
+       * 成功失败都要重启。留 1.5 秒给界面把结果（或错误）显示出来再退。
+       */
+      var result = await runDataDirMigration(targetDir, opts.removeSource !== false);
+      if (result && result.restartRequired) {
+        setTimeout(function () {
+          try {
+            app.relaunch();
+          } catch (e) {
+            logger.error('[data-dir] relaunch failed:', e && e.message ? e.message : e);
+          }
+          app.exit(0);
+        }, 1500);
+      }
+      return result;
     });
 
     ipcMain.handle('backup-database', async function () {
@@ -5888,11 +8062,11 @@ app
       try {
         var id = parseInt(photoId, 10);
         if (!id) {
-          return { success: false, error: '无效的照片 ID' };
+          return { success: false, error: '无效的图片 ID' };
         }
         var photo = db.getFullPhoto(id);
         if (!photo || !photo.file_path) {
-          return { success: false, error: '照片记录不存在' };
+          return { success: false, error: '图片记录不存在' };
         }
         if (!fs.existsSync(photo.file_path)) {
           return { success: false, error: '文件不存在' };
@@ -5914,11 +8088,11 @@ app
       try {
         var id = parseInt(photoId, 10);
         if (!id) {
-          return { success: false, error: '无效的照片 ID' };
+          return { success: false, error: '无效的图片 ID' };
         }
         var photo = db.getFullPhoto(id);
         if (!photo || !photo.file_path) {
-          return { success: false, error: '照片记录不存在' };
+          return { success: false, error: '图片记录不存在' };
         }
         var rootIdOfPhoto =
           photo && photo.root_id != null ? parseInt(photo.root_id, 10) || null : null;
@@ -5944,7 +8118,7 @@ app
       try {
         var id = parseInt(photoId, 10);
         if (!id) {
-          return { success: false, error: '无效的照片 ID' };
+          return { success: false, error: '无效的图片 ID' };
         }
         var photoMeta = db.getFullPhoto(id);
         var rootIdOfPhoto =
@@ -5964,11 +8138,11 @@ app
       try {
         var id = parseInt(photoId, 10);
         if (!id) {
-          return { success: false, error: '无效的照片 ID' };
+          return { success: false, error: '无效的图片 ID' };
         }
         var result = db.togglePhotoFavorite(id);
         if (!result) {
-          return { success: false, error: '照片记录不存在' };
+          return { success: false, error: '图片记录不存在' };
         }
         // 「仅收藏」那一档的 `COUNT(*)` 变了（行数没变，变的是 is_favorite 的分布）⇒
         // 清读池缓存。刻意**不清目录缓存**：收藏不影响目录结构 / 根目录统计。
@@ -5983,15 +8157,235 @@ app
       }
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // 组织元数据：评分 / 标记 / 用户标签（2026-10-09）
+    //
+    // ## 为什么这些写操作必须清读池缓存
+    //
+    // 元数据（rating / flag / 标签）是**筛选维度**，不是纯展示字段。用户在「仅 5 星」
+    // 那一档里按了 X 把当前图否掉，如果读池里还留着「仅 5 星」那份结果列表，
+    // 列表上这一张会**继续存在**，而用户以为它已经被筛掉了 —— 这正是本工程最忌讳的
+    // 「静态全绿、线上失效」。行数没变，变的是「哪些行属于这个筛选档」的分布，
+    // 所以 `invalidateReadCaches()` 是必需的，不是保险。
+    //
+    // 目录缓存（`invalidateCatalogCachesSafe`）刻意**不动**：元数据不影响目录结构、
+    // 分区计数、根目录统计 —— 与 `photo-toggle-favorite` 同一取向。
+    //
+    // 标签是跨表写（tags + photo_tags），影响面比 rating/flag 更大：标签列表本身有
+    // 使用计数，`listTags()` 的结果也在读池里，所以标签类操作一律清缓存。
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** 清读池缓存的统一收口 —— 元数据写入只关心这一件事，写十遍不如一个函数。 */
+    function invalidateReadCachesForOrgMeta(reason) {
+      void reason;
+      try {
+        dbReadWorkerPool.invalidateReadCaches();
+      } catch (eInv) {
+        void eInv;
+      }
+    }
+
+    ipcMain.handle('photo-set-rating', function (event, photoId, rating) {
+      try {
+        var id = parseInt(photoId, 10);
+        if (!id) {
+          return { success: false, error: '无效的图片 ID' };
+        }
+        var result = db.setPhotoRating(id, rating);
+        if (!result) {
+          return { success: false, error: '图片记录不存在' };
+        }
+        invalidateReadCachesForOrgMeta('photo-set-rating');
+        return { success: true, id: result.id, rating: result.rating };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('photo-set-flag', function (event, photoId, flag) {
+      try {
+        var id = parseInt(photoId, 10);
+        if (!id) {
+          return { success: false, error: '无效的图片 ID' };
+        }
+        // 🔴 传值是**幂等设值**，不是 toggle —— 见 preload.js 与 database.js#setPhotoFlag。
+        //    「取消标记」走 `flag = 'none'`，由界面上的独立动作发出。
+        var result = db.setPhotoFlag(id, flag);
+        if (!result) {
+          return { success: false, error: '图片记录不存在' };
+        }
+        invalidateReadCachesForOrgMeta('photo-set-flag');
+        return { success: true, id: result.id, flag: result.flag };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('photo-get-tags', function (event, photoId) {
+      try {
+        var id = parseInt(photoId, 10);
+        if (!id) {
+          return { success: false, error: '无效的图片 ID' };
+        }
+        return { success: true, tags: db.getPhotoTags(id) };
+      } catch (err) {
+        return { success: false, error: err.message, tags: [] };
+      }
+    });
+
+    ipcMain.handle('photo-set-tags', function (event, photoId, names) {
+      try {
+        var id = parseInt(photoId, 10);
+        if (!id) {
+          return { success: false, error: '无效的图片 ID' };
+        }
+        var result = db.setPhotoTags(id, names);
+        if (!result) {
+          return { success: false, error: '图片记录不存在' };
+        }
+        invalidateReadCachesForOrgMeta('photo-set-tags');
+        // 回包带**最终集合**（不是调用方传进来的那份）：归一、去重、自动建标签都发生在
+        // 数据层，界面的 chip 必须以此为准，否则会显示成用户打的原样（含空格 / 大小写差异）。
+        return { success: true, id: result.id, tags: result.tags };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('list-tags', function () {
+      try {
+        return { success: true, tags: db.listTags() };
+      } catch (err) {
+        return { success: false, error: err.message, tags: [] };
+      }
+    });
+
+    ipcMain.handle('rename-tag', function (event, tagId, newName) {
+      try {
+        var result = db.renameTag(tagId, newName);
+        if (!result) {
+          return { success: false, error: '标签不存在或名称为空' };
+        }
+        invalidateReadCachesForOrgMeta('rename-tag');
+        // 🔴 返回的 `id` 可能是**目标标签**的 id（归一后撞名 ⇒ 合并）。界面必须用这个
+        //    返回值刷新，不能继续用自己手上那个旧 id —— 那个 id 已经被删了。
+        return { success: true, id: result.id, name: result.name };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('delete-tag', function (event, tagId) {
+      try {
+        var ok = db.deleteTag(tagId);
+        if (!ok) {
+          return { success: false, error: '标签不存在' };
+        }
+        invalidateReadCachesForOrgMeta('delete-tag');
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    });
+
+    /**
+     * 图片编辑（P0）：旋转 / 翻转，**写回原文件**。
+     *
+     * 🔴 `actions` 是**一串**动作（按顺序应用），不是单个动作：预览态编辑里用户连点的
+     *    「转一下、翻一下、再转一下」攒成序列，保存时合成一条算子 ⇒ 只编码一次。
+     *    传单个字符串仍然接受（`image-edit.js#normalizeActions` 兼容旧调用）。
+     *
+     * 返回**输出文件的真实尺寸与大小**，界面据此刷新缩略图与预览。
+     * 🔴 前端不要自己推算新尺寸：90/270 档宽高对调、翻转不改变尺寸、EXIF 方向还要先归一化，
+     *    组合起来有十几种情形，推算必然漏 —— 实测那条链路由 `image-edit.js` 给出。
+     */
+    ipcMain.handle('photo-edit-transform', async function (event, photoId, actions) {
+      if (isFolderScanRunning()) {
+        return { success: false, error: '扫描进行中，请稍后再试' };
+      }
+      try {
+        var r = await getPhotoEditService().transform(photoId, actions);
+        return {
+          success: true,
+          id: r.id,
+          width: r.width,
+          height: r.height,
+          size: r.size,
+          // 渲染端靠它翻新 URL 缓存键（`utils.js#photoCacheVersion`），漏了会看到旧图
+          dateModified: r.dateModified,
+        };
+      } catch (err) {
+        return { success: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+
+    /**
+     * 图片编辑（P1）：裁剪并**另存副本**（副本进库，成为一条正常照片行）。
+     *
+     * `rect` 用**用户看到的图**的坐标系（即 EXIF 已转正）；按 orientation 换算矩形这件事
+     * 收在 `image-edit.js` 里 —— 两端各算一次必然有一端漏掉 90/270 的对调。
+     */
+    ipcMain.handle('photo-edit-crop', async function (event, photoId, rect) {
+      if (isFolderScanRunning()) {
+        return { success: false, error: '扫描进行中，请稍后再试' };
+      }
+      try {
+        var r = await getPhotoEditService().crop(photoId, rect);
+        return {
+          success: true,
+          id: r.id,
+          filePath: r.filePath,
+          width: r.width,
+          height: r.height,
+          size: r.size,
+          sourceId: r.sourceId,
+        };
+      } catch (err) {
+        return { success: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+
+    /**
+     * 图片编辑：**一次性**应用「一串变换 + 一个裁剪」（预览态编辑点「保存」的唯一入口）。
+     *
+     * 🔴 为什么不在这里拆成两次调用：`rect` 用的是**变换之后**那张图的坐标系，
+     *    两次调用之间队列会让出，另一端可能插进来再改一次文件 ⇒ 裁错地方且不报错。
+     *    顺序（先写回变换、再裁剪副本）收在 `photo-edit-service.js#applyEdit` 里。
+     */
+    ipcMain.handle('photo-edit-apply', async function (event, photoId, payload) {
+      if (isFolderScanRunning()) {
+        return { success: false, error: '扫描进行中，请稍后再试' };
+      }
+      try {
+        var p = payload || {};
+        var r = await getPhotoEditService().applyEdit(photoId, {
+          actions: p.actions,
+          crop: p.crop,
+        });
+        return {
+          success: true,
+          id: r.id,
+          width: r.width,
+          height: r.height,
+          size: r.size,
+          // 渲染端靠它翻新 URL 缓存键（`utils.js#photoCacheVersion`），漏了会看到旧图
+          dateModified: r.dateModified,
+          crop: r.crop,
+        };
+      } catch (err) {
+        return { success: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+
     ipcMain.handle('show-photo-in-folder', function (event, photoId) {
       try {
         var id = parseInt(photoId, 10);
         if (!id) {
-          return { success: false, error: '无效的照片 ID' };
+          return { success: false, error: '无效的图片 ID' };
         }
         var photo = db.getFullPhoto(id);
         if (!photo || !photo.file_path) {
-          return { success: false, error: '照片记录不存在' };
+          return { success: false, error: '图片记录不存在' };
         }
         if (!fs.existsSync(photo.file_path)) {
           return { success: false, error: '文件不存在' };
@@ -6132,7 +8526,7 @@ app
     });
 
     /**
-     * 照片信息面板的「AI 内容标签」。
+     * 图片信息面板的「主题标签」。
      *
      * 走的是**独立于 `get-photo-info` 的一条路**：标签存在搜图索引库里（不在 photos 表），
      * 而 `getPhotoInfo` 只连主库。两条异步必须在渲染端**并进同一个对象再重画** ——
@@ -6145,6 +8539,38 @@ app
     ipcMain.handle('get-photo-ai-tags', function (event, photoId, locale) {
       if (!semanticTags || !photoId) return [];
       return semanticTags.tagsFor(Number(photoId), locale);
+    });
+
+    /**
+     * 「画面标签」（JoyTag）—— 与上面那条同构的跨库只读通道（tag-index.sqlite）。
+     * `locale === 'en'` 时返回英文原文，否则返回中文映射（缺失回落英文）。
+     */
+    ipcMain.handle('get-photo-joy-tags', function (event, photoId, locale) {
+      if (!joyTagTags || !photoId) return [];
+      return joyTagTags.tagsFor(Number(photoId), locale);
+    });
+
+    /**
+     * 「标签导航页」的四条通道（分类树 / 节点标签 / 搜索 / 某标签下的照片）。
+     *
+     * 前三条只碰 tag 索引库，直接转发给 `tagNav`；第四条要**跨库**（tag 库给有序 id、
+     * 主库给照片行），所以走下面 `fetchTagNavPhotoRows` 这个显式组合。
+     * 网页端复用同一个函数（注入进 `webServer`），保证两端读数一致。
+     */
+    ipcMain.handle('get-tag-nav-status', function () {
+      return tagNav ? tagNav.status() : { available: false, tags: 0, photos: 0 };
+    });
+    ipcMain.handle('get-tag-nav-tree', function () {
+      return tagNav ? tagNav.tree() : [];
+    });
+    ipcMain.handle('get-tag-nav-node', function (event, nodeId, locale) {
+      return tagNav ? tagNav.node(nodeId, locale) : { tags: [], total: 0, indexed: 0 };
+    });
+    ipcMain.handle('get-tag-nav-search', function (event, keyword, locale) {
+      return tagNav ? tagNav.search(keyword, locale) : { tags: [], nodes: [], indexed: 0 };
+    });
+    ipcMain.handle('get-tag-nav-photos', function (event, tag, options) {
+      return fetchTagNavPhotoRows(tag, options);
     });
 
     ipcMain.handle('get-photo-dimensions', async function (event, photoId) {
@@ -6218,6 +8644,22 @@ app
       );
     });
 
+    /**
+     * 关键词搜**目录**（搜图页「关键词」档的「文件夹」分组）。
+     *
+     * 与 `search-photos` 刻意**两条 IPC**：那边返回图片、这边返回目录，两者的分页、排序、
+     * 代价模型都不同（详见 `database.js#searchFolders` 里关于覆盖索引与回表那段）。合成一条
+     * 只会让调用方在「只要目录」时也得等图片那一半。
+     */
+    ipcMain.handle('search-folders', function (event, query, options) {
+      return runDbReadWorkerOnly(
+        sqliteDbPath,
+        'searchFolders',
+        Object.assign({}, options || {}, { query }),
+        browseRequests.control(event.sender, options),
+      );
+    });
+
     ipcMain.handle('ai-search-status', async function () {
       return semanticSearch.refresh();
     });
@@ -6242,32 +8684,39 @@ app
       });
     });
     /**
-     * 预选词打分。
+     * 预选词。
      *
-     * 两种入参形状都用：
-     *   - `{ lang, limit }`：**正常路径**。词源在服务端（`src/ai/search-vocabulary.js` 的
-     *     几百词开放词表），按真实命中数排序后返回前 N 个。界面不再自己带词表，
-     *     于是桌面端与网页端不可能漂移。
-     *   - `['词', ...]`（数组，老契约）：只对这几个词打分。留着是为了让老调用方与
-     *     静态守护断言继续有效，正常界面已经不走这条路。
-     * 失败就让界面自己决定怎么退化，不是致命错误。
+     * **按入参形状分岔成两条路**（2026-10-09 起；不是新旧替换，是「两个不同的问题」）：
+     *
+     *   - `{ lang, limit }`：**常规路径**，界面唯一的用法。答案就是「这个库里哪些词点下去有图」，
+     *     而这份信息**已经在索引库里**（`embeddings.tags` = 每张图的 top-3 标签词表下标）
+     *     ⇒ 主进程开一条只读 SQL 转置统计即可（`suggestTermsFromTags`，实测 48 ms）。
+     *   - `['词', ...]`（数组，老契约）：对这一组**指定的**词打分。界面已经不走这条，
+     *     但只有它能回答「**词表外**的任意词有没有内容」—— 只读 SQL 路只能在 308 词的词表里
+     *     查下标，词表外的词一律 0。所以它保留，仍走 worker 的 `suggest` 分支。
+     *
+     * 两条路的回答形状**逐字段一致**（`{ sampled, terms: [{ text, hits }] }`），
+     * 渲染层不需要知道这次是谁答的。🔴 但 `hits` 的口径**两条路本来就不一样**
+     *     （老路 = 用 CLIP 采样打分过的张数；只读路 = 把该词排进 top-3 标签的张数），
+     *     所以它**只用于排序与挡掉 0 命中，不是张数**，不许显示给用户 ——
+     *     详见 `SemanticTags.suggestTerms` 的注释。
      */
     ipcMain.handle('ai-search-suggest', function (_event, request) {
-      var payload = searchMatchOptions();
       if (Array.isArray(request)) {
         var list = request.slice(0, 64).map(function (item) {
           return String(item == null ? '' : item);
         });
         if (!list.length) return Promise.resolve({ sampled: 0, terms: [] });
+        var payload = searchMatchOptions();
         payload.candidates = list;
-      } else {
-        var scope = request && typeof request === 'object' ? request : {};
-        payload.lang = scope.lang ? String(scope.lang) : '';
-        if (scope.limit !== undefined) payload.limit = Number(scope.limit);
+        // 这条路要起只读 worker、载文本编码器 —— 算作交互活跃。
+        return interactionPreempt.withPreempt(function () {
+          return semanticSearch.run('suggest', '', payload);
+        });
       }
-      // 预选词打分同样是「用户在用搜图」、同样要载文本编码器 —— 一并算作交互活跃。
+      // 只读 SQL 读的是「用户正等着的界面元素」，同样算交互活跃（虽然它毫秒级、不会拖慢后台）。
       return interactionPreempt.withPreempt(function () {
-        return semanticSearch.run('suggest', '', payload);
+        return Promise.resolve(suggestTermsFromTags(request));
       });
     });
     ipcMain.handle('face-action', function (_event, operation, args) {

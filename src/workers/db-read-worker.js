@@ -39,7 +39,13 @@ parentPort.on('message', function (msg) {
     var database = openDb();
     var result;
     if (
-      ['getPhotos', 'getFolderPhotos', 'searchPhotos', 'getRandomPreviewPhotoBatch'].includes(msg.op)
+      [
+        'getPhotos',
+        'getFolderPhotos',
+        'searchPhotos',
+        'searchFolders',
+        'getRandomPreviewPhotoBatch',
+      ].includes(msg.op)
     ) {
       // Reuse the shared query implementation without constructor migrations or writes.
       const reader = Object.create(PhotoDatabase.prototype);
@@ -55,6 +61,7 @@ parentPort.on('message', function (msg) {
       if (msg.op === 'getFolderPhotos')
         result = reader.getFolderPhotos(options.folderPath, options);
       else if (msg.op === 'searchPhotos') result = reader.searchPhotos(options.query, options);
+      else if (msg.op === 'searchFolders') result = reader.searchFolders(options.query, options);
       else if (msg.op === 'getRandomPreviewPhotoBatch')
         result = reader.getRandomPreviewPhotoBatch(options);
       else result = reader.getPhotos(options);

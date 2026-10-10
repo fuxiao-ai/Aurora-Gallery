@@ -15,7 +15,10 @@
     state.zoom = 1;
     state.panX = 0;
     state.panY = 0;
-    state.previewRotateDeg = 0;
+    // 🔴 这里**不再**把 `state.previewRotateDeg` 归零：它现在是「预览态待保存编辑」的一部分
+    //    （由 `app.js#resetPreviewPendingEdit` 负责清）。写在这里会有两个后果：
+    //    ① 用户点「重置缩放」会把待保存的旋转从布局上抹掉、但 CSS 变换还在 ⇒ 图与留白对不上；
+    //    ② 打开新图 / 关预览时看起来「清干净了」，实际还没清 —— 真正的清理由那两个出口显式做。
     onUpdatePreviewTransform();
     onUpdatePreviewImageLayoutBounds();
   }
@@ -50,6 +53,13 @@
     onUpdatePreviewTransform();
   }
 
+  /**
+   * 旋转 90/270 时，元素盒要给「转过来的图」留出空间 —— 把 max-width/max-height 对调。
+   *
+   * 🔴 `rot` 只用来判「是不是 90 的奇数倍」，所以取 `previewRotateDeg`（旋转动作的**角度和**）
+   *    就够了：镜像会把角度取反，但 `-a ≡ a (mod 180)`，镜像动作**不改变**这一位。
+   *    真实的变换在 `updatePreviewTransform` 的 CSS 尾巴里，这里不做任何代数。
+   */
   function updatePreviewImageLayoutBounds(options) {
     options = options || {};
     var state = options.state || {};
@@ -77,12 +87,21 @@
     img.style.maxHeight = bw + 'px';
   }
 
+  /**
+   * 把平移 / 缩放 / **预览态编辑**叠成一条 transform。
+   *
+   * 🔴 编辑那一段是 `state.previewEditCssTail` —— 一串**原样的 CSS 变换函数**，
+   *    按「用户点击的逆序」拼好（见 `app.js#previewEditCssTail`）。刻意不在这里做
+   *    「角度 + 镜像位」的代数合成：CSS 的求值顺序（最右先作用 = 先镜像后旋转）与 sharp
+   *    的算子顺序**同构**，所以把动作原样拼进去就与后端逐像素一致，
+   *    而自己再写一份代数 = 多一份会与 `image-edit.js` 悄悄漂移的实现。
+   */
   function updatePreviewTransform(options) {
     options = options || {};
     var state = options.state || {};
     var dom = options.dom || {};
     if (!dom.previewImage || !dom.previewZoom) return;
-    var rot = state.previewRotateDeg || 0;
+    var tail = state.previewEditCssTail || '';
     dom.previewImage.style.transform =
       'translate(' +
       state.panX +
@@ -90,26 +109,10 @@
       state.panY +
       'px) scale(' +
       state.zoom +
-      ') rotate(' +
-      rot +
-      'deg)';
+      ')' +
+      (tail ? ' ' + tail : '');
     var pct = Math.round(state.zoom * 100);
     dom.previewZoom.textContent = pct + '%';
-  }
-
-  function cyclePreviewRotate(options) {
-    options = options || {};
-    var state = options.state || {};
-    var onUpdatePreviewTransform = options.onUpdatePreviewTransform;
-    var onUpdatePreviewImageLayoutBounds = options.onUpdatePreviewImageLayoutBounds;
-    if (
-      typeof onUpdatePreviewTransform !== 'function' ||
-      typeof onUpdatePreviewImageLayoutBounds !== 'function'
-    )
-      return;
-    state.previewRotateDeg = ((state.previewRotateDeg || 0) + 90) % 360;
-    onUpdatePreviewTransform();
-    onUpdatePreviewImageLayoutBounds();
   }
 
   global.RendererPreviewInteraction = Object.assign({}, global.RendererPreviewInteraction || {}, {
@@ -118,7 +121,6 @@
     applyZoom: applyZoom,
     updatePreviewImageLayoutBounds: updatePreviewImageLayoutBounds,
     updatePreviewTransform: updatePreviewTransform,
-    cyclePreviewRotate: cyclePreviewRotate,
   });
 
   // ===== preview-slideshow.js =====
@@ -309,6 +311,22 @@
     scheduleNext();
   }
 
+  /**
+   * 幻灯片开关按钮的文案落点。
+   *
+   * 🔴 **必须写进 `.btn-label`，不能直接写按钮的 `textContent`** —— 直接写会把按钮里的
+   * `<span class="btn-label">` 整个替换成一个文本节点（和 `i18n.js#applyDom()` 同一个
+   * 失效机制，见 `index.html` 里 previewOverlay 上方那条规矩注释）。
+   * 这个按钮**刻意没有 `<svg class="btn-icon">`**：它的图标就是状态本身（▶ / ⏸），
+   * 而雪碧图里没有 `#icon-pause` ⇒ 用图标表达不了「正在播放」那一态，只能由文案承载。
+   * 找不到 span 时退回按钮本身（老结构 / 守护里的替身），保证行为不退化。
+   */
+  function setSlideshowToggleLabel(btn, text) {
+    if (!btn) return;
+    var label = btn.querySelector ? btn.querySelector('.btn-label') : null;
+    (label || btn).textContent = text;
+  }
+
   function startSlideshow(options) {
     options = options || {};
     var state = options.state || {};
@@ -317,12 +335,12 @@
     if (typeof onRestartSlideshowTimer !== 'function') return;
     if (state.slideshowPlaying) return;
     state.slideshowPlaying = true;
-    if (dom.slideshowToggleBtn) {
-      dom.slideshowToggleBtn.textContent =
-        window.I18n && typeof window.I18n.t === 'function'
-          ? window.I18n.t('preview.slideshow.pause')
-          : '⏸ 暂停';
-    }
+    setSlideshowToggleLabel(
+      dom.slideshowToggleBtn,
+      window.I18n && typeof window.I18n.t === 'function'
+        ? window.I18n.t('preview.slideshow.pause')
+        : '⏸ 暂停',
+    );
     onRestartSlideshowTimer();
   }
 
@@ -336,10 +354,12 @@
       state.slideshowTimer = null;
     }
     if (dom.slideshowToggleBtn) {
-      dom.slideshowToggleBtn.textContent =
+      setSlideshowToggleLabel(
+        dom.slideshowToggleBtn,
         window.I18n && typeof window.I18n.t === 'function'
           ? window.I18n.t('preview.slideshow.play')
-          : '▶ 播放';
+          : '▶ 播放',
+      );
     }
   }
 
@@ -431,5 +451,226 @@
     syncPreviewFavoriteButton: syncPreviewFavoriteButton,
     patchPhotoFavoriteInState: patchPhotoFavoriteInState,
     updateFavoriteStarOnCard: updateFavoriteStarOnCard,
+  });
+
+  // ===== preview-live-photo.js =====
+  /**
+   * Live Photo 的**预览内播放**。
+   *
+   * 一条 Live Photo 在库里只占**一个**条目：图片行自己，伴生 MOV 的存在被记录在
+   * `photo.live_motion_id` 上，并且它的那一行会被媒体类型筛选排掉
+   * （`live_still_id > 0` ⇒ 不出现在任何档位）。所以「看这段动态」这件事
+   * **只能发生在预览里** —— 这就是本段存在的全部理由。没有它，我们等于把用户的
+   * 伴生视频藏起来了却没有任何入口。
+   *
+   * 🔴 判据只认 `photo.live_motion_id`（配对任务写进库的事实）。
+   *    不许在这里用「同目录有没有同名 .mov」现场推断：真库实测那条判据在 `.mov` 上
+   *    头 500 个就命中 61 个，而其中带 Apple identifier 的是 0 ——
+   *    按文件名判「伴生」会把写真集的「封面图 + 正片」整批当成 Live Photo。
+   *    （伴生视频必然是 QuickTime 容器：主进程 `LIVE_MOTION_EXTENSIONS` 只认 `.mov`。）
+   */
+
+  /** 转发到 `utils.js` 的唯一实现 —— 网格角标与这里的播放按钮必须是同一个判据。 */
+  function isLivePhotoStill(photo) {
+    return global.RendererUtils.isLivePhotoStill(photo);
+  }
+
+  function liveVideoEl(dom) {
+    return (dom && dom.previewLiveVideo) || null;
+  }
+
+  /**
+   * 把叠加层彻底收回：**解除 HLS 会话 + 断源 + 隐藏**。
+   * 顺序不能换 —— `PhotoHlsAttach.destroy()` 自己会 `removeAttribute('src')`，
+   * 先断源再 destroy 会让 hls.js 在已卸载的媒体上收尾。
+   */
+  function detachLiveVideo(video) {
+    if (!video) return;
+    if (video._liveTryPlay) {
+      video.removeEventListener('canplay', video._liveTryPlay);
+      video._liveTryPlay = null;
+    }
+    if (global.PhotoHlsAttach) global.PhotoHlsAttach.destroy(video);
+    try {
+      video.pause();
+    } catch (e0) {}
+    video.removeAttribute('src');
+    try {
+      video.load();
+    } catch (e1) {}
+    video.style.display = 'none';
+    video.onended = null;
+  }
+
+  /** LIVE 按钮的显隐 + 文案 + 激活态。三样都必须由这里单独算，调用方不许自己拼。 */
+  function syncLiveButton(options) {
+    options = options || {};
+    var state = options.state || {};
+    var dom = options.dom || {};
+    var btn = dom.previewLiveBtn;
+    if (!btn) return;
+    var photo = state.previewPhotos && state.previewPhotos[state.previewIndex];
+    var show = !options.isVideo && isLivePhotoStill(photo);
+    var playing = show && !!state.previewLivePlaying;
+    btn.style.display = show ? '' : 'none';
+    btn.classList.toggle('active', playing);
+    var label = btn.querySelector('.btn-label');
+    if (label) label.textContent = playing ? '停止' : '实况';
+  }
+
+  function stopLivePlayback(options) {
+    options = options || {};
+    var state = options.state || {};
+    var dom = options.dom || {};
+    state.previewLivePlaying = false;
+    detachLiveVideo(liveVideoEl(dom));
+    syncLiveButton({ state: state, dom: dom });
+  }
+
+  /**
+   * 每次预览切图都走这里（`openPreview` 里唯一的串扰点）：
+   * 先无条件停掉上一段动态，再按新图片决定按钮显不显示。
+   *
+   * 🔴 **必须无条件停**，不能写成「只有新图片不是 Live Photo 才停」：
+   *    「上一张是 Live、下一张也是 Live」时那样写会让上一段动态继续盖在新静止图上播完。
+   */
+  function syncPreviewLiveUi(options) {
+    options = options || {};
+    var state = options.state || {};
+    var dom = options.dom || {};
+    detachLiveVideo(liveVideoEl(dom));
+    state.previewLivePlaying = false;
+    syncLiveButton({ state: state, dom: dom, isVideo: !!options.isVideo });
+  }
+
+  /**
+   * 与 `attachElectronVideo` 同源：先要 HTTP base，再查 `/api/video-playback?id=`
+   * 决定直链还是 HLS。**这一步不能省** —— iPhone 的伴生视频自 iPhone 8 起是 HEVC，
+   * Chromium 解不了，直接写 `/video/{id}` 会静默黑屏；那条接口就是干这个的。
+   *
+   * 不复用 `attachElectronVideo` 的唯一原因：它的守卫是
+   * `state.previewPhotos[i].id !== openedId`。这里要打开的 id 是**伴生视频的 id**，
+   * 而守卫手里比的是**图片的 id** ⇒ 直接复用会被永远拦下。
+   */
+  function attachLiveMotionVideo(options) {
+    var photo = options.photo;
+    var video = options.video;
+    var motionId = options.motionId;
+    var api = options.api;
+    var state = options.state;
+    var dom = options.dom;
+    var stillId = Number(photo.id);
+    var v = '?v=' + motionId;
+
+    /** 异步链路回来时，用户可能已经翻页/关了预览 —— 不许再往叠加层里灌内容。 */
+    function stillIsCurrent() {
+      if (!dom.previewOverlay || !dom.previewOverlay.classList.contains('active')) return false;
+      var cur = state.previewPhotos && state.previewPhotos[state.previewIndex];
+      if (!cur || Number(cur.id) !== stillId) return false;
+      return Number(cur.live_motion_id) === motionId;
+    }
+
+    function tryPlay() {
+      var p = video.play();
+      if (p && typeof p.catch === 'function') p.catch(function () {});
+    }
+
+    // HLS 档要等清单解析完才有东西可播 —— 直链档 canplay 也来得更晚。
+    // 两种都靠这条监听兜住；立刻先试一次是为了直链档少一次等待。
+    if (video._liveTryPlay) video.removeEventListener('canplay', video._liveTryPlay);
+    video._liveTryPlay = function () {
+      video.removeEventListener('canplay', video._liveTryPlay);
+      video._liveTryPlay = null;
+      if (!stillIsCurrent()) return;
+      tryPlay();
+    };
+    video.addEventListener('canplay', video._liveTryPlay);
+
+    function applySrc(httpBase) {
+      var root = String(httpBase).replace(/\/$/, '');
+      video.src = root + '/video/' + motionId + v;
+      try {
+        video.load();
+      } catch (e0) {}
+      tryPlay();
+    }
+
+    if (!(api && api.has && api.has('getWebLocalBaseUrl'))) {
+      video.src = 'video://' + motionId + v;
+      try {
+        video.load();
+      } catch (e1) {}
+      tryPlay();
+      return;
+    }
+
+    api.call('getWebLocalBaseUrl').then(function (base) {
+      if (!stillIsCurrent()) return;
+      if (!base) {
+        video.src = 'video://' + motionId + v;
+        try {
+          video.load();
+        } catch (e2) {}
+        tryPlay();
+        return;
+      }
+      var root = String(base).replace(/\/$/, '');
+      fetch(root + '/api/video-playback?id=' + motionId)
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (data) {
+          if (!stillIsCurrent()) return;
+          if (data && data.mode === 'hls' && data.ready && data.playlistUrl && global.PhotoHlsAttach) {
+            global.PhotoHlsAttach.attach(video, root + data.playlistUrl);
+            tryPlay();
+          } else {
+            applySrc(base);
+          }
+        })
+        .catch(function () {
+          if (!stillIsCurrent()) return;
+          applySrc(base);
+        });
+    });
+  }
+
+  function toggleLivePlayback(options) {
+    options = options || {};
+    var state = options.state || {};
+    var dom = options.dom || {};
+    var api = options.api || null;
+    var photo = state.previewPhotos && state.previewPhotos[state.previewIndex];
+    if (!isLivePhotoStill(photo)) return;
+    if (state.previewLivePlaying) {
+      stopLivePlayback({ state: state, dom: dom });
+      return;
+    }
+    var video = liveVideoEl(dom);
+    var motionId = Number(photo.live_motion_id) || 0;
+    if (!video || motionId <= 0) return;
+    state.previewLivePlaying = true;
+    video.style.display = '';
+    // 跟随当前缩放/旋转，否则动态会跳回未缩放的原始取景
+    video.style.transform = dom.previewImage ? dom.previewImage.style.transform : '';
+    video.onended = function () {
+      stopLivePlayback({ state: state, dom: dom });
+    };
+    syncLiveButton({ state: state, dom: dom });
+    attachLiveMotionVideo({
+      photo: photo,
+      video: video,
+      motionId: motionId,
+      api: api,
+      state: state,
+      dom: dom,
+    });
+  }
+
+  global.RendererPreviewLive = Object.assign({}, global.RendererPreviewLive || {}, {
+    syncLiveButton: syncLiveButton,
+    syncPreviewLiveUi: syncPreviewLiveUi,
+    stopLivePlayback: stopLivePlayback,
+    toggleLivePlayback: toggleLivePlayback,
   });
 })(window);

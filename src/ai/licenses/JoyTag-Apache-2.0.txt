@@ -1,0 +1,59 @@
+JoyTag — 许可证与来源说明
+=========================
+
+本仓库目前随包分发的是它的**标签表**（不是权重）：
+
+  src/ai/joytag-labels.txt     5813 行，一行一个 danbooru 标签，**顺序即模型输出下标**
+
+来源：JoyTag 官方发布（权重文件 `model.onnx` 与标签表 `top_tags.txt` 同处一包）
+
+  项目主页  https://huggingface.co/fancyfeast/joytag
+  许可证    Apache License 2.0
+  规模      91.5M 参数 / F32
+  任务      Image Classification（多标签，输出维度 = 5813，取 sigmoid 后逐标签判断）
+
+------------------------------------------------
+1. 为什么把标签表单独放进仓库
+------------------------------------------------
+它是 tag 检索路线的**契约**，不是可以现场生成的东西：
+
+  · 中文查询词要映射到哪些标签，取决于**这张表的实际内容**（它没有 `canyon` / `valley` /
+    `living_room` / `wig`，也**没有任何带颜色的腿部服饰标签**）。映射表
+    `src/ai/tag-vocabulary.js` 每一条都按这张表逐条核对过。
+  · `scripts/tag-vocab-regression.js` 要在**任何机器上**（不装模型、不联网）断言
+    「映射里写的标签都真的存在」。没有这张表就没法断言，而错误的标签只会静默 0 命中。
+
+它是纯文本（76 KB），随 `src/**/*` 进包，读取方式与其余 `src/ai` 资源一致。
+
+------------------------------------------------
+2. 权重（`model.onnx`，约 366 MB）目前**不在**本仓库
+------------------------------------------------
+跑 tag 推理需要它。按现在（2026-10-07）的方案，它属于「全库重跑」那一步的依赖，
+尚未接入 `bundled-models.js` 的播种流程；接入时请连许可证一起处理，
+并注意 `src/ai/bundled-models.js` 对 `ready.json` 的**哈希闸门**约定。
+
+------------------------------------------------
+3. 许可证（Apache License 2.0）
+------------------------------------------------
+Copyright 2024 fancyfeast
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+------------------------------------------------
+4. 标签名的来源
+------------------------------------------------
+标签名本身取自 Danbooru 的公开标签体系（`https://danbooru.donmai.us/wiki_pages/help:tags`）。
+本表是 JoyTag 从该体系里按**词频前 5813** 截取的结果，因此长尾里混有大量角色名
+（`ohara_mari`、`nishizumi_shiho`）与风格名（`photoshop_(medium)`），
+而常见场景词（山、谷、机场）反而缺失 —— 用法上的含义见
+`src/ai/tag-vocabulary.js` 的文件头注释。

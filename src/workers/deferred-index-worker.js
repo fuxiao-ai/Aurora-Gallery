@@ -65,15 +65,62 @@ function indexExists(name) {
   }
 }
 
+/** 库里那条索引**当时**建出来的原文（`sqlite_master.sql` 存的是执行时的原样文本）。 */
+function storedIndexSql(name) {
+  try {
+    var row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1")
+      .get(name);
+    return row ? String(row.sql || '') : null;
+  } catch (eSql) {
+    void eSql;
+    return null;
+  }
+}
+
+/**
+ * 比较 DDL 前做两件归一化：
+ *
+ * ① 折叠空白 —— 换行/缩进差异不算「定义变了」；
+ * ② **剥掉 `IF NOT EXISTS`** —— SQLite 存进 `sqlite_master.sql` 时会把这半句删掉
+ *    （官方文档列的规范化规则之一）。不剥的话库里那条**永远**等于不了清单里的 DDL，
+ *    于是每次启动都判成「定义变了」⇒ DROP 再 CREATE ⇒ 白花几分钟建整条索引，
+ *    而这正是本函数要避免的那个失败模式。
+ */
+function normalizeSqlText(s) {
+  return String(s || '')
+    .replace(/\bIF\s+NOT\s+EXISTS\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * 建一条索引，并按「这一轮是否真的在建」上报进度。**每条各自独立 try**（内部那个），
  * 任何一条失败（磁盘满 / 谓词笔误）都不影响其余条，且错误消息能对上具体是哪一条。
  *
  * @param {string} name 索引名（必须与 DDL 里的名字一致，否则存在性判断会一直为假）
  * @param {string} sql 完整、可直接 exec 的 DDL
+ * @param {boolean} [rebuildOnChange] DDL 里**烤了会变的字面量**（目前只有 `EXIF_SCHEMA_VERSION`）
+ *   时传 `true`：`IF NOT EXISTS` 只认名字、不认定义，版本一升就会留下一条**旧定义**的索引，
+ *   而查询要的是新定义 ⇒ 蕴含证不出来 ⇒ 规划器静默退回全表扫（不报错、只是慢回几十秒）。
+ *   传 `true` 时先比对 `sqlite_master.sql`，不同就 `DROP` 再建。
+ *   ⚠️ **默认不传**：其余索引的 DDL 是稳定的，加上比对只会引入「历史文本与字面量差一个空格
+ *   就在每次启动重建几分钟」的风险。
  * @returns {string} `'ok'` 或错误消息（与既有 `results.phaseN[name]` 的取值形态一致）
  */
-function createIndexReporting(name, sql) {
+function createIndexReporting(name, sql, rebuildOnChange) {
+  if (rebuildOnChange) {
+    var stored = storedIndexSql(name);
+    if (stored !== null && normalizeSqlText(stored) !== normalizeSqlText(sql)) {
+      // 定义变了：`IF NOT EXISTS` 会直接跳过 ⇒ 必须显式 DROP。名字来自本工程的字面量清单，
+      // 仍然加引号（宁可多两个字符，也不让一个手误的名字变成 SQL 注入）。
+      try {
+        db.exec('DROP INDEX IF EXISTS "' + String(name).replace(/"/g, '""') + '"');
+      } catch (eDrop) {
+        void eDrop;
+      }
+    }
+  }
   var existed = indexExists(name);
   if (!existed) postItem('start', name, false, 0, '');
   var startedAt = Date.now();
@@ -251,7 +298,7 @@ results.phase4.idx_photos_root_date = createIndexReporting(
 //    🔴 但这一批**不需要穿缩略图溢出页链** —— 用到的列 `root_id` 1 / `file_name` 3 /
 //       `file_size` 5 / `file_type` 6 / `date_taken` 9 全部排在 `thumbnail`（cid 11）
 //       **之前**，只读每行前段。
-//       （对比：`dhash` 是 cid 29、在 BLOB 之后 ⇒ 「查找相似照片」那条候选索引
+//       （对比：`dhash` 是 cid 29、在 BLOB 之后 ⇒ 「查找相似图片」那条候选索引
 //        **刻意没做**：它的回表代价与收益都还没在真库上量过，不拿没量过的东西上生产。）
 //
 // ⚠️ `IF NOT EXISTS` ⇒ 只在第一次真正建；之后每次启动都是空操作（每条一句 sqlite_master
@@ -271,7 +318,12 @@ var phase5List = deferredIndexes.PHASE5_INDEXES;
 results.phase5 = {};
 for (var p5 = 0; p5 < phase5List.length; p5++) {
   var entry5 = phase5List[p5];
-  results.phase5[entry5.name] = createIndexReporting(entry5.name, entry5.sql);
+  results.phase5[entry5.name] = createIndexReporting(
+    entry5.name,
+    entry5.sql,
+    // 只有 DDL 里烤了 `EXIF_SCHEMA_VERSION` 的那条会带这个标记（见 `deferred-indexes.js` ⑦）
+    entry5.rebuildOnChange === true,
+  );
 }
 
 worker_threads.parentPort.postMessage(results);

@@ -46,7 +46,7 @@ async function run() {
     await service.run('install');
     assert.equal(service.status().ready, true);
     assert.equal((await service.run('index')).indexed, 2);
-    assert.equal((await service.run('index')).processed, 0);
+    assert.equal((await service.run('index')).done, 0);
     for (const [query, expected] of [
       ['一只猫', 1],
       ['a football match', 2],

@@ -46,8 +46,8 @@ async function run() {
     assert.equal(indexed.faces, 2);
     assert.equal(indexed.people, 1);
     await service.run('settings');
-    assert.equal(service.status().processed, 2, 'opening settings preserves index progress');
-    assert.equal((await service.run('index')).processed, 0);
+    assert.equal(service.status().done, 2, 'opening settings preserves index progress');
+    assert.equal((await service.run('index')).done, 0);
     const group = (await service.run('groups')).items[0];
     await service.run('rename', { personId: group.id, name: '测试人物' });
     assert.equal((await service.run('groups')).items[0].name, '测试人物');

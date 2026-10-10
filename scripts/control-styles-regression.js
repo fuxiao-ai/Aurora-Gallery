@@ -150,9 +150,12 @@ check(
 );
 
 // --------------------------------------- 5. 下拉框：唯一来源 = styles.css
-const selectBlock = blockOf(styles, 'select.sort-select, select.ui-select {');
+// 2026-10-09：标签筛选按钮（#orgFilterTagsBtn，<button class="sort-select">）并入同一块 ——
+// 它与两个下拉在工具条上并排，皮肤必须同源。选择器头是字面量断言：
+// 有人把 button 拆出独立声明时，这里会立刻变红（那正是「唯一来源」被破坏）。
+const selectBlock = blockOf(styles, 'select.sort-select, select.ui-select, button.sort-select {');
 check(
-  `select.sort-select / select.ui-select 的唯一来源带 8px 圆角`,
+  `select.sort-select / select.ui-select / button.sort-select 的唯一来源带 8px 圆角`,
   !!selectBlock && /border-radius: 8px/.test(selectBlock),
 );
 check(

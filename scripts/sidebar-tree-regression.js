@@ -117,8 +117,26 @@ function loadDesktop() {
     RendererSidebarUI: sidebarUi,
     RendererTabsUI: tabsUi,
     RendererTabsFlowUI: tabsFlowUi,
+    // `app.js` 顶部就是 `var sidebarTree = window.RendererSidebarTree || {}`，
+    // 这里给一个「路径归一化 = 原样返回」的替身（真身 `sidebar-tree.js#normalizePath`
+    // 负责分隔符 / 大小写归一）。浏览记忆那组断言要拿真实路径比来比去，
+    // 没有它 `saveBrowseTabMemory` 会在 `normalizePath` 上直接抛。
+    RendererSidebarTree: { normalizePath: (p) => String(p == null ? '' : p) },
     RendererAiViews: {
       init: () => aiViews,
+    },
+    // 标签导航页的界面层（**替身**，不是实现）。替身表是显式列举的 ⇒
+    // 产品每新增一个顶层挂载都要补一桩，否则夹具崩在「读 undefined 的 mount」上。
+    RendererTagNavUI: {
+      mount: () => ({
+        enter() {},
+        renderSidebar() {},
+        renderBrowseCards() {},
+        refreshLocale() {},
+        selectTag() {},
+        selectNode() {},
+        displayName: (tag) => tag,
+      }),
     },
     PhotoCompare: { mount: () => ({ show() {}, hide() {} }) },
     SemanticSearchUI: { mount: () => ({ show() {}, hide() {} }) },
@@ -187,7 +205,9 @@ async function testDesktop() {
   }
 
   // --- 3. gate 语义未被误放宽：view='dates' 仅 dates 页签存活 ---
-  for (const tab of ['folders', 'search', 'people', 'duplicates', 'settings']) {
+  // `tags` 在列：标签页在 `#sidebarContent` 里渲染的是**另一棵树**，更不该让
+  // folders / dates 的 gate 存活（存活 = 迟到的目录树回包会盖掉标签树）。
+  for (const tab of ['folders', 'search', 'people', 'duplicates', 'tags', 'settings']) {
     state.currentTab = tab;
     state.sidebarLockedMode = '';
     assert.equal(
@@ -1027,8 +1047,246 @@ function testWebParity() {
   console.log('[sidebar-tree-regression] 两端同口径 PASS');
 }
 
+// ---------------------------------------------------------------------------
+// 离开「文件 / 日期」页之前存一次浏览记忆 —— **六条出口一条都不能漏**
+// ---------------------------------------------------------------------------
+/**
+ * 2026-10-07 用户报的：「每次重进文件标签页，默认跳转之前点击的文件夹」。
+ *
+ * 根因不是浏览记忆本身坏了，而是它**只在两条出口上被写过**（导轨的 `.nav-tab` 点击、
+ * `viewDuplicates`）。走向「首页」或「设置」时压根没存 ⇒ 记忆停在更早那次 ——
+ * 他先点搜图结果里的目录进了 X，之后在文件页逛到别处，再从**首页**回来，却被带回 X。
+ * 症状看起来完全像「记忆存错了位置」，所以这条回归要同时钉住「判据」和「接线」。
+ *
+ * ⚠️ 判据是同一个函数（`rememberBrowsePosition`），出口只管调它。但它按 `state.currentTab`
+ *    判断该不该存 ⇒ **调用必须排在改写 `state.currentTab` 之前**，否则它变成空操作，
+ *    而且看不出来（不报错、不写日志）。所以每个出口都要同时断言「调了」和「调在切换之前」。
+ */
+
+/** 取一个具名函数的源码片段（到下一个顶层函数声明为止）。 */
+function fnSlice(src, name) {
+  const i = src.indexOf('function ' + name + '(');
+  assert.ok(i >= 0, '找不到函数 ' + name);
+  const m = /\n\s*(?:async\s+)?function [A-Za-z_$]/.exec(src.slice(i + 1));
+  return src.slice(i, m ? i + 1 + m.index : src.length);
+}
+
+function testBrowseMemoryExits() {
+  const { ctx } = loadDesktop();
+  const state = ctx.state;
+
+  // --- 行为 1：「文件」页的三个代表性字段确实落进 folders 记忆 ---
+  state.currentTab = 'folders';
+  state.currentView = 'folder';
+  state.currentPath = 'K:\\COS\\2024\\05';
+  state.page = 3;
+  state.mediaFilter = 'image';
+  ctx.rememberBrowsePosition();
+  const foldersMemory = state.browseCaches.folders.tabMemory;
+  assert.ok(foldersMemory, '在「文件」页时 rememberBrowsePosition 会写下 folders 记忆');
+  assert.equal(foldersMemory.currentView, 'folder', '记住视图（folder / all / favorites…）');
+  assert.equal(foldersMemory.currentPath, 'K:\\COS\\2024\\05', '记住目录 —— 「重进文件页跳到旧目录」就是它');
+  assert.equal(foldersMemory.page, 3, '记住页码');
+  assert.equal(foldersMemory.mediaFilter, 'image', '记住媒体档过滤');
+
+  // --- 行为 2：「日期」页写的是 dates 记忆，不串到 folders ---
+  const foldersSnapshot = JSON.stringify(state.browseCaches.folders.tabMemory);
+  state.currentTab = 'dates';
+  state.currentView = 'all';
+  state.currentDate = '2024-05-01';
+  state.page = 1;
+  ctx.rememberBrowsePosition();
+  assert.equal(
+    JSON.stringify(state.browseCaches.folders.tabMemory),
+    foldersSnapshot,
+    '在「日期」页不许改写 folders 记忆（串了会让文件页落到日期视图）',
+  );
+  assert.equal(state.browseCaches.dates.tabMemory.currentDate, '2024-05-01', 'dates 记忆写的是日期');
+
+  // --- 行为 3：不在浏览页时是空操作（否则「搜图 / 人物」的视图态会写进 folders 记忆，
+  //     回到相册页会拿到一个 ai_search 视图 —— viewDuplicates 的注释专门讲过这个）---
+  const datesSnapshot = JSON.stringify(state.browseCaches.dates.tabMemory);
+  for (const [tab, view] of [
+    ['search', 'ai_search'],
+    ['people', 'people'],
+    ['settings', 'all'],
+    ['home', 'all'],
+    ['duplicates', 'duplicates'],
+  ]) {
+    state.currentTab = tab;
+    state.currentView = view;
+    ctx.rememberBrowsePosition();
+    assert.equal(
+      JSON.stringify(state.browseCaches.folders.tabMemory) +
+        JSON.stringify(state.browseCaches.dates.tabMemory),
+      foldersSnapshot + datesSnapshot,
+      `在「${tab}」页不得改写任何浏览记忆 —— 出口那次调用必须发生在切页**之前**`,
+    );
+  }
+
+  // --- 行为 4：离开再回来，**页码要真的回来**（存进去 ≠ 还原出来）---
+  //
+  // 🔴 本节是补上来的：第 1 组只钉了「记忆里存着 page 3」，**没有一条**钉「回来之后
+  //    `state.page` 是不是 3」。2026-10-07 用户报的「所有文件重新进入时跳转到第一页」
+  //    就活在这个缝里 —— 写入侧全绿，还原侧被 `showTabContent` 后面那句
+  //    「切到 folders 默认显示所有文件」清成 1。它判的是
+  //    `currentView !== 'folder' && !== 'folder_overview'`，而「所有文件」的视图正是
+  //    `'all'` ⇒ 目录视图毫发无伤、只有「所有文件 / 收藏」被打回第 1 页，
+  //    所以用户才会点名「所有文件」。三个视图都跑，目录那一条当对照。
+  const roundTrips = [
+    { view: 'folder', path: 'K:\\COS\\2024\\05', note: '目录视图（既有行为，作对照）' },
+    { view: 'all', path: '', note: '所有文件' },
+    { view: 'favorites', path: '', note: '收藏' },
+  ];
+  for (const rt of roundTrips) {
+    const { ctx: c2 } = loadDesktop();
+    const s2 = c2.state;
+    s2.currentTab = 'folders';
+    s2.sidebarLockedMode = '';
+    s2.currentView = rt.view;
+    s2.currentPath = rt.path;
+    s2.page = 7;
+    c2.rememberBrowsePosition();
+    assert.equal(
+      s2.browseCaches.folders.tabMemory.page,
+      7,
+      `前提：${rt.note} 的页码要先真的存进记忆（存不进去的话下面那条断言毫无意义）`,
+    );
+    // 离开去搜图，再从导轨的「文件」回来 —— 导轨那条出口传的就是 fromTab = 离开前的 tab
+    // ⚠️ 这个夹具里 `requestAnimationFrame` 是同步的，`scheduleBrowseReload` 会**当场**
+    //    调 `loadPhotos`，而它第一句就是 `api.invoke(...)`（本夹具没有 photoAPI，会抛）。
+    //    这里换成桩，顺便把「回来那一次到底请求第几页」记下来 —— 状态对了但请求的还是
+    //    第 1 页的话，用户看到的依然是第一页。
+    let askedPage = null;
+    c2.loadPhotos = () => {
+      askedPage = s2.page;
+    };
+    c2.showTabContent('folders', { fromTab: 'search' });
+    assert.equal(s2.page, 7, `${rt.note}：回来必须落在记忆里的第 7 页`);
+    assert.equal(s2.currentView, rt.view, `${rt.note}：回来不许被改写成别的视图`);
+    if (rt.path) assert.equal(s2.currentPath, rt.path, `${rt.note}：回来必须落回记忆里的目录`);
+    assert.equal(askedPage, 7, `${rt.note}：回来那一次加载必须请求第 7 页`);
+  }
+
+  // --- 行为 5：反方向基线 —— 记忆**没命中**时必须归位（否则上面的守卫会被
+  //     「干脆别归位」这种写法假绿：把重置块整个删掉，行为 4 一样全绿）---
+  const notApplied = [
+    {
+      note: '记忆被失效清空（设置页改完库回来）',
+      setup(c3) {
+        const s3 = c3.state;
+        s3.currentTab = 'folders';
+        s3.currentView = 'favorites';
+        s3.page = 9;
+        c3.rememberBrowsePosition();
+        c3.invalidateTabSessionCaches();
+      },
+      fromTab: 'settings',
+    },
+    {
+      note: '带 fromTab 但这一页压根没存过记忆',
+      setup(c3) {
+        c3.invalidateTabSessionCaches();
+        c3.state.currentView = 'favorites';
+        c3.state.page = 9;
+      },
+      fromTab: 'search',
+    },
+    {
+      note: '没有 fromTab（导航历史那条刻意不传）',
+      setup(c3) {
+        c3.state.currentView = 'favorites';
+        c3.state.page = 9;
+      },
+      fromTab: undefined,
+    },
+  ];
+  for (const na of notApplied) {
+    const { ctx: c3 } = loadDesktop();
+    const s3 = c3.state;
+    s3.currentTab = 'folders';
+    s3.sidebarLockedMode = '';
+    na.setup(c3);
+    c3.loadPhotos = () => {};
+    s3.currentTab = 'folders';
+    c3.showTabContent('folders', { fromTab: na.fromTab });
+    assert.equal(
+      s3.currentView,
+      'all',
+      `${na.note}：「文件」页必须归位到「所有文件」（右侧不许停在别处留下的视图）`,
+    );
+    assert.equal(s3.page, 1, `${na.note}：页码必须归 1`);
+  }
+
+  // --- 静态接线：六条出口 ---
+  const app = stripComments(fs.readFileSync(path.join(ROOT, 'src/renderer/app.js'), 'utf8'));
+  const events = stripComments(
+    fs.readFileSync(path.join(ROOT, 'src/renderer/ui-events.js'), 'utf8'),
+  );
+  const memoryFn = fnSlice(app, 'rememberBrowsePosition');
+  // 三个浏览页都必须在列：folders / dates / tags。少一个 ⇒ 那一页的记忆停在更早一次
+  // （症状是「从首页/设置页回来位置丢了」，看起来完全像浏览记忆本身坏了）。
+  for (const browseTab of ['folders', 'dates', 'tags']) {
+    assert.ok(
+      new RegExp(`state\\.currentTab === '${browseTab}'`).test(memoryFn),
+      `判据收在 rememberBrowsePosition 一处，${browseTab} 必须在列`,
+    );
+  }
+
+  // 出口 1 / 2：首页、设置页（app.js）
+  for (const [name, after] of [
+    ['openHomePage', "state.currentTab = 'home'"],
+    ['openSettingsPage', 'syncNavigationRail('],
+  ]) {
+    const slice = fnSlice(app, name);
+    const callIdx = slice.indexOf('rememberBrowsePosition();');
+    assert.ok(callIdx >= 0, `${name} 是六条出口之一，必须存一次浏览记忆`);
+    assert.ok(
+      callIdx < slice.indexOf(after),
+      `${name} 里存记忆必须排在「${after}」**之前** —— 排在后面时 currentTab 已经改了，` +
+        'rememberBrowsePosition 变成空操作（不报错、不写日志，只是记忆停在更早那次）',
+    );
+  }
+
+  // 出口 3–6：导轨的 .nav-tab 点击（搜图 / 人物 / 日期 / 重复四条走同一个处理器）
+  const navFn = fnSlice(events, 'bindNavTabs');
+  const navCallIdx = navFn.indexOf('onSaveBrowseTabMemory(prevTab)');
+  assert.ok(navCallIdx >= 0, '导轨点击处理器必须把「离开前的 tab」交给 onSaveBrowseTabMemory');
+  assert.ok(
+    navCallIdx < navFn.indexOf('state.currentTab = nextTab'),
+    '导轨那条出口同样要排在校改 currentTab 之前',
+  );
+  // 判据必须是「离开前那个 tab 是浏览页」，且**显式列举**这三个（folders / dates / tags）。
+  // 放宽成 `if (prevTab)` / 去掉任一项都会让这个守护红 —— 前者的后果是给非浏览页
+  // （settings / home / 智能视图）也存一次记忆，把浏览位置冲掉。
+  assert.ok(
+    /if \(prevTab === 'folders' \|\| prevTab === 'dates' \|\| prevTab === 'tags'\)/.test(navFn),
+    '导轨出口的判据必须是「离开前那个 tab 是浏览页」（folders / dates / tags 显式列举），不能放宽',
+  );
+
+  // 出口 7：重复页不走导轨那个分支，单独一处
+  const dupFn = fnSlice(app, 'viewDuplicates');
+  assert.ok(
+    /saveBrowseTabMemory\('folders'\)/.test(dupFn) && /saveBrowseTabMemory\('dates'\)/.test(dupFn),
+    'viewDuplicates 要按离开前的 tab 二选一存记忆',
+  );
+
+  // 接线全貌：app.js 里 `saveBrowseTabMemory(...)` 的**调用点**只该有四处 ——
+  // `rememberBrowsePosition` 里一处 + `viewDuplicates` 里两处 + 函数自身定义一处
+  // （注入给 ui-events 的那句是 `onSaveBrowseTabMemory: saveBrowseTabMemory,`，不带括号、不算）。
+  // 多出来的调用点意味着有人绕过了 rememberBrowsePosition，那正是这次要修的形态。
+  const writeSites = (app.match(/saveBrowseTabMemory\(/g) || []).length;
+  assert.equal(
+    writeSites,
+    4,
+    'app.js 里 saveBrowseTabMemory(...) 的调用点变了（应为：定义 1 + rememberBrowsePosition 1 + ' +
+      'viewDuplicates 2）—— 新加的出口请改走 rememberBrowsePosition，别再各写各的判定',
+  );
+}
+
 async function main() {
   await testDesktop();
+  testBrowseMemoryExits();
   await testRootRowParity();
   testWebParity();
   await testWeb();

@@ -48,6 +48,7 @@
         cur === 'duplicates' ||
         cur === 'people' ||
         cur === 'search' ||
+        cur === 'tags' ||
         cur === 'home';
       state.tabBeforeSettings = ok ? cur : 'folders';
     })();
@@ -111,6 +112,7 @@
       restoreTab !== 'duplicates' &&
       restoreTab !== 'people' &&
       restoreTab !== 'search' &&
+      restoreTab !== 'tags' &&
       restoreTab !== 'home'
     ) {
       restoreTab = 'folders';
@@ -782,7 +784,7 @@
     }
   }
 
-  // ===== 照片信息面板：显示字段勾选 =====
+  // ===== 图片信息面板：显示字段勾选 =====
   //
   // 勾选框的**结构、顺序、文案**全部由 `src/web/js/photo-info-fields.js` 的注册表给出，
   // 本文件不写死任何一个字段名 —— 注册表加一个字段，这里自动多一行。
@@ -902,7 +904,7 @@
           tStFmt(
             'settings.save.infoFieldsFail',
             { error: e && e.message ? e.message : String(e) },
-            '保存照片信息字段失败：' + (e && e.message ? e.message : String(e)),
+            '保存图片信息字段失败：' + (e && e.message ? e.message : String(e)),
           ),
         );
       }

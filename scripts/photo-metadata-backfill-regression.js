@@ -244,20 +244,30 @@ check('readHeaderMeta 读失败时静默返回 null，不抛', sizeFn.includes('
 const oneBody = bodyOf(implSrc, 'async function processOne(row) {');
 check('夹具自证：取到了 processOne 的函数体', oneBody.length > 0);
 check('processOne 会读取文件头', oneBody.includes('readHeaderMeta('));
-check(
-  '🔴 拿尺寸与生成缩略图共用同一个 sharp 实例（文件只打开一次）',
-  // ⚠️ 锚点只钉到 `loadSharp()(`：2026-10-06 起入参可能是 `sharedBuf || row.file_path`
-  //    （缩略图补全与查重指纹共用一次读盘），把入参写进锚点会在没有真实回归时假红。
-  /var instance = loadSharp\(\)\(/.test(oneBody) &&
-    oneBody.includes('readHeaderMeta(instance)') &&
-    oneBody.includes('thumb = await instance'),
+// 🔴 锚点在 2026-10-06 换了形态：接线统一收进 `src/main/sharp-input.js`（与网页端共用），
+//    主进程只留薄壳 ⇒ 旧锚点 `var instance = loadSharp()(` 消失了。
+//    ⚠️ **这是本文件第二次犯同一个错**（上次是「把入参写进锚点」）：锚点一旦钉具体实现调用，
+//       抽象一层就假红 —— 而假红与真回归在输出上长得一模一样。
+//       ⇒ 改成钉**行为链**：同一个标识符被 readHeaderMeta 与 resize 共用、且顺序不变。
+//       `[\s\S]*?` 是顺序要求本身（match 顺序 = 源码顺序）。
+// 🔴 2026-10-07 第三次：缩略图那一刀收进了 `thumb-format.js#resizeThumb()`，
+//    `thumb = await instance…` 这个形态也没了（变成 `thumb = await resizeThumb(instance, …)`）。
+//    ⚠️ 这次**不再把新函数名钉进去** —— 那只是把同一个错再犯一遍。锚点末段改成
+//    「`thumb` 由**某个**以 `instance` 为第一实参的调用产出」，两种写法都能命中：
+//      · 老形态 `thumb = await instance.rotate()…`
+//      · 新形态 `thumb = await resizeThumb(instance, …)`
+//    契约本身没变：**同一个实例**（文件只打开一次）且顺序是「先读头、后出图」。
+const instChain = oneBody.match(
+  /\bvar instance = \w+\.instance;[\s\S]*?readHeaderMeta\(instance\)[\s\S]*?\bthumb = await (?:\w+(?:\.\w+)*\s*\(\s*)?instance\b/,
 );
-{
-  const iInst = oneBody.indexOf('var instance = loadSharp()(');
-  const iMeta = oneBody.indexOf('readHeaderMeta(instance)');
-  const iPipe = oneBody.indexOf('thumb = await instance');
-  check('🔴 metadata 取在 resize 之前（同一实例），顺序不能颠倒', iInst >= 0 && iMeta > iInst && iPipe > iMeta);
-}
+check('🔴 拿尺寸与生成缩略图共用同一个 sharp 实例（文件只打开一次）', !!instChain);
+// 「共用同一实例」的前提是那个实例**能读这个文件**：来源必须是兜底入口。
+// 写回 `loadSharp()(path)` 会让 bmp / ico / cr2 重新变成「扫得进来、一张也出不了图」。
+check(
+  '🔴 实例必须来自兜底入口（否则 libvips 读不了的格式又变成空承诺）',
+  oneBody.includes('createSharpInput('),
+);
+check('🔴 metadata 取在 resize 之前（同一实例），顺序不能颠倒', !!instChain);
 check(
   '🔴 缺尺寸判定同时判 width 与 height（库里存 0，两个都要判）',
   /var needSize = [^;]*row\.width > 0[^;]*row\.height > 0/.test(oneBody),

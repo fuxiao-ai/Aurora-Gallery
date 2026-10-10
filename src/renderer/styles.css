@@ -2226,6 +2226,23 @@ html.sidebar-resizing .sidebar-content {
     transparent 100%
   );
 }
+/* ── 侧栏顶部三个视图入口（所有文件 / 收藏 / 所有目录）────────────────────────
+   sticky 钉在滚动容器可视顶：树滚到几千个目录深处时，这三个入口仍然抬手可点，
+   不必先滚回顶。包一个容器统一钉，不给三行各自 sticky（互相叠压、top 偏移写死行高）。
+   背景走「--glass + blur」的同款配方（与 .theme-menu 一致）：--glass 是半透明的，
+   光有底色挡不住下面滚过的树行，必须靠本层的 backdrop-filter 把它们糊掉。 */
+.sidebar-view-entries {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  /* 左右负 margin 盖住 .sidebar-content 的 8px padding：否则树行会从两侧 8px 缝里露出 */
+  margin: 0 -8px 4px;
+  padding: 2px 8px 6px;
+  background: var(--glass);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-bottom: 1px solid var(--glass-border);
+}
 .sidebar-content::-webkit-scrollbar {
   width: 6px;
 }
@@ -2499,7 +2516,11 @@ html[data-theme='light'] .toolbar {
    所以以前「本节写的 10px 与投影」其实一个都没生效。浅色下另有覆盖（见本文件
    `html[data-theme='light'] select.sort-select`），因此浅色仍带投影，深色是平的。 */
 select.sort-select,
-select.ui-select {
+select.ui-select,
+/* 标签筛选按钮（`#orgFilterTagsBtn`）是 <button>，也走同一套皮肤 —— 它是工具条上
+   与两个下拉并排的控件，高度 / 圆角 / 边框必须一致（视觉验证抓出过 23px vs 36px 的错位）。
+   它没有下拉箭头，`background-image` / 右内距在 `.org-filter-tags-btn` 里掐掉。 */
+button.sort-select {
   -webkit-appearance: none;
   appearance: none;
   min-height: 36px;
@@ -2524,23 +2545,27 @@ select.ui-select {
   box-shadow: none;
 }
 html[data-theme='light'] select.sort-select,
-html[data-theme='light'] select.ui-select {
+html[data-theme='light'] select.ui-select,
+html[data-theme='light'] button.sort-select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath stroke='%235a5f78' stroke-width='1.65' stroke-linecap='round' stroke-linejoin='round' d='M4.5 6.25L8 9.75l3.5-3.5'/%3E%3C/svg%3E");
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.9) inset,
     0 1px 4px rgba(26, 29, 46, 0.06);
 }
 select.sort-select:hover,
-select.ui-select:hover {
+select.ui-select:hover,
+button.sort-select:hover {
   border-color: rgba(123, 140, 255, 0.42);
   background-color: var(--bg-hover);
 }
 html[data-theme='light'] select.sort-select:hover,
-html[data-theme='light'] select.ui-select:hover {
+html[data-theme='light'] select.ui-select:hover,
+html[data-theme='light'] button.sort-select:hover {
   border-color: rgba(85, 104, 255, 0.38);
 }
 select.sort-select:focus,
-select.ui-select:focus {
+select.ui-select:focus,
+button.sort-select:focus {
   border-color: var(--accent);
   box-shadow:
     0 0 0 3px var(--accent-dim),
@@ -2592,7 +2617,7 @@ select.ui-select option {
   padding: 0 30px 0 9px;
 }
 
-/* 照片网格 */
+/* 图片网格 */
 .photo-grid {
   flex: 1;
   display: flex;
@@ -2659,7 +2684,7 @@ select.ui-select option {
   aspect-ratio: 1 / 1;
 }
 
-/* 照片卡片（对齐网页端 photo-card 精致样式*/
+/* 图片卡片（对齐网页端 photo-card 精致样式*/
 .photo-card {
   position: relative;
   border-radius: var(--radius);
@@ -2894,12 +2919,492 @@ select.ui-select option {
   background: color-mix(in srgb, var(--bg-card) 78%, #4a8fd4);
   border-color: color-mix(in srgb, var(--glass-border) 70%, #6da9df);
 }
+/* Live Photo 角标：与上面两个同构（同 padding / 同圆角 / 同模糊），只换配色。
+   用的是「LIVE」文字而不是 svg 图标 —— iOS 本来的实况照片角标就是这五个字母，
+   省掉往 index.html 的 sprite 里加 symbol + 升 sw.js 的 CACHE_NAME。
+   ⚠️ 与 `.media-type-badge-video` 共用左上角是安全的：那一列只写在视频行上，
+   而 Live Photo 角标只写在图片行上，两者互斥、不会同框。 */
+.media-type-badge-live {
+  color: color-mix(in srgb, #fff3d9 76%, var(--text-primary));
+  background: color-mix(in srgb, var(--bg-card) 74%, #c9922f);
+  border-color: color-mix(in srgb, var(--glass-border) 68%, #e0b055);
+  letter-spacing: 0.06em;
+}
 /* 触控屏无悬停：收藏按钮保持可*/
 @media (hover: none) {
   .photo-card-fav {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   组织元数据：网格角标（标记 / 评分）—— 2026-10-09
+   ---------------------------------------------------------------------------
+   位置分配（别改，改了会与已有的角标撞位）：
+     左上 = 视频 / LIVE（`ui-grid.js` 里两者互斥，见那边注释）
+     右上 = 收藏按钮（**悬停才出现**，32×32 —— 所以标记**不能**放右上，
+            否则冲片时用户一悬停，收藏按钮就把 20px 的标记整个吞掉，实测踩过）
+     左下 = 评分
+     右下 = 标记（选 / 否）
+   悬停时底部信息层（文件名 / 日期）与两个下角标同层叠：信息文本按「该卡**存在**
+   哪个角标」用属性选择器让位（见下方两条 `:hover` 规则），没有角标的卡片不受影响。
+   三者同时出现时构成「左上类型、左下质量、右下状态」一整套，眼睛扫一遍就知道
+   这张图该不该留。
+   ⚠️ 都靠 `.photo-card` 的定位上下文（它在 `ui-grid.js` 里是 `position: relative`），
+      不要用 `fixed` —— 瀑布流里卡片位置由列决定，`fixed` 会漂到视口角落。
+   ───────────────────────────────────────────────────────────────────────────── */
+.photo-card-flag {
+  position: absolute;
+  bottom: 9px;
+  right: 9px;
+  z-index: 6;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0.94;
+  pointer-events: none;
+}
+/* 「选」用绿、「否」用红 —— **刻意不走 CSS 变量**（`--success` / `--error` 在六套
+   主题之间的色相差异很大，这套角标只有 20px，色相一偏就与旁边的缩略图糊在一起）。
+   写死色值换来的是「换主题也一眼可辨」，这正是角标存在的意义。 */
+.photo-card-flag--pick {
+  color: #eafff2;
+  background: color-mix(in srgb, var(--bg-card) 62%, #2f9e63);
+  border-color: color-mix(in srgb, var(--glass-border) 60%, #4cc184);
+}
+.photo-card-flag--reject {
+  color: #fff0f0;
+  background: color-mix(in srgb, var(--bg-card) 62%, #b8453f);
+  border-color: color-mix(in srgb, var(--glass-border) 60%, #d96b64);
+}
+/* 评分：图区左下角。用「实心星 × 数字」而不是画 N 颗星 ——
+   180px 的卡片上单颗星不到 8px，五连星只是一排灰点（理由见 `org-meta-ui.js`）。 */
+.photo-card-rating {
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px 2px 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: color-mix(in srgb, #fff4d6 78%, var(--text-primary));
+  background: color-mix(in srgb, var(--bg-primary) 62%, #000000);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 70%, #e0b055);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0.94;
+  pointer-events: none;
+}
+.photo-card-rating .badge-icon {
+  color: #f0c255;
+}
+.photo-card-rating em {
+  font-style: normal;
+  line-height: 1;
+}
+/* 悬停信息层让位：只在「该卡真的有对应角标」时缩窄文本可用宽。
+   `data-org-rating='0'` / `data-org-flag='none'` = 没有角标 ⇒ 不让位（否则
+   没打分的卡片文件名也整体右移，白亏 34px）。特异性 (0,5,0) 压过
+   `.photo-card .photo-info` 的 (0,2,0) 与 `.photo-card:hover .photo-info` 的 (0,3,0)。 */
+.photo-card[data-org-rating]:not([data-org-rating='0']):hover .photo-info {
+  padding-left: 46px;
+}
+.photo-card[data-org-flag]:not([data-org-flag='none']):hover .photo-info {
+  padding-right: 46px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   组织元数据：预览里的「整理」抽屉内部控件（标记三连 + 五颗星 + 收藏 + 标签）
+   ───────────────────────────────────────────────────────────────────────────── */
+.preview-flag-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+/* 🔴 显隐只能用行内 `style.display`：这三个按钮带 `.btn.btn-sm`，而
+   `.preview-controls-group > .btn.btn-sm { display: inline-flex }` 特异性更高，
+   光设 `hidden` 属性藏不住（同组 LIVE / 编辑按钮也是因此走行内值，
+   理由写在 `app.js#syncPreviewEditButtons`）。 */
+.preview-flag-btn.active {
+  color: color-mix(in srgb, var(--text-primary) 92%, #ffffff);
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--glass-border));
+  background: color-mix(in srgb, var(--bg-card) 62%, var(--accent));
+}
+#previewFlagPickBtn.active {
+  color: #eafff2;
+  border-color: color-mix(in srgb, var(--glass-border) 56%, #4cc184);
+  background: color-mix(in srgb, var(--bg-card) 58%, #2f9e63);
+}
+#previewFlagRejectBtn.active {
+  color: #fff0f0;
+  border-color: color-mix(in srgb, var(--glass-border) 56%, #d96b64);
+  background: color-mix(in srgb, var(--bg-card) 58%, #b8453f);
+}
+.preview-rating-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 2px;
+}
+.preview-rating-star {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  line-height: 0;
+  color: color-mix(in srgb, var(--text-secondary) 70%, transparent);
+  transition: color 0.12s ease, transform 0.12s ease;
+}
+.preview-rating-star .btn-icon {
+  width: 15px;
+  height: 15px;
+}
+.preview-rating-star:hover {
+  color: color-mix(in srgb, #f0c255 80%, var(--text-primary));
+  transform: scale(1.12);
+}
+.preview-rating-star.active {
+  color: #f0c255;
+}
+/* 「整理」入口按钮上的标签计数角标。id 仍是 `previewOrgBtn`（旧名 `previewTagsBtn`
+   —— 改名的理由见 `app.js` 的 dom 登记处）。角标只数标签，见 `org-meta-ui.js`。 */
+#previewOrgBtn .preview-tags-count {
+  min-width: 0;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+}
+#previewOrgBtn.has-tags {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--glass-border));
+}
+
+/* ── 「整理」抽屉（2026-10-09）──────────────────────────────────────────────
+   收藏 / 标记 / 评分 / 标签 / 对比 全部住在这里。形态与「图片信息」抽屉
+   （`.preview-info-panel`）**同构**：右侧 360px 滑出、同一层 z-index、
+   同一段 transform 过渡；两者**互斥**（`app.js#togglePreviewOrgPanel`）。
+   为什么从「贴大图下缘的浮条」改成抽屉，写在 `index.html` 该节点上方的注释里。 */
+.preview-org-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  max-width: 85vw;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-card) 92%, transparent) 0%,
+    color-mix(in srgb, var(--bg-primary) 85%, transparent) 100%
+  );
+  backdrop-filter: blur(36px) saturate(1.5);
+  -webkit-backdrop-filter: blur(36px) saturate(1.5);
+  border-left: 1px solid color-mix(in srgb, var(--glass-border) 70%, var(--accent) 10%);
+  box-shadow:
+    -8px 0 40px color-mix(in srgb, var(--bg-primary) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--glass-border) 30%, transparent) inset;
+  z-index: 20;
+  overflow-y: auto;
+  transform: translateX(100%);
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0;
+}
+/* 🔴 `pointer-events: auto` **只在打开态**给，而且必须给。本节点的父元素是
+   `.preview-body`，那条规则刻意设了 `pointer-events: none`（让点击穿透到
+   `.preview-body-inner` 里的图片，好拖拽 / 缩放），而指针事件是**继承**的属性 ——
+   不写这一行，抽屉画得出来但整块「看得见、点不动」。
+   2026-10-09 用户报「冲片条无法点击」就是同一个机制（那次的节点是
+   `.preview-culling-bar`，现已随这次改造删除）。`.preview-info-panel` 用的是
+   同一套写法（`auto` 写在 `.open` 那条），本条与它逐字同构。
+   关闭态刻意**不给** `auto`：它已经 `translateX(100%)` 挪出屏幕，
+   万一过渡帧里露出 1px，也不该把点击截走。 */
+.preview-org-panel.open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+.preview-org-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+  position: sticky;
+  top: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-card) 96%, transparent) 0%,
+    color-mix(in srgb, var(--bg-card) 82%, transparent) 100%
+  );
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  z-index: 1;
+}
+.preview-org-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preview-org-panel-header h3::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.preview-org-panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.preview-org-panel-close:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  transform: rotate(90deg);
+}
+.preview-org-panel-close .btn-icon {
+  width: 18px;
+  height: 18px;
+}
+.preview-org-panel-body {
+  padding: 0;
+}
+.preview-org-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 40%, transparent);
+}
+.preview-org-section:last-child {
+  border-bottom: none;
+}
+/* 分区标题与「图片信息」抽屉的分区标题同一套（小号大写 + 圆点 + 右侧渐隐横线）——
+   两块抽屉挨着出现，标题长得不一样会像两个人做的。 */
+.preview-org-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preview-org-section-title::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  flex-shrink: 0;
+}
+.preview-org-section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 20%, transparent),
+    transparent
+  );
+}
+/* 分区里的一行控件。`wrap` 必须开：窄视口（`max-width: 85vw` 时 360px 会缩到
+   300px 上下）里五颗星 + 三个标记按钮挤不下，换行比横向溢出好。 */
+.preview-org-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.org-filter-tags-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+/* 标签筛选面板的关闭叉。原先借用 `.preview-org-tags-close`（预览里那个标签悬浮
+   面板的关闭叉）—— 2026-10-09 那个面板并进「整理」抽屉后就没有了，本条独立出来。
+   ⚠️ 当时两条长得一模一样纯属巧合：一个是「悬浮小面板」，一个是「工具条下拉多选」，
+   共用类名会让将来改其中一处外观时静默改到另一处。 */
+.org-filter-tags-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  line-height: 0;
+  color: var(--text-secondary);
+}
+.org-filter-tags-close:hover {
+  color: var(--text-primary);
+}
+.preview-org-tags-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.preview-org-tags-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+.preview-org-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-card) 70%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--glass-border) 78%, var(--accent));
+}
+.preview-org-tag-remove {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--text-primary) 72%, transparent);
+}
+.preview-org-tag-remove:hover {
+  color: var(--text-primary);
+}
+.preview-org-tags-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.preview-org-tags-input-row .settings-text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.preview-org-tags-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   组织元数据：工具条筛选（评分 / 标记 / 标签）
+   ───────────────────────────────────────────────────────────────────────────── */
+/* 标签筛选按钮：走上面「统一下拉框」块的皮肤（button.sort-select 已并入），
+   只掐掉它没有的东西 —— 下拉箭头背景图，以及为箭头留的 40px 右内距。
+   特异性 (0,1,1) 与 `button.sort-select` 打平、靠源码顺序后置取胜；
+   浅色档的箭头覆写 (0,2,1) 同理需要一条同特异性的后置覆写。 */
+button.org-filter-tags-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  background-image: none;
+  padding-right: 14px;
+}
+html[data-theme='light'] button.org-filter-tags-btn {
+  background-image: none;
+}
+.org-filter-tags-count:not(:empty) {
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg-primary);
+  background: var(--accent);
+}
+.org-filter-tags-btn.has-selection,
+.org-filter-clear-btn {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--glass-border));
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-primary));
+  cursor: pointer;
+}
+.org-filter-tags-panel {
+  position: absolute;
+  right: 12px;
+  top: calc(100% + 6px);
+  z-index: 9;
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--glass-border) 88%, var(--accent) 10%);
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-primary));
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--bg-primary) 78%, #000000);
+}
+.org-filter-tags-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.org-filter-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.org-filter-tag-row:hover {
+  background: color-mix(in srgb, var(--bg-card) 70%, var(--accent) 12%);
+}
+.org-filter-tag-row input {
+  accent-color: var(--accent);
+}
+.org-filter-tag-row .org-filter-tag-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.org-filter-tag-row .org-filter-tag-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.org-filter-tags-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
 }
 #previewFavoriteBtn.active {
   color: color-mix(in srgb, var(--warning) 82%, var(--text-primary));
@@ -3011,7 +3516,7 @@ select.ui-select option {
   margin-top: 2px;
 }
 
-/* 目录视图：主区「子目录」与「当前文件夹照片」分区标题 */
+/* 目录视图：主区「子目录」与「当前文件夹图片」分区标题 */
 .browse-folder-subfolders-wrap {
   margin-bottom: 16px;
 }
@@ -3460,6 +3965,32 @@ html[data-theme='light'] .folder-cover-card:hover {
     background-position: -100% 0;
   }
 }
+/*
+ * 进度条的**不定态**：「在跑，但进度未知」。
+ *
+ * 这个语义以前是白拿的 —— `<progress>` 不带 `value` 时浏览器自己画一段来回动的条纹。
+ * 而 `div` 的 `0%` 会被读成「进度就是 0」（真的没进展），两者含义**相反**：
+ * 前者说「别急，在跑」，后者说「一点没动」。AI 那两节的进度条从 `<progress>` 换成
+ * `div`（契约 §5 的形状收敛）时，必须自己把这个语义补回来，否则索引进度会从
+ * 「动来动去」变成一条死掉的空槽（见 `scan-flow.js` 里那段注释）。
+ *
+ * ⚠️ 与 `.progress-fill` 的两条动画是**叠加**的：宽度固定在 40%，靠 `margin-left`
+ *    从 -40% 滑到 100%（即从槽左缘滑出右缘外），再叠上原有的渐变流光。
+ */
+.progress-fill--indeterminate {
+  width: 40%;
+  animation:
+    progressIndeterminate 1.4s ease-in-out infinite,
+    progressShimmer 2s linear infinite;
+}
+@keyframes progressIndeterminate {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
 .progress-file {
   font-size: 11px;
   color: var(--text-muted);
@@ -3822,7 +4353,7 @@ html[data-theme='light'] .folder-cover-card:hover {
           （稳态 121 次 / 30.4ms vs 基线 122 次 / 28ms）⇒ 只能每帧回主线程重算样式 + 重绘。
         · 换成「静态环 + `transform: scale()`」同样不行（实测掉帧更差）。
       视觉代价：丢掉「向外扩 6px 淡出」的那层脉冲感，呼吸光晕（`::before`）完整保留。
-      收益：进入照片流时的 Paint 耗时 64.15ms → 18.9ms（−71%）。 */
+      收益：进入图片流时的 Paint 耗时 64.15ms → 18.9ms（−71%）。 */
 .browse-footer-actions .pagination-random::before {
   content: '';
   position: absolute;
@@ -3858,6 +4389,105 @@ html[data-theme='light'] .folder-cover-card:hover {
 }
 
 /* === 预览（对齐网页端毛玻璃样式） === */
+/* ===== 图片编辑：裁剪选区（由 preview-crop.js 动态创建） =====
+   层级取 15050：必须**高于预览层**（预览是 1000），又**低于通用弹窗**（app-dialog 是 15100）。
+   低于弹窗是刻意的 —— 裁剪确认失败时弹的提示框要盖在选区之上。 */
+.preview-crop-layer {
+  position: fixed;
+  z-index: 15050;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.preview-crop-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  /* 遮罩用一个巨大的外阴影画出来：选区一改，暗区自动跟着变 ——
+     比铺四块暗 div 少一份「四边尺寸要同时更新」的漂移风险。 */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  cursor: move;
+}
+
+/* 三分线：只在视觉上帮助构图，不吃鼠标事件（否则四角拖动会被它挡住） */
+.preview-crop-box::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.3) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.3) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+  pointer-events: none;
+}
+
+.preview-crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.preview-crop-handle[data-corner='nw'] {
+  left: -6px;
+  top: -6px;
+  cursor: nwse-resize;
+}
+.preview-crop-handle[data-corner='ne'] {
+  right: -6px;
+  top: -6px;
+  cursor: nesw-resize;
+}
+.preview-crop-handle[data-corner='se'] {
+  right: -6px;
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+.preview-crop-handle[data-corner='sw'] {
+  left: -6px;
+  bottom: -6px;
+  cursor: nesw-resize;
+}
+
+.preview-crop-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 选区已确认、正等「保存 / 放弃」：遮罩与三分线留着（用户看到的就是将要裁出来的那块），
+   但整层**不再吃事件** —— 否则那 9999px 的外阴影会把工具条上的两个按钮一起挡住，
+   点「保存」等于点在遮罩上（什么都不发生，且不报错）。 */
+.preview-crop-layer.is-pending {
+  pointer-events: none;
+  cursor: default;
+}
+.preview-crop-layer.is-pending .preview-crop-handle {
+  display: none;
+}
+.preview-crop-layer.is-pending .preview-crop-box {
+  border-style: dashed;
+  cursor: default;
+}
+
+/* 「保存 / 放弃」—— 只在有待保存的编辑时才出现（由 JS 用行内 display 放行，
+   理由同工具条上其他 `.btn.btn-sm`：作者样式压过 UA 的 [hidden]）。 */
+.preview-edit-commit {
+  color: var(--accent, #f5a623);
+  border-color: color-mix(in srgb, var(--accent, #f5a623) 46%, transparent);
+}
+
 .preview-overlay {
   display: none;
   position: fixed;
@@ -4351,6 +4981,34 @@ html[data-theme='light'] .folder-cover-card:hover {
 .preview-overlay.is-fullscreen .preview-video {
   /* already 100% width/height from base rule */
 }
+/**
+ * Live Photo 的伴生视频 —— **叠在**静止图上播，不是替换它。
+ *
+ * 🔴 必须绝对定位：`.preview-body-inner` 是 flex row，而 `.preview-image` 与
+ *    `.preview-video` 都是 `width:100%` —— 只要再有一个参与流的子元素同时可见，
+ *    它们就会被挤成左右两半。脱离流是唯一能「盖上去」又不动既有两条分支的办法。
+ *
+ * `pointer-events: none` 是刻意的：底下那张图要继续能拖拽/缩放，
+ * 停止动态走工具条上的「实况」按钮（或等它自己播完）。
+ */
+.preview-live-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  background: transparent;
+  z-index: 2;
+  pointer-events: none;
+}
+/** Live 播放按钮：只在当前图片真的有伴生视频时由 JS 放出来（默认 `display:none`）。 */
+.preview-live-btn.active {
+  color: var(--accent, #f5a623);
+  border-color: color-mix(in srgb, var(--accent, #f5a623) 46%, transparent);
+}
 .preview-video::cue {
   background: transparent !important;
   color: var(--subtitle-color, #ffffff);
@@ -4524,7 +5182,7 @@ html[data-theme='light'] .folder-cover-card:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 24px;
+  padding: 12px 16px;
   border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
   position: sticky;
   top: 0;
@@ -4539,7 +5197,7 @@ html[data-theme='light'] .folder-cover-card:hover {
 }
 .preview-info-panel-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: 0.01em;
@@ -4561,7 +5219,7 @@ html[data-theme='light'] .folder-cover-card:hover {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 5px;
+  padding: 3px;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -4578,19 +5236,19 @@ html[data-theme='light'] .folder-cover-card:hover {
   height: 18px;
 }
 .preview-info-section {
-  padding: 18px 24px;
+  padding: 12px 16px;
   border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 40%, transparent);
 }
 .preview-info-section:last-child {
   border-bottom: none;
 }
 .preview-info-section-title {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--accent);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4619,9 +5277,9 @@ html[data-theme='light'] .folder-cover-card:hover {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  padding: 7px 10px;
+  padding: 4px 8px;
   margin: 1px -4px;
-  gap: 16px;
+  gap: 12px;
   border-radius: 8px;
   transition: background 0.15s;
 }
@@ -4629,37 +5287,37 @@ html[data-theme='light'] .folder-cover-card:hover {
   background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 .preview-info-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
   font-weight: 500;
-  min-width: 56px;
+  min-width: 50px;
 }
 .preview-info-value {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text);
   text-align: right;
   word-break: break-word;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 1.35;
 }
-/* AI 标签行：值区改成胶囊容器。类名由注册表在 `render: 'tags'` 时加上 ——
+/* 主题标签行：值区改成胶囊容器。类名由注册表在 `render: 'tags'` 时加上 ——
    不用 `:has()` 判，那个在旧浏览器上没有兜底，会让整条读数退回成纯文本。 */
 .preview-info-value-tags {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
 }
 .preview-info-tag {
-  padding: 2px 9px;
+  padding: 1px 8px;
   border: 1px solid var(--glass-border);
   border-radius: 999px;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 1.6;
+  line-height: 1.4;
   color: var(--text-secondary);
   background: color-mix(in srgb, var(--bg-card) 62%, transparent);
   cursor: pointer;
@@ -4678,7 +5336,7 @@ html[data-theme='light'] .folder-cover-card:hover {
   cursor: default;
 }
 .preview-info-empty {
-  padding: 40px 24px;
+  padding: 24px 16px;
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
@@ -5144,6 +5802,31 @@ html[data-theme='dark'] {
 }
 .preview-next {
   right: 16px;
+}
+/* 🔴 右侧抽屉（图片信息 / 整理）打开时，把「下一张」让开。
+   两个抽屉都是 `right: 0; width: 360px; z-index: 20`，而 `.preview-nav` 是
+   `right: 16px; z-index: 6` ⇒ 抽屉一开就把右箭头**整个**盖住：点它没反应、
+   也不报错、控制台一行字都没有（`%TEMP%/aurora-orgmeta-shot/drawer.js` 实测：
+   抽屉打开后往右箭头中心发真实鼠标事件，`state.previewIndex` 一动不动）。
+   这是 `.preview-info-panel` 时代就有的既有缺陷，只是信息面板属于「看一眼就走」，
+   没人报过；而「整理」抽屉的用法是**一边看图一边翻着标**，鼠标点不动「下一张」
+   就等于塌了一半，所以在这里一并修掉。
+   `min(376px, calc(85vw + 16px))` 与抽屉自己的 `width: 360px` / `max-width: 85vw`
+   逐字对应（各自 +16px 的原有边距）—— **两处必须一起改**，
+   否则窄窗口下箭头会重新钻回抽屉底下（85vw 时抽屉 340px、箭头正好落在剩的 60px 里）。 */
+.preview-overlay.has-right-drawer .preview-next {
+  right: min(376px, calc(85vw + 16px));
+}
+/* 同一个类还要管「缩放百分比」：它不在 `.preview-body` 里，而是 `.preview-zoom-box`
+   （`position: absolute; right: 12px; bottom: 12px; z-index: 12`）—— 它是
+   `#previewOverlay` 的直接子元素，所以抽屉那个 `z-index: 20` **压不住它**
+   （`.preview-body` 自成一个 `z-index: 2` 的层叠上下文，里面的 20 出不来）。
+   实测（`drawer.js` 浅色截图）：抽屉开着时右下角浮着一个「250%」小胶囊，
+   正好压在「标签」分区的下缘，很脏。同一个类顺手把它也让开。
+   ⚠️ 类必须挂在 `#previewOverlay` 上（不是 `.preview-body`）——
+   只有挂在共同的祖先上，这条规则才够得着 `.preview-zoom-box`。 */
+.preview-overlay.has-right-drawer .preview-zoom-box {
+  right: min(372px, calc(85vw + 12px));
 }
 
 /* === 全屏浮层控件显隐 ===
@@ -5884,7 +6567,7 @@ html[data-theme='light'] .settings-number-input:hover {
   width: min(100%, 320px);
 }
 
-/* 照片信息面板的字段勾选：结构由 src/web/js/photo-info-fields.js 的注册表动态生成，
+/* 图片信息面板的字段勾选：结构由 src/web/js/photo-info-fields.js 的注册表动态生成，
    这里只负责观感（分组小标题 + 自适应网格 + 紧凑勾选行）。 */
 .settings-info-fields {
   display: flex;
@@ -6113,6 +6796,33 @@ html[data-theme='light'] .settings-number-input:hover {
     animation-duration: 2.6s !important;
     animation-iteration-count: infinite !important;
   }
+  /* 🔴 进度条的不定态**也必须豁免** —— 这条是 2026-10-08 用像素实测才发现漏掉的，
+     推理看不出来（`<progress>` 换 `div` 时我以为「补了个 CSS 动画」就等价了）。
+     判据在 `@media` 块上方拿不到，所以记在这里：
+       旧元素是裸 `<progress max="100">` 不带 value ⇒ 浏览器画的是 **UA shadow tree 里
+       伪元素**上的动画。而本块上方那条是 `*` 选择器 —— **命中不到 shadow 伪元素**，
+       所以它从来压不住原生 `<progress>` 的条纹。换成我们的 `div` 之后，同一条动画挂在
+       **普通元素**上，正好落进压制范围：实测同一个页面、同一次 reduce 下，
+       旧元素逐帧变化 7.29%、新元素 0.00%（两个「必须不动」的对照都是 0%，方法可信）。
+     ⚠️ 于是本机（Windows，实测 `reduce = true`）看到的是**一条静止的 40% 填充** ——
+        那不是「安静的降级」，是**给了一个错误的确定值**（读起来就是「进度 40%」），
+        而真相是「在跑、进度未知」。`theme-polish.css` 又把面板里的 `.progress-fill`
+        背景改成纯色 ⇒ 面板内不定态的**唯一**可见运动就是这条位移，压掉就一点动感都不剩。
+     ⇒ 豁免，理由与加载圈 / 底栏随机同源：它是**重点功能的可辨识信号**，不是装饰性位移动效。
+     ⚠️ 周期取 2.4s（常态是 1.4s，故意放慢），且 `animation-name` 收窄成**只留位移那一条** ——
+        把常态里的 `progressShimmer` 留在被压制态：少一层运动，语义不丢。
+     ⚠️ 选择器特异性 (0,1,0) 高于上方 `*`(0,0,0)，且同样带 !important ⇒ 压得住。
+     ⚠️ **网页端没有孪生规则，不要「照着同步」过去**：`src/web` 里根本没有不定态进度条
+        （面板是桌面端独有），而且它那边的 reduce 块是**具名元素列表**、不是 `*` ——
+        照抄过去只会多一条永不命中的死规则（与上面那条随机光晕的要求恰好相反）。
+     🔴 守护 `background-tasks-panel-regression.js` ③ 会核对这段（含 duration / iteration /
+        animation-name 三条），别把它当「可以清理的死代码」删掉。 */
+  .progress-fill--indeterminate {
+    animation-name: progressIndeterminate !important;
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+    animation-fill-mode: none !important;
+  }
 }
 
 /* === 响应/ 移动端适配 === */
@@ -6236,7 +6946,7 @@ html[data-theme='light'] .settings-number-input:hover {
     gap: 6px;
   }
 
-  /* 照片信息始终显示 */
+  /* 图片信息始终显示 */
   .photo-card .photo-info {
     opacity: 1;
     padding: 20px 8px 8px;
@@ -6260,7 +6970,7 @@ html[data-theme='light'] .settings-number-input:hover {
     padding: 6px 36px 6px 12px;
   }
 
-  /* 照片网格区域 */
+  /* 图片网格区域 */
   .photo-grid {
     padding: 8px;
   }
@@ -6632,6 +7342,21 @@ html[data-theme='light'] .close-choice-actions .btn:hover {
   margin-top: 12px;
   line-height: 1.45;
 }
+/* 关闭弹窗里的「后台任务正在运行」警告行：平时 hidden，有任务才亮出来 */
+.close-choice-tasks {
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--warning) 82%, var(--text-primary));
+  border: 1px solid color-mix(in srgb, var(--warning) 48%, var(--glass-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--warning) 22%, var(--bg-card)) 0%,
+    color-mix(in srgb, var(--warning) 8%, var(--bg-card)) 100%
+  );
+}
 
 /* 通用主题弹窗（替代原alert/confirm*/
 .app-dialog-overlay {
@@ -6642,15 +7367,15 @@ html[data-theme='light'] .close-choice-actions .btn:hover {
   align-items: center;
   justify-content: center;
   padding: max(20px, env(safe-area-inset-bottom));
-  /* 半透明遮罩：删除确认常从预览层（z-index 1000）内弹出，背后就是当前这张照片。
+  /* 半透明遮罩：删除确认常从预览层（z-index 1000）内弹出，背后就是当前这张图片。
      外层 color-mix 的「46%」= 遮罩不透明度 —— 想更清楚地看到背后的图就调小它
      （数值 = 不透明度，0.46 即透出 54%）。与 transparent 混合按预乘 alpha 处理，
      只会降 alpha、不会把颜色变暗。
      ⚠️ 实测边界（改前量过，别再走一遍）：
-        · 0.58 起 → 背后的照片只剩微弱残影，等于没透；
-        · 0.36 起 → 照片很清楚，但白色卡片压在被洗白的照片上、边界糊进背景。 */
+        · 0.58 起 → 背后的图片只剩微弱残影，等于没透；
+        · 0.36 起 → 图片很清楚，但白色卡片压在被洗白的图片上、边界糊进背景。 */
   background: color-mix(in srgb, color-mix(in srgb, var(--bg-primary) 64%, #000000) 46%, transparent);
-  /* 🔴 blur 必须同步降下来：14px 会把背后的照片糊成纯色块，
+  /* 🔴 blur 必须同步降下来：14px 会把背后的图片糊成纯色块，
      「半透明」就白做了。3px 只做轻微柔化，图仍可辨认。 */
   backdrop-filter: blur(3px) saturate(1.1);
   -webkit-backdrop-filter: blur(3px) saturate(1.1);
@@ -6780,7 +7505,7 @@ html[data-theme='light'] .app-dialog-actions .btn:hover {
   }
 }
 
-/* === 目录 / 照片加载提示（侧边栏与主区域=== */
+/* === 目录 / 图片加载提示（侧边栏与主区域=== */
 @keyframes emptyFloat {
   0%,
   100% {
@@ -7229,24 +7954,39 @@ body.is-recording-shortcut {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   首页（Home）—— 独立导航页
+   首页（Home）—— 独立导航页 · 视觉语言「编辑感」（2026-10-06 翻新）
    ---------------------------------------------------------------------
-   · 视觉对照物 = docs/home-page-preview.html（取色与排版），落地一律走 var() token，
-     不写死十六进制 —— 六元组（主题 / 强调色 / 背景 / 纹理 / 透明度 / 窗口背景）下都要成立。
-   · 显隐只由 `html.home-page-open` 决定（默认隐藏），而该 class 只由 app.js 的
-     syncPageOpenClasses() 从 state.currentTab 派生。⇒ 退出路径不需要逐条补「隐藏首页」。
-   · 卡片是「介绍容器」，不是入口：不给 cursor:pointer、不做 hover 抬升、不绑 click。
-     全页可点的只有主按钮（.btn-primary）与卡内 .home-chip，两者都是原生 <button>。
-   · 说明文案必须落在 1 行内（≤30 字），超一行会把同行卡片一起撑高（实测多 8 字即折行）。
-   · 装饰层（2026-10-05 追加「美化启动页」）共 8 处，编号 ①–⑧：环境光 / 品牌徽标 /
-     段头菱块 / 渐隐细线 / 卡右角晕 / 卡左竖条 / 图标底座 / chip 描边。
-     🔴 **全部是静态装饰**：不加 `:hover`、不加 `cursor`、不加动效。两条原因：
-        (1) 守护 §6 把本段内的 `cursor:pointer` 与 `:hover` **各钉成 1 处**（只能属于
-            .home-chip），多一处即红 —— 这也是「卡片不得像按钮」的机械化兜底；
-        (2) 动效会让「改前改后逐像素对照」这条验证手段失效（像素永远在飘）。
-     🔴 光晕一律走**元素自己的背景层**，不放定位伪元素：伪元素按绘制顺序画在行内内容
-        之上，光会蒙在字上压对比度（见「按钮表面光晕」一节的实测结论）。
-        例外只有两处 `::before`，都落在内边距里、碰不到文字（卡左竖条、段头菱块）。
+   设计主张：**层级靠结构与排版，不靠装饰。**
+
+   上一版有 8 处装饰（三层径向环境光 / 品牌实心渐变徽标 / 段头菱块 / accent 渐隐细线 /
+   卡右上角光晕 / 卡左 3px 竖条 / 图标实心淡底座 / chip 偏色描边 + CTA 外投影）。
+   它们单独看都不难看，但叠在一起的效果是**到处都在发光，反而不知道先看哪** ——
+   四张卡各像一块小海报，唯一的主按钮淹没在其中。
+
+   这一版做减法：
+     · 装饰 **8 处 → 3 处**：① 顶部一层线性光 ② 品牌徽标描边 ③ 图标底座描边。
+     · 砍掉：三层径向光、段头菱块、accent 渐隐线、卡右上角光晕、卡左竖条、
+       图标实心淡底、chip 偏色描边、CTA 外投影。
+     · 省下的注意力**全部**给三个主语：`标题` / `库概览四项` / `主按钮`。
+     · 材料只剩两种：1px `--border` 边框、一层 `--bg-card` 底色。没有光晕、没有渐变底、
+       没有投影 —— 于是六元组（22 套预设 × 深浅两档）下，这一页的观感差异只来自
+       字号与留白，不来自「某个颜色在深色档看不见了」。
+
+   形态语言（这一版第一次成体系，它同时也是「哪能点」的答案）：
+     · **实心 = 主行动**：全页只有 `.home-cta-btn` 一个实心块。
+     · **描边 = 次级入口**：`.home-chip`，常态中性 `--border` 边，hover 才转 accent。
+     · **无边界 = 纯信息**：卡片本体、数字、标签、说明 —— 无边框、无指针、无 hover。
+   ⇒ 上一版靠段头那句小字（`home.sectionNote`「卡片是介绍，点里面的按钮直接去」）来补
+     「不知道哪能点」这个认知缺口，**那是文案在替版式擦屁股**。这一版把版式本身做对，
+     那句话降级为**备份信号**（保留，但不再是唯一线索）。
+
+   🔴 机械契约（勿破，`home-page-regression` 逐条钉住）：
+     · Home 段内 `cursor: pointer` 与 `:hover` **各只允许出现 1 次**，都只能属于 `.home-chip`
+       —— 这是「卡片不得像按钮」的机械化兜底，也是一切装饰不许带动效的原因
+       （动效还会让「改前改后逐像素对照」这条验证手段失效）。
+     · `.home-feature` 规则体里不得出现 `cursor` / `transform`。
+     · 可点节点恒 10 个（`[data-home-goto]`）—— 本段不得引入第 11 个可点形态。
+     · 取色一律走 `var()`；唯一的写死值是中性黑投影（本轮已全部去掉，所以本段现在是零硬编码色）。
    ═══════════════════════════════════════════════════════════════════════ */
 
 .home-page {
@@ -7256,41 +7996,25 @@ body.is-recording-shortcut {
   min-height: 0;
   overflow-y: auto;
   box-sizing: border-box;
-  padding: 26px 30px 32px;
-  /* ── 装饰 ①：环境光（页面自己的背景层） ──
-     三层极淡的径向光。刻意贴在**页面自己的背景层**上，而不是做在定位伪元素上：
-     伪元素按绘制顺序画在行内内容之上，光晕会蒙在文字上压对比度（见「按钮表面光晕」
-     一节的实测结论）。放进 background-image 就永远在文字之下，零层级风险。
-
-     `background-attachment` 用默认的 scroll —— 这一页是滚动容器，所以光晕钉在**可见区**
-     的边角、不随内容跑，读起来像环境光而不是一张贴图。
-
-     ⚠️ 这里敢把 `background-color` 与 `background-image` 分开写，是因为 `.home-page`
-        **不在** gallery-design.css 的「可见面」清单里（那张清单钉死为 body + 7 个面），
-        没有 `--bg-texture` 会来压 background-image。
-     ⚠️ 也不要顺手把 `.home-page` 加进那张清单：theme-regression §9d 的 SURFACE_SEL
-        是写死的 7 项，多一个成员就匹配不到那条纹理规则，守护会直接红。
-     ⚠️ 三层强度都压在 8%–16%：深色档要看得见，浅色档不能变脏。 */
+  padding: 34px 40px 48px;
+  /* 装饰 ①：**顶部一层线性光**。
+     上一版是三层径向光（右上暖 / 左上冷 / 底部收束），读起来像被打了三个聚光灯，
+     却没有一个指向内容。线性光只声明「页首」这一件事，落在 320px 内就化干净。
+     ⚠️ 走**元素自己的背景层**而不是定位伪元素：伪元素按绘制顺序画在内容之上，
+        光会蒙在文字上压对比度（见「按钮表面光晕」一节的实测结论）。
+     ⚠️ `background-color` 与 `background-image` 分开写，不写 `background` 简写
+        —— 简写会按隐含默认值把 background-image 一起重置。
+     ⚠️ `background-repeat: no-repeat` 不能省：渐变默认平铺，会和内容一起滚成条纹。
+     ⚠️ `.home-page` **不在** gallery-design.css 的纹理「可见面」清单里（刻意如此，见 CONTRACTS），
+        所以这里不会被 `--bg-texture` 覆盖。 */
   background-color: var(--bg);
-  background-image:
-    /* 右上角暖光：托住页头 */
-    radial-gradient(
-      760px 460px at 88% -16%,
-      color-mix(in srgb, var(--accent) 16%, transparent) 0%,
-      transparent 72%
-    ),
-    /* 左上角冷光：与强调色错开，免得整页只有一个色调 */
-    radial-gradient(
-      620px 380px at -6% -10%,
-      color-mix(in srgb, var(--accent-2, var(--accent)) 12%, transparent) 0%,
-      transparent 70%
-    ),
-    /* 底部收束光：长页滚到底时不空 */
-    radial-gradient(
-      900px 300px at 50% 106%,
-      color-mix(in srgb, var(--accent) 8%, transparent) 0%,
-      transparent 70%
-    );
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 7%, transparent) 0%,
+    transparent 320px
+  );
+  background-repeat: no-repeat;
+  background-attachment: scroll;
 }
 html.home-page-open .home-page {
   display: block;
@@ -7305,103 +8029,157 @@ html.home-page-open #sidebarResizer {
   display: none !important;
 }
 
-/* ── 页头 ── */
+/* ── 页头 ──
+   全页第一个主语：标题 26px。上一版是 21px，与卡片标题 14px 只差一级，
+   于是「这是什么产品」和「这张卡讲什么」在视觉上几乎同权。 */
 .home-head {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 14px;
 }
-/* 装饰 ②：品牌徽标 —— 纯装饰（HTML 里是 aria-hidden、无文案，因此不进 i18n）。
-   强调色小方块 + 白色日出线稿；底本身就是 accent 渐变，所以线稿写死白色在深浅两档
-   都成立（与主题无关，不是「写死配色」）。
-   ⚠️ 高度 30px ≤ 标题行高（≈31px）⇒ `.home-head` 高度不变，不会把下面的 CTA 推下去。 */
+/* 装饰 ②：品牌徽标 —— 从「实心 accent 渐变底 + 白色线稿」改成**描边风格**。
+   上一版那枚徽标是页面上最亮的实心块之一，会和唯一的主按钮抢「实心 = 可点」这个角色。
+   描边版保留识别度，但不争重量（形态语言：描边 = 静态标识）。
+   ⚠️ 高度 32px ≤ 标题行高（26px × 1.25 ≈ 33px）⇒ `.home-head` 高度不会被它撑高。 */
 .home-brand {
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
-  color: #fff;
-  background-image: linear-gradient(145deg, var(--accent), var(--accent-2, var(--accent)));
-  box-shadow:
-    0 4px 12px -5px var(--accent-glow),
-    inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent);
+  border-radius: 10px;
+  color: var(--accent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 .home-brand svg {
   display: block;
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
 }
 .home-title {
-  font-size: 21px;
+  font-size: 26px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
   color: var(--text-primary);
 }
 .home-sub {
-  margin-top: 6px;
-  font-size: 13px;
+  margin-top: 7px;
+  /* 52ch 是**行宽**约束而不是排版偏好：这一句是唯一的品牌陈述，
+     一行读到底比折成两行更完整，也不至于在超宽屏上拉成一条难读的长线。 */
+  max-width: 52ch;
+  font-size: 14px;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 
-/* ── 主行动（全页唯一 primary，复用既有 .btn/.btn-primary 配方） ── */
+/* ── 库概览 ──
+   全页第二个主语：**四项平铺** —— 张图片 / 个视频 / 总大小 / 个目录。
+
+   🔴 为什么不给图片数更大字号（2026-10-06 用户否决了上一版）：
+     上一版是「1 主数字（30px）+ 3 次级（15px）」，把图片数抬到主行。用户反馈
+     「**图片和视频不在一个层级好吗**」—— 对使用者来说图片与视频是同一维度的两个取值
+     （底栏那个筛选下拉 `#mediaFilterSelect` 里它俩就是并列的 `image` / `video`），
+     谁高谁低没有依据；而这个高低一旦只由**字号**表达，就会被读成「视频不重要」。
+     ⇒ 四项同字号同权重、一行排开。层级改由**本块与页头/卡片的关系**给出
+     （整体比卡片标题重、比页标题轻），不压在四项之间。
+     顺带一个好的副作用：没有主次就没有那条 `border-top` 分隔线，本块的结构装饰归零 ——
+     与「层级靠结构与排版，不靠装饰」是同一件事。
+
+   🔴 恒形（骨架态 ↔ 填充态尺寸必须逐值相同）靠三件事，缺一条都会跳字：
+     ① 数值**字号在骨架态就用终值**（`—` 也是这个字号）；
+     ② 四项 `repeat(4, minmax(0, 1fr))` 均分 ⇒ 格宽由容器决定、与位数无关；
+     ③ 所有数值 `nowrap` ⇒ 不因换行而改高。
+   本块是纯展示：无指针、无 hover、零 `data-home-goto`（可点节点数见守护 §5）。 */
+.home-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 30px;
+  padding: 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background-color: var(--bg-card);
+}
+/* ⚠️ 每格用**行内流**而不是 flex + baseline：`.home-stat-value` 一旦需要 `overflow: hidden`
+   （防超长数字撑破），就会创建新的格式化上下文、baseline 退化成盒底边，数字与标签会错位。
+   行内块天然按内容 baseline 对齐，而这里本来也不需要 overflow。 */
+.home-stat-item {
+  min-width: 0;
+  line-height: 1;
+}
+.home-stat-value {
+  display: inline-block;
+  /* 20px 是「四项平铺」下的取值：比卡片标题（15px）重、比页标题（26px）轻，
+     且让最长的一项「1,199,030 张图片」在 1160px 窗口的四分之一栏里仍单行放得下。 */
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  /* tabular-nums：占位符 `—` ↔ 数字切换时字面宽度不抖（恒形的第三条件）。 */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.home-stat-label {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── 主行动 ──
+   全页第三个主语，也是**唯一**的实心块（形态语言：实心 = 主行动）。
+   上一版给它叠了 accent 外投影「让它浮起来」—— 本轮去掉：页面上只有它一个实心元素，
+   这本身就是最强的重量信号；再叠投影就变成「实心 + 发光」，与「装饰克制」的主张自相矛盾。
+   复用既有 `.btn` / `.btn-primary` 配方（记忆红线：纯 accent 直配白字跨 22 套预设最坏 1.53，
+   所以不能自己另写一套 primary）。 */
 .home-cta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 20px;
+  gap: 14px;
+  margin-top: 26px;
 }
 .home-cta-btn {
-  padding: 10px 20px;
-  border-radius: 9px;
-  font-size: 14px;
+  padding: 11px 22px;
+  border-radius: 10px;
+  font-size: 14.5px;
   font-weight: 600;
-  /* 浮起来：主按钮是全页唯一的实心块，给它一点外投影才不像贴纸。
-     走 box-shadow（不碰背景/文字），因此不影响白字对比度。 */
-  box-shadow: 0 6px 18px -8px var(--accent-glow);
 }
 .home-cta-hint {
   font-size: 13px;
   color: var(--text-muted);
 }
 
-/* ── 分段标题：细线全页只用这一处（首页不是空状态，不用虚线框） ── */
+/* ── 分段标题：一个标签 + 一条纯色细线（全页唯一的分隔线） ──
+   上一版这里是「强调色菱块 + accent 渐隐细线」两处装饰。本轮都去掉 ——
+   段头的职责只是**分组**，一条 1px 中性线就够；加渐变反而让「能做什么」这四个字
+   比它要分组的卡片更抢眼。
+   ⚠️ `.home-section-note`（「卡片是介绍，点里面的按钮直接去」）必须保留：
+      它是守护 R9 的补偿信号，删掉会变红。这一版虽然把版式本身做对了，
+      但这句备份提示仍有价值 —— 用户仍可能先在卡片上点一下。 */
 .home-section-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 26px 0 13px;
+  gap: 14px;
+  margin: 38px 0 16px;
 }
 .home-section-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-secondary);
   white-space: nowrap;
-}
-/* 装饰 ③：段头前的强调色小菱块。用伪元素而不是文本节点 —— 免得为了一个符号再进
-   i18n 表（守护 §9 对 home.* 词条做「无孤儿」比对，凭空多一条就得两语言各加一份）。 */
-.home-section-title::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 8px;
-  border-radius: 2px;
-  vertical-align: 1px;
-  background-image: linear-gradient(140deg, var(--accent), var(--accent-2, var(--accent)));
 }
 .home-section-head i {
   flex: 1 1 auto;
   height: 1px;
-  /* 装饰 ④：细线由强调色向透明渐隐 —— 比一条纯灰线有方向感，正好指向右侧的说明文字 */
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent) 42%, var(--border)),
-    transparent
-  );
+  background: var(--border);
 }
 .home-section-note {
   font-size: 12px;
@@ -7409,65 +8187,38 @@ html.home-page-open #sidebarResizer {
   white-space: nowrap;
 }
 
-/* ── 能力卡网格：4 张卡 ⇒ 2 列 2 行，末行刚好填满 ── */
+/* ── 能力卡网格：4 张卡 ⇒ 2 列 2 行，末行刚好填满 ──
+   刻意**等权**：4 个能力域对用户是平级的「能做什么」，强行主次反而误导
+   （有人最需要的可能是「只看视频」而不是「所有文件」）。等权网格 + 统一视觉语言
+   是诚实的做法；层级交给页头那三个主语句去建立，不压在卡片权重上。 */
 .home-feature-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
   align-items: stretch;
 }
 .home-feature {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 16px 15px;
+  gap: 16px;
+  padding: 20px 20px 18px;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  /* position 只为下面那条左侧竖条（::before 走绝对定位）而加。
-     🔴 卡片仍然是「介绍容器」，不是入口：不加 cursor、不加 transform、不加 :hover。
-     守护 §6 把 Home 样式段内的 cursor:pointer 与 :hover **各钉成 1 处**，
-     那唯一一对只能属于 .home-chip —— 这里多一个 :hover 就直接红。 */
-  position: relative;
-  /* 装饰 ⑤：右上角一层极淡的强调色晕。走背景层 ⇒ 永远在文字之下，零对比度风险。
-     ⚠️ 分开写 background-color / background-image（不写 background 简写）：
-        简写会按隐含默认值把 background-image 一起重置。 */
+  border-radius: 14px;
+  /* 表面只有「一层底色 + 1px 边框」。
+     上一版这里有四层：`--bg-card` + 右上角 accent 径向光晕 + 左侧 3px 渐变竖条 + 投影片影
+     —— 每张卡都像一块小海报，四张并排时页面找不到重点。
+     🔴 卡片仍是「介绍容器」不是入口：无 `cursor`、无 `transform`、无 `:hover`
+        （守护 §6 要求段内 `cursor:pointer` 与 `:hover` 各只出现 1 次，且都属 `.home-chip`）。 */
   background-color: var(--bg-card);
-  background-image: radial-gradient(
-    180px 120px at 100% 0%,
-    color-mix(in srgb, var(--accent) 11%, transparent) 0%,
-    transparent 72%
-  );
-  /* 一点体积感。沿用 .photo-card 那套硬编码黑影子（深色档几乎不可见 = 无害）。 */
-  box-shadow: 0 1px 3px #0000000f;
-}
-/* 装饰 ⑥：左侧强调色竖条。
-   宽 3px，落在卡片的 16px 内边距里 ⇒ 压不到任何文字。
-   用伪元素而不是 border-left：既能给渐变 + 圆角，又不动盒模型 ——
-   加真 border 会让同一行的两张卡内容宽度差 2px。
-   ⚠️ `position: absolute` 不能省：`.home-feature` 是 flex 容器，不脱离文档流的话
-      这个伪元素会变成一个 flex item，把图标和文案整体往下挤。 */
-.home-feature::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 14px;
-  bottom: 14px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  opacity: 0.85;
-  background-image: linear-gradient(
-    180deg,
-    var(--accent),
-    color-mix(in srgb, var(--accent) 18%, transparent)
-  );
 }
 .home-feature-head {
   display: flex;
-  gap: 11px;
+  gap: 12px;
   min-width: 0;
 }
-/* 装饰 ⑦：图标底座。20px 线稿裸放在卡上太单薄，给一块强调色淡板托住。
-   底座 30px 仍矮于右侧两行文案（≈44px）⇒ 卡片高度不变。 */
+/* 装饰 ③：图标底座 —— 从「30px 实心 accent-dim 底 + 20px 线稿」改成**描边底座**，
+   与品牌徽标同一套形态语言（描边 = 静态标识，实心 = 可点）。
+   ⚠️ 底座 30px 仍矮于右侧两行文案（≈46px）⇒ 卡片高度不会被它撑高。 */
 .home-feature-icon {
   flex: 0 0 30px;
   width: 30px;
@@ -7477,38 +8228,44 @@ html.home-page-open #sidebarResizer {
   justify-content: center;
   border-radius: 9px;
   color: var(--accent);
-  background: var(--accent-dim);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .home-feature-icon svg {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
 }
 .home-feature-body {
   min-width: 0;
 }
 .home-feature-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 .home-feature-desc {
-  margin-top: 4px;
+  margin-top: 5px;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 
-/* ── 卡内入口 chips ──
-   margin-top:auto 让 chips 贴底：同行卡片等高时，chip 数不同也不会参差。 */
+/* ── 卡内入口 chips：全页唯一的次级可点形态 ──
+   形态语言：**描边 = 次级入口**，常态中性、hover 才转 accent。
+   上一版常态描边就偏向 accent 28%，于是「卡片边框（中性）/ 图标底座（淡 accent 底）/
+   chip 边框（偏 accent）」三种描边各说各话，静态看是一堆彩色盒子，反而看不出哪个能点。
+   现在只有 hover 反馈与 `›` 后缀在说「这能点」。
+   `margin-top:auto` 让 chips 贴底：同行卡片等高时，chip 数不同也不会参差。 */
 .home-feature-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   margin-top: auto;
 }
 .home-chip {
+  /* 🔴 `font: inherit` 必须写 —— 原生 <button> 不继承字体。 */
   font: inherit;
   font-size: 12.5px;
   line-height: 1;
@@ -7516,29 +8273,27 @@ html.home-page-open #sidebarResizer {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 10px;
-  /* 装饰 ⑧：描边往强调色偏 28% —— 常态就透出「这是个按钮」，
-     否则 chip 与卡片边框同色，整页看起来没有可点的东西。 */
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: 7px;
-  background: var(--bg-hover);
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-secondary);
   transition:
     background var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard),
     color var(--dur-fast) var(--ease-standard);
 }
+/* `›` 后缀是「这一片能点」的第二个信号（第一个是 hover 反馈）。
+   用伪元素而不是文本节点 ⇒ 不占 i18n 词条（守护 §9 对 home.* 做「无孤儿」比对）。 */
 .home-chip::after {
   content: '›';
   margin-left: -1px;
   font-size: 13px;
   line-height: 1;
-  opacity: 0.65;
+  opacity: 0.6;
 }
 .home-chip:hover {
   background: var(--accent-dim);
-  /* 常态描边已偏向强调色 28%，hover 必须给到实色才看得出「更亮了」
-     （原先是 var(--accent-dim)，比新常态还淡 ⇒ hover 反而变弱）。 */
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -7550,12 +8305,18 @@ html.home-page-open #sidebarResizer {
   outline-offset: 2px;
 }
 
-/* 窄屏退成单列，避免两列时说明折行、卡片高度参差。 */
+/* ── 窄屏 ──
+   能力卡退单列（两列时说明会折行、卡片高度参差）；
+   库概览退 2×2（4 列时每一栏不到 120px，「1,199,030 张图片」会被挤到折行 ⇒ 反而更难读）。 */
 @media (max-width: 760px) {
+  .home-page {
+    padding: 24px 20px 32px;
+  }
   .home-feature-row {
     grid-template-columns: minmax(0, 1fr);
   }
-  .home-page {
-    padding: 20px 18px 24px;
+  .home-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
   }
 }

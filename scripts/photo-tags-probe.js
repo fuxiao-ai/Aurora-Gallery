@@ -1,7 +1,7 @@
 'use strict';
 /* global WebSocket */
 /**
- * 「AI 内容标签」端到端探针（手动跑，不是回归）。
+ * 「主题标签」端到端探针（手动跑，不是回归）。
  *
  * 为什么必须有它：这条链路横跨**三个进程 / 三个库**——
  *   渲染进程（注册表渲染胶囊、点击）→ 主进程 IPC → `SemanticTags` 只读连接
@@ -195,7 +195,7 @@ async function main() {
     st.previewIndex = 0;
     st.previewTotalPhotos = 1;
     st.slideshowRandom = false;
-    // 只勾「文件名 + AI 标签」，让断言聚焦
+    // 只勾「文件名 + 主题标签」，让断言聚焦
     st.infoPanelFields = ['file_name', 'ai_tags'];
     el.classList.add('open');
     // 同时把预览遮罩置为 active —— 否则「跳转前会关预览」那条断言是空跑的
@@ -231,7 +231,7 @@ async function main() {
     JSON.stringify(opened.overlayActive),
   );
   check(
-    '🔴 面板里出现了 AI 标签胶囊（IPC → 注册表 → DOM 全通）',
+    '🔴 面板里出现了 主题标签胶囊（IPC → 注册表 → DOM 全通）',
     opened.chipCount > 0 && !opened.empty,
     JSON.stringify(opened),
   );
@@ -387,7 +387,7 @@ async function main() {
 
   // ------------------------------------------------------------------ 输出
   const failed = results.filter((r) => !r.ok);
-  process.stdout.write('[photo-tags-probe] AI 内容标签端到端\n');
+  process.stdout.write('[photo-tags-probe] 主题标签端到端\n');
   for (const r of results) {
     process.stdout.write('  ' + (r.ok ? '\u2713' : '\u2717') + ' ' + r.name + (r.detail ? '  [' + r.detail + ']' : '') + '\n');
   }

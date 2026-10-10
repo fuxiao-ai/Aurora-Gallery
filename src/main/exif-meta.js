@@ -6,7 +6,7 @@
  * 🔴 为什么必须只有一份：这些值最终写进 `photos` 的那几十列，而**两条路**都会产出它们 ——
  *    扫描期（`scanner.js`，`GENERATE_THUMBNAILS_DURING_SCAN` 为真时）与缩略图补全顺带读
  *    （`main.js#processOne`）。两份实现一定会漂移，而漂移的方向是「字段时有时无」：
- *    不报错、也不写日志，只是某些照片能搜到相机型号、另一些不能。
+ *    不报错、也不写日志，只是某些图片能搜到相机型号、另一些不能。
  *
  * 🔴 字段用**声明式注册表**（`EXIF_FIELD_SPECS`）描述，下面这些全部由它派生，不许手抄：
  *      · `EXIF_FIELD_COLUMNS`（key → 列名）
@@ -43,7 +43,7 @@ var exifReader = require('exif-reader');
  * 回填口径的**版本号**。每扩一次字段就 +1。
  *
  * 🔴 它是「已检查」标记的**第二半**。只写 `exif_mtime` 是个**二元**标记（看过就再也不看），
- *    所以扩字段时若不动它，**已经跑过的行会永久缺新列** —— 不报错、不写日志，只是那些照片
+ *    所以扩字段时若不动它，**已经跑过的行会永久缺新列** —— 不报错、不写日志，只是那些图片
  *    在面板上永远少几行。候选谓词因此是
  *    `exif_mtime IS NULL OR IFNULL(exif_ver, 0) < EXIF_SCHEMA_VERSION`（见 `database.js#_sqlNeedsExifExpr`）。
  *
@@ -324,7 +324,7 @@ function toDecimalDegrees(dms, ref) {
 
 /**
  * 海拔：`GPSAltitudeRef` 为 1 表示**海平面以下** ⇒ 取负。
- * 拿不到 Ref 时按正值处理（绝大多数照片如此，宁可差个符号也不要丢掉整条读数）。
+ * 拿不到 Ref 时按正值处理（绝大多数图片如此，宁可差个符号也不要丢掉整条读数）。
  */
 function toSignedAltitude(alt, ref) {
   var v = asNumber(alt);
@@ -399,7 +399,7 @@ var NORMALIZERS = {
  * 从 `sharp().metadata()` 的返回里解析出拍摄参数。
  *
  * 🔴 **绝不抛**：没有 EXIF / 解析失败 / 字节损坏，一律返回全 null 的字段对象。
- *    「这张照片本来就没有 EXIF」必须能和「解析炸了」区分开的是**调用方**（靠 `metadata()`
+ *    「这张图片本来就没有 EXIF」必须能和「解析炸了」区分开的是**调用方**（靠 `metadata()`
  *    本身有没有成功），而不是这里 —— 这里一律给一个可写的空壳，调用方才敢写「已检查」标记，
  *    否则候选集永远收敛不了。
  *
@@ -429,8 +429,8 @@ function extractExifFields(metadata) {
     try {
       out[spec.key] = readField(spec, bags);
     } catch (e) {
-      // 单个字段炸掉不该拖垮整张照片：这一项留 null，其余照常。
-      // （旧实现是整段 try，一个坏字段会让后面所有字段一起丢 —— 症状是「有的照片只有品牌没有光圈」。）
+      // 单个字段炸掉不该拖垮整张图片：这一项留 null，其余照常。
+      // （旧实现是整段 try，一个坏字段会让后面所有字段一起丢 —— 症状是「有的图片只有品牌没有光圈」。）
       out[spec.key] = null;
     }
   }

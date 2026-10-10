@@ -1,9 +1,17 @@
 /**
- * 视频首帧缩略图（ffmpeg）与无帧时的占位 JPEG，供主进程 thumb 协议与 Web /thumb 共用。
+ * 视频首帧缩略图（ffmpeg）与无帧时的占位图，供主进程 thumb 协议与 Web /thumb 共用。
+ *
+ * ⚠️ 命名里刻意不带编码格式：出什么格式由 `main/thumb-format.js#THUMB_ENCODE_FORMAT` 决定，
+ *    以前叫 `…Jpeg` 时换 WebP 就变成了半个谎（主进程那两个包装函数从来没带过格式名）。
  */
 'use strict';
 
 var spawn = require('child_process').spawn;
+var thumbFormat = require('./main/thumb-format');
+var resizeThumb = thumbFormat.resizeThumb;
+var encodeThumb = thumbFormat.encodeThumb;
+var THUMB_DEFAULT_SIZE = thumbFormat.THUMB_DEFAULT_SIZE;
+var THUMB_DEFAULT_QUALITY = thumbFormat.THUMB_DEFAULT_QUALITY;
 
 var sharpModule = null;
 function loadSharp() {
@@ -16,11 +24,11 @@ function loadSharp() {
  * @param {{ ffmpegPath?: string, size?: number, quality?: number }} opts
  * @returns {Promise<Buffer|null>}
  */
-function extractVideoFrameJpeg(filePath, opts) {
+function extractVideoFrameThumb(filePath, opts) {
   opts = opts || {};
   var ffmpegPath = opts.ffmpegPath;
-  var size = Math.max(64, Math.min(1024, parseInt(opts.size, 10) || 256));
-  var quality = Math.max(50, Math.min(95, parseInt(opts.quality, 10) || 75));
+  var size = Math.max(64, Math.min(4096, parseInt(opts.size, 10) || THUMB_DEFAULT_SIZE));
+  var quality = Math.max(50, Math.min(95, parseInt(opts.quality, 10) || THUMB_DEFAULT_QUALITY));
 
   return new Promise(function (resolve) {
     if (!ffmpegPath || !filePath) {
@@ -106,11 +114,8 @@ function extractVideoFrameJpeg(filePath, opts) {
         return;
       }
       var buf = Buffer.concat(out);
-      loadSharp()(buf)
-        .rotate()
-        .resize(size, size, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: quality })
-        .toBuffer()
+      // 走共用算子：缩放 + 编码（编码格式的唯一来源在 thumb-format.js）
+      resizeThumb(loadSharp()(buf), size, quality)
         .then(function (finalBuf) {
           finish(finalBuf);
         })
@@ -125,10 +130,10 @@ function extractVideoFrameJpeg(filePath, opts) {
  * @param {{ size?: number, quality?: number }} opts
  * @returns {Promise<Buffer>}
  */
-function buildVideoPlaceholderJpeg(opts) {
+function buildVideoPlaceholderThumb(opts) {
   opts = opts || {};
-  var size = Math.max(64, Math.min(1024, parseInt(opts.size, 10) || 256));
-  var quality = Math.max(50, Math.min(95, parseInt(opts.quality, 10) || 75));
+  var size = Math.max(64, Math.min(4096, parseInt(opts.size, 10) || THUMB_DEFAULT_SIZE));
+  var quality = Math.max(50, Math.min(95, parseInt(opts.quality, 10) || THUMB_DEFAULT_QUALITY));
   var svg =
     '<svg xmlns="http://www.w3.org/2000/svg" width="' +
     size +
@@ -146,13 +151,15 @@ function buildVideoPlaceholderJpeg(opts) {
     '<path d="M112 92 L112 164 L172 128 Z" fill="rgba(255,255,255,0.86)"/>' +
     '<circle cx="128" cy="128" r="56" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="6"/>' +
     '</svg>';
-  return loadSharp()(Buffer.from(svg))
-    .resize(size, size, { fit: 'cover' })
-    .jpeg({ quality: quality })
-    .toBuffer();
+  // 占位图是 SVG 画的方形图，用 `cover` 不用 `inside`（与图片那路不同），
+  // 所以这里只借编码这一步，不借 `resizeThumb()` 的缩放形态。
+  return encodeThumb(
+    loadSharp()(Buffer.from(svg)).resize(size, size, { fit: 'cover' }),
+    quality,
+  );
 }
 
 module.exports = {
-  extractVideoFrameJpeg: extractVideoFrameJpeg,
-  buildVideoPlaceholderJpeg: buildVideoPlaceholderJpeg,
+  extractVideoFrameThumb: extractVideoFrameThumb,
+  buildVideoPlaceholderThumb: buildVideoPlaceholderThumb,
 };

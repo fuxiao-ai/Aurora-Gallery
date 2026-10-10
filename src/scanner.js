@@ -6,6 +6,15 @@ const crypto = require('crypto');
 // 只翻 exif.Photo 会让品牌/型号/定位永远取空。
 const { extractExifFields } = require('./main/exif-meta');
 const logger = require('./main/logger');
+// 缩略图「缩放 + 编码」的唯一入口（编码格式也只在那边定义）——
+// 扫描写入的 `thumb_size` / `thumb_format` 必须与图片补全、网页端按需生成**完全同源**，
+// 否则重跑任务的候选谓词会把刚生成的这批人反复算成「待重生成」。
+const {
+  resizeThumb,
+  normalizeThumbSize,
+  THUMB_ENCODE_FORMAT,
+  THUMB_DEFAULT_QUALITY,
+} = require('./main/thumb-format');
 
 var IMAGE_EXTENSIONS = new Set([
   '.jpg',
@@ -21,6 +30,18 @@ var IMAGE_EXTENSIONS = new Set([
   '.avif',
   '.svg',
   '.ico',
+  // 🔴 下面这些扩展名此前**不在白名单里** —— 等于「这类文件根本扫不进来」。
+  //    它们 libvips（sharp）**一张也读不了**，靠 `src/main/image-decoders/` 自研解码器兜底出像素
+  //    （接线在 `main.js#decodeWithOwnDecoder`）。实测的 libvips 可读输入只有 9 种：
+  //    gif / heif / jpeg / png / raw / svg / tiff / vips / webp。
+  '.tga',
+  '.qoi',
+  '.pbm',
+  '.pgm',
+  '.ppm',
+  '.pnm',
+  '.pam',
+  '.dib',
   '.raw',
   '.cr2',
   '.cr3',
@@ -351,7 +372,7 @@ Scanner.prototype.scanFolder = async function (rootPath) {
       // ⚠️ 注意 `enumerateFiles` 当前把 fs 错误（路径不存在 / 无权限）**吞成空结果**，
       // 所以「选了个已被删掉的目录」不会走到这里 —— 那种情况下根会留下、数量为 0，
       // 与本次改动前一致（空目录本身是合法场景，不能一概撤根）。
-      // ⚠️ 只包枚举这一句：插入阶段的失败不撤根 —— 那会儿可能已经写了部分照片，
+      // ⚠️ 只包枚举这一句：插入阶段的失败不撤根 —— 那会儿可能已经写了部分图片，
       // 用户重扫即可，撤根反而会把已入库的记录一起删掉。
       try {
         this.db.removeRootFolder(rootPath);
@@ -763,14 +784,10 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
         gpsLongitude = exifFields.gpsLongitude;
 
         try {
-          var topts = this.getThumbOptions();
-          var tsz = topts.size || 256;
-          var tq = topts.quality != null ? topts.quality : 75;
-          var thumbBuffer = await sharp(filePath)
-            .rotate()
-            .resize(tsz, tsz, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: tq })
-            .toBuffer();
+          var topts = this.getThumbOptions() || {};
+          var tsz = normalizeThumbSize(topts.size);
+          var tq = topts.quality != null ? topts.quality : THUMB_DEFAULT_QUALITY;
+          var thumbBuffer = await resizeThumb(sharp(filePath), tsz, tq);
           thumbnail = thumbBuffer;
           generatedThumbSize = tsz;
         } catch (e) {}
@@ -851,9 +868,10 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
       dateModified,
       thumbnail || null,
       thumbnail ? 1 : 0,
-      // 缩略图规格：如实记录生成时的目标档位与编码格式（编码在 714 行固定为 JPEG）
+      // 缩略图规格：如实记录生成时的目标档位与编码格式
+      // （编码格式取 `THUMB_ENCODE_FORMAT` —— 与实际字节同源，不许再写死字符串）
       thumbnail ? generatedThumbSize : 0,
-      thumbnail ? 'jpeg' : '',
+      thumbnail ? THUMB_ENCODE_FORMAT : '',
       cameraMake,
       cameraModel,
       lensModel,
@@ -871,7 +889,7 @@ Scanner.prototype.processFile = async function (filePath, rootId, preStat) {
     // `changes === 0` ⇒ 这个 file_path 库里已有一行，而 partition 阶段只把
     // 「mtime 或 size 与库内不一致」的文件放进本阶段 ⇒ **它就是被变更过的文件**。
     // 🔴 必须把新值写回去（并在同一句里失效派生列），否则下一轮还会判它变了 —— 候选永不收敛，
-    // 就地替换过的照片永远留着旧缩略图与旧指纹。
+    // 就地替换过的图片永远留着旧缩略图与旧指纹。
     // ⚠️ 测试替身 / 老库上取不到该语句时保持旧语义（返回 'ignored'），不要抛错中断整次扫描。
     if (this.updateFileFactsStmt) {
       var updateArgs = writeArgs.slice();

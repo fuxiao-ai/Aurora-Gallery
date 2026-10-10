@@ -1,5 +1,29 @@
 'use strict';
 
+// `EXIF_SCHEMA_VERSION` 是**唯一**需要烤进 SQL 字面量的版本号（`_sqlNeedsExifExpr()` 与本文件
+// 的 `BACKFILL_PENDING_CORE_PRED` 都用它）。放在这里而不是各处 require：
+// 两边一旦各取各的，版本一升就会出现「查询要 `< 3`、部分索引的 WHERE 还是 `< 2`」——
+// 而部分索引的匹配是**逐字**的，蕴含证不出来 ⇒ 规划器静默退回全表扫（不报错）。
+var EXIF_SCHEMA_VERSION = require('./main/exif-meta').EXIF_SCHEMA_VERSION;
+
+// 图片「列表行」的列清单唯一真相源（含 `thumb_size` / `thumb_format`）。
+// ⚠️ 本文件是**读 Worker** 的实际执行体，与 `database.js` 是同一个查询的两份入口 ——
+//    列清单在这里被抄一份的话，Worker 那条路就会少带缩略图规格，而两条路的结果
+//    在界面上是同一批卡片 ⇒ 症状是「有时正常有时不刷新」。见 `photo-list-columns.js`。
+var photoListColumns = require('./main/photo-list-columns').photoListColumns;
+// 封面行要的两列（`thumb_size` / `thumb_format`）：封面查询主体是窗口函数，会把整棵子树
+// 物化一遍（真库单根 90 万行），**不能**把基线列清单整个塞进去 —— 只按主键回查这两列。
+// 约定写在 `photo-list-columns.js#thumbSpecColumnsPrefixed`，由
+// `scripts/photo-thumb-url-regression.js` 第 3 组守着（封面 SQL 里出现基线清单就红）。
+var thumbSpecColumnsPrefixed = require('./main/photo-list-columns').thumbSpecColumnsPrefixed;
+// 组织元数据（评分 / 标记 / 标签）的筛选谓词。**必须从这里取，不能自己写一份**：
+// 本文件是日期页照片列表的实际执行体，与 `database.js#getPhotos` 是同一套筛选的两个
+// 入口 —— 各写一份的症状是「总览页筛了、日期页没筛」，用户以为自己看的是「仅 5 星」，
+// 其实日期页给的是全部。不报错、不写日志，只在有人手工对数时暴露。
+// ⚠️ 它住在叶子模块而不是 `database.js`：本文件被 `database.js` require，
+//    反向 require 会成环（见 `org-meta-filter.js` 文件头）。
+var pushOrgMetaConditions = require('./main/org-meta-filter').pushOrgMetaConditions;
+
 /**
  * 与 root_folder_stats_cache.media_key 一致（all / image / video）
  */
@@ -60,6 +84,90 @@ var IMAGE_TYPE_PRED = "lower(replace(file_type, '.', '')) NOT IN " + VIDEO_TYPE_
 /** 部分索引名；**只在这里引用，绝不自己建** —— 唯一真相源是 `src/workers/deferred-index-worker.js`。 */
 var AGG_VIDEO_INDEX = 'idx_photos_agg_root_folder_video';
 var AGG_IMAGE_INDEX = 'idx_photos_agg_root_folder_image';
+
+/**
+ * 「整根去重目录数」（`all` 档）用的覆盖索引：`(root_id, folder_path)`。
+ *
+ * 🔴 与 `AGG_*` 那两条一样是**名字的唯一真相源**；DDL 在 `database.js#createCoreSchema`
+ *    （`idx_photos_root_folder`），`deferred-index-worker` 也会补建一次。
+ *
+ * 为什么必须有它：`all` 档的目录数原先不带 hint，规划器会挑更"便宜"的 `idx_photos_root (root_id)`
+ * 逐行取 `folder_path` 再去重。真库实测（`K:\COS`，912,222 行）：
+ *   · 无 hint   → **3,424 ms**
+ *   · 带本 hint → **228 ms**（15×，结果值 31,730 逐个相同）
+ * 根 27 / 28 同样（513→44 ms、1,013→94 ms）。
+ */
+var AGG_ALL_FOLDER_INDEX = 'idx_photos_root_folder';
+
+/**
+ * 「伴生视频」的部分索引名与谓词（2026-10-06 加）。
+ *
+ * 🔴 **索引名与谓词都只在这里写一份**：DDL 在 `src/main/deferred-indexes.js#PHASE5_INDEXES`
+ *    （带 `IF NOT EXISTS`，由 `deferred-index-worker` 在首窗后建），本模块只引用名字。
+ *    与 `AGG_*` 那两条**是同一种分工**：谓词必须**逐字相同**，否则部分索引静默失效
+ *    （不报错，只是规划器不再用它）。
+ */
+var LIVE_COMPANION_INDEX = 'idx_photos_live_companion';
+var LIVE_COMPANION_PRED = 'live_still_id > 0';
+
+/**
+ * 「缩略图补全」的两条部分索引名。
+ *
+ * `idx_photos_missing_thumb` 由 `src/workers/thumbnail-fix-worker.js`（启动期一次性迁移 worker）
+ * 建 —— 本模块只引用名字、绝不自己建。
+ *
+ * 🔴 为什么 `database.js` 的第一趟取批要**钉住**它（`INDEXED BY`）：
+ *    该取批的 WHERE（`has_thumbnail = 0 AND <失败标记可重试>`）同样蕴含
+ *    `BACKFILL_PENDING_CORE_PRED`（后者的第一支就是 `has_thumbnail = 0`）⇒ 一旦新索引存在，
+ *    规划器可以合法地改用**新**索引。而两者条目数差三个数量级：真库实测
+ *    `idx_photos_missing_thumb` 条目 ≈ 0（缩略图已补齐），新索引条目 ≈ 86 万
+ *    ⇒ 改用新索引 = 逐行回表 86 万次（真库外推 ~200 s），而现在是 8 ms。
+ *    这是「新索引把既有查询带偏」的典型形态，**必须**钉死（反向对照见
+ *    `scripts/thumb-backfill-metadata-fetch-regression.js`）。
+ */
+var MISSING_THUMB_INDEX = 'idx_photos_missing_thumb';
+var BACKFILL_PENDING_INDEX = 'idx_photos_backfill_pending';
+
+/**
+ * 「补全任务还有活可干」的**核心谓词** —— 四条判据各自**只看「缺什么」**、
+ * 不看失败标记与 `date_modified`（那是逐支 residual 的事）。
+ *
+ * 用途只有一个：当**部分索引的 WHERE**。取批 SQL 里会**逐字**再放一份这个字符串当合取项，
+ * 好让规划器能用上那条索引（`WHERE id < ? AND <本串> AND <完整谓词>`）。
+ *
+ * ## 为什么它能这么写（三件事缺一不可）
+ *
+ * 1. 🔴 **完整谓词 ⟹ 本串**，所以把它加进 WHERE **语义零变化**（纯冗余合取项）。
+ *    `_sqlBackfillPendingExpr()` = `(缺缩略图 AND 可重试) OR (是图片 AND ((缺dHash AND 可重试)
+ *    OR (缺尺寸 AND 可重试) OR (EXIF旧 AND 可重试)))`，四条支各自蕴含本串的一段：
+ *    第一支 ⇒ `has_thumbnail = 0`；后三支 ⇒ 本串第二段里的三个小项。
+ *    逐字同源由 `scripts/thumb-backfill-metadata-fetch-regression.js` 断言。
+ * 2. 🔴 **只建索引不改谓词没用**：夹具实测「索引存在、WHERE 不动」时计划**仍是**
+ *    `SEARCH photos USING INTEGER PRIMARY KEY (rowid<?)` —— SQLite 要求「查询的 WHERE 蕴含
+ *    索引的 WHERE」，而那个四支 OR + 逐支 residual 的形状它证不出来。加上本串之后
+ *    （与索引 WHERE **逐字相同**的一整棵子树）蕴含关系变成一次「表达式树完全相同」的比较，
+ *    规划器当场改走 `SEARCH photos USING INDEX idx_photos_backfill_pending (id<?)`。
+ * 3. 🔴 **后三支刻意被 `IMAGE_TYPE_PRED` 门住**（视频不进索引）：
+ *    视频的 `dhash` 恒为 NULL（不做感知哈希）⇒ 若不门住，真库 26,609 个视频**永久**留在
+ *    索引里；而取批是**倒序**的，收敛区里的视频会被逐个回表确认、再判 `is_image` 失败丢掉。
+ *    夹具实测：不门住 ⇒ 索引内含 125 个视频条目（真库 26,609）；门住 ⇒ **0**。
+ *    ⚠️ 第一支（`has_thumbnail = 0`）**不能**一并门进 `is_image`：视频的缩略图是能生成的
+ *    （ffmpeg / 占位图兜底），门掉就等于放弃它们 —— 与 `_sqlBackfillPendingExpr()` 里
+ *    「第一支不许挪进 is_image」是同一条理由。
+ *
+ * ⚠️ `EXIF_SCHEMA_VERSION` 烤在这串里 ⇒ **升版必须重建索引**（否则查询要 `< 3`、
+ *    索引 WHERE 还是 `< 2`，蕴含证不出来 ⇒ 第二趟静默退回全表扫）。
+ *    `src/main/deferred-indexes.js` 里那条索引带 `rebuildOnChange`，由
+ *    `deferred-index-worker.js` 比对 `sqlite_master.sql` 自动 DROP + CREATE。
+ */
+var BACKFILL_PENDING_CORE_PRED =
+  '(has_thumbnail = 0 OR (' +
+  IMAGE_TYPE_PRED +
+  " AND ((dhash IS NULL OR TRIM(dhash) = '')" +
+  ' OR (width IS NULL OR width = 0)' +
+  ' OR (exif_mtime IS NULL OR IFNULL(exif_ver, 0) < ' +
+  EXIF_SCHEMA_VERSION +
+  '))))';
 
 // `getStats()`（顶栏统计条）的记忆化。为什么、键怎么取、失效两条腿都在那个模块里。
 // 一句话：整条记录真库首次 8,616 ms / 热 949 ms，而调用点有 11+ 处、总在连着调。
@@ -174,6 +282,49 @@ function mediaCountIndexHint(db, rootId, mediaType) {
   return hasIndex(db, idx) ? ' INDEXED BY ' + idx : '';
 }
 
+/**
+ * 「排除 Live Photo 伴生视频」的 WHERE 条件片段（2026-10-06 加）。
+ *
+ * ## 它治的是什么
+ *
+ * 并行工作流给「所有媒体」档加了一句 `COALESCE(live_still_id, 0) = 0`（想把伴生 MOV
+ * 从浏览列表里藏掉）。语义上只排掉 **1 行**，但计划从覆盖索引退化成了**逐行回表**：
+ *
+ *   | 写法 | 计划 | 真库实测（1,656,580 行） |
+ *   | --- | --- | ---: |
+ *   | 无谓词 | `SCAN photos USING COVERING INDEX idx_photos_hasThumb` | **478 ms** |
+ *   | `COALESCE(live_still_id,0)=0` | `SCAN photos`（回表） | **105,954 ms** |
+ *
+ * `live_still_id` 在 `photos` 里排在缩略图 BLOB **之后** ⇒ 真库里这个列**没有单独索引**，
+ * 而 `idx_photos_hasThumb` 不含它 ⇒ 规划器只能放弃覆盖扫描、每行走一次溢出页链。
+ * 前端等不到结果就超时 → `loadPhotos` 的 catch → 用户看到「图片加载失败」（`app.js:5921`）。
+ *
+ * ## 为什么换写法就快
+ *
+ * `id NOT IN (SELECT id FROM photos WHERE live_still_id > 0)` 里：
+ *  · 子查询被 `idx_photos_live_companion`（**部分索引**，`WHERE live_still_id > 0`）兜住，
+ *    真库上只有 **1 个条目** ⇒ 子查询本身微秒级；
+ *  · 外层仍是 `SCAN photos USING COVERING INDEX`（**不回表**）⇒ 回到 478 ms 一档。
+ *
+ * 语义与 `COALESCE` 写法**逐个相同**（1,656,579）—— 注意 `id` 是主键、恒非 NULL，
+ * 所以 `NOT IN` 不会踩上「`NOT (NULL > 0)` = NULL」那条三值逻辑陷阱（这点在
+ * `database.js#_sqlNotLiveStillIsMotionExpr` 的注释里也强调过）。
+ *
+ * ## 🔴 返回 `null` = 调用方**刻意不加**这个条件
+ *
+ * 索引是运行期由 `deferred-index-worker` 按 `PHASE5_INDEXES` 建的，首窗之前**一定不存在**。
+ * 那段时间里：宁可多显示 1 行（伴生 MOV 露出），也**绝不**回到 106 秒的写法。
+ * 这正是「渐进增强」：慢的实现一旦可用就永远不用，快的实现可用才切过去。
+ * 所以**调用方必须容忍 `null`**，而不是自己拼一个等价兜底谓词。
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {string|null} 条件片段（不含 `AND`），或 `null` = 索引未就绪 / 不可用
+ */
+function liveCompanionExcludeCondition(db) {
+  if (!hasIndex(db, LIVE_COMPANION_INDEX)) return null;
+  return 'id NOT IN (SELECT id FROM photos WHERE ' + LIVE_COMPANION_PRED + ')';
+}
+
 /** 覆盖索引里的去重目录数（`(root_id, folder_path)` 两列都在索引里，不回表）。 */
 function countDistinctFolders(db, indexName, predicate, rootId) {
   var inner = 'SELECT DISTINCT folder_path FROM photos';
@@ -233,7 +384,9 @@ function runAggregateStatsForSingleRoot(db, rootId, options) {
   var folderCount;
   if (isImage) folderCount = countDistinctFolders(db, AGG_IMAGE_INDEX, IMAGE_TYPE_PRED, rootId);
   else if (isVideo) folderCount = countDistinctFolders(db, AGG_VIDEO_INDEX, VIDEO_TYPE_PRED, rootId);
-  else folderCount = countDistinctFolders(db, null, '', rootId);
+  // `all` 档也要显式钉住 `(root_id, folder_path)`：不带 hint 时规划器会挑 `idx_photos_root`，
+  // 逐行取 folder_path 再去重（真库根 23 实测 3,424 ms vs 228 ms，结果值相同）。
+  else folderCount = countDistinctFolders(db, AGG_ALL_FOLDER_INDEX, '', rootId);
 
   return {
     // image 档用部分索引自己的行数（`NOT IN` 会把 file_type 为 NULL 的行一并排除，
@@ -264,49 +417,55 @@ function runGetRootFoldersAgg(db, options) {
   }
   var videoPred =
     "lower(replace(p.file_type, '.', '')) IN ('mp4','mov','m4v','avi','mkv','webm','wmv','flv','mpg','mpeg','m2ts','ts','3gp','3g2')";
-  var mediaWhereBare = mediaWhere.replace(/\bp\./g, '');
-  var videoPredBare = videoPred.replace(/\bp\./g, '');
-  /** 两步：先按 root_id 聚合件数/视频数，再对 (root_id, folder_path) 去重后计目录数；利于走 (root_id, folder_path) 索引，避免单语句内 COUNT(DISTINCT) 与大 GROUP BY 耦合 */
-  var rows = db
-    .prepare(
-      `
-      WITH counts AS (
-        SELECT
-          root_id,
-          COUNT(*) AS photo_count,
-          COALESCE(SUM(CASE WHEN ${videoPredBare} THEN 1 ELSE 0 END), 0) AS video_count
-        FROM photos
-        WHERE 1 = 1 ${mediaWhereBare}
-        GROUP BY root_id
-      ),
-      folder_counts AS (
-        SELECT d.root_id, COUNT(*) AS folder_count
-        FROM (
-          SELECT DISTINCT root_id, folder_path
-          FROM photos
-          WHERE 1 = 1 ${mediaWhereBare}
-        ) AS d
-        GROUP BY d.root_id
-      )
-      SELECT
-        rf.id AS id,
-        rf.path AS path,
-        rf.name AS name,
-        COALESCE(c.photo_count, 0) AS photo_count,
-        COALESCE(f.folder_count, 0) AS folder_count,
-        COALESCE(c.video_count, 0) AS video_count
-      FROM root_folders rf
-      LEFT JOIN counts c ON c.root_id = rf.id
-      LEFT JOIN folder_counts f ON f.root_id = rf.id
-      ORDER BY rf.name ASC
-    `,
-    )
-    .all();
 
-  if (rows && rows.length > 0) {
-    return rows;
+  /**
+   * 🔴 **逐根算，每个指标各走一条覆盖索引 / 部分索引** —— 与 `runAggregateStatsForSingleRoot`
+   *    共用同一套判据（那个函数就是为了同一件事写的，注释里有 61,140 ms → 92 ms 的对照）。
+   *
+   * ## 这里以前是一趟整表 CTE，它的代价是「缓存未命中 = 必定超时」
+   *
+   * 原写法把三档都压成**一趟扫全表**的 CTE：`COUNT(*) + SUM(CASE WHEN 视频 …)` 要 `file_type`
+   * （在缩略图 BLOB **之后**，只能逐行回表），`SELECT DISTINCT root_id, folder_path` 也要把
+   * 166 万行物化一遍。它只在 `root_folder_stats_cache` **未命中**时才跑，而缓存一旦被
+   * 失效（扫描收尾只补它跑过的那几档、老库升级后新档位压根没写过）就落到这条路上。
+   *
+   * 真库实测（1,656,580 行 / 18 GB，2026-10-07）：`mediaType='image'` 的这一趟
+   * **60 秒还没跑完**（探针 60 s 硬切）；而同参数的逐根版本三根合计约 **2.9 秒**：
+   *
+   *   | 根 | photo_count | video_count | folder_count |
+   *   | --- | ---: | ---: | ---: |
+   *   | 23 `K:\COS` | 315 ms | 11 ms | 203 ms |
+   *   | 27 `G:\T` | 525 ms | 2 ms | 54 ms |
+   *   | 28 `G:\国模` | 1,062 ms | 4 ms | 83 ms |
+   *
+   * ## 为什么这不只是"慢"，而是**用户可见的故障**
+   *
+   * 切到「仅图片」时 `app.js#loadRootFolders` 会 `await api.getRootFolders({mediaType:'image'})`；
+   * 这条读走共享读池，而 `db-read-worker-pool#JOB_TIMEOUT_MS = 120000`（**含排队时间**）
+   * ⇒ 超 120 s 的任务被掐掉 + retire 一个 worker。真库上根 23/27 的 `root_folder_stats_cache`
+   * **没有 `image` 行**（只有 root 28 有）⇒ 每次切「仅图片」都必然走到这条慢路。
+   * 读池只有 3 个槽 ⇒ 被它占住的那 120 秒里，排在后面的浏览请求会被一起拖过 deadline
+   * ⇒ 前端 `loadPhotos` 的 catch 就是「图片加载失败」（`app.js`）。
+   */
+  var rootRows = db.prepare('SELECT id, path, name FROM root_folders ORDER BY name ASC').all();
+  if (rootRows && rootRows.length > 0) {
+    var out = [];
+    for (var ri = 0; ri < rootRows.length; ri++) {
+      var rf = rootRows[ri];
+      var stats = runAggregateStatsForSingleRoot(db, rf.id, { mediaType: mediaType });
+      out.push({
+        id: rf.id,
+        path: rf.path,
+        name: rf.name,
+        photo_count: stats ? stats.photo_count : 0,
+        folder_count: stats ? stats.folder_count : 0,
+        video_count: stats ? stats.video_count : 0,
+      });
+    }
+    return out;
   }
 
+  // 老库（`photos` 有行但 `root_folders` 为空）：保留原来的整表形状，只在这里兜底。
   var path = require('path');
   var mediaWhereP2 = mediaWhere.replace(/\bp\./g, 'p2.');
   var fallbackRows = db
@@ -556,10 +715,12 @@ function runGetFolderCovers(db, options) {
             COUNT(*) OVER (PARTITION BY folder_path) AS folder_photo_count
           FROM filtered
         )
-        SELECT id, file_name, folder_path, has_thumbnail, folder_photo_count
-        FROM ranked
-        WHERE rn = 1
-        ORDER BY folder_path ASC
+        SELECT r.id, r.file_name, r.folder_path, r.has_thumbnail, r.folder_photo_count,
+               ${thumbSpecColumnsPrefixed('p')}
+        FROM ranked r
+        JOIN photos p ON p.id = r.id
+        WHERE r.rn = 1
+        ORDER BY r.folder_path ASC
       `;
     const rows = db.prepare(legacySql).all(...params);
     return {
@@ -634,10 +795,12 @@ function runGetFolderCovers(db, options) {
           COUNT(*) OVER (PARTITION BY folder_path) AS folder_photo_count
         FROM filtered
       )
-      SELECT id, file_name, folder_path, has_thumbnail, folder_photo_count
-      FROM ranked
-      WHERE rn = 1
-      ORDER BY folder_path ASC
+      SELECT r.id, r.file_name, r.folder_path, r.has_thumbnail, r.folder_photo_count,
+             ${thumbSpecColumnsPrefixed('p')}
+      FROM ranked r
+      JOIN photos p ON p.id = r.id
+      WHERE r.rn = 1
+      ORDER BY r.folder_path ASC
     `;
   var covers = db.prepare(sql).all(...inParams);
   return {
@@ -684,8 +847,11 @@ function runGetImmediateSubfolderCovers(db, options) {
         ROW_NUMBER() OVER (PARTITION BY child_path ORDER BY ${folderCoverPickOrderBySql()}) AS rn
       FROM children
     )
-    SELECT child_path AS folder_path, folder_photo_count, id, has_thumbnail, file_name
-    FROM ranked WHERE rn = 1 ORDER BY child_path ASC
+    SELECT r.child_path AS folder_path, r.folder_photo_count, r.id, r.has_thumbnail, r.file_name,
+           ${thumbSpecColumnsPrefixed('p')}
+    FROM ranked r
+    JOIN photos p ON p.id = r.id
+    WHERE r.rn = 1 ORDER BY r.child_path ASC
   `;
   return db.prepare(sql).all(Array.from(prefix).length + 1, escaped, windowsEscaped, prefix);
 }
@@ -749,13 +915,20 @@ function runGetDatePhotos(db, dateStr, options) {
   }
   // 范围查询替代 date(date_taken) = ?，让 idx_photos_date 索引生效（1.7s → 38ms）
   var nextDate = nextCalendarDate(dateStr);
+  // 组织元数据筛选（2026-10-09）：与 `getPhotos` / `getFolderPhotos` 同一个谓词构造器。
+  // 条件拼在**日期范围之后**，所以绑定顺序是 `dateStr, nextDate, ...orgParams`
+  // ——下面三处 `.get/.all` 的参数顺序必须与此一致。
+  var orgConds = [];
+  var orgParams = [];
+  pushOrgMetaConditions(orgConds, orgParams, options);
+  var orgSql = orgConds.length ? ' AND ' + orgConds.join(' AND ') : '';
   var rangeWhere = favoritesOnly
-    ? 'date_taken >= ? AND date_taken < ? AND is_favorite = 1' + mediaSql
-    : 'date_taken >= ? AND date_taken < ?' + mediaSql;
-  var total = db.prepare('SELECT COUNT(*) as count FROM photos WHERE ' + rangeWhere).get(dateStr, nextDate);
-  var photoCols = lite
-    ? 'id, file_name, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite'
-    : 'id, file_name, file_path, folder_path, file_size, file_type, width, height, date_taken, date_modified, has_thumbnail, is_favorite';
+    ? 'date_taken >= ? AND date_taken < ? AND is_favorite = 1' + mediaSql + orgSql
+    : 'date_taken >= ? AND date_taken < ?' + mediaSql + orgSql;
+  var total = db
+    .prepare('SELECT COUNT(*) as count FROM photos WHERE ' + rangeWhere)
+    .get(dateStr, nextDate, ...orgParams);
+  var photoCols = photoListColumns({ lite: lite });
   var photos = db
     .prepare(
       'SELECT ' +
@@ -768,7 +941,7 @@ function runGetDatePhotos(db, dateStr, options) {
         dir +
         ' LIMIT ? OFFSET ?',
     )
-    .all(dateStr, nextDate, pageSize, offset);
+    .all(dateStr, nextDate, ...orgParams, pageSize, offset);
   return {
     photos: photos,
     total: total ? total.count : 0,
@@ -910,10 +1083,23 @@ module.exports = {
   runGetDuplicateHashGroupsBundle: runGetDuplicateHashGroupsBundle,
   // P0-1：媒体档计数走部分索引。索引名与谓词都在本模块内，外部只拿 hint 片段。
   mediaCountIndexHint: mediaCountIndexHint,
+  // 「排除伴生视频」条件（索引未就绪时返回 null ⇒ 调用方刻意不加）。
+  liveCompanionExcludeCondition: liveCompanionExcludeCondition,
+  LIVE_COMPANION_INDEX: LIVE_COMPANION_INDEX,
+  LIVE_COMPANION_PRED: LIVE_COMPANION_PRED,
+  // 缩略图补全的两条索引名 + 候选集核心谓词。谓词的唯一真相源在本模块：
+  // `database.js`（取批 SQL 的冗余合取项）与 `main/deferred-indexes.js`（索引 WHERE）
+  // 都从这里取，两边**逐字**同一份 —— 部分索引的匹配是逐字的，抄一份就等着静默失效。
+  MISSING_THUMB_INDEX: MISSING_THUMB_INDEX,
+  BACKFILL_PENDING_INDEX: BACKFILL_PENDING_INDEX,
+  BACKFILL_PENDING_CORE_PRED: BACKFILL_PENDING_CORE_PRED,
+  EXIF_SCHEMA_VERSION: EXIF_SCHEMA_VERSION,
   hasIndex: hasIndex,
   clearIndexCache: clearIndexCache,
   AGG_IMAGE_INDEX: AGG_IMAGE_INDEX,
   AGG_VIDEO_INDEX: AGG_VIDEO_INDEX,
+  // `all` 档「整根去重目录数」的覆盖索引名（回归要按它建索引 / 断言计划）。
+  AGG_ALL_FOLDER_INDEX: AGG_ALL_FOLDER_INDEX,
   // 媒体档谓词的**唯一真相源**：`src/main/deferred-indexes.js` 从这里取去拼部分索引谓词，
   // 不自己写后缀清单。两边逐字不一致 ⇒ 部分索引静默失效（不报错、只是用不上）。
   VIDEO_TYPE_LIST: VIDEO_TYPE_LIST,

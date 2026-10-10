@@ -346,8 +346,8 @@ function testEveryCallSiteDeclaresPriority() {
     );
   }
   assert(
-    seen.length === 11,
-    '应当有 11 个写库任务调用点，实际找到 ' + seen.length + ' 个：' + seen.join(', '),
+    seen.length === 14,
+    '应当有 14 个写库任务调用点，实际找到 ' + seen.length + ' 个：' + seen.join(', '),
   );
 
   const expected = {
@@ -359,6 +359,17 @@ function testEveryCallSiteDeclaresPriority() {
     'deferred-index': 'REPAIR',
     'maintenance-rebuild-thumbnail-flags': 'USER',
     'maintenance-optimize-database': 'USER',
+    /**
+     * 缩略图**全量重建**（2026-10-07 加）。
+     *
+     * 档位定在 `IDLE`：它是「用户可选的画质迁移」—— 做晚了只是糊，做早了会把用户
+     * 正在浏览读的那块盘（本机图库在外接机械盘上）抢走。而同为整文件读的缩略图补全
+     * 定在 `INDEX`，是因为补全出的是「**没有**图」的行 —— 那是缺失，不是画质。
+     * ⚠️ 两个名字分开登记：登记阶段与抽干阶段的批次粒度差三个数量级
+     * （4 万行 / 50 张），合用一个名字后就分不出「卡在登记」还是「卡在抽干」。
+     */
+    'thumb-regen': 'IDLE',
+    'thumb-regen-enqueue': 'IDLE',
   };
   Object.keys(expected).forEach(function (name) {
     const hits = found[name];

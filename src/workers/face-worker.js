@@ -81,14 +81,57 @@ async function execute(operation, args = {}) {
       failed = 0,
       skipped = 0,
       countsAt = 0;
-    progress({ phase: 'indexing', ...store.counts() });
+    /**
+     * 分母：候选集规模的**抽样估计值**（只在起手算一次 ⇒ **起始快照**）。
+     *
+     * 🔴 **单独 try**：「估不出分母」只该让百分比消失，**不该让整个索引失败** ——
+     *    人脸索引在大库上要跑几十小时，为一个进度读数把它弄死不可接受。
+     * ⚠️ 与 `store.batch()` 同源（共享 `CANDIDATE_PRED`），否则百分比与真实工作量脱钩。
+     *
+     * 🔴 **必须先报 `'counting'` 再去估**（`docs/contracts/background-tasks.md` §3.1.4）。
+     *    `estimatePendingCount()` 是 2000 次跨库点查，不是瞬时的；顺序反了的话那段时间
+     *    界面读到的是 `done = 0 / total = 0`，渲染端只能把它画成「完成 0」——
+     *    与「估计失败」**完全不可区分**。缩略图补全就是这么修的（`main.js` 里先置
+     *    `phase = 'counting'` 再去做那个会阻塞的统计），这里取同一套表达。
+     *
+     * ⚠️ 三态 `countPhase` 与 `totalEstimated` 是**两个正交的维度**：前者说「分母算到哪一步」、
+     *    后者说「这个分母是抽样估的、还是精确数出来的」。别把它俩合成一个字段 ——
+     *    合成之后 `totalEstimated` 在「估成功」与「估失败」两种情况下取值相同，
+     *    等于完全不承载信息（收敛前就是这个形状，所以界面区分不了）。
+     */
+    let estimatedTotal = 0;
+    let countPhase = 'counting';
+    progress({
+      phase: 'indexing',
+      ...store.counts(),
+      total: 0,
+      totalEstimated: true,
+      countPhase,
+    });
+    try {
+      const est = store.estimatePendingCount();
+      estimatedTotal = Math.max(0, Number(est && est.estimate) || 0);
+      countPhase = 'ready';
+    } catch (eEst) {
+      estimatedTotal = 0;
+      countPhase = 'failed';
+    }
+    progress({
+      phase: 'indexing',
+      ...store.counts(),
+      total: estimatedTotal,
+      totalEstimated: true,
+      countPhase,
+    });
     const startedAt = Date.now();
     const report = (photo) =>
       progress({
-        processed,
+        done: processed,
         failed,
         skipped,
-        currentFile: photo.file_name,
+        // 🔴 **完整路径**（与缩略图补全/重建同口径）；`store.batch()` 的 SELECT 里现成有
+        // `p.file_path`，第 154 行的 `detect` 也在用它 —— 报文件名是白白丢掉目录信息。
+        currentFile: photo.file_path,
         ratePerMinute: Math.round(
           ((processed + failed) * 60000) / Math.max(1000, Date.now() - startedAt),
         ),
@@ -107,7 +150,8 @@ async function execute(operation, args = {}) {
           continue;
         }
         try {
-          progress({ currentFile: photo.file_name });
+          // 同上：完整路径（面板「文件」行的口径，见 `report()` 里那条注释）。
+          progress({ currentFile: photo.file_path });
           let detections;
           try {
             detections = await encoder.detect(photo.file_path, () => cancelled);
@@ -152,7 +196,7 @@ async function execute(operation, args = {}) {
       store.regroup(preferences);
       clustered = true;
     }
-    return { ...store.summary(), processed, failed, skipped, clustered };
+    return { ...store.summary(), done: processed, failed, skipped, clustered };
   } finally {
     store.close();
     if (encoder) await encoder.dispose();

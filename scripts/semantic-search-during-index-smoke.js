@@ -57,8 +57,8 @@ async function run() {
     for (let i = 0; i < 900; i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const state = service.status();
-      if (state.busy && state.processed > 0 && state.processed < total && !liveSearch) {
-        progressBefore = { percent: state.percent, processed: state.processed, phase: state.phase };
+      if (state.running && state.done > 0 && state.done < total && !liveSearch) {
+        progressBefore = { percent: state.percent, done: state.done, phase: state.phase };
         try {
           liveSearch = await service.run('search', 'a photo');
         } catch (error) {
@@ -66,7 +66,7 @@ async function run() {
         }
         break;
       }
-      if (!state.busy && i > 3) break;
+      if (!state.running && i > 3) break;
     }
     assert.ok(liveSearch, '索引未跑完就必须有机会发起搜索');
     assert.notEqual(typeof liveSearch, 'string', '索引进行中搜索不得被拒绝：' + liveSearch);
@@ -76,11 +76,11 @@ async function run() {
       '结果只基于已落库的部分（indexed=' + liveSearch.indexed + '/' + total + '）',
     );
     const afterSearch = service.status();
-    assert.equal(afterSearch.busy, true, '搜索不得把索引任务顶掉');
-    assert.equal(afterSearch.processed >= progressBefore.processed, true, '索引进度不倒退');
+    assert.equal(afterSearch.running, true, '搜索不得把索引任务顶掉');
+    assert.equal(afterSearch.done >= progressBefore.done, true, '索引进度不倒退');
 
     const result = await running;
-    assert.equal(result.processed, total, '索引仍然完整跑完');
+    assert.equal(result.done, total, '索引仍然完整跑完');
     assert.equal(result.indexed, total, '全部照片最终都被索引');
     assert.equal(
       (await service.run('search', 'a photo')).photos.length > 0,

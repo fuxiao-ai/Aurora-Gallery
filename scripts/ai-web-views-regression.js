@@ -113,6 +113,13 @@ function findByClass(root, cls) {
   });
   return found;
 }
+function findAllByAttr(root, attr) {
+  const out = [];
+  walk(root, (node) => {
+    if (node.getAttribute && node.getAttribute(attr) != null) out.push(node);
+  });
+  return out;
+}
 function findAllByClass(root, cls) {
   const out = [];
   walk(root, (node) => {
@@ -165,7 +172,7 @@ const dom = {
   sidebar: sidebar,
 };
 
-let status = { ready: true, indexed: 4, busy: false, people: 0 };
+let status = { ready: true, indexed: 4, running: false, people: 0 };
 let hits = [{ id: 7, file_name: 'hit.jpg', date_modified: '2026-01-02' }];
 // 搜索响应里的「已索引张数」：真实服务端会带回，界面据它说明结果覆盖率。
 let searchIndexed = null;
@@ -175,8 +182,21 @@ const groupItems = [{ id: 1, name: 'Family', photoCount: 3, thumbnail: '/thumb/1
 const personPhotos = [{ id: 2, file_name: 'sample.jpg' }];
 const gridBatches = [];
 
+// 关键词档的目录检索响应（`/api/search-folders`）：两组结果里的「文件夹」那一组。
+const kwFolders = [
+  { folder_path: 'K:\\COS\\2024\\05', folder_photo_count: 3, id: 11, has_thumbnail: true },
+];
+/** GET 流水：保留态回归要数「这次回来到底有没有重新问库」。 */
+const getLog = [];
 function get(url) {
+  getLog.push(url);
   if (url.indexOf('/api/ai-search-status') === 0) return Promise.resolve({ ...status });
+  if (url.indexOf('/api/search-folders?') === 0)
+    return Promise.resolve({ folders: kwFolders.slice(), total: kwFolders.length });
+  // `/api/search` = 关键词档的文件检索；`/api/ai-search` = 语义档。**两条是不同的接口**，
+  // 替身必须分开给 —— 串了就测不出「切档换了引擎」。
+  if (url.indexOf('/api/search?') === 0)
+    return Promise.resolve({ photos: hits.slice(), total: hits.length });
   if (url.indexOf('/api/ai-search?') === 0)
     return Promise.resolve({
       photos: hits.slice(),
@@ -261,21 +281,22 @@ async function run() {
     views.enter('ai_search');
     assert.equal(views.isShowing(), true);
     assert.equal(views.isActive(), true);
-    assert.ok(grid.innerHTML.includes('描述你想找的画面'), '搜图首屏是引导页');
-    assert.equal(
-      (grid.innerHTML.match(/class="ai-web-chip"/g) || []).length,
-      5,
-      '引导页给出 5 个示例词',
-    );
+    assert.ok(grid.innerHTML.includes('按文件名或文件夹名搜索'), '搜图首屏落在关键词档');
+    // 档位控件：两个按钮常驻、默认高亮在关键词上（两套引擎必须显式二选一）。
+    const modeButtons = findAllByAttr(sidebar, 'data-ai-search-mode');
+    assert.equal(modeButtons.length, 2, '侧栏给出「关键词 / 语义」两个档位');
+    assert.equal(modeButtons[0].getAttribute('data-ai-search-mode'), 'keyword');
+    assert.equal(modeButtons[0].classList.contains('is-active'), true, '默认档位是关键词');
+    assert.equal(modeButtons[1].classList.contains('is-active'), false);
     assert.equal(slot('#headerMediaFilterSelect').style.display, 'none');
     assert.equal(slot('#sortSelect').style.display, 'none');
     assert.equal(slot('#pagination').style.display, 'none');
     assert.equal(slot('#browseFooter').style.display, 'none', '智能视图收起整条页脚');
 
     // 侧栏独占：搜索框 + 搜索历史都在 #aiSidebar 里。
-    const searchForm = findByClass(sidebar, 'ai-web-sidebar-search');
+    let searchForm = findByClass(sidebar, 'ai-web-sidebar-search');
     assert.ok(searchForm, '侧栏里出现搜索表单');
-    assert.ok(findByTag(searchForm, 'input'), '侧栏里有画面描述输入框');
+    assert.ok(findByTag(searchForm, 'input'), '侧栏里有关键词输入框');
     assert.equal(findAllByClass(sidebar, 'ai-web-history-item').length, 0, '初始没有搜索历史');
     const emptyHint = findByClass(sidebar, 'ai-web-sidebar-empty');
     assert.ok(emptyHint && emptyHint.textContent.includes('还没有搜索记录'), '空历史给出提示');
@@ -286,10 +307,56 @@ async function run() {
 
     await views.load();
     await flush();
-    assert.ok(grid.innerHTML.includes('描述你想找的画面'), '状态就绪时不打断引导页');
+    assert.ok(grid.innerHTML.includes('按文件名或文件夹名搜索'), '关键词档不查 AI 索引状态');
+
+    // ---------- 关键词档：结果 = 文件夹 + 文件两组 ----------
+    // 刻意与下面语义档用**同一个词**：搜索历史按词去重，这样「历史里出现 1 条」那条
+    // 断言测的是去重本身，而不是「两档各写了一条」。
+    let input = findByTag(sidebar, 'input');
+    input.value = 'a beach at sunset';
+    searchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.ok(grid.innerHTML.includes('文件夹'), '结果里有「文件夹」分组');
+    assert.ok(grid.innerHTML.includes('文件'), '结果里有「文件」分组');
+    assert.ok(grid.innerHTML.includes('K:\\COS\\2024\\05'), '命中的目录带完整路径');
+    assert.ok(grid.innerHTML.includes('hit.jpg'), '命中的文件复用既有照片卡');
+    assert.ok(grid.innerHTML.includes('folder-card'), '目录卡片走 .folder-card 契约（点了能跳目录）');
+    assert.equal(
+      findByClass(sidebar, 'ai-web-sidebar-status').textContent,
+      '文件夹 1 个 · 文件 1 个',
+      '状态行两组都报',
+    );
+    assert.equal(state.currentPhotos.length, 1, '预览窗口只装文件那一组');
+    assert.equal(state.previewTotalPages, 1);
+
+    // ---------- 切到语义档：同一个词换成另一套引擎 ----------
+    const modesHost = findByClass(sidebar, 'ai-web-search-modes');
+    assert.ok(modesHost, '侧栏里有档位切换容器');
+    modesHost.listeners.click({ target: modeButtons[1] });
+    await flush();
+    assert.equal(modeButtons[1].classList.contains('is-active'), true, '语义档高亮');
+    assert.equal(modeButtons[0].classList.contains('is-active'), false);
+    assert.equal(
+      findByClass(sidebar, 'ai-web-sidebar-status').textContent.includes('达到匹配阈值'),
+      true,
+      '切档后立刻按语义引擎重搜（不是沿用关键词那两组结果）',
+    );
+    // 语义档的空闲态：`enter()` 会清掉上一次的词（`!restoring` 那支）与两张网格残留，
+    // 于是回到引导页。注意「清词」只发生在**干净进入**那一次 —— 有保留态时要原样还原
+    // （见下面的保留态回归），这正是 `!restoring` 守卫的作用。
+    views.enter('ai_search');
+    await flush();
+    assert.ok(grid.innerHTML.includes('描述你想找的画面'), '语义档首屏是引导页');
+    assert.equal(
+      (grid.innerHTML.match(/class="ai-web-chip"/g) || []).length,
+      5,
+      '引导页给出 5 个示例词',
+    );
 
     // ---------- 搜图：结果落进照片网格 ----------
-    const input = findByTag(sidebar, 'input');
+    // `enter` 重建了侧栏，输入框与表单要重新取：旧引用写不进新的 `inputEl`。
+    searchForm = findByClass(sidebar, 'ai-web-sidebar-search');
+    input = findByTag(searchForm, 'input');
     input.value = 'a beach at sunset';
     searchForm.listeners.submit({ preventDefault() {} });
     await flush();
@@ -336,11 +403,11 @@ async function run() {
     input.value = 'nothing at all';
     searchForm.listeners.submit({ preventDefault() {} });
     await flush();
-    assert.ok(grid.innerHTML.includes('没有达到匹配阈值的照片'));
+    assert.ok(grid.innerHTML.includes('没有达到匹配阈值的图片'));
     assert.equal(state.currentPhotos.length, 0);
 
     // ---------- 搜图：模型未就绪时只给一句人话 ----------
-    status = { ready: false, indexed: 0, busy: false, people: 0 };
+    status = { ready: false, indexed: 0, running: false, people: 0 };
     hits = [{ id: 7, file_name: 'hit.jpg' }];
     views.enter('ai_search');
     await views.load();
@@ -352,7 +419,7 @@ async function run() {
     assert.ok(grid.innerHTML.includes('本地模型尚未就绪'), '引导页同样给出提醒');
 
     // ---------- 人物：侧栏列出人物，网格先给引导态 ----------
-    status = { ready: true, indexed: 40, busy: false, people: 1 };
+    status = { ready: true, indexed: 40, running: false, people: 1 };
     state.currentView = 'people';
     views.enter('people');
     assert.ok(grid.innerHTML.includes('从左侧选择一个人'), '人物首屏是「从左侧选择」');
@@ -522,7 +589,7 @@ async function run() {
       indexed: 3702,
       scanned: 12420,
       faces: 36,
-      busy: true,
+      running: true,
       phase: 'indexing',
       people: 1,
     };
@@ -574,7 +641,7 @@ async function run() {
     global.document.documentElement.lang = 'zh-CN';
 
     // ---------- 搜图：索引进行中允许搜，但要说清只覆盖已索引部分 ----------
-    status = { ready: true, indexed: 12000, busy: true, phase: 'indexing', people: 0 };
+    status = { ready: true, indexed: 12000, running: true, phase: 'indexing', people: 0 };
     searchIndexed = 12000;
     hits = [{ id: 7, file_name: 'hit.jpg' }];
     state.currentView = 'ai_search';
@@ -594,7 +661,7 @@ async function run() {
       '结果覆盖率如实说明，避免把「搜不到」误读成「没这张照片」',
     );
     searchIndexed = null;
-    status = { ready: true, indexed: 40, busy: false, people: 1 };
+    status = { ready: true, indexed: 40, running: false, people: 1 };
     hits = [{ id: 7, file_name: 'hit.jpg' }];
 
     // ---------- 搜图：侧栏预选词（搜索框下方随机一组，点一下直接搜） ----------
@@ -739,6 +806,126 @@ async function run() {
     assert.equal(slot('#browseFooter').style.display, '');
     assert.equal(sidebar.children.length, 0, '离开后侧栏清空，交还给文件夹 / 日期列表');
 
+    // ---------- 搜图：结果的保留态（只认「离开过一次再回来」） ----------
+    // 与桌面端同口径（见 `src/renderer/ai-views.js#retainedSearch`）：
+    //   - 从结果里的目录卡片跳进那个目录、或去看了下人物，再回搜图 ⇒ 结果原样回来；
+    //   - 后台重画（`loadPhotos()` 触发的那次 `loadSearch()`）必须**重搜**，否则新入库的
+    //     照片永远搜不出来 —— 不报错、不写日志；
+    //   - 从没搜过 / 空提交之后再进来 ⇒ 干净的引导页。
+    {
+      const kwSearchCalls = () =>
+        getLog.filter(
+          (url) =>
+            url.indexOf('/api/search-folders?') === 0 || url.indexOf('/api/search?') === 0,
+        ).length;
+      const statusOfSidebar = () => findByClass(sidebar, 'ai-web-sidebar-status').textContent;
+      const gridSnapshot = () => grid.innerHTML;
+      const searchForm = () => findByClass(sidebar, 'ai-web-sidebar-search');
+      const searchInput = () => findByTag(searchForm(), 'input');
+
+      status = { ready: true, indexed: 40, running: false, people: 1 };
+      hits = [{ id: 7, file_name: 'hit.jpg' }];
+      state.currentView = 'ai_search';
+      // 干净进入：查询被清掉（`!restoring` 那支），档位回到关键词。
+      views.enter('ai_search');
+      const modeBtns = findAllByAttr(sidebar, 'data-ai-search-mode');
+      findByClass(sidebar, 'ai-web-search-modes').listeners.click({ target: modeBtns[0] });
+      await flush();
+      assert.equal(
+        state.aiSearchQuery,
+        '',
+        '干净进入时不留活的查询 —— 否则下一次 loadPhotos() 会把它悄悄搜出来',
+      );
+      assert.ok(gridSnapshot().includes('按文件名或文件夹名搜索'), '关键词档干净进入落引导页');
+
+      const baseCalls = kwSearchCalls();
+      searchInput().value = '2024';
+      searchForm().listeners.submit({ preventDefault() {} });
+      await flush();
+      assert.equal(kwSearchCalls() - baseCalls, 2, '一次关键词搜索 = 目录 + 文件两条请求');
+      assert.ok(gridSnapshot().includes('K:\\COS\\2024\\05'), '「文件夹」组列出命中目录');
+      assert.ok(gridSnapshot().includes('hit.jpg'), '「文件」组列出命中文件');
+      assert.equal(statusOfSidebar(), '文件夹 1 个 · 文件 1 个', '状态行两组都报');
+      assert.equal(state.currentPhotos.length, 1, '预览窗口只装文件那一组');
+
+      const rowsBefore = gridSnapshot();
+      const statusBefore = statusOfSidebar();
+
+      // 反方向基线：**没离开过**的重画必须重搜。它是下面「还原不重跑」的对照。
+      const beforeReload = kwSearchCalls();
+      await views.load();
+      await flush();
+      assert.equal(kwSearchCalls() - beforeReload, 2, '没离开过就重画 = 老老实实重搜一遍');
+
+      // 往返：离开（点结果目录 / 去人物页都走这条）再回来 ⇒ 原样还原，且不再问库。
+      const beforeRoundTrip = kwSearchCalls();
+      views.leave();
+      views.enter('ai_search');
+      await views.load();
+      await flush();
+      assert.equal(gridSnapshot(), rowsBefore, '回来时两组结果逐条还原');
+      assert.equal(statusOfSidebar(), statusBefore, '状态行文案一并还原');
+      assert.equal(
+        searchInput().value,
+        '2024',
+        '搜索框里的词还在 —— 否则用户不知道看着的是哪次搜索',
+      );
+      assert.equal(beforeRoundTrip, kwSearchCalls(), '还原**不重跑搜索**（重跑会闪骨架、并把结果缩回第一页）');
+
+      // 一次性：紧接着再重画（没有新的离开）必须重搜。
+      const beforeRepeat = kwSearchCalls();
+      await views.load();
+      await flush();
+      assert.equal(kwSearchCalls() - beforeRepeat, 2, '一次性标记用完即弃');
+
+      // 空提交 = 唯一的用户主动清空入口，之后离开再回来不许把结果复活。
+      searchInput().value = '';
+      searchForm().listeners.submit({ preventDefault() {} });
+      await flush();
+      assert.equal(state.aiSearchQuery, '', '空提交清掉 state.aiSearchQuery');
+      assert.ok(gridSnapshot().includes('按文件名或文件夹名搜索'), '空提交回到引导页');
+      const afterClear = kwSearchCalls();
+      views.leave();
+      views.enter('ai_search');
+      await views.load();
+      await flush();
+      assert.ok(gridSnapshot().includes('按文件名或文件夹名搜索'), '清掉的结果不许复活');
+      assert.equal(kwSearchCalls(), afterClear, '引导页不发搜索请求');
+
+      // 空结果也不进保留态：回来是引导页，不是把那屏「没有匹配」画回来。
+      kwFolders.length = 0;
+      hits = [];
+      searchInput().value = 'zzz-no-such-thing';
+      searchForm().listeners.submit({ preventDefault() {} });
+      await flush();
+      assert.ok(
+        gridSnapshot().includes('没有匹配的文件或文件夹'),
+        '两组都空时给出明确提示',
+      );
+      const afterEmpty = kwSearchCalls();
+      views.leave();
+      views.enter('ai_search');
+      await views.load();
+      await flush();
+      assert.equal(
+        gridSnapshot().includes('没有匹配的文件或文件夹'),
+        false,
+        '空结果不许进保留态 —— 否则回来会把一屏「没搜到」原样画回来',
+      );
+      assert.equal(kwSearchCalls(), afterEmpty, '空结果之后回来不重跑搜索（那个词已经作废了）');
+
+      // 复位，别把夹具改动留给后面的静态契约断言。
+      kwFolders.push({
+        folder_path: 'K:\\COS\\2024\\05',
+        folder_photo_count: 3,
+        id: 11,
+        has_thumbnail: true,
+      });
+      hits = [{ id: 7, file_name: 'hit.jpg' }];
+      state.currentView = 'all';
+      views.leave();
+    }
+
     // ---------- 静态契约：app.js 的侧栏两态切换 ----------
     const appSrc = fs.readFileSync(path.join(__dirname, '../src/web/js/app.js'), 'utf8');
     assert.match(appSrc, /function isFolderSidebarTab\(tab\)\s*\{\s*return tab === 'folders';/);
@@ -755,6 +942,16 @@ async function run() {
       '离开智能视图要把侧栏还给 #sidebarContent',
     );
     assert.match(appSrc, /function leaveWebAiViewForBrowse\(tab\)/);
+    // 🔴 与桌面端 `showTabContent` 首行那句 `aiViews.leave()` 同口径：进 AI 视图前先 leave()。
+    //    少了它，AI 视图之间的切换（搜图 ⇄ 人物）不会给保留态打上「离开过一次」的标记，
+    //    于是「从搜图去看了眼人物再回搜图」会**重跑搜索**（闪骨架 + 缩回第一页），
+    //    而「点结果里的目录跳进目录再回来」却能保留 —— 同一条诉求在两条路上表现不一致。
+    assert.ok(
+      /function enterWebAiView\(view\)[\s\S]{0,2000}?webAiViews\.leave\(\);[\s\S]{0,160}?webAiViews\.enter\(view\);/.test(
+        appSrc,
+      ),
+      'enterWebAiView 必须先 leave() 再 enter()（否则 AI 视图之间切换会丢掉保留态）',
+    );
     assert.ok(
       appSrc.includes("leaveWebAiViewForBrowse('folders')"),
       'viewFolder / viewAllPhotos 等入口要收回搜图 / 人物页签',

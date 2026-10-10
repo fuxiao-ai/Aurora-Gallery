@@ -62,13 +62,13 @@ async function run() {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const state = service.status();
       samples.push({
-        busy: state.busy,
+        running: state.running,
         people: state.people || 0,
         faces: state.faces || 0,
         scanned: state.scanned || 0,
-        processed: state.processed || 0,
+        done: state.done || 0,
       });
-      if (state.busy && state.processed > 0 && state.processed < total && attempts < 3) {
+      if (state.running && state.done > 0 && state.done < total && attempts < 3) {
         attempts++;
         try {
           const data = await service.run('groups');
@@ -77,17 +77,17 @@ async function run() {
           liveRead = error.message;
         }
       }
-      if (!state.busy && samples.length > 3) break;
+      if (!state.running && samples.length > 3) break;
     }
     const result = await running;
-    assert.equal(result.processed, total, 'index processes every photo');
+    assert.equal(result.done, total, 'index processes every photo');
     assert.equal(result.people, 2, 'two distinct people are grouped');
-    const midRun = samples.filter((s) => s.busy && s.people > 0 && s.processed < total);
+    const midRun = samples.filter((s) => s.running && s.people > 0 && s.done < total);
     assert.ok(midRun.length > 0, '人物数必须在索引结束前就在进度中上报');
     // 人物页实时条还要显示「已扫描 / 检出人脸」：两者都得在索引结束前就上报。
-    const midFaces = samples.filter((s) => s.busy && s.faces > 0 && s.processed < total);
+    const midFaces = samples.filter((s) => s.running && s.faces > 0 && s.done < total);
     assert.ok(midFaces.length > 0, '检出人脸数必须在索引结束前就上报（实时条要显示它）');
-    const midScanned = samples.filter((s) => s.busy && s.scanned > 0 && s.processed < total);
+    const midScanned = samples.filter((s) => s.running && s.scanned > 0 && s.done < total);
     assert.ok(midScanned.length > 0, '已扫描张数必须在索引结束前就上报');
     assert.equal(typeof liveRead, 'number', 'indexing must not reject concurrent read-only groups');
     assert.ok(liveRead > 0, 'concurrent read returns already-detected people');

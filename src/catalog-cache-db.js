@@ -29,6 +29,18 @@ class CatalogCacheDb {
     `);
   }
 
+  /**
+   * 关闭连接。唯一用途是「迁移数据目录」前放开这第二个库 ——
+   * 它在 WAL 模式下同样持有文件句柄，不关就复制，副本会缺最后一次提交。
+   */
+  close() {
+    try {
+      this.db.close();
+    } catch (e) {
+      void e;
+    }
+  }
+
   gcExpired(nowMs) {
     var now = Number(nowMs) || Date.now();
     try {

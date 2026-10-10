@@ -175,7 +175,7 @@
     rescanBtn.textContent = tSet('settings.folderRescan', '重新扫描');
     rescanBtn.title = tSet(
       'settings.folderRescanTitle',
-      '子文件夹移动、重命名或大量增删照片后，请重新扫描以同步索引',
+      '子文件夹移动、重命名或大量增删图片后，请重新扫描以同步索引',
     );
     rescanBtn.addEventListener(
       'click',
@@ -217,7 +217,7 @@
     if (!container) return;
     if (!folders || folders.length === 0) {
       var emptyTitle = tSet('settings.folderEmptyTitle', '暂无相册目录');
-      var emptyDesc = tSet('settings.folderEmptyDesc', '点击上方「添加目录」按钮开始管理照片');
+      var emptyDesc = tSet('settings.folderEmptyDesc', '点击上方「添加目录」按钮开始管理图片');
       container.innerHTML =
         '<div class="settings-empty"><div class="icon">📂</div><div class="title">' +
         emptyTitle +
@@ -289,11 +289,20 @@
   };
 
   // ===== thumb-settings-ui.js =====
+  // ⚠️ 档位白名单在这里是**第二份副本**（第一份在 `src/main/thumb-format.js#THUMB_SIZE_CHOICES`，
+  //    第三份在 `index.html#settingThumbSize` 的 `<option>`）。渲染端拿不到主进程模块，只能各留一份；
+  //    `scripts/thumbnail-spec-regression.js` 断言三处集合逐位一致 —— 只改一处会出现
+  //    「下拉里选得到、落库被 clamp 回默认」这种静默回落。
+  var THUMB_SIZE_CHOICES = [128, 192, 256, 320, 512];
+  var THUMB_DEFAULT_SIZE = 512;
+  var THUMB_QUALITY_CHOICES = [55, 65, 75, 85, 95];
+  var THUMB_DEFAULT_QUALITY = 75;
+
   function normalizeThumbSizeQuality(sz, q) {
-    var size = parseInt(sz, 10) || 256;
-    if ([128, 192, 256, 320].indexOf(size) < 0) size = 256;
-    var quality = parseInt(q, 10) || 75;
-    if ([55, 65, 75, 85, 95].indexOf(quality) < 0) quality = 75;
+    var size = parseInt(sz, 10) || THUMB_DEFAULT_SIZE;
+    if (THUMB_SIZE_CHOICES.indexOf(size) < 0) size = THUMB_DEFAULT_SIZE;
+    var quality = parseInt(q, 10) || THUMB_DEFAULT_QUALITY;
+    if (THUMB_QUALITY_CHOICES.indexOf(quality) < 0) quality = THUMB_DEFAULT_QUALITY;
     return { size: size, quality: quality };
   }
 
@@ -303,7 +312,7 @@
         .replace('{size}', String(size))
         .replace('{quality}', String(quality));
     }
-    return '当前生效：最大边长 ' + size + ' px · JPEG 质量 ' + quality;
+    return '当前生效：最大边长 ' + size + ' px · 画质 ' + quality;
   }
 
   function updateThumbCurrentLineDisplay(options) {
@@ -383,6 +392,22 @@
     }
   }
 
+  /**
+   * 停「缩略图全量重建」的轮询。
+   *
+   * 🔴 与补全那边**各停各的**：两个任务是互斥的，但它们的状态行都在设置页上，
+   *    共用一个计时器的话「补全结束」会把重建的轮询一起清掉（反之亦然）——
+   *    表现是「另一个任务的状态不再刷新」，而且**只在某个任务刚结束时**才出现。
+   */
+  function stopThumbnailRebuildPolling(options) {
+    options = options || {};
+    var state = options.state || {};
+    if (state.thumbRebuildPolling) {
+      clearInterval(state.thumbRebuildPolling);
+      state.thumbRebuildPolling = null;
+    }
+  }
+
   function stopDuplicateHashPolling(options) {
     options = options || {};
     var state = options.state || {};
@@ -396,6 +421,7 @@
     setMaintenanceBusy: setMaintenanceBusy,
     setMaintenanceStatus: setMaintenanceStatus,
     stopThumbnailBackfillPolling: stopThumbnailBackfillPolling,
+    stopThumbnailRebuildPolling: stopThumbnailRebuildPolling,
     stopDuplicateHashPolling: stopDuplicateHashPolling,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

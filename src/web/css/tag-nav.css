@@ -1,0 +1,229 @@
+/*
+ * 标签导航页（网页端）。桌面端那份在 src/renderer/tag-nav.css —— 两端的类名刻意**不共用**：
+ * 两边的父级布局与 CSS 变量并不相同（这里是 `--bg-card` / `--design-*` 那套），
+ * 强行共用一个类名会让「改一端动两端」。
+ *
+ * 共用的是**契约**而不是类名：缩进口径（行内 `padding-left` 是唯一来源、`.tree-children` 为 0）、
+ * 树的展开态（`.expanded` 类 + 行内 `display` 双写）、箭头态（`.tree-toggle.is-expanded`）
+ * 全部沿用 gallery-design.css 里那套目录树的规则 —— 这里**不再重写**，只补 tag 页独有的部分。
+ *
+ * ⚠️ 本文件在 `sw.js#SHELL_ASSETS` 里：改它必须同一次改动里抬 `CACHE_NAME`，
+ *    否则已装 PWA 的设备永远拿旧字节（见文件头部那条注释）。
+ */
+
+/* ===== 侧栏：搜索框 + 树 + 底部状态 ===== */
+/* 三段式纵向布局：搜索框与底部状态固定，中间的树自己滚动 —— 否则标签一多
+   就把搜索框顶出可视区。 */
+.web-tag-nav {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+/* 一行两格：输入框（含内嵌的清空叉）+ 独立的提交按钮。改动与桌面端逐条同形 ——
+   提交按钮不能跟清空叉共用一个绝对定位锚点，否则输入框得白留 50+px 右内边距。 */
+.web-tag-nav-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 8px;
+}
+/* 输入框 + 清空叉的定位锚点（叉是绝对定位、飘在输入框内部） */
+.web-tag-nav-search-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.web-tag-nav-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary, var(--text));
+  font-size: 13px;
+  outline: none;
+}
+.web-tag-nav-input::placeholder {
+  color: var(--text-muted);
+}
+.web-tag-nav-input:focus {
+  border-color: var(--bg-active);
+}
+/* 系统自带的「清空」叉在各平台长得不一样，统一关掉，改用下面那个自绘按钮 */
+.web-tag-nav-input::-webkit-search-cancel-button {
+  display: none;
+}
+.web-tag-nav-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-40%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.web-tag-nav-clear:hover {
+  color: var(--text-primary, var(--text));
+  background: var(--bg-hover);
+}
+/* 提交按钮：搜索改成「非实时」之后必须有的可见出口（以前敲字就出结果）。与输入框等高。 */
+.web-tag-nav-submit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.web-tag-nav-submit svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.web-tag-nav-submit:hover {
+  color: var(--text-primary, var(--text));
+  background: var(--bg-hover);
+}
+.web-tag-nav-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+.web-tag-nav-foot {
+  flex: 0 0 auto;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--design-line, var(--border));
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.web-tag-nav-foot-warn {
+  color: var(--text-secondary);
+}
+
+/* 树里的一行。`.folder-item` 已经给了尺寸/hover/active，这里只补标签页独有的部分。 */
+.web-tag-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.web-tag-nav-row .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* `tagIndexed === 0` 的节点（索引里一个标签都没有）置灰：
+   点进去必然是空的，置灰让用户一眼知道「不是没有，是还没建到这儿」。 */
+.web-tag-nav-row.is-dim .name,
+.web-tag-nav-row.is-dim .count {
+  opacity: 0.45;
+}
+/* 叶子行前面的小圆点：补上父行「箭头槽」占掉的那 18px。
+   用真节点但不参与点击命中（命中判据只看 [data-tag-nav-kind]）。 */
+.web-tag-nav-dot {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.web-tag-nav-dot::before {
+  content: '';
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+}
+.web-tag-nav-empty,
+.web-tag-nav-loading {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 10px;
+}
+.web-tag-nav-group {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 8px 10px 4px;
+}
+
+/* ===== 主区：卡片列表（分类总览 / 节点下的标签 / 搜索结果）===== */
+/* 这一块**不是**照片网格 —— 父节点不给照片网格（原因见 src/web/js/tag-nav.js 文件头）。 */
+.web-tag-nav-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  padding: 4px 2px 16px;
+}
+.web-tag-nav-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 52px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary, var(--text));
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
+}
+.web-tag-nav-card:hover {
+  border-color: var(--bg-active);
+  background: var(--bg-hover);
+}
+.web-tag-nav-card.is-dim {
+  opacity: 0.5;
+}
+.web-tag-nav-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.web-tag-nav-card-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 手机：卡片两列起（auto-fill 在 320px 宽下会挤出 2 列，但最小宽度更宽松一点更好读） */
+@media (max-width: 600px) {
+  .web-tag-nav-cards {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}

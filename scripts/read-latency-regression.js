@@ -454,7 +454,7 @@ function checkIndexPlans(dbPath) {
   }
 }
 
-/* ───────────────── P1（Phase 5）：五条新索引 —— 计划真的翻转，且没把别的查询带偏 ───────────────── */
+/* ───────────────── P1（Phase 5）：六条新索引 —— 计划真的翻转，且没把别的查询带偏 ───────────────── */
 
 /**
  * Phase 5 的 DDL **直接取自** `src/main/deferred-indexes.js` —— 与 worker 跑的是**同一份字符串**。
@@ -466,10 +466,13 @@ function checkIndexPlans(dbPath) {
  */
 function checkPhase5IndexPlans(dbPath) {
   const list = require('../src/main/deferred-indexes').PHASE5_INDEXES;
+  const heavy = require('../src/db-heavy-read');
   assert.equal(
     list.length,
-    5,
-    '哨兵：Phase 5 应当正好五条 —— 增删索引必须同步改本文件的断言，否则新增的索引不在覆盖范围内',
+    9,
+    '哨兵：Phase 5 应当正好九条 —— 增删索引必须同步改本文件的断言，否则新增的索引不在覆盖范围内' +
+      '（⑦ 是 2026-10-07 加的「补全第二趟取批」候选索引；' +
+      '⑧⑨ 是 2026-10-09 加的组织元数据两个筛选维度 rating / flag）',
   );
   for (const item of list) {
     assert.ok(
@@ -477,28 +480,69 @@ function checkPhase5IndexPlans(dbPath) {
       `哨兵：${item.name} 的 DDL 必须带 IF NOT EXISTS（否则每次启动都重建整条索引）：${item.sql}`,
     );
     assert.ok(item.sql.includes(' ON photos('), `哨兵：${item.name} 必须建在 photos 上：${item.sql}`);
+    assert.ok(
+      item.sql.includes(' ' + item.name + ' ON photos('),
+      `哨兵：${item.name} 的 DDL 里索引名必须就是 name 字段（两者不一致 ⇒ 名称查询查不到、` +
+        `而 \`created\` 断言会把「建出来的其实是别的名字」当成通过）：${item.sql}`,
+    );
   }
-  // 三条普通 + 两条部分。部分索引**必须真的写出 WHERE** —— 漏了它就从「部分」变成「全列」，
+  // 五条普通 + 四条部分。部分索引**必须真的写出 WHERE** —— 漏了它就从「部分」变成「全列」，
   // 体积与选择性与设计意图都不一样（而且不会报错）。
+  // ⚠️ 组织元数据那两条（rating / flag）**刻意是普通索引**：要能查 `flag = 'none'` /
+  //    `rating = 0`（冲片里的「还剩哪些没标」），而部分索引恰好把这两档排除在外。
   assert.deepEqual(
     list
       .filter((i) => / WHERE /.test(i.sql))
       .map((i) => i.name)
       .sort(),
-    ['idx_photos_dup_hash_full', 'idx_photos_root_date_day'],
-    '哨兵：这两条必须是部分索引（WHERE 不能在重构里被悄悄丢掉）',
+    [
+      'idx_photos_backfill_pending',
+      'idx_photos_dup_hash_full',
+      'idx_photos_live_companion',
+      'idx_photos_root_date_day',
+    ],
+    '哨兵：这四条必须是部分索引（WHERE 不能在重构里被悄悄丢掉）',
   );
 
-  const heavy = require('../src/db-heavy-read');
+  // 「同一个字符串写在两个文件里」的守（第 6 条索引的 WHERE 与 `database.js` 的判据同源）。
+  // 🔴 为什么必须钉：SQLite 的部分索引匹配是**逐字**的 —— 两边差一个字符，索引就静默用不上
+  //    （不报错），而 `all` 档那条 `NOT IN` 子查询会当场退回逐行回表（真库 105 秒）。
+  const companion = list.find((i) => i.name === heavy.LIVE_COMPANION_INDEX);
+  assert.ok(companion, '哨兵：Phase 5 必须含伴生视频那条部分索引 ' + heavy.LIVE_COMPANION_INDEX);
+  assert.equal(
+    companion.name,
+    'idx_photos_live_companion',
+    '索引名必须与 `db-heavy-read#LIVE_COMPANION_INDEX` 逐字一致（回归要按名字建 DROP）',
+  );
+  assert.ok(
+    companion.sql.includes(' WHERE ' + heavy.LIVE_COMPANION_PRED),
+    'DDL 的 WHERE 必须逐字来自 `db-heavy-read#LIVE_COMPANION_PRED`：' + companion.sql,
+  );
+  assert.equal(
+    PhotoDatabase.prototype._sqlLiveStillIsMotionExpr.call({}),
+    heavy.LIVE_COMPANION_PRED,
+    '伴生视频谓词必须两处逐字相同（`database.js#_sqlLiveStillIsMotionExpr` vs `db-heavy-read#LIVE_COMPANION_PRED`）' +
+      '—— 部分索引匹配是逐字的，差一个字符索引就静默失效',
+  );
+  assert.equal(
+    heavy.liveCompanionExcludeCondition({ prepare: () => ({ get: () => null }) }),
+    null,
+    '🔴 闸门在「问不出索引存在性」时必须返回 null（宁可多显示 1 行，也绝不加回那个回表谓词）',
+  );
+
   const IMG = heavy.IMAGE_TYPE_PRED;
   const db = new PhotoDatabase(dbPath);
   try {
     // `file_hash` 是**延迟迁移列** ⇒ 先确保它在（幂等），再填一部分值，
     // 让 `idx_photos_dup_hash_full` 的部分索引非空（空索引的规划器行为不代表生产）。
-    try {
-      db.db.exec('ALTER TABLE photos ADD COLUMN file_hash TEXT');
-    } catch (eAlter) {
-      void eAlter;
+    // ⚠️ `dhash` 同理（也是延迟迁移列，且 ⑦ `idx_photos_backfill_pending` 的 WHERE 引用了它）
+    //    —— 少了它，下面那条 `CREATE INDEX` 会当场 `no such column: dhash`。
+    for (const col of ['file_hash', 'dhash']) {
+      try {
+        db.db.exec('ALTER TABLE photos ADD COLUMN ' + col + ' TEXT');
+      } catch (eAlter) {
+        void eAlter;
+      }
     }
     db.db.exec("UPDATE photos SET file_hash = 'h' || (id % 50) WHERE id % 3 = 0");
 
@@ -526,7 +570,7 @@ function checkPhase5IndexPlans(dbPath) {
     const beforeDayRoot = planOf(db.db, DAY_ROOT, [1]);
     assert.match(beforeDayRoot, /TEMP B-TREE FOR GROUP BY/, '哨兵：日期分组（单根）建索引前必须是临时分组：' + beforeDayRoot);
 
-    // ── ② 建索引（DDL 原样取自清单），并确认**五条都真的建出来了**。
+    // ── ② 建索引（DDL 原样取自清单），并确认**清单里每一条都真的建出来了**。
     for (const item of list) db.db.exec(item.sql);
     const created = db.db
       .prepare(
@@ -540,7 +584,7 @@ function checkPhase5IndexPlans(dbPath) {
     assert.deepEqual(
       created,
       list.map((i) => i.name).sort(),
-      '哨兵：五条索引必须真的建出来 —— 否则下面的计划断言会把「索引压根不存在」当成通过',
+      '哨兵：清单里每条索引都必须真的建出来 —— 否则下面的计划断言会把「索引压根不存在」当成通过',
     );
 
     // ── ③ 建索引之后：临时排序 / 临时分组消失，且走对应的新索引。
@@ -585,6 +629,115 @@ function checkPhase5IndexPlans(dbPath) {
       !/TEMP B-TREE/.test(afterDayRoot),
       '单根日期分组也不许再有临时分组（真库 2,311 ms 那条夹具上从 2.3 s 掉到 26 ms）：' + afterDayRoot,
     );
+
+    // ── ⑧⑨ 组织元数据两列（rating / flag，2026-10-09）──
+    //
+    // 这两条与前面七条**形态不同**：它们不是「消除临时排序/分组」的索引，
+    // 而是纯**等值筛选**维度（`WHERE rating = ?` / `WHERE flag = ?`）。
+    // 所以不钉 `EXPLAIN QUERY PLAN` 的具体串 —— 那个会随列的选择性（多少张图被评过星）
+    // 和夹具规模漂移，钉死它就是给自己造一个随数据变化而红的假牙。
+    //
+    // 改钉「这条索引能不能用于这个形状」：`INDEXED BY` 强制指路，索引不存在、
+    // 或对该 WHERE 不可用时 SQLite 会**当场抛错**（`no such index` / `no query solution`），
+    // 而不是静默降级。这是不依赖数据分布、又能真正证伪的判据。
+    const forcedRating = db.db
+      .prepare('SELECT id FROM photos INDEXED BY idx_photos_rating WHERE rating = ?')
+      .all(5);
+    assert.ok(
+      Array.isArray(forcedRating),
+      '按评分筛选必须能用 idx_photos_rating 求解（索引不存在或不可用会当场抛错）',
+    );
+    const forcedFlag = db.db
+      .prepare('SELECT id FROM photos INDEXED BY idx_photos_flag WHERE flag = ?')
+      .all('pick');
+    assert.ok(
+      Array.isArray(forcedFlag),
+      '按标记筛选必须能用 idx_photos_flag 求解（索引不存在或不可用会当场抛错）',
+    );
+    // 🔴 负例（证明上面两条不是恒真）：拿一个不存在的索引名去 INDEXED BY 必须抛错。
+    //    少了这条，若哪天 `INDEXED BY` 被改成被忽略的写法，上面两条会永远绿。
+    let indexByThrew = false;
+    try {
+      db.db.prepare('SELECT id FROM photos INDEXED BY idx_photos_does_not_exist WHERE id = ?').all(1);
+    } catch (eIndexBy) {
+      indexByThrew = true;
+    }
+    assert.ok(indexByThrew, '负例哨兵：INDEXED BY 指向不存在的索引必须抛错（否则上面两条断言是恒真的）');
+
+    // ── ④ 第 6 条（`idx_photos_live_companion`）：`all` 档排除伴生视频不许再回表 ──
+    //
+    // 这条索引治的是用户报告的「所有文件 → 照片加载失败」：`all` 档原先用
+    // `COALESCE(live_still_id, 0) = 0` 排除伴生视频，而 `live_still_id` 排在缩略图 BLOB
+    // 之后、没有任何索引 ⇒ 计划从「覆盖扫描」退化成「逐行回表」，真库 478 ms → 105,954 ms。
+    // 治本 = 换谓词形状（`id NOT IN (子查询)`）+ 让这条部分索引兜住子查询。
+    //
+    // 🔴 两态都要钉：
+    //    · **索引不在** ⇒ 子查询自己就是 `SCAN photos`（回表）⇒ 所以调用方必须**不加条件**。
+    //      实测（60000 行带内联 BLOB）没索引时 `NOT IN` 与 `COALESCE` 一样慢：231 ms vs 231 ms；
+    //      有索引后 `NOT IN` 是 **4 ms**。⇒ 自适应闸门是必需项，不是优化。
+    //    · **索引在** ⇒ 子查询必须走它，且外层必须**仍是覆盖扫描**（那是快的唯一来源）。
+    const EXCLUDE = 'SELECT COUNT(*) AS n FROM photos WHERE id NOT IN (' +
+      'SELECT id FROM photos WHERE ' + heavy.LIVE_COMPANION_PRED + ')';
+    const LEGACY = 'SELECT COUNT(*) AS n FROM photos WHERE COALESCE(live_still_id, 0) = 0';
+
+    // 前提：夹具上 Phase 4 + Phase 5 的索引都在位了，但**第 6 条刚被上面的循环建出来**，
+    // 所以这里必须先证明「去掉它」时子查询确实会退化成回表 —— 否则下面的「走索引」断言
+    // 可能只是因为规划器无论如何都走覆盖扫描，等于什么都没守住。
+    db.db.exec('DROP INDEX IF EXISTS ' + heavy.LIVE_COMPANION_INDEX);
+    heavy.clearIndexCache(db.db);
+    assert.equal(
+      heavy.liveCompanionExcludeCondition(db.db),
+      null,
+      '哨兵：索引被 DROP 之后闸门必须立刻返回 null（`hasIndex` 命中 true 也带 TTL，不会留假阳性）',
+    );
+    const beforeExcludePlan = planOf(db.db, EXCLUDE, []);
+    assert.match(
+      beforeExcludePlan,
+      /LIST SUBQUERY/,
+      '哨兵：`NOT IN (子查询)` 形状必须在计划里体现为 LIST SUBQUERY：' + beforeExcludePlan,
+    );
+    assert.ok(
+      /(^|\| )SCAN photos( \||$)/.test(beforeExcludePlan),
+      '哨兵：索引不在时子查询必须退化成**非覆盖**的 `SCAN photos`（回表）——这正是不能用的原因：' +
+        beforeExcludePlan,
+    );
+    assert.ok(
+      !/idx_photos_live_companion/.test(beforeExcludePlan),
+      '哨兵：索引都 DROP 了计划里不许再出现它：' + beforeExcludePlan,
+    );
+
+    // 重新建上（DDL 原样取自清单里那一条 —— 不是这里手抄的）。
+    const companionDdl = list.find((i) => i.name === heavy.LIVE_COMPANION_INDEX);
+    assert.ok(companionDdl, '哨兵：清单里必须有 ' + heavy.LIVE_COMPANION_INDEX);
+    db.db.exec(companionDdl.sql);
+    heavy.clearIndexCache(db.db);
+    const gate = heavy.liveCompanionExcludeCondition(db.db);
+    assert.equal(
+      gate,
+      'id NOT IN (SELECT id FROM photos WHERE ' + heavy.LIVE_COMPANION_PRED + ')',
+      '闸门返回的条件必须是这个形状（外层靠它保住覆盖扫描）',
+    );
+    const afterExcludePlan = planOf(db.db, EXCLUDE, []);
+    assert.match(
+      afterExcludePlan,
+      /USING INDEX idx_photos_live_companion/,
+      '子查询必须走这条部分索引（真库上它只有 1 个条目 ⇒ 微秒级）：' + afterExcludePlan,
+    );
+    assert.match(
+      afterExcludePlan,
+      /SCAN photos USING COVERING INDEX/,
+      '🔴 外层扫描**必须仍是覆盖索引**（不回表）—— 这是「478 ms 档」与「105,954 ms 档」的分界：' +
+        afterExcludePlan,
+    );
+    // 值必须逐个相同：换的是计划形状，不是语义。
+    const legacyN = db.db.prepare(LEGACY).get().n;
+    const newN = db.db.prepare(EXCLUDE).get().n;
+    assert.equal(legacyN, newN, '治本写法与 COALESCE 写法的结果必须逐个相同（夹具上）');
+
+    // 收尾：把这条索引 DROP 掉，免得影响后面的 `checkMediaCountIndexHint`
+    // （它有一条「规划器本来不选部分索引」的哨兵，多一条索引就可能把那条哨兵带偏）。
+    db.db.exec('DROP INDEX IF EXISTS ' + heavy.LIVE_COMPANION_INDEX);
+    heavy.clearIndexCache(db.db);
   } finally {
     db.close();
   }

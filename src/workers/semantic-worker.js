@@ -5,7 +5,33 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const { MODEL_KEY, DIMENSIONS, GENERIC_TEXT, loadEncoder, dot } = require('../ai/embedding');
-const { IndexStore } = require('../ai/index-store');
+const { IndexStore, MAX_RESULTS } = require('../ai/index-store');
+/**
+ * `ready.json` 的**读写判据**只有一个实现（`isSearchReady` / `writeSearchReady`），
+ * 主进程 `semantic-search.js#status()` 也 require 同一对函数 —— 否则「界面说没就绪、
+ * worker 说有」这种两边不一致迟早出现，而且两边都不报错。
+ */
+const { isSearchReady, writeSearchReady } = require('../ai/bundled-models');
+/**
+ * tag 倒排路（M4）——本文件只管**查询侧**的三样东西，别把它们混起来：
+ *   · `TagIndexStore` —— 独立库的**只读**句柄（`<aiPath>/tag-index.sqlite`，与 CLIP 库分开文件）；
+ *   · `tagFusion` —— 纯函数的融合层（RRF + route 标注 + tag 路自述），不含任何 IO；
+ *   · `tagIndexPath` —— 库路径的**唯一来源**。自己 `path.join(root, 'tag-index.sqlite')`
+ *     会造出第二份路径真相，而「索引建好了但搜图说没有索引」正是两边各写一份的典型后果。
+ *
+ * ⚠️ **建索引侧不在这里**（2026-10-08 拆分）：JoyTag 那一路整体搬去了
+ * `semantic-tag-worker.js`，与 CLIP 这一路**并行**跑（cpu ∥ dml，实测 1.41×，
+ * 完整推导见 `docs/contracts/semantic-search.md`）。搬过去的理由：同进程多 ONNX 会话
+ * 只有 `cpu + dml` 一种组合能跑 ⇒ 两个会话必须分属两个线程；顺带本进程不再载
+ * `joytag-model`（少一份 ORT，也不再有「谁先 require」的 DLL 次序问题）。
+ */
+const {
+  TagIndexStore,
+  tagIndexPath,
+  TAG_ROUTE_RANGE,
+  TAG_MAX_RESULTS,
+} = require('../ai/tag-index-store');
+const tagFusion = require('../ai/tag-fusion');
 const {
   readCachedWordVectors,
   computeTags,
@@ -28,16 +54,106 @@ const TEXT_ONLY_OPERATIONS = new Set(['search', 'suggest']);
  * 返回的不是「界面要显示的那 5 个」而是**一个池子**：界面从池子里洗牌抽 5 个，
  * 「换一批」就是再洗一次，因此不需要为「换一批」重新跑一遍模型。池子太小则洗牌没有可见变化
  * （18 词池随机抽 5，两批重复率很高），太大则 IPC 负载与前端渲染都白花 —— 24 是实测够用的折中。
+ *
+ * 🔴 **这两个数以 `search-vocabulary.js` 为唯一定义处**（2026-10-09 起）：预选词的常规路径
+ *    已经改走主进程只读 SQL（`SemanticTags.suggestTerms`），它同样要夹这两个数。这里再写一份
+ *    的后果不是报错，而是「同一个界面元素被两条路服务时条数不同」，而界面只摆 5 个
+ *    （`SUGGEST_COUNT`）⇒ 差 24 还是 64 **在界面上看不出来**。
  */
-const SUGGEST_LIMIT_DEFAULT = 24;
-const SUGGEST_LIMIT_MAX = 64;
-/** 命中多少张才算「点下去有图」。1 是下限：要挡的是 0 张，命中 1 张点进去照样有照片可看。 */
+const SUGGEST_LIMIT_DEFAULT = vocabulary.SUGGEST_LIMIT_DEFAULT;
+const SUGGEST_LIMIT_MAX = vocabulary.SUGGEST_LIMIT_MAX;
+/** 命中多少张才算「点下去有图」。1 是下限：要挡的是 0 张，命中 1 张点进去照样有图片可看。 */
 const DEFAULT_MIN_HITS = 1;
 /** 阈值只接受有限数；越界或缺失时交给 IndexStore 用默认值。 */
 function matchThreshold(options) {
   const value = Number(options && options.threshold);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
+
+/**
+ * tag 路的查询线（概率口径，0.55 起算命中）。
+ *
+ * 与 CLIP 阈值**刻意走两个键**（`threshold` / `tagThreshold`）：两者量纲不同，
+ * 共用一个滑杆就必然出现「为了压住 tag 的误报把 CLIP 也砍没了」。
+ *
+ * 越界选择**夹取**而不是回默认值：滑杆正常不会传出界（界面自己按 `TAG_ROUTE_RANGE` 限位），
+ * 能走到这里的只有被手工改坏的设置；此时「就近生效」比「悄悄跳回 0.55」可解释 ——
+ * 后者会让用户以为「拖了没反应」。
+ */
+function tagThreshold(options) {
+  const value = Number(options && options.tagThreshold);
+  if (!Number.isFinite(value)) return TAG_ROUTE_RANGE.default;
+  return Math.min(TAG_ROUTE_RANGE.max, Math.max(TAG_ROUTE_RANGE.min, value));
+}
+
+/**
+ * tag 倒排库的**只读**句柄：惰性打开，并**缓存失败**。
+ *
+ * ① **只读**（`fileMustExist`）是必须的：可写打开会在「从没建过索引」的机器上**凭空造出一个
+ *    空库文件**，于是「没有 tag 索引」被伪装成「tag 索引是空的」。这两件事在界面上长得一样
+ *    （都是「tag 路没参与」），根因却完全不同 —— 前者要去建索引，后者要去查建索引为什么空转。
+ * ② **惰性**：绝大多数查询用不上 tag 路（自由词），而每个 worker 实例只该为它付一次探测。
+ * ③ **缓存失败**：库不存在时若每次搜索都重试，就是每次多一次 stat + 一次异常构造。
+ *    ⚠️ 代价是「同一个 worker 内不再重试」。这不会把用户永久卡住：worker 是**一次性**的
+ *    （主任务结束即退出、主进程把 `this.worker` 置 null，见 `semantic-search.js`），
+ *    下一次搜索是一个全新的模块实例，探测会重来。真正会复用同一实例的只有 relay
+ *    （索引进行中代跑搜索），而那时本来也轮不到重建索引。
+ */
+let tagStoreTried = false;
+let tagStoreHandle = null;
+function openTagStoreReadOnly() {
+  if (tagStoreTried) return tagStoreHandle;
+  tagStoreTried = true;
+  try {
+    tagStoreHandle = new TagIndexStore(tagIndexPath(root), { readOnly: true });
+  } catch (_) {
+    // 库不存在 / 版本不符 / 表缺失 —— 三种都在这里收敛成同一个结论（「这趟没有 tag 路」），
+    // 由 `describeTag` 报成 `NO_INDEX`，界面说一句人话。
+    tagStoreHandle = null;
+  }
+  return tagStoreHandle;
+}
+
+/**
+ * tag 路的**接线**：惰性拿只读句柄 → 解析查询 → 查一次倒排 → 交给 `mergeRoutes` 融合。
+ *
+ * ⚠️ 这里**故意只做 IO**，全部判据（RRF、route 归属、`matched`/`truncated` 口径、
+ *   `similarity = null` 的理由）都在 `src/ai/tag-fusion.js#mergeRoutes` —— 因为那个文件
+ *   能被回归用真夹具库整条跑通，而这个文件裸 node 一 `require` 就 `TypeError`
+ *   （顶层读 `workerData.aiPath`）。**判据必须放在能被真跑的地方**，本仓已有先例。
+ */
+function tagRoute(store, query, result, options) {
+  const enabled = !(options && options.tagEnabled === false);
+  const tagStore = enabled ? openTagStoreReadOnly() : null;
+  const parsed = tagFusion.parseQuery(query);
+  const threshold = tagThreshold(options);
+  let tagResult = null;
+  let failure = '';
+  if (tagStore && parsed.supported) {
+    try {
+      tagResult = tagStore.query(parsed.entry, { threshold, limit: TAG_MAX_RESULTS });
+    } catch (error) {
+      // 查询失败（库被截断 / 半写 / 磁盘故障）⇒ 降级成纯 CLIP，但**必须报出来**：
+      // 静默降级正是「搜图有时灵有时不灵」这类工单的来源，而它会把人送去查模型。
+      tagResult = null;
+      failure = error.message;
+    }
+  }
+  return tagFusion.mergeRoutes({
+    clip: result,
+    parsed,
+    enabled,
+    available: !!tagStore,
+    failure,
+    tagThreshold: threshold,
+    tagResult,
+    maxResults: MAX_RESULTS,
+    // `store` 是主库（CLIP 库）的句柄 —— `photosByIds` 走的是 `photos` 表，与 `embeddings` 同在
+    // 主库；tag 倒排库只有 `{id, score}`，补不出图片行。
+    photosByIds: (ids) => store.photosByIds(ids),
+  });
+}
+
 let cancelled = false;
 let controller;
 let busy = false;
@@ -49,7 +165,13 @@ let activeStore = null;
 // 泛化文本的向量：一次编码，索引与检索共用（relay 也要用，所以挂在模块上）。
 let activeBaseline = null;
 const root = workerData.aiPath;
-const readyFile = path.join(root, 'ready.json');
+/**
+ * ⚠️ 这里**刻意不留** `readyFile` 常量：`<root>/ready.json` 的路径与判定都归
+ * `bundled-models#isSearchReady / writeSearchReady`（与主进程同一对函数）。
+ * 自己 `path.join(root, 'ready.json')` 再 `JSON.parse` 一遍 = 第二份判据 —— 主进程
+ * 那边的 `status()` 现在也按磁盘派生 `ready`，两份一旦漂就是「界面说没就绪、
+ * 索引却照跑」这种不报错的错。
+ */
 const indexPath = path.join(root, 'semantic-index.sqlite');
 const cacheDir = path.join(root, 'models');
 // 标签的参数（语言 / 阈值 / 条数 / 分批大小）只在 src/ai/photo-tags.js 定义一次，
@@ -145,7 +267,11 @@ async function readOnly(encoder, store, baselineVector, operation, query, option
       { threshold: matchThreshold(options), baseline: baselineVector },
       () => cancelled,
     );
-    return { ...result, indexed: store.count() };
+    // CLIP 路每张图的向量都要过一遍点积，是这条路上唯一的成本；tag 路是倒排取批。
+    // 两者都跑完才谈得上融合 —— 融合的那一段**是同步的**（better-sqlite3 全同步），
+    // 所以这里不 await：它不产生任何让出点，写在 `await store.search` 之后即可。
+    const fused = tagRoute(store, query, result, options);
+    return { ...result, ...fused, indexed: store.count() };
   }
   if (operation === 'suggest') {
     // 预选词打分。两种入参：
@@ -154,6 +280,15 @@ async function readOnly(encoder, store, baselineVector, operation, query, option
     //     对整份词表打分后按真实命中数取前 N 个返回。
     // 之所以把词表挪到服务端：词表从 18 个变成几百个，再让界面把整份词表传过来毫无意义，
     // 而且桌面端与网页端各写一份必然漂移（原来两边就是各抄一份 18 词池）。
+    //
+    // 🔴 **2026-10-09 起，界面只走 `candidates` 这一半**：只给 `lang` 的常规路径改走主进程
+    //    只读 SQL（`src/main/semantic-tags.js#SemanticTags.suggestTerms`，同一条
+    //    `embeddings.tags` 表转置统计，实测 **45 ms**）—— 老路要起只读 worker、载文本编码器
+    //    （~2.1 s）、开索引（~0.7 s）、扫取样向量打分（~1.2 s），冷启还要现算 308 个词的
+    //    向量（~13 s），而答案只是「哪些词点下去有图」。
+    //    **本半条刻意保留**：只有它能对**词表外**的任意词真去打分（SQL 路只能在 308 词表里
+    //    查下标，词表外的词一律 0）。两条路服务的是两个不同的问题，不是新旧替换关系 ——
+    //    两侧的出口都在 `main.js` / `web-server.js` 里按入参形状分岔，别合并。
     const explicit = Array.isArray(options && options.candidates)
       ? options.candidates.map((item) => String(item == null ? '' : item).trim()).filter(Boolean)
       : null;
@@ -243,7 +378,7 @@ function refreshTags() {
       // 倒序：最后一行是本批**最小**的 photo_id，游标严格递减
       cursor = rows[rows.length - 1].photo_id;
       done += rows.length;
-      progress({ phase: 'tagging', processed: done, total });
+      progress({ phase: 'tagging', done, total, totalEstimated: false });
       if (rows.length < TAG_BATCH) break;
     }
     return { tagged: done, total };
@@ -252,13 +387,18 @@ function refreshTags() {
   }
 }
 
+/**
+ * 建 tag 倒排索引（第二路）时，一次在 `photos` 上往下取多少个 id 来筛待办。
+ *
+ * 取 4× batch（64）是刻意的：筛掉已打标的那部分 id 靠的是 `tag_photo` 的**点查**，
+ * 一次 64 个探针约 0.5 ms，而真正贵的是**取图**（读缩略图 BLOB + 两步 sharp）。
+ * 窗口比一批大几倍，能保证「凑够一批要打的图」不必反复进出循环。
+ */
 async function execute(operation, query, options) {
   fs.mkdirSync(root, { recursive: true });
   if (operation === 'status') {
-    let ready = false;
-    try {
-      ready = JSON.parse(fs.readFileSync(readyFile, 'utf8')).model === MODEL_KEY;
-    } catch (_) {}
+    // 判据与主进程 `status()` 共用一个函数（不要在这里再写一遍 JSON.parse 比对）。
+    const ready = isSearchReady(root, MODEL_KEY);
     const store = new IndexStore(workerData.dbPath, indexPath);
     try {
       return { ready, indexed: store.count() };
@@ -267,11 +407,8 @@ async function execute(operation, query, options) {
     }
   }
   if (operation !== 'install') {
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
-    } catch (_) {}
-    if (!manifest || manifest.model !== MODEL_KEY) throw new Error('AI_MODEL_MISSING');
+    // 模型没就绪（文件缺失 / 版本对不上 / JSON 坏了）一律在这里挡住，别让后面的编码器加载去背锅。
+    if (!isSearchReady(root, MODEL_KEY)) throw new Error('AI_MODEL_MISSING');
   }
   // 补标签必须在 loadEncoder 之前收口（原因见 refreshTags 的注释）。
   if (operation === 'tag') return refreshTags();
@@ -307,8 +444,8 @@ async function execute(operation, query, options) {
           .toBuffer(),
       );
       check();
-      fs.writeFileSync(readyFile + '.tmp', JSON.stringify({ model: MODEL_KEY }));
-      fs.renameSync(readyFile + '.tmp', readyFile);
+      // 写 ready.json 也走共用实现（内部同样是 `.tmp` + rename，落盘原子）。
+      writeSearchReady(root, MODEL_KEY);
       // 顺手把预选词的词表向量算好存下来：这一步正好在跑重活、编码器就在手上，多花的十几秒
       // 混在「下载模型」里没人会注意到；否则第一次进搜图页要为了预选词多等十几秒。
       progress({ phase: 'loading' });
@@ -323,7 +460,7 @@ async function execute(operation, query, options) {
     // 交给索引循环里的只读搜索（relay）复用：编码器与库连接都已就绪，不必再开一份。
     activeEncoder = encoder;
     activeStore = store;
-    // 基线只编码一次：检索时每张照片都要减掉它与泛化文本的相似度（原因见 embedding.js）。
+    // 基线只编码一次：检索时每张图片都要减掉它与泛化文本的相似度（原因见 embedding.js）。
     const baselineVector = await encoder.text(GENERIC_TEXT);
     check();
     activeBaseline = baselineVector;
@@ -375,15 +512,62 @@ async function execute(operation, query, options) {
     let failed = 0;
     let skipped = 0;
     let indexed = store.count();
-    progress({ phase: 'indexing', processed, failed, skipped, indexed });
+    /**
+     * 分母：候选集规模的**抽样估计值**（只在起手算一次 ⇒ 它是**起始快照**）。
+     *
+     * 🔴 **单独 try**：分母只是给用户看「大概还要多久」的装饰信息，**估不出来只该让百分比消失，
+     *    不该让整个索引失败** —— 这是个要跑几十小时的任务，为一个进度读数把它弄死不可接受。
+     * ⚠️ 它必须与 `store.batch()` 同源（共享 `CANDIDATE_PRED`），否则百分比与真实工作量脱钩。
+     *
+     * 🔴 **必须先报 `'counting'` 再去估**（`docs/contracts/background-tasks.md` §3.1.4）。
+     *    顺序反了的话，估算那段时间界面读到 `done = 0 / total = 0`，只能画成「完成 0」——
+     *    与「估计失败」不可区分。三态与缩略图补全同一套（详见 `face-worker.js` 同一处的推导）。
+     *
+     * ⚠️ 三态 `countPhase` 与 `totalEstimated` **正交**：一个说「分母算到哪一步」，
+     *    一个说「分母是估的还是精确数的」。合成一个字段 = `totalEstimated` 在「估成功」
+     *    与「估失败」下取值相同 = 零信息量。
+     */
+    let estimatedTotal = 0;
+    let countPhase = 'counting';
+    progress({
+      phase: 'indexing',
+      done: processed,
+      failed,
+      skipped,
+      indexed,
+      total: 0,
+      totalEstimated: true,
+      countPhase,
+    });
+    try {
+      const est = store.estimatePendingCount();
+      estimatedTotal = Math.max(0, Number(est && est.estimate) || 0);
+      countPhase = 'ready';
+    } catch (eEst) {
+      estimatedTotal = 0;
+      countPhase = 'failed';
+    }
+    progress({
+      phase: 'indexing',
+      done: processed,
+      failed,
+      skipped,
+      indexed,
+      total: estimatedTotal,
+      totalEstimated: true,
+      countPhase,
+    });
     const startedAt = Date.now();
     const report = (photo) =>
       progress({
-        processed,
+        done: processed,
         failed,
         skipped,
         indexed,
-        currentFile: photo.file_name,
+        // 🔴 **完整路径**，不是 `file_name`：后台任务面板那条「文件」行要能定位到是哪张图，
+        // 与缩略图补全 / 重建（`main.js` 的 `currentFile = row.file_path`）同口径。
+        // `batch()` 的 SELECT 里现成有 `p.file_path`，取文件名是白白丢掉目录信息。
+        currentFile: photo.file_path,
         ratePerMinute: Math.round(
           ((processed + failed) * 60000) / Math.max(1000, Date.now() - startedAt),
         ),
@@ -402,7 +586,14 @@ async function execute(operation, query, options) {
           continue;
         }
         try {
-          progress({ currentFile: photo.file_name });
+          // 同上：完整路径（面板「文件」行的口径，见 `report()` 里那条注释）。
+          progress({ currentFile: photo.file_path });
+          /**
+           * ⚠️ 这条链**与 `joytag-model.js#prepareSource` 必须逐字同源**
+           * （`scripts/joytag-index-regression.js` 会剥掉注释后逐字比对）。
+           * JoyTag 那一路（`semantic-tag-worker.js`）自己取图走的就是 `prepareSource`；
+           * 两处各写一份 = 同一张图在两条路下产出不同分数，而两边都不报错。
+           */
           const prepare = (input) =>
             sharp(input, { limitInputPixels: 100000000 })
               .rotate()
@@ -424,6 +615,8 @@ async function execute(operation, query, options) {
           const baseline = dot(baselineVector, vector);
           // 标签同理顺手算掉：图片向量与词表向量此刻都在手上，纯点积、不解码任何东西，
           // 边际成本≈0。漏算也不算错（batchPendingTags 之后会补），只是白多跑一趟。
+          // ⚠️ 这是 **CLIP 词表**那一路标签（存 `embeddings.tags`）；JoyTag 倒排
+          // （`tag-index.sqlite`）由并行的 `semantic-tag-worker.js` 负责，两套词表必须分立。
           store.put(photo, vector, baseline, {
             indexes: indexesOf(computeTags(vector, tagWords.vectors, baseline)),
             key: tagWords.key,
@@ -440,7 +633,12 @@ async function execute(operation, query, options) {
       }
       await new Promise((resolve) => setImmediate(resolve));
     }
-    return { indexed: store.count(), processed, failed, skipped };
+    /**
+     * JoyTag 倒排那一趟**不在这里**：它由并行的 `semantic-tag-worker.js` 用自己的游标
+     * 扫全库（并行结构里它的覆盖面天然就是全库，见该文件头注释）。本趟的返回值里
+     * 因此不再有 `tags` —— 主进程会从 tag worker 的结果里取来补上。
+     */
+    return { indexed: store.count(), done: processed, failed, skipped };
   } finally {
     global.fetch = originalFetch;
     controller = null;

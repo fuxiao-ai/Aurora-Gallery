@@ -6,7 +6,7 @@ html {
   --glyph-user: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='4'/%3E%3Cpath d='M4.5 20a7.5 7.5 0 0 1 15 0'/%3E%3C/svg%3E");
 }
 
-/* ---------- 人物 / 照片网格 ---------- */
+/* ---------- 人物 / 图片网格 ---------- */
 .people-dialog .people-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
@@ -81,7 +81,7 @@ html {
   font-variant-numeric: tabular-nums;
 }
 
-/* 某个人的照片 */
+/* 某个人的图片 */
 .people-dialog .people-photo-grid {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
@@ -213,7 +213,7 @@ html {
   min-height: 32px;
   padding: 5px 11px;
 }
-/* 照片卡上的「纠正」不占布局：平时隐形，悬停照片时浮在右上角，展开后保持可见。 */
+/* 图片卡上的「纠正」不占布局：平时隐形，悬停图片时浮在右上角，展开后保持可见。 */
 .people-dialog .people-card.people-photo {
   position: relative;
 }
@@ -414,7 +414,7 @@ html {
   font-weight: 650;
   letter-spacing: -0.01em;
 }
-/* 人物视图同样复用主照片网格（#photoGrid），不再独占 #contentArea；
+/* 人物视图同样复用主图片网格（#photoGrid），不再独占 #contentArea；
    侧栏让位规则见 src/renderer/navigation.css。 */
 
 #peopleButton,

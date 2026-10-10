@@ -82,7 +82,7 @@ async function run() {
     container,
     isActive: () => active,
     call: async (operation) => {
-      if (operation === 'status') return { ready: true, indexed: 4, busy: false, phase: 'complete' };
+      if (operation === 'status') return { ready: true, indexed: 4, running: false, phase: 'complete' };
       if (operation === 'query') return { photos: [{ id: 7, file_name: 'hit.jpg' }] };
       throw Error(operation);
     },

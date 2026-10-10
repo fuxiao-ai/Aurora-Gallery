@@ -2,7 +2,7 @@
  * 智能视图（搜图 / 人物）的专属样式。
  *
  * 侧栏独占：搜图页侧栏 = 搜索框 + 预选词 + 搜索历史，人物页侧栏 = 人物列表；
- * 结果照片复用 .photo-card（由 ui-grid.js 生成），这里只补侧栏控件与
+ * 结果图片复用 .photo-card（由 ui-grid.js 生成），这里只补侧栏控件与
  * 主区空态 / 首屏引导（示例词）。
  */
 
@@ -230,7 +230,7 @@
   gap: 10px;
   padding: 10px 12px 12px;
 }
-/* 人物搜索：只筛下面这个列表，不碰主区照片 */
+/* 人物搜索：只筛下面这个列表，不碰主区图片 */
 .ai-people-search {
   flex: 0 0 auto;
 }
@@ -542,6 +542,91 @@
 .ai-search-submit:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* ---------- 搜图档位：关键词 / 语义 ----------
+   两套引擎（文件名子串 vs AI 向量），必须让用户看见自己在哪一套上，
+   所以做成常驻的二选一，而不是藏在菜单里。 */
+.ai-search-modes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-secondary) 55%, transparent);
+}
+.ai-search-mode {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+.ai-search-mode:hover:not(.is-active) {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.ai-search-mode.is-active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.ai-search-mode:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---------- 关键词档结果：文件夹 + 文件 ---------- */
+
+.ai-kw-results {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 4px 0 12px;
+}
+.ai-kw-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.ai-kw-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+.ai-kw-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+.ai-kw-count {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.ai-kw-body {
+  min-width: 0;
+}
+.ai-kw-empty {
+  padding: 10px 4px;
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 
 /* ---------- 空态与首屏引导 ---------- */

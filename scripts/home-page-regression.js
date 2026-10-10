@@ -462,7 +462,7 @@ check(
   /t\s*===\s*'home'[\s\S]{0,120}?syncNavigationRail\('home'\)/.test(appCode),
 );
 
-// ══════════════════════════════════════════════ 5. 入口接线（10 个节点 → 10 个落点）
+// ══════════════════════════════════════════════ 5. 入口接线（11 个节点 → 11 个落点）
 
 const gotoRe = /data-home-goto="([^"]+)"/g;
 const gotoList = [];
@@ -471,18 +471,28 @@ const gotoList = [];
   while ((m = gotoRe.exec(htmlCode)) !== null) gotoList.push(m[1]);
 }
 check('夹具自证：找得到 data-home-goto 节点', gotoList.length > 0, String(gotoList.length));
-check('🔴 可点节点共 10 个（视图 2 + 带筛选的视图 1 + 标签页 3 + 设置面板 4）', gotoList.length === 10, JSON.stringify(gotoList));
+check('🔴 可点节点共 11 个（视图 2 + 带筛选的视图 2 + 标签页 3 + 设置面板 4）', gotoList.length === 11, JSON.stringify(gotoList));
 check(
-  '🔴 10 个落点两两不同（防「两个文案指向同一处」）',
+  '🔴 11 个落点两两不同（防「两个文案指向同一处」）',
   new Set(gotoList).size === gotoList.length,
   JSON.stringify(gotoList),
 );
 check(
-  '🔴 「只看视频」带 mediaFilter（不带就和「所有照片」同落点）',
-  gotoList.includes('view:all:video') && (() => {
-    const g = sliceBetween(appCode, 'function handleHomeGoto(spec) {', '\nfunction bindHomePageActions');
-    return /parts\[2\]\s*===\s*'video'/.test(g) && /state\.mediaFilter\s*=\s*'video'/.test(g) && /dom\.mediaFilterSelect\.value\s*=\s*'video'/.test(g);
-  })(),
+  '🔴 「只看照片 / 只看视频」各带自己的 mediaFilter（不带就和「所有文件」同落点）',
+  ['image', 'video'].every((f) => gotoList.includes('view:all:' + f)) &&
+    (() => {
+      const g = sliceBetween(appCode, 'function handleHomeGoto(spec) {', '\nfunction bindHomePageActions');
+      // 认**契约**不认写法：① 第三个冒号段确实是筛选值；② 取值域恰好是底栏那个
+      // <select> 的两项（写第四个值 ⇒ select.value 静默失败，见 app.js 里的长注释）；
+      // ③ state 与真下拉**两处**都写（只写 state = 界面筛选没跟着变）。
+      return (
+        /parts\[2\]/.test(g) &&
+        g.includes("'image'") &&
+        g.includes("'video'") &&
+        /state\.mediaFilter\s*=/.test(g) &&
+        /dom\.mediaFilterSelect\.value\s*=/.test(g)
+      );
+    })(),
 );
 
 // 每个 data-home-goto 节点必须是原生 <button>，且 handler 支持它的前缀
@@ -559,7 +569,7 @@ const cardGotos = cards.map((c) => {
   return out;
 });
 check('🔴 每张卡都有 1 个以上卡内入口（「介绍与入口合体」）', cardGotos.every((g) => g.length > 0), JSON.stringify(cardGotos));
-check('卡内入口合计 9 个（主按钮占掉第 10 个节点）', cardGotos.reduce((a, g) => a + g.length, 0) === 9, JSON.stringify(cardGotos));
+check('卡内入口合计 10 个（主按钮占掉第 11 个节点）', cardGotos.reduce((a, g) => a + g.length, 0) === 10, JSON.stringify(cardGotos));
 check('卡内没有嵌套 <button>（chip 是卡的直接后代，不出现按钮里套按钮）', cards.every((c) => countOf(c, '<button') === countOf(c, '</button>') && countOf(c, '<button') > 0));
 
 /** 卡片是介绍容器：样式里不得有指针样式与 hover 抬升 */
@@ -609,6 +619,143 @@ check('卡内没有嵌套 <button>（chip 是卡的直接后代，不出现按�
   check(
     '🔴 .home-brand 住在 .home-head 里（不许漂成一个游离的装饰层）',
     i > htmlCode.indexOf('<div class="home-head"') && i < htmlCode.indexOf('<div class="home-cta"'),
+  );
+}
+
+// ══════════════════════════════════════════════ 6b. 库概览统计带（2026-10-06）
+
+/**
+ * 首页上**唯一**的数据块。它能和「Home 是纯导航页」共存，靠的**不是**放宽范围线，
+ * 而是「数据白拿」：值是 `state.stats`，而那个字段由启动路径上本来就会跑的 `loadStats()`
+ * 写入 —— 首页自己不请求、不读库 ⇒ §7 的零副作用断言**原样生效**，一条例外都没开。
+ * 下面这组钉的正是这个前提，以及「数据晚到不跳字」那三条件。
+ *
+ * 为什么这组必须机械钉住：它坏掉的方式全是**静默**的 ——
+ *   · 少了 loadStats 里的合流调用 ⇒ 顶栏数字一切正常，首页永远一条「—」；
+ *   · 值节点挂了 data-home-goto ⇒ 可点节点从 11 变 12，而 §5 之外没人发现；
+ *   · 拿掉 CSS 的均分/nowrap ⇒ 数字一到就跳一下，只有肉眼能看见。
+ */
+{
+  check('夹具自证：index.html 里有统计带容器', /class="home-stats"\s+id="homeStats"/.test(htmlCode));
+
+  for (const id of ['homeStatPhotos', 'homeStatVideos', 'homeStatSize', 'homeStatFolders']) {
+    check('统计带含值节点 #' + id, new RegExp('id="' + id + '"').test(htmlCode));
+  }
+
+  const statsRegion = sliceBetween(htmlCode, '<div class="home-stats"', '<div class="home-cta"');
+  check('夹具自证：切出了统计带的 HTML 片段', statsRegion.length > 0, String(statsRegion.length));
+  check(
+    '🔴 统计带内零 data-home-goto（它不进 §5 那 11 个可点节点）',
+    !statsRegion.includes('data-home-goto'),
+  );
+  check('🔴 统计带内零 <button>（纯展示，不引入新的可点节点）', !statsRegion.includes('<button'));
+
+  const placeholders = (statsRegion.match(/>—</g) || []).length;
+  check(
+    '🔴 4 个值节点的初始文本都是占位符（骨架先于数据 ⇒ 首帧就有确定高度）',
+    placeholders === 4,
+    '实得 ' + placeholders,
+  );
+
+  const homeStatsBody = sliceBetween(appCode, 'function renderHomeStats() {', '\nfunction setHomeStatValue');
+  check('夹具自证：取到了 renderHomeStats 的函数体', homeStatsBody.length > 0, String(homeStatsBody.length));
+  check(
+    '🔴 renderHomeStats 的数据源是 state.stats（首页不自己发请求、不读数据库）',
+    homeStatsBody.includes('state.stats'),
+  );
+  check(
+    '🔴 renderHomeStats 里零 IPC（不出现 invoke / send / sendSync）',
+    !/\.(invoke|send|sendSync)\(/.test(homeStatsBody),
+  );
+  check(
+    '🔴 口径互斥：照片数 = totalPhotos − videoPhotos —— getStats 的 totalPhotos 是 COUNT(*)，' +
+      '含视频行；不减就会出现「照片 + 视频 > 全部文件」（2026-10-07 实测：顶栏 1,656,580 ' +
+      'vs 首页 1,629,971 + 26,609 视频）。减法只在真相源 stillPhotoCount 里写一次，' +
+      '这里只钉「调了它」，不钉减号本身 —— 钉减号会在抽函数时误报',
+    /stillPhotoCount\(\s*total\s*,\s*videos\s*\)/.test(homeStatsBody),
+  );
+  check(
+    '🔴 「统计到了没有」的判据是 `!= null` 而不是 `> 0` —— 用后者会让**空库**永远停在占位符上，' +
+      '与「还在加载」不可区分（空库应当显示 0）',
+    /s\.totalPhotos\s*!=\s*null/.test(homeStatsBody),
+  );
+  check(
+    '🔴 占位符只有一个来源（HOME_STAT_PLACEHOLDER：1 处定义 + 1 处使用）—— 两态同宽的前提',
+    /var HOME_STAT_PLACEHOLDER = '—'/.test(appCode) && countOf(appCode, 'HOME_STAT_PLACEHOLDER') === 2,
+    '实得 ' + countOf(appCode, 'HOME_STAT_PLACEHOLDER'),
+  );
+
+  check(
+    '🔴 loadStats 在写完 state.stats **之后**补写统计带（漏了 = 首页永远停在占位符，' +
+      '而顶栏数字一切正常 —— 最典型的静默失效）',
+    (() => {
+      const b = sliceBetween(appCode, 'async function loadStats() {', '\n}');
+      const iSet = b.indexOf('state.stats =');
+      const iRender = b.indexOf('renderHomeStats()');
+      return b.length > 0 && iSet >= 0 && iRender > iSet;
+    })(),
+  );
+  check(
+    'openHomePage 末尾补写一次统计带（从别页回来立即是数字，不闪占位符帧）',
+    /syncNavigationRail\('home'\);[\s\S]{0,400}?renderHomeStats\(\);/.test(homeOpen),
+  );
+
+  // 恒形三条件：①管宽度、②③管高度与字面宽度。少任何一条，长数字都会撑开容器。
+  // ⚠️ 2026-10-06 第二版：统计带从「1 主数字 + 3 个次级指标」改成**四项平铺**
+  //    （取消主次层级），均分那一条的作用点随之回到 `.home-stats` 本身。
+  check(
+    '🔴 .home-stats 用 `repeat(4, minmax(0, 1fr))` 均分 ⇒ 四项格宽由容器决定、与位数无关',
+    /\.home-stats\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/.test(cssCode),
+  );
+  check(
+    '🔴 主次层级确实取消了：`.home-stat-lead` / `.home-stat-sub` / `.home-stat-value--mini` 一个都不许留 —— ' +
+      '留着任何一个，四项就会重新长出一套高低（这正是上一版被否掉的形态）',
+    !/\.home-stat-lead/.test(cssCode) &&
+      !/\.home-stat-sub/.test(cssCode) &&
+      !/\.home-stat-value--mini/.test(cssCode),
+  );
+  check(
+    '🔴 .home-stat-value 单行 nowrap ⇒ 高度不随内容换行变化',
+    /\.home-stat-value\s*\{[^}]*white-space:\s*nowrap/.test(cssCode),
+  );
+  check(
+    '🔴 数值字号固定写在 .home-stat-value 里（不靠 JS 设）—— ' +
+      '字号不许跟着「数据到没到」变，否则骨架态与填充态不同高（恒形的第 0 条件，比均分更根本）',
+    /\.home-stat-value\s*\{[^}]*font-size:\s*\d/.test(cssCode),
+  );
+  check(
+    '🔴 .home-stat-value 用 tabular-nums ⇒ 占位符 ↔ 数字切换时字面宽度不抖',
+    /\.home-stat-value\s*\{[^}]*font-variant-numeric:\s*tabular-nums/.test(cssCode),
+  );
+  check(
+    '🔴 统计带自己不带 cursor / :hover（§6 那两条计数必须仍是 1，只能属于 .home-chip）',
+    !/\.home-stat[^{]*\{[^}]*cursor:/.test(cssCode) && !/\.home-stat[^{]*:hover/.test(cssCode),
+  );
+
+  // ── 设计主张的机械化表达（2026-10-06 视觉翻新：「编辑感」）──
+  // 「层级靠结构与排版，不靠装饰」如果只写在注释里，下次「美化一下」就会复发。
+  // 上一版的问题不是某个装饰丑，而是 8 处装饰叠在一起后**到处都在发光** ——
+  // 三层径向环境光 / 卡右上角光晕 / 卡左竖条 / 段头菱块 / 渐隐线……
+  // 于是唯一的主按钮淹没其中，用户不知道先看哪。下面两条把这个减法钉住。
+  const homeCssMark = cssRaw.indexOf('首页（Home）—— 独立导航页');
+  const homeCss = cssCode.slice(cssCode.indexOf('.home-page', homeCssMark));
+  check(
+    '夹具自证：切出了 Home 的样式段（供设计主张断言用）',
+    homeCss.length > 0 && homeCss.includes('.home-chip'),
+    String(homeCss.length),
+  );
+  check(
+    '🔴 Home 段**零 radial-gradient** —— 不用径向光晕建立氛围。上一版的三层径向光是' +
+      '「到处发光、不知道先看哪」的根源；顶部那层**线性**光是刻意保留的唯一一处环境光',
+    !/radial-gradient/.test(homeCss),
+  );
+  check(
+    '🔴 卡片表面不许加投影 —— 表面只剩「一层底色 + 1px 边框」。投影会让 4 张卡各像一块小海报，' +
+      '把主按钮的视觉重量稀释掉',
+    (() => {
+      const b = (/\.home-feature\s*\{[^}]*\}/.exec(homeCss) || [''])[0];
+      return b.length > 0 && !/box-shadow/.test(b);
+    })(),
   );
 }
 
@@ -664,6 +811,10 @@ check('夹具自证：零副作用断言不是靠空片段蒙混（片段里确�
 
 const HOME_KEYS = [
   'home.subtitle',
+  'home.stats.photos',
+  'home.stats.videos',
+  'home.stats.size',
+  'home.stats.folders',
   'home.addFolder',
   'home.addFolderHint',
   'home.whatCanDo',
@@ -677,6 +828,7 @@ const HOME_KEYS = [
   'home.grp.personal.title',
   'home.grp.personal.desc',
   'home.chip.videos',
+  'home.chip.photos',
 ];
 
 /** 从 i18n.js 里取某个 key 的值（取第一次出现的那条） */
@@ -734,7 +886,7 @@ check('夹具自证：词条取值解析不是空手而归（home.subtitle 应�
   const CARD_SPEC = [
     { id: 'browse', words: ['文件夹', '日期'], gotos: ['view:all', 'view:folder_overview', 'tab:dates'] },
     { id: 'search', words: ['搜', '人物'], gotos: ['tab:search', 'tab:people'] },
-    { id: 'large', words: ['视频'], gotos: ['view:all:video'] },
+    { id: 'large', words: ['图片', '视频'], gotos: ['view:all:image', 'view:all:video'] },
     { id: 'personal', words: ['主题', '快捷键', '扫'], gotos: ['panel:settingsSectionAppearance', 'panel:settingsSectionShortcuts', 'panel:settingsSectionNetwork'] },
   ];
   CARD_SPEC.forEach((spec, i) => {

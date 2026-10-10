@@ -18,7 +18,11 @@ class Element {
     this.listeners[name] = callback;
   }
 }
-const tabs = ['folders', 'dates', 'search', 'people', 'duplicates'].map((tab) => new Element(tab));
+// 夹具里的导航项。`tags`（标签导航页）在列：它是**浏览视图**，走的是通用 nav-tab 处理器
+// ⇒ 必须和 folders / dates 一样，能从设置页返回、并且点一下就退出设置页。
+const tabs = ['folders', 'dates', 'search', 'people', 'tags', 'duplicates'].map(
+  (tab) => new Element(tab),
+);
 const elements = Object.fromEntries(
   ['sidebar', 'sidebarResizer', 'topbarSettingsBtn'].map((id) => [id, new Element()]),
 );
@@ -96,9 +100,12 @@ async function run() {
   const railCode = rail.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
   // 2026-10-05：导轨多了第 7 项「首页」（`#topbarHomeBtn`，`.rail-home`）—— 它是一次
   // **页面跳转**，不是浏览视图，所以**不带 `.nav-tab`**（那是 `bindNavTabs` 批量挂 click 的标记）。
+  // 2026-10-09：导轨多了第 8 项「标签」（`data-tab="tags"`）。它是**浏览视图**（左侧是标签树、
+  // 右侧是照片网格，`currentView === 'tag'` 在 `BROWSABLE_VIEWS` 里），所以带 `.nav-tab`，
+  // 并且落在「换内容看的维度」那一组（`people` 之后、第二条分隔线之前）。
   // ⚠️ 别把「与设置同属『页面』」顺手读成「位置也该挨着设置」：位置由下面那条序列断言管。
-  assert.equal((railCode.match(/class="rail-item/g) || []).length, 7);
-  assert.equal((railCode.match(/<svg/g) || []).length, 7);
+  assert.equal((railCode.match(/class="rail-item/g) || []).length, 8);
+  assert.equal((railCode.match(/<svg/g) || []).length, 8);
   // 只数数量抓不到「顺序被改错」：再解析出每个 rail 项的 data-tab 序列逐位比对。
   // 「设置」项没有 data-tab（`syncNavigationRail` 里 `item.dataset.tab || 'settings'` 兜底），
   // 而「首页」**必须**带 `data-tab="home"` —— 否则它会落进那个 `|| 'settings'` 兜底，
@@ -109,13 +116,13 @@ async function run() {
   while ((tabMatch = tabRe.exec(railCode))) railTabs.push(tabMatch[1]);
   assert.deepEqual(
     railTabs,
-    ['home', 'folders', 'dates', 'search', 'people', 'duplicates'],
+    ['home', 'folders', 'dates', 'search', 'people', 'tags', 'duplicates'],
     '导轨项 data-tab 序列 / 数量必须精确匹配',
   );
-  // 🔴 「视图」与「页面跳转」的分界：只有那 5 个浏览视图能带 `.nav-tab`
+  // 🔴 「视图」与「页面跳转」的分界：只有那些浏览视图能带 `.nav-tab`
   // （`bindNavTabs` 按它批量挂 click），首页与设置都不行 —— 否则它们会被当成视图处理。
   const navTabTabs = (railCode.match(/class="rail-item nav-tab[^"]*"\s*\n?\s*data-tab="([^"]+)"/g) || []).length;
-  assert.equal(navTabTabs, 5, '.nav-tab 只应挂在那 5 个浏览视图上');
+  assert.equal(navTabTabs, 6, '.nav-tab 只应挂在那 6 个浏览视图上');
   assert.ok(
     !/rail-home[^>]*nav-tab|nav-tab[^>]*rail-home/.test(railCode),
     '首页不是视图，不得带 .nav-tab',
@@ -157,11 +164,12 @@ async function run() {
       'view:dates',
       'view:search',
       'view:people',
+      'view:tags',
       'divider',
       'view:duplicates',
       'settings',
     ],
-    'rail 三段结构必须精确：首页 ｜ 分组线 ｜ 视图 4 项 ｜ 分组线 ｜ 重复 + 设置',
+    'rail 三段结构必须精确：首页 ｜ 分组线 ｜ 视图 5 项 ｜ 分组线 ｜ 重复 + 设置',
   );
   // 同一类错位在设置页也存在过：导航项顺序（ui-settings.js 的 navItems）
   // 与区块的 DOM 顺序不一致，而设置页当时是「单页长滚动 + scrollIntoView」，

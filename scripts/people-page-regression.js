@@ -86,7 +86,7 @@ async function run() {
     },
     call: async (operation) => {
       if (operation === 'status')
-        return { ready: true, indexed: 1, busy: false, phase: 'complete' };
+        return { ready: true, indexed: 1, running: false, phase: 'complete' };
       if (operation === 'groups')
         return { items: [{ id: 1, name: 'Family', photoCount: 1, thumbnail: 'fixture' }] };
       if (operation === 'photos')
@@ -140,7 +140,7 @@ async function run() {
       call: async (operation) => {
         operations.push(operation);
         if (operation === 'status')
-          return { ready: true, indexed: 1, busy: false, phase: 'complete' };
+          return { ready: true, indexed: 1, running: false, phase: 'complete' };
         if (operation === 'settings') return { matchThreshold: 0.34, thumbnailFallback: false };
         throw Error(operation);
       },
@@ -252,7 +252,7 @@ async function run() {
       isActive: () => true,
       call: async (operation) => {
         if (operation === 'status')
-          return { ready: true, indexed: 5, busy: false, phase: 'complete', people: 3 };
+          return { ready: true, indexed: 5, running: false, phase: 'complete', people: 3 };
         if (operation === 'settings') return { matchThreshold: 0.35, thumbnailFallback: true };
         throw Error(operation);
       },
@@ -275,7 +275,7 @@ async function run() {
       settingsOnly: true,
       container: aiContainer,
       isActive: () => true,
-      call: async () => ({ ready: true, indexed: 2, busy: false, phase: 'complete' }),
+      call: async () => ({ ready: true, indexed: 2, running: false, phase: 'complete' }),
     });
     try {
       ai.show();
@@ -288,7 +288,7 @@ async function run() {
     global.window.SemanticSearchUI.mount({
       manage: true,
       openSettings() {},
-      call: async () => ({ ready: true, indexed: 2, busy: false }),
+      call: async () => ({ ready: true, indexed: 2, running: false }),
     });
     body.children.find((item) => item.id === 'semanticSearchButton').listeners.click();
     await settle();
@@ -325,7 +325,7 @@ async function run() {
     const empty = mountLive(emptyContainer, () => ({
       ready: true,
       indexed: 30,
-      busy: true,
+      running: true,
       phase: 'indexing',
       people: 0,
       items: [],
@@ -351,7 +351,7 @@ async function run() {
     const live = mountLive(liveContainer, () => ({
       ready: true,
       indexed: 40,
-      busy: true,
+      running: true,
       phase: 'indexing',
       people: livePeople,
       items: [{ id: 1, name: 'Family', photoCount: 3, thumbnail: 'fixture' }].concat(
@@ -383,7 +383,7 @@ async function run() {
     // 和一行红框归因，三句讲同一件事、把表单推远 —— 已整块删除（见下方静态守护）。
     const staleStatus = () => ({
       ready: true,
-      busy: false,
+      running: false,
       phase: 'complete',
       indexed: 0,
       faces: 0,
@@ -448,7 +448,7 @@ async function run() {
     const freshContainer = new Element('section');
     const freshSettings = mountSettings(freshContainer, () => ({
       ready: true,
-      busy: false,
+      running: false,
       phase: 'complete',
       indexed: 40000,
       faces: 12000,
@@ -481,7 +481,7 @@ async function run() {
     // 空列表的话术：同样都是「0 个人物」，但「索引是上一代识别器建的」与「还没有识别到人物」
     // 指向的动作完全不同（重建 vs 等索引 / 怀疑照片）。
     const staleEmptyContainer = new Element('section');
-    const staleEmpty = mountLive(staleEmptyContainer, () => ({ ...staleStatus(), busy: false }));
+    const staleEmpty = mountLive(staleEmptyContainer, () => ({ ...staleStatus(), running: false }));
     try {
       staleEmpty.show();
       await settle();

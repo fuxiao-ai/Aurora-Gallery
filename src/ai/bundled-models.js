@@ -44,8 +44,28 @@ function readManifest(modelsDir) {
   }
 }
 
-function sha256File(file) {
-  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+/**
+ * 文件的 sha256。
+ *
+ * 🔴 **必须分块读，不能 `fs.readFileSync` 把整份塞进内存**：随包模型里 SigLIP2 单文件
+ * 283 MB、JoyTag 权重 366 MB，一次性读进来会在「可用内存只剩 1.28 GB」的机器上直接顶爆，
+ * 而播种发生在**启动路径**上 —— 这里失败就等于启动失败。分块读的哈希与一次性读**逐字节相同**
+ * （sha256 是流式的），所以这是等价重构，不是行为变更。
+ */
+function sha256File(file, chunkBytes = 4 * 1024 * 1024) {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(file, 'r');
+  try {
+    const chunk = Buffer.allocUnsafe(chunkBytes);
+    let read = 0;
+    // 位置传 null ⇒ 顺序读，读完返回 0
+    while ((read = fs.readSync(fd, chunk, 0, chunkBytes, null)) > 0) {
+      hash.update(read === chunkBytes ? chunk : chunk.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
 }
 
 function sizeOf(file) {
@@ -170,13 +190,53 @@ function seedSearch(modelsDir, searchAiPath, modelKey) {
 }
 
 /**
+ * JoyTag 打标模型：`models/joytag/model.onnx` → `<searchAiPath>/models/joytag/model.onnx`。
+ *
+ * 为什么放在**搜图**那棵树下：它与 CLIP 索引同属「本机 AI 索引」，产物 `tag-index.sqlite`
+ * 也落在 `ai-search/` 旁边，两者是同一趟任务的两个产出（见 `docs/contracts/joytag-index.md`）。
+ *
+ * 与人脸那支同形（size 比对、缺了才补），但**多一道 sha256 校验**：366 MB 的权重被半截写入时，
+ * size 恰好对不上的情况能靠 size 抓住，而「看起来完整、内容坏了」的后果是**打标全部产出垃圾**
+ * （静默失效，没有任何报错）。所以只在真的拷过之后校验一次 —— 幂等快路径不重复算 366 MB 哈希。
+ *
+ * 🔴 **标签表绝不在这里播种**：`joytag-labels.txt` 的唯一真相源是 `src/ai/joytag-labels.txt`
+ * （`tag-labels.js#fingerprint()` / `EXPECTED_LINES` 的判据），它随 `src/` 进包。
+ * 播种层再复制一份 = 两张同名表可能分叉，而这张表「顺序即输出下标」，
+ * 分叉的后果是全库 `tag_id` 静默错位。**没有第二份，就没有分叉。**
+ */
+function seedJoytag(modelsDir, searchAiPath) {
+  const manifest = readManifest(modelsDir);
+  const section = manifest && manifest.joytag;
+  const files = section && Array.isArray(section.files) ? section.files : null;
+  if (!files || !files.length) return { status: 'no-bundle', copied: 0, checked: 0 };
+  const root = path.join(searchAiPath, 'models', 'joytag');
+  let copied = 0;
+  for (const file of files) {
+    const from = path.join(modelsDir, 'joytag', file.path);
+    const to = path.join(root, file.path);
+    if (sizeOf(to) === file.bytes) continue;
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    copyAtomic(from, to);
+    copied++;
+  }
+  if (copied) {
+    for (const file of files) {
+      const to = path.join(root, file.path);
+      if (sizeOf(to) !== file.bytes || sha256File(to) !== file.sha256)
+        return { status: 'hash-mismatch', copied, checked: files.length, file: file.path };
+    }
+  }
+  return { status: copied ? 'seeded' : 'already-complete', copied, checked: files.length };
+}
+
+/**
  * 入口。任何一个环节出错都只落在该环节的报告里，永远不抛——调用方按返回值打日志即可。
  */
 function ensureBundledModels(options) {
   const settings = options || {};
   const modelsDir = settings.modelsDir;
   if (!modelsDir || !fs.existsSync(modelsDir)) return { status: 'no-models-dir', modelsDir };
-  const report = { status: 'ok', modelsDir, face: null, search: null };
+  const report = { status: 'ok', modelsDir, face: null, search: null, joytag: null };
   try {
     report.face = seedFace(modelsDir, settings.faceAiPath);
   } catch (error) {
@@ -187,13 +247,18 @@ function ensureBundledModels(options) {
   } catch (error) {
     report.search = { status: 'error', message: error && error.message ? error.message : String(error) };
   }
+  try {
+    report.joytag = seedJoytag(modelsDir, settings.searchAiPath);
+  } catch (error) {
+    report.joytag = { status: 'error', message: error && error.message ? error.message : String(error) };
+  }
   return report;
 }
 
 /** 播种是否真的动过文件（决定要不要打日志）。 */
 function reportSaysCopied(report) {
-  if (!report || !report.face || !report.search) return false;
-  return report.face.copied > 0 || report.search.copied > 0;
+  if (!report || !report.face || !report.search || !report.joytag) return false;
+  return report.face.copied > 0 || report.search.copied > 0 || report.joytag.copied > 0;
 }
 
 module.exports = {
@@ -209,6 +274,7 @@ module.exports = {
   writeSearchReady,
   seedFace,
   seedSearch,
+  seedJoytag,
   ensureBundledModels,
   reportSaysCopied,
 };

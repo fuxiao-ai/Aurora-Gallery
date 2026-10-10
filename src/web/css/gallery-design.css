@@ -233,14 +233,14 @@ html .sidebar {
   margin-bottom: 4px;
   padding-bottom: 4px;
 }
-/* 第一个照片库之前补一条分隔线：上面几行（所有照片 / 收藏 / 所有目录）是「视图入口」，
+/* 第一个图库之前补一条分隔线：上面几行（所有图片 / 收藏 / 所有目录）是「视图入口」，
    下面的 .tree-root 才是真实目录树，不给线就只能靠行距猜。 */
 .folder-item + .tree-root {
   border-top: 1px solid var(--border);
   margin-top: 8px;
   padding-top: 8px;
 }
-/* 根目录行（= 一个照片库）略作强调，和「所有照片 / 收藏 / 所有目录」区分开 */
+/* 根目录行（= 一个图库）略作强调，和「所有图片 / 收藏 / 所有目录」区分开 */
 .tree-root > .folder-item.tree-parent > .name {
   font-weight: 600;
 }
@@ -552,8 +552,8 @@ html .topbar,
 /* ═══ 面板透明度（第五维 data-opacity）══════════════════════════════════════════
  *
  * 语义：把「界面框架」那几张面的**底色**按 --ui-alpha 掺进 transparent，透出 body 的
- *      渐变底与 `.aurora-bg` 极光层。**只动背景色，不动照片**——`.photo-card` 与
- *      `.photo-card img` 一概不在此列（照片是主体，通透了就没法看图了）。
+ *      渐变底与 `.aurora-bg` 极光层。**只动背景色，不动图片**——`.photo-card` 与
+ *      `.photo-card img` 一概不在此列（图片是主体，通透了就没法看图了）。
  *
  * 与前三/四维的关系：**正交**。body 里那层 `.aurora-bg` 是唯一的「底」，
  * 面板透出来的就是它 → 「纯黑 + 通透」「暖调 + 轻微」都能叠。

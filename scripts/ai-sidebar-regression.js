@@ -182,6 +182,9 @@ function makeDom() {
     'aiSearchInput',
     'aiSearchSubmit',
     'aiSearchForm',
+    'aiSearchModes',
+    'aiSearchModeKeyword',
+    'aiSearchModeSemantic',
     'aiViewStatus',
     'aiPeopleStatus',
     'aiPeopleLive',
@@ -197,8 +200,12 @@ function makeDom() {
   ];
   const dom = {};
   ids.forEach((id) => {
-    dom[id] = makeEl(id === 'photoGrid' ? 'div' : 'div');
+    dom[id] = makeEl('div');
   });
+  // 档位按钮靠 `data-ai-search-mode` 被识别（切换监听只认这个属性，不认 id），
+  // 替身必须带上它，否则切档那条路测不到。
+  dom.aiSearchModeKeyword.setAttribute('data-ai-search-mode', 'keyword');
+  dom.aiSearchModeSemantic.setAttribute('data-ai-search-mode', 'semantic');
   return dom;
 }
 
@@ -239,12 +246,13 @@ const flush = async (rounds = 12) => {
 
 function buildAiViews(opts) {
   const historyStore = opts.store;
-  const status = opts.status || { ready: true, indexed: 40, busy: false, people: 2 };
+  const status = opts.status || { ready: true, indexed: 40, running: false, people: 2 };
   const groups = opts.groups || [];
   const personPhotosById = opts.personPhotosById || {};
   const dom = makeDom();
   const gridCalls = [];
   const apiCalls = [];
+  const skeletonCalls = [];
   const state = { currentView: opts.view, currentPhotos: [], cardLayoutMode: 'grid' };
   const api = {
     // 「预选词按库筛选」这条通道默认不提供（老用例保持纯静态词库的行为）；
@@ -286,12 +294,56 @@ function buildAiViews(opts) {
         if (opts.renameFails) return Promise.reject(new Error('FACE_PERSON_MISSING'));
         return Promise.resolve({});
       }
+      // 关键词档的两条请求：`doKeywordSearch` **并行**发出目录与文件两条（见
+      // `src/renderer/ai-views.js`）。默认都给空 —— 老用例只关心语义档，行为不变。
+      if (op === 'searchFolders') {
+        const kw = opts.keyword || {};
+        return Promise.resolve({
+          folders: (kw.folders || []).slice(),
+          total: kw.folderTotal == null ? (kw.folders || []).length : kw.folderTotal,
+        });
+      }
+      if (op === 'searchPhotos') {
+        const kw = opts.keyword || {};
+        const page = (b && b.page) || 1;
+        // 「更多」翻页要能看出**去了第几页** —— 第 2 页起给另一批条目，
+        // 于是「页游标被缩回第一页」这种坏形态才会表现成「又拿到同一批」。
+        const rows = page <= 1 ? kw.files || [] : kw.filesPage2 || [];
+        return Promise.resolve({
+          photos: rows.slice(),
+          total: kw.fileTotal == null ? (kw.files || []).length : kw.fileTotal,
+          page: page,
+          pageSize: (b && b.pageSize) || 60,
+          totalPages: 1,
+        });
+      }
       return Promise.reject(new Error('unexpected ' + op + '/' + a));
     },
   };
   const ui = {
     renderPhotoGrid(payload) {
       gridCalls.push(payload.photos);
+    },
+    /**
+     * 目录封面卡片。真身（`ui-grid.js#renderFolderCoverGrid`）写的是 `innerHTML`，
+     * 而假 DOM 的 innerHTML 只是一个字符串，所以这里只复刻契约里**那一件**事：
+     * 每行是 `.folder-cover-card[data-folder-path]`。
+     * 「点结果里的目录跳进这个目录」那条委托监听（`ui-events.js` 挂在 `#photoGrid` 上）
+     * 正是靠这个属性认行的，保留态回归必须认得出它。
+     */
+    renderFolderCoverGrid(payload) {
+      const host = payload && payload.dom && payload.dom.photoGrid;
+      if (!host) return;
+      host.replaceChildren();
+      (payload.covers || []).forEach((row) => {
+        const card = makeEl('div');
+        card.className = 'folder-cover-card';
+        card.setAttribute('data-folder-path', String(row.folder_path || ''));
+        const count = makeEl('div');
+        count.textContent = String(row.folder_photo_count == null ? '' : row.folder_photo_count);
+        card.appendChild(count);
+        host.appendChild(card);
+      });
     },
     applyCardSize() {},
     escapeHtml: (s) => String(s == null ? '' : s),
@@ -300,7 +352,10 @@ function buildAiViews(opts) {
     formatDateTime: () => '',
     formatNumber: (n) => String(n),
     normalizePath: (p) => p,
-    showSkeleton() {},
+    // 骨架屏是「重跑了一遍搜索」的可见后果：还原**不能**留下这个痕迹。
+    showSkeleton() {
+      skeletonCalls.push(1);
+    },
   };
   const views = global.window.RendererAiViews.init({
     dom,
@@ -310,7 +365,7 @@ function buildAiViews(opts) {
     onRerenderChrome() {},
   });
   views.bind();
-  return { views, dom, state, apiCalls, gridCalls, historyStore };
+  return { views, dom, state, apiCalls, gridCalls, skeletonCalls, historyStore };
 }
 
 const HISTORY_KEY = 'photoManager.aiSearchHistory';
@@ -325,6 +380,15 @@ function suggestFromDom(dom) {
   return collectByAttr(dom.aiSearchSuggest, 'data-ai-suggest');
 }
 
+/**
+ * 切到指定档位。**默认档位是关键词**（不依赖索引、进页面就能搜），
+ * 要测语义档（预选词 / 匹配阈值 / 覆盖率文案）的用例必须先切过去。
+ */
+function switchMode(dom, mode) {
+  const btn = mode === 'semantic' ? dom.aiSearchModeSemantic : dom.aiSearchModeKeyword;
+  dom.aiSearchModes.listeners.click({ target: btn });
+}
+
 async function testDesktopSearchSuggest() {
   // ---- 预选词：进入即随机抽一批、点一下直接搜 ----
   {
@@ -337,6 +401,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { sampled: 3000, terms: SUGGEST_TERMS },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     // 词池是**异步取回来**的（服务端要按真实命中数算一遍），所以这里必须等一轮。
     // 等不到就什么都不摆 —— 旧实现是先摆一批写死的词、再慢慢替换，那正是要改掉的。
     await flush();
@@ -388,12 +453,17 @@ async function testDesktopSearchSuggest() {
   {
     const store = {};
     installRendererGlobals(store);
-    const { views, dom } = buildAiViews({
+    const { views, dom, state } = buildAiViews({
       view: 'people',
       store,
       searchSuggest: { sampled: 3000, terms: SUGGEST_TERMS },
     });
     const batches = new Set();
+    // 切档要求 `isSearch()` 为真（判据是 `state.currentView`），而这个实例初始停在人物页，
+    // 所以先把它切到搜图页（真实界面里这一步由 `showTabContent` 做）。
+    state.currentView = 'ai_search';
+    views.enter('ai_search');
+    switchMode(dom, 'semantic');
     for (let i = 0; i < 12; i += 1) {
       views.enter('ai_search');
       await flush();
@@ -418,6 +488,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { sampled: 3000, terms: SUGGEST_TERMS },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await flush();
     const call = apiCalls.find((c) => c.op === 'aiSearchSuggest');
     assert.ok(call, '进搜索页时向主进程要一次预选词');
@@ -451,6 +522,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { sampled: 3000, terms: [] },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await flush();
     assert.equal(suggestFromDom(dom).length, 0, '一个词都不达标时不摆任何词');
     assert.equal(dom.aiSearchSuggest.hidden, true, '整块收起来');
@@ -473,6 +545,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { sampled: 0, terms: [] },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await flush();
     assert.equal(dom.aiSearchSuggest.hidden, true, '没有可用索引时收起，而不是摆一批可能没结果的词');
     views.enter('people');
@@ -500,6 +573,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { sampled: 3000, terms: SUGGEST_TERMS },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     // 不 await：此刻请求刚发出去，DOM 必须已经是加载态
     assert.equal(
       dom.aiSearchSuggest.hidden,
@@ -543,6 +617,7 @@ async function testDesktopSearchSuggest() {
       searchSuggest: { fails: true },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     assert.equal(
       countByClass(dom.aiSearchSuggest, 'ai-suggest-skeleton'),
       5,
@@ -573,6 +648,7 @@ async function testMainHeroExamples() {
     installRendererGlobals(store);
     const { views, dom } = buildAiViews({ view: 'ai_search', store });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     const hero = deepText(dom.photoGrid);
     ['夕阳下的海滩', '雪山和湖泊', '人物肖像', '城市夜景', '美食特写'].forEach((word) => {
       assert.ok(hero.includes(word), '拿不到词池时引导页给固定示例词：' + word);
@@ -590,6 +666,7 @@ async function testMainHeroExamples() {
       searchSuggest: { sampled: 3000, terms: SUGGEST_TERMS },
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await flush();
     const hero = deepText(dom.photoGrid);
     const allowed = SUGGEST_TERMS.map((term) => term.text);
@@ -743,6 +820,397 @@ async function testDesktopAiViews() {
     assert.equal(gridCalls[gridCalls.length - 1].length, 1, '切换后网格换成第二个人的照片');
     assert.equal(state.previewTotalPhotos, 1);
     views.stopPolling();
+  }
+}
+
+// ===========================================================================
+// A5. 搜图结果的保留态：**只有**「离开过一次」才复用上一次的结果
+// ===========================================================================
+/**
+ * 用户报的两个症状，其实是一对：
+ *
+ *   - 「点击结果中的文件夹进行了跳转，重新回到搜图页面，需要保留之前的结果」——
+ *     从结果里的目录卡片跳进那个目录（普通浏览），再回到搜图页时结果不该消失。
+ *   - 反方向必须同样成立：从导轨的搜索图标**进来**时是干净的引导页，不能凭空冒出一屏
+ *     用户没搜过的结果。
+ *
+ * 最容易写坏的两种形态都在中间：
+ *   ① 写成「有查询就还原」⇒ 新进来的那次也被还原（用户看到自己没搜过的结果）；
+ *   ② 写成「任何一次重画都还原」⇒ 后台扫描完成触发的 `loadPhotos → loadSearch`
+ *      会把结果冻在过去：新入库的照片搜不出来，而且不报错、不写日志。
+ * 所以判据必须是「离开过一次（一次性）+ 保留态在 + 档位与查询都同源」。
+ */
+async function testSearchResultRetention() {
+  const KW_FOLDERS = [
+    { id: 1, folder_path: 'K:\\COS\\2024\\05', folder_photo_count: 3, has_thumbnail: true },
+    { id: 4, folder_path: 'K:\\COS\\2024\\06', folder_photo_count: 1, has_thumbnail: true },
+  ];
+  const kwFixture = {
+    folders: KW_FOLDERS,
+    files: [
+      { id: 8, file_name: '2024_海边.jpg' },
+      { id: 9, file_name: 'IMG_2024.jpg' },
+    ],
+    filesPage2: [{ id: 10, file_name: '2024_第二页.jpg' }],
+    fileTotal: 4,
+  };
+
+  // ---- ① 关键词档：搜 → 从结果里的目录跳走 → 回来 ----
+  {
+    const store = {};
+    installRendererGlobals(store);
+    const { views, dom, state, apiCalls, gridCalls, skeletonCalls } = buildAiViews({
+      view: 'ai_search',
+      store,
+      keyword: kwFixture,
+    });
+    const kwCalls = () => apiCalls.filter((c) => c.op === 'searchFolders' || c.op === 'searchPhotos');
+    const filePageCalls = () =>
+      apiCalls.filter((c) => c.op === 'searchPhotos').map((c) => c.b && c.b.page);
+    const fileRows = () =>
+      gridCalls.length ? gridCalls[gridCalls.length - 1].map((p) => p.file_name) : [];
+    // 目录行认的是 `.folder-cover-card[data-folder-path]` —— 点卡片跳进那个目录的委托监听
+    // 正是靠这个属性认行的（见 ui-grid.js#renderFolderCoverGrid + ui-events.js）。
+    const folderRows = () => collectByAttr(dom.photoGrid, 'data-folder-path');
+
+    views.enter('ai_search');
+    switchMode(dom, 'keyword'); // 默认档就是关键词，显式切一次免得受前面用例的模块级状态影响
+
+    // 基线：还没搜过 ⇒ 引导页，且一次请求都不发
+    assert.ok(
+      deepText(dom.photoGrid).includes('按文件名或文件夹名搜索'),
+      '进搜索页先给引导页（没搜过就没有结果可还原）',
+    );
+    assert.equal(kwCalls().length, 0, '引导页不发任何搜索请求');
+
+    // 搜一次
+    dom.aiSearchInput.value = '2024';
+    dom.aiSearchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.equal(kwCalls().length, 2, '一次关键词搜索 = 两条并行请求（文件夹组 + 文件组）');
+    assert.deepEqual(folderRows(), ['K:\\COS\\2024\\05', 'K:\\COS\\2024\\06'], '文件夹组逐条列出命中目录');
+    assert.deepEqual(fileRows(), ['2024_海边.jpg', 'IMG_2024.jpg'], '文件组列出文件名命中的照片');
+    assert.equal(dom.aiViewStatus.textContent, '文件夹 2 个 · 文件 4 个', '状态行报两个组各自的数');
+    assert.equal(state.aiSearchQuery, '2024');
+
+    // 反向基线：**没离开过**就重画（后台扫描完成 → loadPhotos → loadSearch）必须重搜。
+    // 它是下面「还原不重跑」的对照 —— 只有这一条也在测，才能证明「不重跑」不是把结果整体冻住。
+    await views.load();
+    await flush();
+    assert.equal(kwCalls().length, 4, '没离开过就重画 = 老老实实重搜一遍（结果跟着库走，不冻在过去）');
+
+    // 「更多」翻到第 2 页：保留态必须连**翻过的页**一起记住
+    const moreBtn = () => findByClass(dom.photoGrid, 'ai-more-button');
+    assert.ok(moreBtn(), '文件组有「更多」（命中数 4 > 已渲染 2）');
+    moreBtn().listeners.click();
+    await flush();
+    assert.equal(fileRows().length, 3, '「更多」把第 2 页的条目接在后面');
+    assert.equal(fileRows()[2], '2024_第二页.jpg', '接上来的正是第 2 页那一批');
+
+    // ---- 往返：点结果里的目录跳走（离开），再回到搜图页 ----
+    const inputBefore = dom.aiSearchInput.value;
+    const statusBefore = dom.aiViewStatus.textContent;
+    const callsBefore = kwCalls().length;
+    const skeletonsBefore = skeletonCalls.length;
+
+    views.leave(); // = showTabContent 里离开搜图页
+    views.enter('ai_search'); // = 从导轨搜索图标 / 后退回到搜图页
+    await views.load(); // = loadPhotos() → loadSearch()
+    await flush();
+
+    assert.deepEqual(
+      folderRows(),
+      ['K:\\COS\\2024\\05', 'K:\\COS\\2024\\06'],
+      '回来时「文件夹」组逐条还原（这一组正是用户点进去过的那一组）',
+    );
+    assert.equal(fileRows().length, 3, '回来时「文件」组连「更多」翻过的第 2 页一起还原');
+    assert.equal(fileRows()[0], '2024_海边.jpg', '还原的是同一次搜索的结果，不是别的一批');
+    assert.equal(dom.aiSearchInput.value, inputBefore, '搜索框里的词还在 —— 否则用户不知道看着的是哪次搜索');
+    assert.equal(dom.aiViewStatus.textContent, statusBefore, '状态行文案一并还原');
+    assert.equal(
+      kwCalls().length,
+      callsBefore,
+      '还原**不重跑搜索**：再发一次请求会把「更多」翻过的页缩回第一页',
+    );
+    assert.equal(
+      skeletonCalls.length,
+      skeletonsBefore,
+      '还原不闪骨架屏（重跑一遍搜索才会闪）',
+    );
+    assert.equal(countByClass(dom.photoGrid, 'ai-kw-empty'), 0, '还原时不得先闪一个空态');
+
+    // 「更多」的**页游标**也在保留态里：接着往后翻应当是第 3 页，而不是从第 2 页重来
+    moreBtn().listeners.click();
+    await flush();
+    assert.equal(
+      filePageCalls()[filePageCalls().length - 1],
+      3,
+      '还原后「更多」接着第 2 页往后翻（页游标没被缩回 1）',
+    );
+
+    // ---- 一次性：还原只发生一次，之后每次重画都老老实实重搜 ----
+    const callsBeforeRepeat = kwCalls().length;
+    await views.load();
+    await flush();
+    assert.equal(
+      kwCalls().length,
+      callsBeforeRepeat + 2,
+      '一次性标记用完即弃（否则后台每次重画都吃到一份过期结果）',
+    );
+
+    // ---- 空提交 = 唯一的清空入口 ----
+    dom.aiSearchInput.value = '';
+    dom.aiSearchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.equal(dom.aiSearchInput.value, '', '空提交清掉搜索框');
+    assert.equal(state.aiSearchQuery, '', '空提交清掉 state.aiSearchQuery');
+    assert.equal(state.currentPhotos.length, 0, '空提交清掉结果集');
+    assert.equal(folderRows().length, 0, '引导页上没有残留的目录卡片');
+    assert.ok(
+      deepText(dom.photoGrid).includes('按文件名或文件夹名搜索'),
+      '空提交回到引导页（有了保留态之后，这是引导页唯一的入口）',
+    );
+
+    // 清掉之后再离开、再回来，不许把清掉的结果复活
+    const callsAfterClear = kwCalls().length;
+    views.leave();
+    views.enter('ai_search');
+    await views.load();
+    await flush();
+    assert.ok(
+      deepText(dom.photoGrid).includes('按文件名或文件夹名搜索'),
+      '空提交之后再进还是引导页 —— 清掉的结果不许复活',
+    );
+    assert.equal(kwCalls().length, callsAfterClear, '引导页不发搜索请求');
+    views.stopPolling();
+  }
+
+  // ---- ② 空结果必须**作废**保留态：同一个词从「有结果」变成「没有结果」 ----
+  // 这不是假想：库被改过（重扫 / 删除）之后，同一个词真的会从有变没有。
+  // 而那正是这条契约唯一承重的场景 —— 只在**同一个查询**上才看得出来：
+  //   查询不同源时 `refreshRetainedSearch()` 自己就会作废那份快照；
+  //   查询同源时若不显式作废，它会把**过期快照**留着，用户离开再回来看到的是
+  //   **已经不存在的结果**，而且不报错、不写日志。
+  {
+    const store = {};
+    installRendererGlobals(store);
+    // 夹具可变：先让「2024」有结果，再把库「改空」后重搜同一个词。
+    const kw = {
+      folders: [
+        { id: 1, folder_path: 'K:\\COS\\2024\\05', folder_photo_count: 3, has_thumbnail: true },
+      ],
+      files: [{ id: 8, file_name: '2024_海边.jpg' }],
+      fileTotal: 1,
+    };
+    const { views, dom, apiCalls } = buildAiViews({ view: 'ai_search', store, keyword: kw });
+    const kwCalls = () =>
+      apiCalls.filter((c) => c.op === 'searchFolders' || c.op === 'searchPhotos');
+    const folderRows = () => collectByAttr(dom.photoGrid, 'data-folder-path');
+
+    views.enter('ai_search');
+    switchMode(dom, 'keyword');
+    dom.aiSearchInput.value = '2024';
+    dom.aiSearchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.deepEqual(folderRows(), ['K:\\COS\\2024\\05'], '第一次「2024」有结果（保留态被写下）');
+
+    // 让库「变空」：同一个词再也搜不到东西
+    kw.folders.length = 0;
+    kw.files.length = 0;
+    kw.fileTotal = 0;
+    dom.aiSearchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.ok(
+      deepText(dom.photoGrid).includes('没有匹配的文件或文件夹'),
+      '同一个词第二次搜变成空结果（空结果也照发两条请求）',
+    );
+
+    const before = kwCalls().length;
+    views.leave();
+    views.enter('ai_search');
+    await views.load();
+    await flush();
+    // ⚠️ 最承重的是这一条：不显式作废时，`refreshRetainedSearch()` 会把当前（已经是空的）
+    //    `kwFolders` / `kwFiles` 刷进那份**同源**快照，于是回来看到的是一个「两段都空」的
+    //    结果壳 —— 看着像搜索成功过、只是没有命中，而用户其实早就离开过这一页了。
+    assert.ok(
+      deepText(dom.photoGrid).includes('按文件名或文件夹名搜索'),
+      '空结果不许进保留态：回来是干净的引导页，而不是上一个「两段都空」的结果壳',
+    );
+    assert.deepEqual(folderRows(), [], '引导页上不该留着目录卡片');
+    assert.equal(
+      deepText(dom.photoGrid).includes('没有匹配的文件或文件夹'),
+      false,
+      '也不该把整页空态画回来：没有结果可保留',
+    );
+    assert.equal(kwCalls().length, before, '空结果之后回来不重跑搜索（那个词已经作废了）');
+    views.stopPolling();
+  }
+
+  // ---- ③ 语义档：还原要停在**同一页**（`searchShown` 基数必须回卷）----
+  // 坏形态不会报错：`renderSearchPage(false)` 是在旧基数上「+200」，
+  // 不回卷的话 200 张会变成 300 张（等于把用户之前在「更多」里翻过的量又叠了一次）。
+  {
+    const store = {};
+    installRendererGlobals(store);
+    const hits = [];
+    for (let i = 1; i <= 300; i += 1) hits.push({ id: i, file_name: 'p' + i + '.jpg' });
+    const { views, dom, state, apiCalls, gridCalls, skeletonCalls } = buildAiViews({
+      view: 'ai_search',
+      store,
+      searchHits: hits,
+    });
+    const semCalls = () => apiCalls.filter((c) => c.op === 'aiSearchQuery').length;
+
+    views.enter('ai_search');
+    switchMode(dom, 'semantic');
+    dom.aiSearchInput.value = '猫';
+    dom.aiSearchForm.listeners.submit({ preventDefault() {} });
+    await flush();
+    assert.equal(gridCalls[gridCalls.length - 1].length, 200, '首屏只画第一页（200 张）');
+    assert.equal(state.currentPhotos.length, 300, '预览窗口覆盖**整个**结果集，不只是已渲染那页');
+
+    const callsBefore = semCalls();
+    const skeletonsBefore = skeletonCalls.length;
+    const statusBefore = dom.aiViewStatus.textContent;
+    const shownBefore = gridCalls[gridCalls.length - 1].length;
+
+    views.leave();
+    views.enter('ai_search');
+    await views.load();
+    await flush();
+    assert.equal(statusBefore, '300 张达到匹配阈值 · 按相似度排序', '状态行按服务端给的达标总数报数');
+    assert.equal(dom.aiViewStatus.textContent, statusBefore, '语义档的状态行一并还原');
+    assert.equal(
+      gridCalls[gridCalls.length - 1].length,
+      shownBefore,
+      '还原停在**同一页**：基数不回卷的话 200 张会变成 300 张（不报错，只是多画一页）',
+    );
+    assert.equal(state.currentPhotos.length, 300, '预览窗口仍是整个结果集');
+    assert.equal(semCalls(), callsBefore, '语义档还原同样不重跑搜索');
+    assert.equal(skeletonCalls.length, skeletonsBefore, '语义档还原也不闪骨架');
+    views.stopPolling();
+  }
+}
+
+// ===========================================================================
+// A5b. 保留态的静态契约（两端）
+// ===========================================================================
+function stripJsComments(src) {
+  return String(src)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+}
+/** 取一个具名函数的源码片段（到下一个函数声明为止）。 */
+function fnSlice(src, name) {
+  const i = src.indexOf('function ' + name + '(');
+  assert.ok(i >= 0, '找不到函数 ' + name);
+  const m = /\n\s*function [A-Za-z_$]/.exec(src.slice(i + 1));
+  return src.slice(i, m ? i + 1 + m.index : src.length);
+}
+
+function testSearchRetentionStaticContract() {
+  // ⚠️ 语义档的空结果分支：桌面端独立成 `doSearch`，网页端内联在 `startSearch` 里
+  //    （网页端那支还顺带处理流式游标，见 `src/web/js/ai-views.js`）。
+  //    名字不同但契约一致，所以按端列举，不猜。
+  for (const spec of [
+    {
+      label: '桌面端',
+      rel: 'src/renderer/ai-views.js',
+      keywordFn: 'doKeywordSearch',
+      semanticFn: 'doSearch',
+      semanticClears: 1,
+    },
+    {
+      label: '网页端',
+      rel: 'src/web/js/ai-views.js',
+      keywordFn: 'doKeywordSearch',
+      semanticFn: 'startSearch',
+      // 空提交一处 + 语义空结果一处，两处都在 `startSearch` 里。
+      semanticClears: 2,
+    },
+  ]) {
+    const code = stripJsComments(fs.readFileSync(path.join(ROOT, spec.rel), 'utf8'));
+    const label = spec.label;
+
+    for (const fn of [
+      'searchRestorable',
+      'markSearchRetained',
+      'refreshRetainedSearch',
+      'restoreRetainedSearch',
+    ]) {
+      assert.ok(
+        new RegExp('function ' + fn + '\\(').test(code),
+        `${label}缺少 ${fn}（判据 / 记账 / 还原必须收在各一处）`,
+      );
+    }
+
+    // 🔴 `pendingRestore` 只许由 `leave()` 按保留态置位。
+    //    别处直接置 true（或在 `enter()` 里置真）会把「新进来的那次」也变成还原 ——
+    //    用户从搜索图标进来就会看见一屏自己没搜过的结果。
+    assert.equal(
+      /pendingRestore\s*=\s*true/.test(code),
+      false,
+      `${label}有地方直接把 pendingRestore 置 true —— 只允许 leave() 里 pendingRestore = !!retainedSearch`,
+    );
+
+    // `state.aiSearchQuery` 只许有**两处**清空，且两处都有非清不可的理由：
+    //   ① `enter()` 里 `!restoring` 那一支 —— 干净的进入不该留着一个活的查询
+    //      （留着会造成「界面画引导页、state 里却挂着查询」，下一次 `loadSearch()` 又把它搜出来）；
+    //   ② `startSearch()` 的空提交 —— 用户主动清空的唯一入口。
+    // 在 `leave()` 里再加一处、或去掉 `!restoring` 守卫，都会让「点结果里的目录跳走再回来」
+    // 重新丢掉结果。
+    const clears = code.match(/state\.aiSearchQuery = ''/g) || [];
+    assert.equal(
+      clears.length,
+      2,
+      `${label}里 state.aiSearchQuery = '' 只该有 2 处（!restoring 的 enter + 空提交），实际 ${clears.length}`,
+    );
+    assert.ok(
+      /if \(!restoring\) state\.aiSearchQuery = '';/.test(fnSlice(code, 'enter')),
+      `${label}#enter 里那处清空必须带 !restoring 守卫 —— 有保留态时要原样还原，不许清`,
+    );
+    assert.ok(
+      /state\.aiSearchQuery = ''/.test(fnSlice(code, 'startSearch')),
+      `${label}唯一那处用户主动清空必须落在 startSearch 的空提交分支里`,
+    );
+
+    // 还原必须排在重搜**之前**，且立刻返回 —— 否则同一趟 `loadSearch()` 里会先重搜一遍
+    // （闪骨架、把「更多」缩回第一页），再被还原覆盖。
+    assert.ok(
+      /if \(restoreRetainedSearch\(\)\) return Promise\.resolve\(\);\s*return startSearch\(query\);/.test(
+        fnSlice(code, 'loadSearch'),
+      ),
+      `${label}#loadSearch 必须先试着还原、还原成功就返回，才轮到 startSearch`,
+    );
+
+    // 空结果不进保留态（回来重跑），两个档位各自一处。
+    for (const [name, mode] of [
+      [spec.keywordFn, '关键词'],
+      [spec.semanticFn, '语义'],
+    ]) {
+      const slice = fnSlice(code, name);
+      assert.ok(
+        /retainedSearch = null;/.test(slice),
+        `${label}${mode}档的空结果分支必须作废保留态（否则回来会把一屏「没搜到」画回来）`,
+      );
+      if (mode === '语义') {
+        assert.equal(
+          (slice.match(/retainedSearch = null;/g) || []).length,
+          spec.semanticClears,
+          `${label}语义档里作废保留态的点数变了（空提交 + 空结果各一处）`,
+        );
+      }
+    }
+
+    // 记账必须发生在渲染**之后**：`markSearchRetained` 顺手把状态行文案与已渲染页数一起
+    // 刷新进保留态，渲染前记就等于记了个空。
+    assert.ok(
+      /render(?:KeywordFiles|KeywordResults|SearchPage)\([^)]*\);\s*markSearchRetained\(query\);/.test(
+        code,
+      ),
+      `${label}的 markSearchRetained 必须排在渲染之后`,
+    );
   }
 }
 
@@ -957,7 +1425,7 @@ async function testPeopleSearchAndRename() {
         scanned: 12420,
         faces: 36,
         people: 1,
-        busy: true,
+        running: true,
         phase: 'indexing',
       },
     });
@@ -1018,7 +1486,7 @@ async function testPeopleSearchAndRename() {
       view: 'people',
       store,
       groups: [{ id: 1, name: 'Alice', photoCount: 2, thumbnail: '/t1' }],
-      status: { ready: true, indexed: 3702, scanned: 12420, busy: true, phase: 'indexing' },
+      status: { ready: true, indexed: 3702, scanned: 12420, running: true, phase: 'indexing' },
     });
     views.enter('people');
     await views.load();
@@ -1045,7 +1513,7 @@ async function testPeopleSearchAndRename() {
       groups: [],
       status: {
         ready: true,
-        busy: false,
+        running: false,
         phase: 'complete',
         indexed: 0,
         faces: 0,
@@ -1091,11 +1559,12 @@ async function testPeopleSearchAndRename() {
     const { views, dom, state } = buildAiViews({
       view: 'ai_search',
       store,
-      status: { ready: true, indexed: 12000, busy: true, phase: 'indexing', people: 0 },
+      status: { ready: true, indexed: 12000, running: true, phase: 'indexing', people: 0 },
       searchHits: [{ id: 1, file_name: 'a.jpg' }],
       searchIndexed: 12000,
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await views.load();
     await flush();
     const hero = deepText(dom.photoGrid);
@@ -1126,6 +1595,7 @@ async function testPeopleSearchAndRename() {
       searchMatched: 1800,
     });
     views.enter('ai_search');
+    switchMode(dom, 'semantic');
     await views.load();
     await flush();
     dom.aiSearchInput.value = '猫';
@@ -1351,6 +1821,19 @@ function loadDesktopApp() {
     RendererTabsUI: tabsUi,
     RendererTabsFlowUI: { handleTabBranch() {} },
     RendererAiViews: { init: () => aiViews },
+    // 标签导航页的界面层（**替身**，不是实现）。替身表是显式列举的 ⇒
+    // 产品每新增一个顶层挂载都要补一桩，否则夹具崩在「读 undefined 的 mount」上。
+    RendererTagNavUI: {
+      mount: () => ({
+        enter() {},
+        renderSidebar() {},
+        renderBrowseCards() {},
+        refreshLocale() {},
+        selectTag() {},
+        selectNode() {},
+        displayName: (tag) => tag,
+      }),
+    },
     PhotoCompare: { mount: () => ({ show() {}, hide() {} }) },
     SemanticSearchUI: { mount: () => ({ show() {}, hide() {} }) },
     PeopleUI: { mount: () => ({ show() {}, hide() {} }) },
@@ -1552,18 +2035,22 @@ function testRailOrder() {
   // 但**必须**带 `data-tab="home"`，否则会落进 `syncNavigationRail` 的 `|| 'settings'`
   // 兜底、在设置页被一起点亮。它排在**最上**（理由见 navigation-regression 那条序列断言：
   // `.rail-settings` 的 `margin-top:auto` 会独吞剩余空间，放别处会悬在半空的空白上）。
+  // 2026-10-09：导轨第 8 项 = 「标签」（`data-tab="tags"`），落在「换内容看的维度」那一组
+  // 的末尾（`people` 之后、第二条分隔线之前）。
   // 三份断言（navigation-regression / 这里 / layout-regression）必须逐位一致。
   assert.deepEqual(
     tabs,
-    ['home', 'folders', 'dates', 'search', 'people', 'duplicates'],
+    ['home', 'folders', 'dates', 'search', 'people', 'tags', 'duplicates'],
     '导轨项 data-tab 序列 / 数量必须精确匹配（顺序被改错也要能抓到）',
   );
-  assert.equal((code.match(/class="rail-item/g) || []).length, 7, '导轨共 7 个 rail-item');
+  assert.equal((code.match(/class="rail-item/g) || []).length, 8, '导轨共 8 个 rail-item');
 }
 
 // ===========================================================================
 async function main() {
   await testDesktopAiViews();
+  await testSearchResultRetention();
+  testSearchRetentionStaticContract();
   await testDesktopSearchSuggest();
   await testMainHeroExamples();
   await testPeopleSearchAndRename();

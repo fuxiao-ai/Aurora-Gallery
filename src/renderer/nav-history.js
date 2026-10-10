@@ -38,7 +38,7 @@
 
   /**
    * 位置对象的比较键。四个字段**全参与**：同一个目录挂在两个 tab 下不是同一个位置，
-   * 「所有照片」与「所有日期」也不能撞键（两者 view 都是 all，靠 date/tab 区分）。
+   * 「所有文件」与「所有日期」也不能撞键（两者 view 都是 all，靠 date/tab 区分）。
    */
   function keyOf(loc) {
     if (!loc) return '';

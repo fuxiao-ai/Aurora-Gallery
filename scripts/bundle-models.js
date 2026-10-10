@@ -1,20 +1,31 @@
 'use strict';
 
 /**
- * 生成随包内置模型目录 `models/`（人脸 + 搜图），供 `scripts/after-pack.js` 复制进安装包。
+ * 生成随包内置模型目录 `models/`（人脸 + 搜图 + JoyTag 打标），供 `scripts/after-pack.js`
+ * 复制进安装包。
  *
  * 用法：
- *   node scripts/bundle-models.js                                   # 人脸 + 搜图，都从官方源下载
+ *   node scripts/bundle-models.js                                   # 三者都做（缺的从官方源下载）
  *   node scripts/bundle-models.js --face                            # 只做人脸
  *   node scripts/bundle-models.js --search                          # 只做搜图
+ *   node scripts/bundle-models.js --joytag                          # 只做 JoyTag
  *   node scripts/bundle-models.js --face-from <目录>                # 从已有模型目录复制（不联网）
  *   node scripts/bundle-models.js --search-from <ai-search/models>  # 从已有缓存复制（不联网）
+ *   node scripts/bundle-models.js --joytag-from <目录>              # 同上（见下「接受两种形状」）
  *   node scripts/bundle-models.js --force                           # 已存在也重做
  *
- * 为什么必须能「从已有目录复制」：完整搜图模型 400 MB 上下，走一遍官方源在很多网络下并不轻松；
- * 而开发机与用户目录里本来就有一份**已经被安装流程验证过**的缓存。复制模式的可靠性靠两道校验兜住：
- * 人脸复制完要过 `face-model.verify()`（按 FILES 里的 sha256 + size），搜图复制完要**离线**把
- * 文本与视觉两套会话都载起来跑一次（等价于安装流程落 `ready.json` 前做的那次验证）。
+ * 为什么必须能「从已有目录复制」：完整搜图模型 400 MB 上下、JoyTag 权重 366 MB，
+ * 走一遍官方源在很多网络下并不轻松；而开发机与用户目录里本来就有一份**已经被安装流程
+ * 验证过**的缓存。复制模式的可靠性靠两道校验兜住：人脸复制完要过 `face-model.verify()`
+ * （按 FILES 里的 sha256 + size），搜图复制完要**离线**把文本与视觉两套会话都载起来跑一次
+ * （等价于安装流程落 `ready.json` 前做的那次验证），JoyTag 复制完要过
+ * `joytag-model.verify()`（sha256 就是官方 LFS 指针里的那一个）。
+ *
+ * ⚠️ `--joytag-from` **接受两种形状**（先试前者，都不在就报错并把两条路径都列出来）：
+ *   · `<目录>/model.onnx`            —— 模型目录本身
+ *   · `<目录>/joytag/model.onnx`     —— 装模型的那一层（运行时就是 `<aiPath>/models`）
+ * 这不是「魔法回退」，是这两种形状在真实机器上**都出现**（台架缓存是前者、
+ * `UserData/ai-search/models` 是后者），逼用户去猜哪一层没有意义。
  *
  * 产物末尾写入 `models/manifest.json`：每个文件的 size + sha256，加上搜图那一份的 `modelKey`。
  * 运行时的播种层（`src/ai/bundled-models.js`）就靠它决定「这份随包模型是不是当前这一代」
@@ -28,25 +39,40 @@ const ROOT = path.join(__dirname, '..');
 const MODELS_DIR = path.join(ROOT, 'models');
 const FACE_DIR = path.join(MODELS_DIR, 'face');
 const SEARCH_DIR = path.join(MODELS_DIR, 'search');
+const JOYTAG_DIR = path.join(MODELS_DIR, 'joytag');
 
 const bundled = require('../src/ai/bundled-models');
+// ⚠️ 运行时与这里必须用**同一份**模型身份（路径 / 尺寸 / sha256）。
+//    各写一份的下场是「打好的包永远不被播种层认」—— 而两边都不报错，只是白下 366 MB。
+const joytag = require('../src/ai/joytag-model');
 
 function parseArgs() {
   const argv = process.argv.slice(2);
-  const options = { face: false, search: false, force: false, faceFrom: '', searchFrom: '' };
+  const options = {
+    face: false,
+    search: false,
+    joytag: false,
+    force: false,
+    faceFrom: '',
+    searchFrom: '',
+    joytagFrom: '',
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--face') options.face = true;
     else if (arg === '--search') options.search = true;
+    else if (arg === '--joytag') options.joytag = true;
     else if (arg === '--force') options.force = true;
     else if (arg === '--face-from' && argv[i + 1]) options.faceFrom = path.resolve(argv[++i]);
     else if (arg === '--search-from' && argv[i + 1]) options.searchFrom = path.resolve(argv[++i]);
+    else if (arg === '--joytag-from' && argv[i + 1]) options.joytagFrom = path.resolve(argv[++i]);
     else if (arg === '--help' || arg === '-h') options.help = true;
     else throw new Error('无法识别的参数: ' + arg + '（--help 看用法）');
   }
-  if (!options.face && !options.search) {
+  if (!options.face && !options.search && !options.joytag) {
     options.face = true;
     options.search = true;
+    options.joytag = true;
   }
   return options;
 }
@@ -54,11 +80,12 @@ function parseArgs() {
 function usage() {
   process.stdout.write(
     [
-      '用法: node scripts/bundle-models.js [--face] [--search] [--force]',
-      '                              [--face-from <目录>] [--search-from <目录>]',
+      '用法: node scripts/bundle-models.js [--face] [--search] [--joytag] [--force]',
+      '                              [--face-from <目录>] [--search-from <目录>] [--joytag-from <目录>]',
       '',
-      '不加 --face/--search 时两者都做。--*-from 表示从已有目录复制而不是联网下载。',
-      '产物: models/face、models/search 与 models/manifest.json（--force 才会覆盖已完成的部分）。',
+      '不加 --face/--search/--joytag 时三者都做。--*-from 表示从已有目录复制而不是联网下载。',
+      '产物: models/face、models/search、models/joytag 与 models/manifest.json',
+      '      （--force 才会覆盖已完成的部分）。',
       '',
     ].join('\n'),
   );
@@ -189,6 +216,57 @@ async function buildSearch(options) {
   );
 }
 
+/**
+ * JoyTag：要么走官方源下载（`joytag-model.install`），要么从已有目录复制，随后一律过
+ * `joytag-model.verify()`。
+ *
+ * ⚠️ **失败必须硬报错，不许静默跳过**。「模型随包」这个承诺一旦被悄悄违反，症状是
+ * 装机版里 tag 倒排索引**永远建不出来**，而界面上只说「没建索引」—— 打包时的一声报错
+ * 是这条链上唯一能提前发现它的地方。
+ */
+async function buildJoytag(options) {
+  if (directoryReady(JOYTAG_DIR) && !options.force) {
+    process.stdout.write('[bundle-models] JoyTag 模型已存在，跳过（--force 可重做）\n');
+    return;
+  }
+  fs.mkdirSync(JOYTAG_DIR, { recursive: true });
+
+  if (options.joytagFrom) {
+    const candidates = [
+      path.join(options.joytagFrom, joytag.MODEL.name),
+      path.join(options.joytagFrom, 'joytag', joytag.MODEL.name),
+    ];
+    const from = candidates.find((file) => fs.existsSync(file));
+    if (!from)
+      throw new Error(
+        '源目录里找不到 ' + joytag.MODEL.name + '，试过:\n  ' + candidates.join('\n  '),
+      );
+    fs.copyFileSync(from, path.join(JOYTAG_DIR, joytag.MODEL.name));
+    process.stdout.write('[bundle-models] JoyTag 模型已从 ' + from + ' 复制\n');
+  } else {
+    const controller = new AbortController();
+    process.once('SIGINT', () => controller.abort());
+    await joytag.install(MODELS_DIR, controller.signal, ({ percent, url }) => {
+      process.stdout.write('\r[bundle-models] 下载 ' + joytag.MODEL.name + ' ' + percent + '%   ');
+      if (percent === 0 && url) process.stdout.write('\n[bundle-models] 源: ' + url + '\n');
+    });
+    process.stdout.write('\n');
+  }
+
+  if (!joytag.verify(MODELS_DIR))
+    throw new Error(
+      'JoyTag 权重校验失败（sha256 应为 ' +
+        joytag.MODEL.sha256.slice(0, 16) +
+        '…、' +
+        joytag.MODEL.bytes +
+        ' B）: ' +
+        JOYTAG_DIR,
+    );
+  process.stdout.write(
+    '[bundle-models] JoyTag 模型就绪: ' + JOYTAG_DIR + ' (' + human(directoryBytes(JOYTAG_DIR)) + ')\n',
+  );
+}
+
 function scan(dir, key) {
   return bundled.listFiles(dir).map((relative) => {
     const item = { bytes: bundled.sizeOf(path.join(dir, relative)), sha256: bundled.sha256File(path.join(dir, relative)) };
@@ -198,7 +276,7 @@ function scan(dir, key) {
 }
 
 /**
- * `--face` / `--search` 只补做一侧时，另一侧必须沿用磁盘上已有的 manifest 条目
+ * `--face` / `--search` / `--joytag` 只补做一侧时，另一侧必须沿用磁盘上已有的 manifest 条目
  * ——否则会把「这次没重建的那一半」记成一节空文件，运行时播种层据此判定没有随包模型。
  */
 function writeManifest(options, previous) {
@@ -206,6 +284,7 @@ function writeManifest(options, previous) {
   const model = require('../src/ai/face-model');
   const keepFace = !options.face && previous.face && Array.isArray(previous.face.files);
   const keepSearch = !options.search && previous.search && Array.isArray(previous.search.files);
+  const keepJoytag = !options.joytag && previous.joytag && Array.isArray(previous.joytag.files);
   const manifest = {
     version: bundled.MANIFEST_VERSION,
     generatedAt: new Date().toISOString(),
@@ -219,6 +298,14 @@ function writeManifest(options, previous) {
       // 与 semantic-worker 的 ready.json 同一个键：对不上就绝不播种。
       modelKey: MODEL_KEY,
       files: keepSearch ? previous.search.files : scan(SEARCH_DIR, 'path'),
+    },
+    joytag: {
+      // 与 `tag-index-store` 的 `TAG_INDEX_MODEL` / `tag_meta.model` 同一串：
+      // 一致才说明「这份随包权重就是索引里那些分数算出来的那一版」。
+      model: require('../src/ai/tag-index-store').TAG_INDEX_MODEL,
+      version: joytag.VERSION,
+      // 播种层按它做 size + sha256 校验，`copied > 0` 时才付一次哈希的钱。
+      files: keepJoytag ? previous.joytag.files : scan(JOYTAG_DIR, 'path'),
     },
   };
   fs.writeFileSync(
@@ -244,6 +331,7 @@ async function main() {
   const previous = bundled.readManifest(MODELS_DIR) || {};
   if (options.face) await buildFace(options);
   if (options.search) await buildSearch(options);
+  if (options.joytag) await buildJoytag(options);
   writeManifest(options, previous);
   process.stdout.write('[bundle-models] 完成。models/ 记得不要提交进版本库（.gitignore 已忽略）。\n');
 }

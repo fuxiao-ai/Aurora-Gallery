@@ -1,5 +1,5 @@
 /**
- * 相似照片检测引擎
+ * 相似图片检测引擎
  * 三层分组架构：
  *   第零层：dHash 精确匹配（SQL GROUP BY，秒级）
  *   第一层：文件夹内近似匹配（LSH + BFS，分钟级）
@@ -23,7 +23,7 @@ function getExactDhashGroups(db, page, pageSize) {
 
 /**
  * 第一层：文件夹内近似匹配（BFS 连通分量）
- * 对 dHash 唯一的照片，按 folder_path 分区做 BFS
+ * 对 dHash 唯一的图片，按 folder_path 分区做 BFS
  * @param {object} db
  * @param {number} threshold 汉明距离阈值（默认 12）
  * @returns {Array<Array<number>>} 分组数组，每组是 photo_id 列表
@@ -31,7 +31,7 @@ function getExactDhashGroups(db, page, pageSize) {
 function buildFolderSimilarGroups(db, threshold) {
   threshold = Math.max(0, Math.min(parseInt(threshold, 10) || 12, 64));
 
-  // 1. 获取 dHash 唯一的照片（排除第零层已覆盖的）
+  // 1. 获取 dHash 唯一的图片（排除第零层已覆盖的）
   var rows = db
     .prepare(
       `SELECT id, folder_path, dhash FROM photos
@@ -69,7 +69,7 @@ function buildFolderSimilarGroups(db, threshold) {
 }
 
 /**
- * 单层 BFS：对同一组照片找汉明距离 <= threshold 的连通分量
+ * 单层 BFS：对同一组图片找汉明距离 <= threshold 的连通分量
  * @param {Array<{id:number,dhash:string}>} photos
  * @param {number} threshold
  * @returns {Array<Array<number>>}
@@ -112,7 +112,7 @@ function bfsGroups(photos, threshold) {
 }
 
 /**
- * 第二层：按需实时查询某张照片的跨文件夹相似照片
+ * 第二层：按需实时查询某张图片的跨文件夹相似图片
  * @param {object} db
  * @param {number} photoId
  * @param {number} threshold
@@ -165,7 +165,7 @@ function findSimilarPhotos(db, photoId, threshold) {
 
   // ⚠️ 这里曾经是 `WHERE id IN (?,?,...,?)` 展开全部 id —— 必炸。
   // 候选动辄十几万（本机真库实测最坏 179169 个），远超 SQLite 单条语句的宿主参数上限
-  // 32766，用户侧看到的就是「查找相似照片失败：too many SQL variables」。
+  // 32766，用户侧看到的就是「查找相似图片失败：too many SQL variables」。
   // 现在把整个列表作为**一个** JSON 参数交给 json_each，变量个数恒为 1。
   // 取舍与实测数据见 src/main/sql-id-list.js 的模块注释。
   var candStmt = db.prepare(
@@ -222,7 +222,7 @@ function buildLshIndex(db) {
 }
 
 /**
- * 使用内存 LSH 索引快速查询相似照片（比纯 SQL 快 5-10 倍）
+ * 使用内存 LSH 索引快速查询相似图片（比纯 SQL 快 5-10 倍）
  * @param {number} photoId
  * @param {number} threshold
  * @param {object} lshIndex 由 buildLshIndex() 构建

@@ -13,15 +13,8 @@ var crypto = require('crypto');
 var childProcess = require('child_process');
 var TextDecoder = require('util').TextDecoder;
 
-var sharpModule = null;
-function loadSharp() {
-  if (!sharpModule) {
-    sharpModule = require('sharp');
-  }
-  return sharpModule;
-}
 var playbackStrategy = require('./playback-strategy');
-/** 照片信息面板的字段注册表：与渲染端、主进程共用同一份（见该文件头部说明） */
+/** 图片信息面板的字段注册表：与渲染端、主进程共用同一份（见该文件头部说明） */
 var PhotoInfoFields = require('./web/js/photo-info-fields.js');
 
 var HlsSessionManager = require('./hls-session-manager');
@@ -33,8 +26,59 @@ var logger = require('./main/logger');
  * 于是网页端搜图同样会让后台长任务在批次边界停下让位。
  */
 var interactionPreempt = require('./main/interaction-preempt').interactionPreempt;
+// 缩略图格式 → 响应头 MIME 的唯一真相源（`database.js` 写入端、桌面端 `thumb://` 共用同一份）。
+// 🔴 `/thumb/:id` 的头**必须**按「这一行实际存的格式」派生：硬编码 `image/jpeg` 时，
+//    库里一旦出现 WebP 行，浏览器不报错、只是不解码。
+// 同时取「生成端」那几个：编码格式、缩放+编码入口、档位归一化 —— 按需生成不许自己写 `.jpeg()`。
+var thumbFormat = require('./main/thumb-format');
+var thumbMimeType = thumbFormat.thumbMimeType;
+var resizeThumb = thumbFormat.resizeThumb;
+var normalizeThumbSize = thumbFormat.normalizeThumbSize;
+var THUMB_ENCODE_FORMAT = thumbFormat.THUMB_ENCODE_FORMAT;
+var THUMB_DEFAULT_QUALITY = thumbFormat.THUMB_DEFAULT_QUALITY;
 
-var RAW_EXTENSIONS = new Set(['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw']);
+/**
+ * 「RAW 家族」= 走**专用预览路径**（`serveRawPreviewJpeg`：有并发队列 + 独立缓存 + 2560px 质量档）。
+ *
+ * ⚠️ 这份清单与 `main/sharp-input.js#OWN_DECODER_RAW_EXTENSIONS` **语义不同，不能合并**：
+ *   这份 = 「按 RAW 对待（队列 / 缓存 / 大尺寸预览）」；
+ *   那份 = 「libvips 读不了、要我们自己抠内嵌预览」。`dng`/`nef`/`arw` 属于前者不属于后者。
+ * 🔴 但**漏项的代价是破图**：不在本表的 RAW 扩展名会落到 `handlePhoto` 的 `mimeMap`
+ *    （那里没有它）⇒ 标成 `image/jpeg` 却发的是原文件 ⇒ 浏览器解不出来，**一声不吭**。
+ *    实测踩到过：`.cr3` / `.crw` 原先不在这里。加新 RAW 格式时**两个清单一起看**。
+ */
+var RAW_EXTENSIONS = new Set([
+  '.cr2',
+  '.crw',
+  '.cr3',
+  '.nef',
+  '.arw',
+  '.dng',
+  '.orf',
+  '.rw2',
+  '.raw',
+]);
+
+/**
+ * 「libvips 读不了的输入 → 一个 sharp 实例」的接线。**与主进程共用同一份**
+ * （`src/main/sharp-input.js`）—— 两端各写一份必然漂移，而漂移的症状是
+ * 「桌面端出得了图、网页端破图」（或反过来），两端都"看起来正常"，只是少了一部分图片。
+ *
+ * 延迟加载：只有真遇到那些格式才需要（模块本身纯 JS、体积小）。
+ */
+var sharpInputModule = null;
+function loadSharpInput() {
+  if (!sharpInputModule) {
+    sharpInputModule = require('./main/sharp-input');
+  }
+  return sharpInputModule;
+}
+
+/** 见 `sharp-input.js#needsOwnRender`：浏览器原生不认、必须由我们转成 JPEG 才能显示的格式。 */
+function needsOwnRender(filePathOrName) {
+  return loadSharpInput().needsOwnRender(filePathOrName);
+}
+
 
 var VIDEO_EXTENSIONS = new Set([
   '.mp4',
@@ -111,6 +155,13 @@ function WebServer(db, port, opts) {
   this.db = db;
   this.port = port || 3456;
   opts = opts || {};
+  /**
+   * 图片编辑服务。🔴 **必须由 main.js 注入同一个实例**，不能在这里 new 一个：
+   *    服务内部对编辑是**全局串行**的，两端各建一个 = 两条互不知情的队列，
+   *    「桌面在转、手机同时在裁同一张」会互相覆盖（后写的覆盖先写的，没有任何报错）。
+   * 取不到时编辑路由回 503，而不是静默降级成「什么都不做」。
+   */
+  this.photoEdit = opts.photoEdit || null;
   /** HLS 输出根目录（网页 + 桌面走 127.0.0.1 时共用） */
   this.hlsRootDir = opts.hlsRootDir || null;
   /** ffmpeg-static 可执行路径 */
@@ -135,17 +186,55 @@ function WebServer(db, port, opts) {
   /** 与桌面同一份搜图匹配阈值：阈值在桌面端设置里调，网页端只是照用 */
   this.getAiSearchMatchThreshold =
     typeof opts.getAiSearchMatchThreshold === 'function' ? opts.getAiSearchMatchThreshold : null;
-  /** 与桌面同一份「照片信息面板显示哪些字段」：桌面设置页勾，网页端照用 */
+  /**
+   * tag 检索层（M4）的两个键：`{ tagEnabled, tagThreshold }`。
+   *
+   * 为什么单独一个注入，不并进上面那个标量：那个标量**搜图与预选词都用**，而 tag 层只有搜图用。
+   * 并进去会让「预选词也带 tag 参数」看起来像真的（它不走 tag 路）。
+   * 取不到时**不补默认值**：worker 侧「缺 `tagEnabled` 键 = 开、缺 `tagThreshold` = 用它自己的
+   * 默认」，与桌面端默认值同源，所以少一个注入不会把网页端静默降级成纯 CLIP。
+   */
+  this.getAiSearchTagOptions =
+    typeof opts.getAiSearchTagOptions === 'function' ? opts.getAiSearchTagOptions : null;
+  /**
+   * 预选词的**常规路径**（主进程注入 → `main.js#suggestTermsFromTags` → `SemanticTags.suggestTerms`）。
+   *
+   * 与桌面端**同源同函数**：主进程按 `embeddings.tags` 转置统计，只读 SQL，
+   * **不起 worker、不载模型**（实测 48 ms；老路要起 worker 载文本编码器 ≈ 4 s，冷启 17 s）。
+   * 取不到时回 `{ sampled: 0, terms: [] }` —— 界面据此把预选词整块收起（既有取向）。
+   * 与 `getPhotoAiTags` / `getTagNavPhotos` 同一形态：只交出「一个能力」，不交出活对象。
+   */
+  this.getAiSuggestTerms =
+    typeof opts.getAiSuggestTerms === 'function' ? opts.getAiSuggestTerms : null;
+  /**
+   * 与桌面同一份缩略图档位 / 画质（主进程注入 → `main.js#getThumbOptions`）。
+   *
+   * 🔴 网页端「按需生成缩略图」那条路**必须**用同一份档位：写死的 256/400 会让库里多出一批
+   *    永远不合档的行 —— 重跑任务每轮都会把这批人重新算成「待重生成」，
+   *    而它们其实是网页端刚生成的。取不到就回落到默认档（见 `thumb-format.js`）。
+   */
+  this.getThumbOptions =
+    typeof opts.getThumbOptions === 'function' ? opts.getThumbOptions : null;
+  /** 与桌面同一份「图片信息面板显示哪些字段」：桌面设置页勾，网页端照用 */
   this.getInfoPanelFields =
     typeof opts.getInfoPanelFields === 'function' ? opts.getInfoPanelFields : null;
   /**
-   * 照片的「AI 内容标签」只读通道（主进程注入 → `SemanticTags.tagsFor`）。
+   * 图片的「主题标签」只读通道（主进程注入 → `SemanticTags.tagsFor`）。
    *
    * 标签在**搜图索引库**里、不在 `photos` 表，所以不能并进 `/api/photo-info` 的 SQL，
    * 只能单开一条 —— 与桌面端 `get-photo-ai-tags` 是同一个来源，两边读数一致。
    */
   this.getPhotoAiTags =
     typeof opts.getPhotoAiTags === 'function' ? opts.getPhotoAiTags : null;
+  /**
+   * 图片的「画面标签」（JoyTag）只读通道（主进程注入 → `JoyTagTags.tagsFor`）。
+   *
+   * 标签在 **tag 索引库**里、不在 `photos` 表，所以不能并进 `/api/photo-info` 的 SQL，
+   * 只能单开一条 —— 与桌面端 `get-photo-joy-tags` 是同一个来源，两边读数一致
+   * （中文映射在通道内做，两端拿到同样的文本）。
+   */
+  this.getPhotoJoyTags =
+    typeof opts.getPhotoJoyTags === 'function' ? opts.getPhotoJoyTags : null;
   /**
    * 网页端「设置」页要展示的设置快照（主进程注入，**只读**）。
    *
@@ -197,6 +286,11 @@ function WebServer(db, port, opts) {
   this._previewJpegQueue = [];
   /** 与桌面 IPC 一致：大聚合走只读 Worker，避免 /api 拖死主线程 */
   this.sqliteReadPath = typeof opts.sqliteReadPath === 'string' ? opts.sqliteReadPath : '';
+  /**
+   * 「组织元数据写入完成」回调（由 `main.js` 注入 `dbReadWorkerPool.invalidateReadCaches`）。
+   * 见 `notifyOrgMetaWritten`。取不到只影响计数的陈旧度上界（5 秒），不影响正确性。
+   */
+  this.onOrgMetaWritten = typeof opts.onOrgMetaWritten === 'function' ? opts.onOrgMetaWritten : null;
   this.semanticSearch = opts.semanticSearch || null;
   this.faceService = opts.faceService || null;
 
@@ -484,6 +578,12 @@ WebServer.prototype.handleRequest = function (req, res) {
     );
   } else if (pathname === '/api/login') {
     this.handleLogin(req, res);
+  } else if (pathname === '/api/photo-edit-transform') {
+    this.handlePhotoEditTransform(req, res);
+  } else if (pathname === '/api/photo-edit-crop') {
+    this.handlePhotoEditCrop(req, res);
+  } else if (pathname === '/api/photo-edit-apply') {
+    this.handlePhotoEditApply(req, res);
   } else if (pathname === '/api/stats') {
     this.handleStats(req, res);
   } else if (pathname === '/api/photos') {
@@ -496,6 +596,8 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.handleDatePhotos(req, res, query);
   } else if (pathname === '/api/search') {
     this.handleSearch(req, res, query);
+  } else if (pathname === '/api/search-folders') {
+    this.handleSearchFolders(req, res, query);
   } else if (pathname === '/api/person-rename') {
     this.handlePersonRename(req, res);
   } else if (
@@ -546,11 +648,18 @@ WebServer.prototype.handleRequest = function (req, res) {
         });
     } else {
       // 阈值与桌面共用同一份设置；取不到就交给 IndexStore 用它自己的默认值。
-      const threshold = this.getAiSearchMatchThreshold
-        ? Number(this.getAiSearchMatchThreshold())
-        : undefined;
+      const options = {};
+      if (this.getAiSearchMatchThreshold) options.threshold = Number(this.getAiSearchMatchThreshold());
+      // tag 检索层：开关与它自己的查询线。⚠️ 不从这里补默认值（理由见构造函数里那段）——
+      // 网页端与桌面端看到同一份设置，靠的是同一个注入，不是在这里各写一份默认。
+      const tagOptions = this.getAiSearchTagOptions ? this.getAiSearchTagOptions() : null;
+      if (tagOptions && typeof tagOptions === 'object') {
+        if (tagOptions.tagEnabled !== undefined) options.tagEnabled = tagOptions.tagEnabled !== false;
+        if (tagOptions.tagThreshold !== undefined)
+          options.tagThreshold = Number(tagOptions.tagThreshold);
+      }
       interactionPreempt
-        .withPreempt(() => this.semanticSearch.run('search', query.q, { threshold }))
+        .withPreempt(() => this.semanticSearch.run('search', query.q, options))
         .then((data) => {
           if (!res.destroyed) this.jsonResponse(res, data, 200, req);
         })
@@ -572,10 +681,25 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.handleRootFolders(req, res, query);
   } else if (pathname === '/api/toggle-favorite') {
     this.handleToggleFavorite(req, res);
+  } else if (pathname === '/api/photo-rating') {
+    // 组织元数据：评分（POST 写 / 无 body 不写；读走列表行自带的 rating 列）
+    this.handlePhotoRating(req, res);
+  } else if (pathname === '/api/photo-flag') {
+    // 组织元数据：标记（**幂等设值**，不是 toggle —— 见 `database.js#setPhotoFlag`）
+    this.handlePhotoFlag(req, res);
+  } else if (pathname === '/api/photo-tags') {
+    // 组织元数据：某张图的用户标签。GET 读、POST **全量替换**写。
+    // 两个方法共用一条路径是刻意的：它们是同一份资源的读与写，
+    // 分成 `/api/photo-tags-get` / `-set` 会让「URL 名字里带动词」这件事扩散出去。
+    if (req.method === 'GET') this.handlePhotoTagsGet(req, res, query);
+    else this.handlePhotoTagsSet(req, res);
+  } else if (pathname === '/api/tags') {
+    // 标签字典（含使用计数）。筛选面板与标签管理都读它。
+    this.handleTagsList(req, res);
   } else if (pathname === '/api/download') {
     this.handleDownload(req, res, query);
   } else if (pathname === '/api/info-fields') {
-    // 网页端「照片信息」面板照用桌面端勾好的字段集（只读，鉴权走上面的统一入口）
+    // 网页端「图片信息」面板照用桌面端勾好的字段集（只读，鉴权走上面的统一入口）
     this.handleInfoFields(req, res);
   } else if (pathname === '/api/settings') {
     // 网页端「设置」页：桌面端设置的只读快照（写入口只有桌面端一处）
@@ -583,8 +707,26 @@ WebServer.prototype.handleRequest = function (req, res) {
   } else if (pathname === '/api/photo-info') {
     this.handlePhotoInfo(req, res, query);
   } else if (pathname === '/api/photo-ai-tags') {
-    // AI 标签在搜图索引库里（跨库），单独一条只读通道，见 getPhotoAiTags
+    // 主题标签在搜图索引库里（跨库），单独一条只读通道，见 getPhotoAiTags
     this.handlePhotoAiTags(req, res, query);
+  } else if (pathname === '/api/photo-joy-tags') {
+    // 画面标签（JoyTag）在 tag 索引库里（跨库），单独一条只读通道，见 getPhotoJoyTags
+    this.handlePhotoJoyTags(req, res, query);
+  } else if (pathname === '/api/tag-nav-status') {
+    // 标签导航页：索引规模（网页端用来显示「标签索引仍在建立」）
+    this.handleTagNavStatus(req, res);
+  } else if (pathname === '/api/tag-nav-tree') {
+    // 标签导航页：分类树（两级，不含标签）
+    this.handleTagNavTree(req, res);
+  } else if (pathname === '/api/tag-nav-node') {
+    // 标签导航页：某个节点下的标签 + 各自命中数
+    this.handleTagNavNode(req, res, query);
+  } else if (pathname === '/api/tag-nav-search') {
+    // 标签导航页：搜标签 / 搜节点
+    this.handleTagNavSearch(req, res, query);
+  } else if (pathname === '/api/tag-nav-photos') {
+    // 标签导航页：某个标签下的照片（跨库：tag 库给有序 id、主库给行）
+    this.handleTagNavPhotos(req, res, query);
   } else if (pathname === '/thumb') {
     // 缩略图：/thumb/123
     this.handleThumb(res, '');
@@ -621,6 +763,13 @@ WebServer.prototype.handleRequest = function (req, res) {
     this.serveStaticFile(res, 'js/photo-compare.js', 'application/javascript; charset=utf-8');
   } else if (pathname === '/js/ai-views.js') {
     this.serveStaticFile(res, 'js/ai-views.js', 'application/javascript; charset=utf-8');
+  } else if (pathname === '/js/tag-nav.js') {
+    // 标签导航页的界面层（类名两端刻意不共用，见该文件头注释）。
+    // ⚠️ 这条路由**必须**与 `src/web/index.html` 的引用同一次改动落下来：
+    //    漏了就是 404，所有静态守护都看不出来（`web-asset-route-regression` 就是为它加的）。
+    this.serveStaticFile(res, 'js/tag-nav.js', 'application/javascript; charset=utf-8');
+  } else if (pathname === '/tag-nav.css') {
+    this.serveStaticFile(res, 'css/tag-nav.css', 'text/css; charset=utf-8');
   } else if (pathname === '/ai-web-views.css') {
     this.serveStaticFile(res, 'css/ai-web-views.css', 'text/css; charset=utf-8');
   } else if (pathname === '/js/app.js') {
@@ -632,10 +781,10 @@ WebServer.prototype.handleRequest = function (req, res) {
       'application/javascript; charset=utf-8',
     );
   } else if (pathname === '/js/photo-info-fields.js') {
-    // 照片信息面板的字段注册表（三端共用同一份 UMD）。
+    // 图片信息面板的字段注册表（三端共用同一份 UMD）。
     // ⚠️ 这条路由曾经缺失：`src/web/index.html` 一直在请求它，但路由表里没有对应
     //    分支 → 落到最后的 404 分支，`window.PhotoInfoFields` 永远是 undefined，
-    //    网页端「照片信息」面板固定显示「照片信息模块未加载」。静态守护看不出来
+    //    网页端「图片信息」面板固定显示「图片信息模块未加载」。静态守护看不出来
     //    （它只比对类名/引用，不认 HTTP 路由），所以单加了 `web-asset-route-regression`
     //    把「页面引用的静态资源」与「路由表」做机械比对。
     this.serveStaticFile(
@@ -849,7 +998,28 @@ WebServer.prototype.handleSearch = function (req, res, query) {
   }
   var options = this.parsePageOptions(query);
   options.lite = true;
+  // `nameOnly=1` ⇒ 只命中**文件名**（真子串），排除「仅所在目录名命中」的图片。
+  // 搜图页「关键词」档的「文件」分组带它；浏览页搜索不带（那边要的是 FTS 分词全量命中）。
+  if (query.nameOnly === '1' || query.nameOnly === 'true') options.nameOnly = true;
   this.respondWithDbRead(req, res, 'searchPhotos', Object.assign(options, { query: q }));
+};
+
+/**
+ * 关键词搜**目录**（网页端搜图页「关键词」档的「文件夹」分组）。
+ *
+ * 与 `/api/search` 刻意**两条路由**：那边返回图片（FTS 分词命中文件名 / 目录路径），
+ * 这边返回目录（按目录路径子串分组）。两者的分页、排序、代价模型都不同，合成一条
+ * 只会让「只要目录」的那半边白等图片那半边。
+ */
+WebServer.prototype.handleSearchFolders = function (req, res, query) {
+  var q = query.q;
+  if (!q) {
+    this.jsonResponse(res, { error: 'q is required' }, 400, req);
+    return;
+  }
+  var limit = parseInt(query.limit, 10);
+  var options = { limit: isFinite(limit) && limit > 0 ? limit : 12 };
+  this.respondWithDbRead(req, res, 'searchFolders', Object.assign(options, { query: q }));
 };
 
 WebServer.prototype.handlePreviewNext = function (req, res, query) {
@@ -1015,6 +1185,23 @@ WebServer.prototype.handleRootFolders = function (req, res, query) {
 
 WebServer.prototype.handleThumb = function (res, idStr) {
   var self = this;
+  // 本函数里三处「当场生成」（视频抽帧 / RAW 预览 / 普通图片）都走 `resizeThumb()`，
+  // 编码格式取同一个常量：写进库的 `thumb_format` 与响应头**同源**，
+  // 换格式时只改 `thumb-format.js#THUMB_ENCODE_FORMAT` 一处。
+  var generatedFormat = THUMB_ENCODE_FORMAT;
+  /** 本次生成要用的档位/画质：与桌面同一份（主进程注入），取不到回落默认档。 */
+  function thumbOptions() {
+    var o;
+    try {
+      o = self.getThumbOptions ? self.getThumbOptions() : null;
+    } catch (e) {
+      o = null;
+    }
+    return {
+      size: normalizeThumbSize(o && o.size),
+      quality: parseInt(o && o.quality, 10) || THUMB_DEFAULT_QUALITY,
+    };
+  }
   function sendPngFallback() {
     var fallback = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/HwADBwIAMCbHYQAAAABJRU5ErkJggg==',
@@ -1035,7 +1222,9 @@ WebServer.prototype.handleThumb = function (res, idStr) {
   if (photo && photo.thumbnail) {
     var buf = Buffer.isBuffer(photo.thumbnail) ? photo.thumbnail : Buffer.from(photo.thumbnail);
     res.writeHead(200, {
-      'Content-Type': 'image/jpeg',
+      // 🔴 按这一行**实际存的格式**派生（`getThumbnail()` 把 `thumb_format` 一起带出来了）：
+      //    未知 / 空串的存量行回落 `image/jpeg`（那批实测全是 JPEG）。
+      'Content-Type': thumbMimeType(photo.format),
       'Content-Length': buf.length,
       'Cache-Control': 'public, max-age=86400',
     });
@@ -1050,10 +1239,11 @@ WebServer.prototype.handleThumb = function (res, idStr) {
       var videoFrameThumb = require('./video-frame-thumb');
       void (async function () {
         try {
-          var topts = { size: 256, quality: 75, ffmpegPath: self.ffmpegPath || null };
-          var jpeg = await videoFrameThumb.extractVideoFrameJpeg(full.file_path, topts);
+          var topts = thumbOptions();
+          topts.ffmpegPath = self.ffmpegPath || null;
+          var jpeg = await videoFrameThumb.extractVideoFrameThumb(full.file_path, topts);
           if (!jpeg) {
-            jpeg = await videoFrameThumb.buildVideoPlaceholderJpeg({
+            jpeg = await videoFrameThumb.buildVideoPlaceholderThumb({
               size: topts.size,
               quality: topts.quality,
             });
@@ -1062,11 +1252,11 @@ WebServer.prototype.handleThumb = function (res, idStr) {
             try {
               self.db.updatePhotoThumbnail(photoId, jpeg, {
                 size: topts.size,
-                format: 'jpeg',
+                format: generatedFormat,
               });
             } catch (eUp) {}
             res.writeHead(200, {
-              'Content-Type': 'image/jpeg',
+              'Content-Type': thumbMimeType(generatedFormat),
               'Content-Length': jpeg.length,
               'Cache-Control': 'public, max-age=86400',
             });
@@ -1089,17 +1279,23 @@ WebServer.prototype.handleThumb = function (res, idStr) {
           return;
         }
         try {
-          var sharpRaw = loadSharp();
-          var jpegRaw = await sharpRaw(full.file_path)
-            .rotate()
-            .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 75 })
-            .toBuffer();
+          // 🔴 必须走共用接线：`sharp(file_path)` 对 cr2 必然抛
+          //    `Old-style JPEG compression support is not configured`，
+          //    于是网页端永远只看到占位图 —— 而桌面端已经靠抠内嵌预览出图了。
+          //    （`needsRawPreview` 的那族容器才会走到这里，正常格式原样返回。）
+          var siRaw = await loadSharpInput().createSharpInput(full.file_path, null);
+          // 档位/画质与桌面同一份（原来写死 400/75 ⇒ 网页端会往库里写一批「永远不合档」的行，
+          // 重跑任务每轮都把它们当成待重生成）
+          var rawOpts = thumbOptions();
+          var jpegRaw = await resizeThumb(siRaw.instance, rawOpts.size, rawOpts.quality);
           try {
-            self.db.updatePhotoThumbnail(photoId, jpegRaw, { size: 400, format: 'jpeg' });
+            self.db.updatePhotoThumbnail(photoId, jpegRaw, {
+              size: rawOpts.size,
+              format: generatedFormat,
+            });
           } catch (eUp) {}
           res.writeHead(200, {
-            'Content-Type': 'image/jpeg',
+            'Content-Type': thumbMimeType(generatedFormat),
             'Content-Length': jpegRaw.length,
             'Cache-Control': 'public, max-age=86400',
           });
@@ -1122,17 +1318,19 @@ WebServer.prototype.handleThumb = function (res, idStr) {
         return;
       }
       try {
-        var sharp = loadSharp();
-        var jpeg = await sharp(full.file_path)
-          .rotate()
-          .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 75 })
-          .toBuffer();
+        // 同上一处：libvips 读不了的格式（bmp / tga / qoi / pnm …）在这里也要兜底，
+        // 否则新扫进来的这些图片在网页端全是一张占位图。
+        var siPlain = await loadSharpInput().createSharpInput(full.file_path, null);
+        var plainOpts = thumbOptions();
+        var jpeg = await resizeThumb(siPlain.instance, plainOpts.size, plainOpts.quality);
         try {
-          self.db.updatePhotoThumbnail(photoId, jpeg, { size: 400, format: 'jpeg' });
+          self.db.updatePhotoThumbnail(photoId, jpeg, {
+            size: plainOpts.size,
+            format: generatedFormat,
+          });
         } catch (eUp) {}
         res.writeHead(200, {
-          'Content-Type': 'image/jpeg',
+          'Content-Type': thumbMimeType(generatedFormat),
           'Content-Length': jpeg.length,
           'Cache-Control': 'public, max-age=86400',
         });
@@ -1149,7 +1347,12 @@ WebServer.prototype.handleThumb = function (res, idStr) {
   sendPngFallback();
 };
 
-WebServer.prototype.handlePhoto = async function (req, res, idStr) {
+/**
+ * `fromPreviewFallback`：由 `handlePreviewImage` 失败回落调起时为 `true`。
+ * 此时**不能再把这些格式转回预览路径** —— 两条路径会互相回弹形成死循环
+ * （异步递归，进程不崩、只是无限重试，而且没有任何报错）。
+ */
+WebServer.prototype.handlePhoto = async function (req, res, idStr, fromPreviewFallback) {
   var photoId = parseInt(idStr, 10);
   if (isNaN(photoId)) {
     res.writeHead(400);
@@ -1170,6 +1373,15 @@ WebServer.prototype.handlePhoto = async function (req, res, idStr) {
         this.serveRawPreviewJpeg(req, res, photo.file_path);
         return;
       }
+      // 🔴 **浏览器也不认**的格式（tga / qoi / pbm~pam / dib …）绝不能把原文件直接发出去：
+      //    mimeMap 里没有它 ⇒ 会被标成 `image/jpeg` ⇒ 浏览器解不出来 ⇒ **破图且一声不吭**。
+      //    转给「生成 JPEG」那条路径（走的是与缩略图同一个解码接线）。
+      //    ⚠️ 判据刻意**不是** `needsFallbackDecode`：bmp / ico / cur 虽然 libvips 读不了，
+      //       但浏览器原生能显示 —— 发原文件更快更清晰。
+      if (!fromPreviewFallback && needsOwnRender(photo.file_path)) {
+        this.handlePreviewImage(req, res, idStr);
+        return;
+      }
       var mimeMap = {
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
@@ -1178,6 +1390,8 @@ WebServer.prototype.handlePhoto = async function (req, res, idStr) {
         '.webp': 'image/webp',
         '.bmp': 'image/bmp',
         '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+        '.cur': 'image/x-icon',
       };
       var contentType = mimeMap[ext] || 'image/jpeg';
       var st = await fs.promises.stat(photo.file_path);
@@ -2283,6 +2497,204 @@ WebServer.prototype.isAuthenticated = function (req, opts) {
   return false;
 };
 
+/**
+ * 读一个 JSON 请求体（上限 64 KB），解析成功才回调。
+ *
+ * 抽成一个方法而不是在每个写操作里内联：内联两遍必然有一处漏掉 Content-Type 校验
+ * 或体积上限 —— 而漏掉体积上限的那一处，就是一个「谁都能把主进程内存撑爆」的入口。
+ * 失败时本方法**自己回响应**，调用方只管 `cb` 里的成功分支。
+ */
+WebServer.prototype.readJsonBody = function (req, res, cb) {
+  var self = this;
+  if (req.method !== 'POST') {
+    this.jsonResponse(res, { success: false, error: 'method_not_allowed' }, 405, req);
+    return;
+  }
+  var ct = (req.headers['content-type'] || '').toLowerCase();
+  if (ct.indexOf('application/json') < 0) {
+    this.jsonResponse(
+      res,
+      { success: false, error: 'Content-Type must be application/json' },
+      415,
+      req,
+    );
+    return;
+  }
+  var body = '';
+  var maxBody = 64 * 1024;
+  var tooLarge = false;
+  req.on('data', function (chunk) {
+    if (tooLarge) return;
+    body += chunk;
+    if (body.length > maxBody) {
+      tooLarge = true;
+      try {
+        req.destroy();
+      } catch (eDestroy) {
+        void eDestroy;
+      }
+    }
+  });
+  req.on('end', function () {
+    if (tooLarge) return;
+    var data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch (eParse) {
+      self.jsonResponse(res, { success: false, error: 'invalid_json' }, 400, req);
+      return;
+    }
+    cb(data);
+  });
+};
+
+/**
+ * POST /api/photo-edit-transform
+ * body: `{ id: number, actions: string[] }`（`actions` 见 `image-edit.js#TRANSFORM_ACTIONS`；
+ *       也接受单个字符串 `action`，兼容旧调用）
+ *
+ * 旋转 / 翻转**写回原文件**。返回输出文件的真实宽高，前端据此刷新，别自己推算。
+ * 🔴 `actions` 是**一串**动作：预览态编辑攒序列，保存时合成一条算子，只编码一次。
+ */
+WebServer.prototype.handlePhotoEditTransform = function (req, res) {
+  var self = this;
+  if (!this.photoEdit) {
+    this.jsonResponse(res, { success: false, error: 'EDIT_UNAVAILABLE' }, 503, req);
+    return;
+  }
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    var actions = data && data.actions != null ? data.actions : data && data.action;
+    if (!isFinite(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: '无效的图片 ID' }, 400, req);
+      return;
+    }
+    self.photoEdit
+      .transform(id, actions)
+      .then(function (r) {
+        self.jsonResponse(
+          res,
+          {
+            success: true,
+            id: r.id,
+            width: r.width,
+            height: r.height,
+            size: r.size,
+            // 网页端靠它翻新 URL 缓存键（`app.js#photoCacheVersion`），漏了会看到旧图
+            dateModified: r.dateModified,
+          },
+          200,
+          req,
+        );
+      })
+      .catch(function (err) {
+        self.jsonResponse(
+          res,
+          { success: false, error: err && err.message ? err.message : String(err) },
+          500,
+          req,
+        );
+      });
+  });
+};
+
+/**
+ * POST /api/photo-edit-crop
+ * body: `{ id: number, rect: { left, top, width, height } }`
+ *
+ * 裁剪并**另存副本**（副本进库）。`rect` 用「用户看到的图」的坐标系（EXIF 已转正）。
+ */
+WebServer.prototype.handlePhotoEditCrop = function (req, res) {
+  var self = this;
+  if (!this.photoEdit) {
+    this.jsonResponse(res, { success: false, error: 'EDIT_UNAVAILABLE' }, 503, req);
+    return;
+  }
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    if (!isFinite(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: '无效的图片 ID' }, 400, req);
+      return;
+    }
+    self.photoEdit
+      .crop(id, data && data.rect)
+      .then(function (r) {
+        self.jsonResponse(
+          res,
+          {
+            success: true,
+            id: r.id,
+            filePath: r.filePath,
+            width: r.width,
+            height: r.height,
+            size: r.size,
+            sourceId: r.sourceId,
+          },
+          200,
+          req,
+        );
+      })
+      .catch(function (err) {
+        self.jsonResponse(
+          res,
+          { success: false, error: err && err.message ? err.message : String(err) },
+          500,
+          req,
+        );
+      });
+  });
+};
+
+/**
+ * POST /api/photo-edit-apply
+ * body: `{ id: number, actions?: string[], crop?: {left,top,width,height}|null }`
+ *
+ * 预览态编辑点「保存」时网页端的**唯一**入口：一次请求把「一串变换 + 一个裁剪」落盘。
+ * 顺序与「rect 用变换后的坐标系」这条契约收在 `photo-edit-service.js#applyEdit` 里 ——
+ * 两端各写一遍必然有一端写反（网页端与桌面端共用同一个服务实例）。
+ */
+WebServer.prototype.handlePhotoEditApply = function (req, res) {
+  var self = this;
+  if (!this.photoEdit) {
+    this.jsonResponse(res, { success: false, error: 'EDIT_UNAVAILABLE' }, 503, req);
+    return;
+  }
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    if (!isFinite(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: '无效的图片 ID' }, 400, req);
+      return;
+    }
+    self.photoEdit
+      .applyEdit(id, { actions: data && data.actions, crop: data && data.crop })
+      .then(function (r) {
+        self.jsonResponse(
+          res,
+          {
+            success: true,
+            id: r.id,
+            width: r.width,
+            height: r.height,
+            size: r.size,
+            // 网页端靠它翻新 URL 缓存键（`app.js#photoCacheVersion`），漏了会看到旧图
+            dateModified: r.dateModified,
+            crop: r.crop,
+          },
+          200,
+          req,
+        );
+      })
+      .catch(function (err) {
+        self.jsonResponse(
+          res,
+          { success: false, error: err && err.message ? err.message : String(err) },
+          500,
+          req,
+        );
+      });
+  });
+};
+
 WebServer.prototype.handleLogin = function (req, res) {
   var self = this;
   if (req.method !== 'POST') {
@@ -2614,6 +3026,8 @@ WebServer.prototype.handlePreviewImage = async function (req, res, idStr) {
     var cacheKey = 'pvw|' + photoId + '|' + String(st.mtimeMs) + '|' + String(st.size);
     var cached = this._previewWebCacheGet(cacheKey);
     if (cached && cached.length) {
+      // ⚠️ 这里是**预览图**缓存（2560 档），编码写死在生成处（`.jpeg({quality:88})`），
+      //    与库里的缩略图无关 —— 缩略图那条路在 `handleThumb`，头按行派生。
       res.writeHead(200, {
         'Content-Type': 'image/jpeg',
         'Content-Length': cached.length,
@@ -2637,7 +3051,8 @@ WebServer.prototype.handlePreviewImage = async function (req, res, idStr) {
       throw eAc;
     }
     try {
-      var buf = await loadSharp()(fp)
+      var siPv = await loadSharpInput().createSharpInput(fp, null);
+      var buf = await siPv.instance
         .rotate()
         .resize({ width: 2560, height: 2560, fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 88, progressive: true, mozjpeg: true })
@@ -2654,7 +3069,8 @@ WebServer.prototype.handlePreviewImage = async function (req, res, idStr) {
     }
   } catch (ePv) {
     try {
-      this.handlePhoto(req, res, cleanId);
+      // 🔴 传 `true`：回落时**不能再把本格式转回预览路径**，否则两条路互相回弹成死循环。
+      this.handlePhoto(req, res, cleanId, true);
     } catch (e2) {
       res.writeHead(500);
       res.end('Error');
@@ -2781,11 +3197,18 @@ WebServer.prototype.serveRawPreviewJpeg = function (req, res, filePath) {
       .then(function () {
         acquired = true;
         var q = Number(self.rawPreview && self.rawPreview.jpegQuality) || 88;
-        return loadSharp()(filePath)
-          .rotate()
-          .resize({ width: 2560, height: 2560, fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: q })
-          .toBuffer();
+        // 🔴 不能直接 `sharp(filePath)`：cr2 / crw 会抛
+        //    `Old-style JPEG compression support is not configured`
+        //    ⇒ 网页端点开 RAW 永远是 500，而桌面端已经出图了。
+        return loadSharpInput()
+          .createSharpInput(filePath, null)
+          .then(function (si) {
+            return si.instance
+              .rotate()
+              .resize({ width: 2560, height: 2560, fit: 'inside', withoutEnlargement: true })
+              .jpeg({ quality: q })
+              .toBuffer();
+          });
       })
       .then(function (buf) {
         self._rawCachePut(key, buf);
@@ -2817,7 +3240,7 @@ WebServer.prototype.pruneExpiredSessions = function () {
 };
 
 WebServer.prototype.parsePageOptions = function (query) {
-  return {
+  var options = {
     sortBy: query.sortBy || 'date_taken',
     sortOrder: query.sortOrder || 'DESC',
     page: parseInt(query.page) || 1,
@@ -2825,6 +3248,32 @@ WebServer.prototype.parsePageOptions = function (query) {
     rootId: query.rootId ? parseInt(query.rootId) : undefined,
     mediaType: query.mediaType || query.media_filter || query.media || undefined,
   };
+  // 组织元数据筛选（评分 / 标记 / 标签）。
+  //
+  // ⚠️ `''` 一律当**没给**（不放这个键）：`<select>` 的「不限」档提交的就是空串。
+  //    放进一个 `rating: 0` 会让主进程的 `!= null` 判据把它当成「只看未评分」——
+  //    而「全部评分」与「只看未评分」在界面上是两个不同的档，混起来是静默的错筛。
+  //
+  // ⚠️ `tagIds` 走**逗号分隔**而不是重复参数：本文件的 query 是
+  //    `Object.fromEntries(searchParams.entries())`，重复键只会留下**最后一个** ——
+  //    用 `?tagIds=1&tagIds=2` 会静默变成「只筛 2」。这是查询串解析的硬约束，别改。
+  if (query.rating !== undefined && query.rating !== '') {
+    options.rating = parseInt(query.rating, 10);
+  }
+  if (query.flag !== undefined && query.flag !== '') {
+    options.flag = String(query.flag);
+  }
+  if (query.tagIds !== undefined && query.tagIds !== '') {
+    options.tagIds = String(query.tagIds)
+      .split(',')
+      .map(function (s) {
+        return parseInt(s, 10);
+      })
+      .filter(function (n) {
+        return isFinite(n) && n > 0;
+      });
+  }
+  return options;
 };
 
 WebServer.prototype.jsonResponse = function (res, data, statusCode, req) {
@@ -2881,13 +3330,160 @@ WebServer.prototype.handleToggleFavorite = function (req, res) {
 };
 
 /**
- * 预选词打分（POST /api/ai-search-suggest）。
+ * 组织元数据（评分 / 标记 / 用户标签）的三个写入口 —— 2026-10-09。
  *
- * 与桌面端同一件事、同一个 worker 操作。两种 body：
- *   - `{ lang, limit }`：**正常路径**，词源在服务端（`src/ai/search-vocabulary.js`），
- *     按真实命中数取前 N 个。桌面端与网页端因此用的是同一份词表、同一套排序。
- *   - `{ candidates: [...] }`：老契约，只给这几个词打分（留着兼容）。
- * 阈值读的是与桌面同一份设置，因此两端筛出来的词一致。
+ * ## 为什么走 `self.db` 直写而不经主进程的写队列
+ *
+ * 与 `/api/toggle-favorite` 同一取向：元数据写入是**单行 UPDATE / 一个小事务**，
+ * 不是扫描或维护那类长写。走写队列会给「手机点一下星」增加一次跨进程往返，
+ * 而它本来就只是几毫秒的活。
+ *
+ * ⚠️ 代价：**不清读池缓存**的话，「仅 5 星」那一档的 `total` 会陈旧最多 5 秒
+ *    （`photos-total-cache.js#PHOTOS_TOTAL_TTL_MS` 是硬上界）。桌面端是显式清
+ *    （见 `main.js` 那组 handler），两端口径要一致 —— 所以这里经
+ *    `onOrgMetaWritten` 把这件事交回主进程做，而不是在这边 require 读池
+ *    （读池归 main 管，本文件不知道它存在）。
+ *
+ * ## 归一不在这里做
+ *
+ * 越界值 / 非法标记由 `database.js` 的 `normalizeRating` / `normalizeFlag` 夹取或回落，
+ * 本层只做「形态校验」（id 是不是正整数、names 是不是数组）。在这里再夹一遍
+ * 就是第二份取值域 —— 而两份漂移的症状是「网页端能用 7 星、桌面端不能」。
+ */
+WebServer.prototype.handlePhotoRating = function (req, res) {
+  var self = this;
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    if (isNaN(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: 'invalid id' }, 400, req);
+      return;
+    }
+    try {
+      var result = self.db.setPhotoRating(id, data.rating);
+      if (!result) {
+        self.jsonResponse(res, { success: false, error: 'photo not found' }, 404, req);
+        return;
+      }
+      self.notifyOrgMetaWritten('photo-rating');
+      self.jsonResponse(res, { success: true, id: result.id, rating: result.rating }, 200, req);
+    } catch (e) {
+      self.jsonResponse(res, { success: false, error: 'write failed' }, 500, req);
+    }
+  });
+};
+
+WebServer.prototype.handlePhotoFlag = function (req, res) {
+  var self = this;
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    if (isNaN(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: 'invalid id' }, 400, req);
+      return;
+    }
+    try {
+      // 🔴 `setPhotoFlag` 是**幂等设值**，不是 `togglePhotoFavorite` 那种翻转。
+      //    网页端手机上是盲操作（一边看图一边点），做成翻转会让重复点把标记清掉。
+      var result = self.db.setPhotoFlag(id, data.flag);
+      if (!result) {
+        self.jsonResponse(res, { success: false, error: 'photo not found' }, 404, req);
+        return;
+      }
+      self.notifyOrgMetaWritten('photo-flag');
+      self.jsonResponse(res, { success: true, id: result.id, flag: result.flag }, 200, req);
+    } catch (e) {
+      self.jsonResponse(res, { success: false, error: 'write failed' }, 500, req);
+    }
+  });
+};
+
+/** GET /api/photo-tags?id=123 —— 读某张图的用户标签。参数非法回**空数组**，不报错。 */
+WebServer.prototype.handlePhotoTagsGet = function (req, res, query) {
+  var id = parseInt(query && query.id, 10);
+  if (isNaN(id) || id <= 0) {
+    this.jsonResponse(res, { success: true, tags: [] }, 200, req);
+    return;
+  }
+  try {
+    this.jsonResponse(res, { success: true, tags: this.db.getPhotoTags(id) }, 200, req);
+  } catch (e) {
+    // 与 `/api/photo-ai-tags` 同一取向：读不到一律空结构，不把预览/列表打挂。
+    this.jsonResponse(res, { success: true, tags: [] }, 200, req);
+  }
+};
+
+/**
+ * POST /api/photo-tags body `{ id, names: string[] }` —— **全量替换**某张图的标签集合。
+ *
+ * 返回的 `tags` 是**最终集合**（归一 / 去重 / 自动建标签都在数据层做），
+ * 客户端必须用回包重画 chip，不能用自己敲进去的原文。
+ */
+WebServer.prototype.handlePhotoTagsSet = function (req, res) {
+  var self = this;
+  this.readJsonBody(req, res, function (data) {
+    var id = parseInt(data && data.id, 10);
+    if (isNaN(id) || id <= 0) {
+      self.jsonResponse(res, { success: false, error: 'invalid id' }, 400, req);
+      return;
+    }
+    if (data.names !== undefined && !Array.isArray(data.names)) {
+      self.jsonResponse(res, { success: false, error: 'names must be an array' }, 400, req);
+      return;
+    }
+    try {
+      var result = self.db.setPhotoTags(id, data.names || []);
+      if (!result) {
+        self.jsonResponse(res, { success: false, error: 'photo not found' }, 404, req);
+        return;
+      }
+      self.notifyOrgMetaWritten('photo-tags');
+      self.jsonResponse(res, { success: true, id: result.id, tags: result.tags }, 200, req);
+    } catch (e) {
+      self.jsonResponse(res, { success: false, error: 'write failed' }, 500, req);
+    }
+  });
+};
+
+/** GET /api/tags —— 标签字典 + 使用计数（按使用量降序）。 */
+WebServer.prototype.handleTagsList = function (req, res) {
+  try {
+    this.jsonResponse(res, { success: true, tags: this.db.listTags() }, 200, req);
+  } catch (e) {
+    this.jsonResponse(res, { success: true, tags: [] }, 200, req);
+  }
+};
+
+/**
+ * 通知主进程「组织元数据变了，清一下读池缓存」。
+ *
+ * 🔴 做成**注入**而不是在这里 `require('./db-read-worker-pool')`：那个池归 main 管
+ *    （连接、worker 生命周期、失效时机都在那边），web-server 直接拿到它等于
+ *    把「谁负责缓存一致性」这件事劈成两半。取不到就静默跳过 —— 后果是
+ *    「total 最多陈旧 5 秒」（TTL 兜底），不是错误结果，所以不该因此拒绝写入。
+ */
+WebServer.prototype.notifyOrgMetaWritten = function (reason) {
+  if (typeof this.onOrgMetaWritten === 'function') {
+    try {
+      this.onOrgMetaWritten(reason);
+    } catch (e) {
+      void e;
+    }
+  }
+};
+
+/**
+ * 预选词（POST /api/ai-search-suggest）。
+ *
+ * **按 body 形状分岔成两条路**（2026-10-09 起；同桌面端，不是新旧替换）：
+ *   - `{ lang, limit }`：**常规路径**，网页端唯一的用法。答案（每张图 top-3 标签的词表下标）
+ *     已经在索引库里 ⇒ 主进程只读 SQL 转置统计即可（注入的 `getAiSuggestTerms`，实测 48 ms），
+ *     **不起 worker、不载模型**。与桌面端同源同函数，两端摆出的词一致。
+ *   - `{ candidates: [...] }`：老契约，对这一组**指定的**词打分。网页端不走这条，
+ *     但只有 worker 那条路能对**词表外**的任意词真去打分 —— 只读 SQL 路只能在 308 词的词表里
+ *     查下标，词表外的词一律 0。
+ *
+ * 两条路的回答形状**逐字段一致**（`{ sampled, terms: [{ text, hits }] }`）。
+ * 🔴 但 `hits` 的口径两条路本来就不一样（老路 = CLIP 采样打分过的张数；只读路 = 把该词排进
+ *    top-3 标签的张数）⇒ 它**只用于排序与挡掉 0 命中，不是张数**，不许显示给用户。
  */
 WebServer.prototype.handleAiSearchSuggest = function (req, res) {
   var self = this;
@@ -2895,7 +3491,9 @@ WebServer.prototype.handleAiSearchSuggest = function (req, res) {
     this.jsonResponse(res, { error: 'method_not_allowed' }, 405, req);
     return;
   }
-  if (!this.semanticSearch) {
+  // 常规路径根本不用编码器 —— 所以判据是「两条路**都没有**」才算不可用，
+  // 不能只因为 `semanticSearch` 缺失就把预选词整条拒掉（老写法会在那种情形下 503）。
+  if (!this.semanticSearch && !this.getAiSuggestTerms) {
     this.jsonResponse(res, { error: 'AI_UNAVAILABLE' }, 503, req);
     return;
   }
@@ -2912,7 +3510,7 @@ WebServer.prototype.handleAiSearchSuggest = function (req, res) {
     } catch (e) {
       /* 坏 body 由下面的校验分支统一拒绝 */
     }
-    var payload = {};
+    // ---- 老契约：给一组指定的词打分（要 worker）----
     if (data && Array.isArray(data.candidates)) {
       var list = data.candidates.slice(0, 64).map(function (item) {
         return String(item == null ? '' : item);
@@ -2921,18 +3519,36 @@ WebServer.prototype.handleAiSearchSuggest = function (req, res) {
         self.jsonResponse(res, { error: 'AI_SUGGEST_INVALID' }, 400, req);
         return;
       }
-      payload.candidates = list;
-    } else if (data && typeof data === 'object') {
-      payload.lang = data.lang ? String(data.lang) : '';
-      if (data.limit !== undefined) payload.limit = Number(data.limit);
-    } else {
+      if (!self.semanticSearch) {
+        self.jsonResponse(res, { error: 'AI_UNAVAILABLE' }, 503, req);
+        return;
+      }
+      var scoring = { candidates: list };
+      if (self.getAiSearchMatchThreshold)
+        scoring.threshold = Number(self.getAiSearchMatchThreshold());
+      interactionPreempt
+        .withPreempt(() => self.semanticSearch.run('suggest', '', scoring))
+        .then((result) => {
+          if (!res.destroyed) self.jsonResponse(res, result, 200, req);
+        })
+        .catch((error) => {
+          if (!res.destroyed) self.jsonResponse(res, { error: error.message }, 503, req);
+        });
+      return;
+    }
+    if (!data || typeof data !== 'object') {
       self.jsonResponse(res, { error: 'AI_SUGGEST_INVALID' }, 400, req);
       return;
     }
-    if (self.getAiSearchMatchThreshold)
-      payload.threshold = Number(self.getAiSearchMatchThreshold());
+    // ---- 常规路径：主进程只读 SQL，毫秒级 ----
+    var payload = { lang: data.lang ? String(data.lang) : '' };
+    if (data.limit !== undefined) payload.limit = Number(data.limit);
     interactionPreempt
-      .withPreempt(() => self.semanticSearch.run('suggest', '', payload))
+      .withPreempt(() =>
+        Promise.resolve(
+          self.getAiSuggestTerms ? self.getAiSuggestTerms(payload) : { sampled: 0, terms: [] },
+        ),
+      )
       .then((result) => {
         if (!res.destroyed) self.jsonResponse(res, result, 200, req);
       })
@@ -3056,7 +3672,7 @@ WebServer.prototype.handlePhotoInfo = function (req, res, query) {
 };
 
 /**
- * 网页端「照片信息」面板要显示哪些字段。
+ * 网页端「图片信息」面板要显示哪些字段。
  * 桌面端设置页是唯一的编辑入口，这里只读；拿不到（老版本主进程没注入回调）就回落默认集，
  * 于是网页端不会因为拿不到设置而变成空面板。
  */
@@ -3091,7 +3707,7 @@ WebServer.prototype.handleInfoFields = function (req, res) {
 };
 
 /**
- * 网页端「照片信息」面板的 AI 标签（只读）。
+ * 网页端「图片信息」面板的 主题标签（只读）。
  *
  * 三种情况都返回空数组 —— 从没建过索引 / 索引了但这张没标签 / 索引库此刻被索引 worker
  * 占着写锁读不到。界面据「空数组」把这一行隐藏（既定取向：空值整行隐藏），
@@ -3109,6 +3725,92 @@ WebServer.prototype.handlePhotoAiTags = function (req, res, query) {
     }
   }
   this.jsonResponse(res, { tags: Array.isArray(tags) ? tags : [] }, 200, req);
+};
+
+/**
+ * 「画面标签」（JoyTag）—— 与 handlePhotoAiTags 同构的只读接口（tag-index.sqlite）。
+ * 参数非法 / 索引读不到都回空数组：面板是只读展示，空数组让注册表整行隐藏。
+ */
+WebServer.prototype.handlePhotoJoyTags = function (req, res, query) {
+  var tags = [];
+  var id = Number(query && query.id);
+  if (this.getPhotoJoyTags && Number.isFinite(id)) {
+    try {
+      tags = this.getPhotoJoyTags(id, String((query && query.locale) || 'zh-CN')) || [];
+    } catch (e) {
+      tags = [];
+    }
+  }
+  this.jsonResponse(res, { tags: Array.isArray(tags) ? tags : [] }, 200, req);
+};
+
+/**
+ * 「标签导航页」的四条只读接口（分类树 / 节点标签 / 搜索 / 某标签下的照片）。
+ *
+ * 与 `/api/photo-joy-tags` 同一取向：**参数非法 / 索引读不到都回空结构**，不报错 ——
+ * 导航页是只读展示，tag 索引还没建好的用户应当看到「这里还没有内容」而不是一个红色错误。
+ * 数据全部来自主进程注入的同一个服务（桌面端与网页端读数必然一致）。
+ */
+WebServer.prototype.handleTagNavStatus = function (req, res) {
+  var out = { available: false, tags: 0, photos: 0 };
+  if (this.getTagNavStatus) {
+    try {
+      out = this.getTagNavStatus() || out;
+    } catch (_) {}
+  }
+  this.jsonResponse(res, out, 200, req);
+};
+
+WebServer.prototype.handleTagNavTree = function (req, res) {
+  var tree = [];
+  if (this.getTagNavTree) {
+    try {
+      tree = this.getTagNavTree() || [];
+    } catch (_) {
+      tree = [];
+    }
+  }
+  this.jsonResponse(res, { tree: Array.isArray(tree) ? tree : [] }, 200, req);
+};
+
+WebServer.prototype.handleTagNavNode = function (req, res, query) {
+  var out = { tags: [], total: 0, indexed: 0 };
+  var nodeId = String((query && query.node) || '');
+  if (this.getTagNavNode && nodeId) {
+    try {
+      out = this.getTagNavNode(nodeId, String((query && query.locale) || 'zh-CN')) || out;
+    } catch (_) {}
+  }
+  this.jsonResponse(res, out, 200, req);
+};
+
+WebServer.prototype.handleTagNavSearch = function (req, res, query) {
+  var out = { tags: [], nodes: [], indexed: 0 };
+  var keyword = String((query && query.q) || '');
+  if (this.getTagNavSearch && keyword) {
+    try {
+      out = this.getTagNavSearch(keyword, String((query && query.locale) || 'zh-CN')) || out;
+    } catch (_) {}
+  }
+  this.jsonResponse(res, out, 200, req);
+};
+
+/**
+ * 某标签下的照片。复用 `parsePageOptions` 让分页参数与 `/api/photos` **同一套解析**
+ * （自己再 parse 一遍就会出现「这边 pageSize 上限 500、那边 120」这类静默不一致）。
+ */
+WebServer.prototype.handleTagNavPhotos = function (req, res, query) {
+  var out = { photos: [], total: 0, page: 1, pageSize: 120, totalPages: 1 };
+  var tag = String((query && query.tag) || '');
+  if (this.getTagNavPhotos && tag) {
+    var options = this.parsePageOptions(query);
+    options.tag = tag;
+    options.locale = String((query && query.locale) || 'zh-CN');
+    try {
+      out = this.getTagNavPhotos(tag, options) || out;
+    } catch (_) {}
+  }
+  this.jsonResponse(res, out, 200, req);
 };
 
 module.exports = WebServer;

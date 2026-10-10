@@ -176,7 +176,18 @@ async function run() {
       path.join(__dirname, '..', 'src', 'workers', 'deferred-index-worker.js'),
       'utf8',
     );
-    // 🔴 这条「只许定义在 worker 里」的检查必须带**词边界**，不能用裸 `includes`。
+    // 延迟索引 DDL 有**两个合法家**（Phase 4 直接写在 worker 里；Phase 5 抽到
+    // `src/main/deferred-indexes.js` 供回归复用同一份字符串，见那个文件开头）。
+    // 两者之外的**任何** `src/` 文件出现同一条 DDL 都是问题：那是把大表建索引搬回启动路径。
+    const DEFERRED_HOMES = [
+      path.join('workers', 'deferred-index-worker.js'),
+      path.join('main', 'deferred-indexes.js'),
+    ];
+    const phase5Source = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'main', 'deferred-indexes.js'),
+      'utf8',
+    );
+    // 🔴 这条「只许定义在延迟索引那一侧」的检查必须带**词边界**，不能用裸 `includes`。
     // 反例是现成的、而且一加索引就会撞上：`idx_photos_root_date` 是
     // `idx_photos_root_date_mod` 的**前缀**，而后者由 `database.js#createCoreSchema` 建
     // ⇒ 裸 `includes('CREATE INDEX IF NOT EXISTS idx_photos_root_date')` 会在
@@ -199,24 +210,46 @@ async function run() {
       // （比如有人在 main 里顺手补一条），代价是拿主进程独占写锁跑几分钟。
       'idx_photos_root_folder_date',
       'idx_photos_root_date',
+      // Phase 5（`src/main/deferred-indexes.js`，DDL 只有一个真相源、worker 与回归共用）。
+      // 原先这五条**没有登记**——因为这条守保护的是 worker 源码，而 Phase 5 的字面量在
+      // `deferred-indexes.js` 里；补登记之后「Phase 5 全批也不许搬回启动路径」才真的被守住。
+      'idx_photos_root_name',
+      'idx_photos_root_size',
+      'idx_photos_dup_hash_full',
+      'idx_photos_date_day',
+      'idx_photos_root_date_day',
+      // 2026-10-06：`all` 档排除 Live Photo 伴生视频走的那条部分索引（只有 1 个条目，
+      // 但**建它本身要全表扫一次** ⇒ 同样是延迟索引、同样不许出现在启动路径上）。
+      'idx_photos_live_companion',
+      // 2026-10-07：补全第二趟取批（`getPhotosMissingThumbnailsBefore`）的候选索引。
+      // 它的 WHERE 引用的四列（has_thumbnail / dhash / exif_mtime / exif_ver）**全在
+      // `thumbnail` BLOB 之后** ⇒ 建索引要逐行穿 7.6 KB 溢出页链，真库外推 3~5 分钟
+      // ⇒ 更是必须留在延迟索引那一侧。
+      'idx_photos_backfill_pending',
+      // 2026-10-09：组织元数据两个筛选维度（rating / flag）。
+      // 这两列是后加的、cid 排在 `thumbnail` 那串 BLOB 之后 ⇒ 建索引要整表回扫
+      // （真库百万行级几十秒到几分钟）。`database.js#ensurePhotosOrgMetaColumns()`
+      // 刻意只做 O(1) 的 ADD COLUMN、一条建索引语句都没有 —— 就靠这里守住。
+      'idx_photos_rating',
+      'idx_photos_flag',
     ]) {
-      assert.match(
-        workerSource,
-        new RegExp('CREATE INDEX IF NOT EXISTS ' + indexName + '\\b'),
-        `延迟索引 ${indexName} 的定义必须在 deferred-index-worker 里（那是唯一真相源）`,
+      const pattern = new RegExp('CREATE INDEX IF NOT EXISTS ' + indexName + '\\b');
+      assert.ok(
+        pattern.test(workerSource) || pattern.test(phase5Source),
+        `延迟索引 ${indexName} 的定义必须在 deferred-index-worker.js 或 main/deferred-indexes.js 里`,
       );
       const offenders = [];
-      const offenderPattern = new RegExp('CREATE INDEX IF NOT EXISTS ' + indexName + '\\b');
       for (const file of walkJsFiles(path.join(__dirname, '..', 'src'))) {
-        if (file.endsWith(path.join('workers', 'deferred-index-worker.js'))) continue;
-        if (offenderPattern.test(fs.readFileSync(file, 'utf8'))) {
+        const relative = path.relative(path.join(__dirname, '..', 'src'), file);
+        if (DEFERRED_HOMES.includes(relative)) continue;
+        if (pattern.test(fs.readFileSync(file, 'utf8'))) {
           offenders.push(path.relative(path.join(__dirname, '..'), file));
         }
       }
       assert.deepEqual(
         offenders,
         [],
-        `${indexName} 的 CREATE INDEX 只许在 deferred-index-worker 里出现，实际还有：${offenders.join(', ')}`,
+        `${indexName} 的 CREATE INDEX 只许在延迟索引那两个文件里出现，实际还有：${offenders.join(', ')}`,
       );
     }
 

@@ -419,7 +419,7 @@
    * 因此「树还没渲染过」时返回 `null`，调用方必须按「拿不到就整块不显示下拉」处理 ——
    * 不能退化成空列表，否则会出现一个点了没反应的下拉。
    *
-   * 口径与侧栏树一致：只含**有照片的目录**（数据源是有照片目录的扁平列表，
+   * 口径与侧栏树一致：只含**有图片的目录**（数据源是有图片目录的扁平列表，
    * `insertTreeNode` 会自动补齐中间层，所以不会出现「父目录查不到」）。
    *
    * @returns {Array<{name:string, fullPath:string, photoCount:number, isLeaf:boolean}>|null}
@@ -554,15 +554,21 @@
         tSide('sidebar.emptyNoFolders', '暂无文件夹<br>请点击「管理设置」添加') +
         '</div>';
     } else {
+      /* 🔴 三个视图入口（所有文件 / 收藏 / 所有目录）包进 .sidebar-view-entries：
+       * 它们在树滚动时 sticky 钉在侧栏顶部（见 styles.css 同名规则）——
+       * 用户滚到几千个目录深处时，回「所有文件」不用先滚回顶。
+       * 包一个容器而不是给三行各自 sticky：三行各自 sticky 会互相叠压，
+       * 还得逐行写死 top 偏移（行高一变就错位）。 */
+      var viewEntries = '';
       var total = 0;
       for (var i = 0; i < state.rootFolders.length; i++) total += state.rootFolders[i].photo_count;
-      html +=
+      viewEntries +=
         '<div class="folder-item ' +
         (state.currentView === 'all' ? 'active' : '') +
         '" data-sidebar-all="1" data-sidebar-view="dates-all">' +
         '<span class="icon">\u{1F5BC}\uFE0F</span>' +
         '<span class="name">' +
-        escapeHtml(tSide('sidebar.allPhotos', '所有照片')) +
+        escapeHtml(tSide('sidebar.allFiles', '所有文件')) +
         '</span>' +
         '<span class="count">' +
         formatNumber(total) +
@@ -570,7 +576,7 @@
         '</div>';
       var favCount =
         state.stats && state.stats.favoritePhotos != null ? state.stats.favoritePhotos : 0;
-      html +=
+      viewEntries +=
         '<div class="folder-item ' +
         (state.currentView === 'favorites' ? 'active' : '') +
         '" data-sidebar-favorites="1" data-sidebar-view="favorites">' +
@@ -586,7 +592,7 @@
       for (var k = 0; k < state.rootFolders.length; k++) {
         folderOverviewCount += Number(state.rootFolders[k].folder_count || 0);
       }
-      html +=
+      viewEntries +=
         '<div class="folder-item ' +
         (state.currentView === 'folder_overview' ? 'active' : '') +
         '" data-sidebar-folder-overview="1" data-sidebar-view="folder-overview">' +
@@ -598,6 +604,7 @@
         formatNumber(folderOverviewCount) +
         '</span>' +
         '</div>';
+      html += '<div class="sidebar-view-entries">' + viewEntries + '</div>';
 
       for (var j = 0; j < state.rootFolders.length; j++) {
         var root = state.rootFolders[j];
@@ -638,7 +645,7 @@
             tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描'),
           ) +
           '" aria-label="' +
-          escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
+          escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此图库')) +
           '">↻</button>' +
           '<span class="count">' +
           formatNumber(root.photo_count) +
@@ -717,20 +724,22 @@
 
     var total = 0;
     for (var i = 0; i < st.rootFolders.length; i++) total += st.rootFolders[i].photo_count;
-    html +=
+    /* 与同步路径同一契约：三个视图入口包进 .sidebar-view-entries（sticky 顶钉）。 */
+    var viewEntries = '';
+    viewEntries +=
       '<div class="folder-item ' +
       (st.currentView === 'all' ? 'active' : '') +
       '" data-sidebar-all="1" data-sidebar-view="dates-all">' +
       '<span class="icon">\u{1F5BC}\uFE0F</span>' +
       '<span class="name">' +
-      escapeHtml(tSide('sidebar.allPhotos', '所有照片')) +
+      escapeHtml(tSide('sidebar.allFiles', '所有文件')) +
       '</span>' +
       '<span class="count">' +
       formatNumber(total) +
       '</span>' +
       '</div>';
     var favCount = st.stats && st.stats.favoritePhotos != null ? st.stats.favoritePhotos : 0;
-    html +=
+    viewEntries +=
       '<div class="folder-item ' +
       (st.currentView === 'favorites' ? 'active' : '') +
       '" data-sidebar-favorites="1" data-sidebar-view="favorites">' +
@@ -746,7 +755,7 @@
     for (var k = 0; k < st.rootFolders.length; k++) {
       folderOverviewCount += Number(st.rootFolders[k].folder_count || 0);
     }
-    html +=
+    viewEntries +=
       '<div class="folder-item ' +
       (st.currentView === 'folder_overview' ? 'active' : '') +
       '" data-sidebar-folder-overview="1" data-sidebar-view="folder-overview">' +
@@ -758,6 +767,7 @@
       formatNumber(folderOverviewCount) +
       '</span>' +
       '</div>';
+    html += '<div class="sidebar-view-entries">' + viewEntries + '</div>';
 
     var globalBudget = { remaining: SIDEBAR_TREE_MAX_RENDER_NODES, _hintAppended: false };
     var j;
@@ -804,7 +814,7 @@
           tSide('sidebar.rescanRootTitle', '子文件夹有移动、重命名等变更时，点此重新扫描'),
         ) +
         '" aria-label="' +
-        escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此照片库')) +
+        escapeAttr(tSide('sidebar.rescanRootAria', '重新扫描此图库')) +
         '">↻</button>' +
         '<span class="count">' +
         formatNumber(root.photo_count) +
@@ -940,6 +950,12 @@
 
   global.RendererSidebarTree = Object.assign({}, global.RendererSidebarTree || {}, {
     normalizePath: normalizePath,
+    // 缩进口径**必须**走这三个函数（`TREE_INDENT_BASE/STEP/TOGGLE_SLOT/ROW_GAP` 是唯一来源）：
+    // 标签导航页的树是另一套渲染器，但它跟目录树并排显示在同一个侧栏里，
+    // 缩进若各写一份常量，两边差 2px 用户一眼就看出来（而没有任何断言会红）。
+    treeRowIndent: treeRowIndent,
+    treeLeafIndent: treeLeafIndent,
+    treeGuideX: treeGuideX,
     buildTree: buildTree,
     insertTreeNode: insertTreeNode,
     sortTree: sortTree,

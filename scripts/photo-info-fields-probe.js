@@ -339,7 +339,7 @@ function check(label, ok, detail) {
   check('「浏览」分组没有 position 时整组不出现', !r0.titles.includes('浏览'), JSON.stringify(r0.titles));
   check('默认关掉的原始值字段不出现（哈希 / ID / 缩略图 / 所属图库）',
     !r0.labels.includes('文件哈希') && !r0.labels.includes('感知哈希') &&
-    !r0.labels.includes('照片 ID') && !r0.labels.includes('缩略图') && !r0.labels.includes('所属图库'),
+    !r0.labels.includes('图片 ID') && !r0.labels.includes('缩略图') && !r0.labels.includes('所属图库'),
     JSON.stringify(r0.labels));
 
   // ---------------------------------------------------------- 3. 取消勾选 → 落库 → 面板少一行
@@ -361,14 +361,14 @@ function check(label, ok, detail) {
   check('勾选框回显同步（20）', f1.onCount === 20, String(f1.onCount));
 
   // ---------------------------------------------------------- 4. 勾上原始值字段
-  console.log('\n四、勾上「感知哈希 / 照片 ID」→ 面板出现原始值行');
+  console.log('\n四、勾上「感知哈希 / 图片 ID」→ 面板出现原始值行');
   console.log('  ' + (await cdp.eval(toggle('dhash', true))));
   await sleep(WAIT);
   console.log('  ' + (await cdp.eval(toggle('photo_id', true))));
   await sleep(WAIT);
   const r2 = await cdp.eval(RENDER_PANEL(SAMPLE));
   check('感知哈希上屏', r2.labels.includes('感知哈希') && r2.values.includes('0123456789abcdef'));
-  check('照片 ID 上屏', r2.labels.includes('照片 ID') && r2.values.includes('1234'));
+  check('图片 ID 上屏', r2.labels.includes('图片 ID') && r2.values.includes('1234'));
   check('行数 = 20 + 取消的宽高比复原不算、新增 2 条', r2.rows === 22 - r2.expectRows, String(r2.rows));
 
   // ---------------------------------------------------------- 5. 全选 / 全不选 / 恢复默认

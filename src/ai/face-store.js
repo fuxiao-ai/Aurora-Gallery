@@ -18,7 +18,7 @@ const VALID = `JOIN faceindex.scans s ON s.photo_id = f.photo_id
  * 🔴 人脸读取的**唯一**规范顺序 —— 内容决定，不含 `faces.id`。
  *
  * `faces.id` 是**插入顺序**，也就等于**人脸扫描顺序**（父表 `scans` 带
- * `ON DELETE CASCADE` ⇒ 重扫一张照片会删掉重插它那几行、拿到新的高位 id）。
+ * `ON DELETE CASCADE` ⇒ 重扫一张图片会删掉重插它那几行、拿到新的高位 id）。
  * 而聚类结果依赖**节点下标**，有三处吃它：`chineseWhispers` 的初始标签是
  * `labels[i] = i`、平票时靠 `heap.nodes[]` 的数组顺序决胜（`weight > bestWeight` ⇒ 先到先得）、
  * 每轮巡访是「先对下标做 Fisher-Yates 再按序投票」；`representatives()` 的数组顺序还同时
@@ -26,19 +26,34 @@ const VALID = `JOIN faceindex.scans s ON s.photo_id = f.photo_id
  * 的**平票归属**（`score > best` ⇒ 也是先到先得）。所以读顺序一变，归组结果就变。
  *
  * 为什么 `(photo_id, id)` 对扫描方向不变：
- *   - 主键 `photo_id` 与方向无关 —— 照片是既有行，扫描方向只决定 `faces.id` 怎么发；
- *   - 次键 `f.id` 在**同一张照片内** = 检测顺序，同样与扫描方向无关。
+ *   - 主键 `photo_id` 与方向无关 —— 图片是既有行，扫描方向只决定 `faces.id` 怎么发；
+ *   - 次键 `f.id` 在**同一张图片内** = 检测顺序，同样与扫描方向无关。
  * 于是「把索引改成倒序扫」不再改动归组结果。
  *
- * 实测（本机 `face-index/faces.sqlite`，81,043 张脸 / 851 张多脸照片）：与 `ORDER BY f.id`
+ * 实测（本机 `face-index/faces.sqlite`，81,043 张脸 / 851 张多脸图片）：与 `ORDER BY f.id`
  * **逐位全等（差异 0 位）**；计划由 `SCAN f` 变为 `SCAN f USING ... idx_faces_photo`
  * （索引序、无临时 B 树），同一读约 2.4× 快。
  *
- * ⚠️ 不要退回 `ORDER BY f.id`：那会让「重扫任意一张照片」把它挪到聚类节点序的末尾 ——
+ * ⚠️ 不要退回 `ORDER BY f.id`：那会让「重扫任意一张图片」把它挪到聚类节点序的末尾 ——
  *    同一份内容重跑给出不同分组（旧的幂等只是「没重扫过」的巧合）。
  * ⚠️ 唯一允许用 `f.id` 排序的是 `photos()`（人物页无限滚动的分页游标，与聚类无关）。
  */
 const FACE_ORDER = 'ORDER BY f.photo_id, f.id';
+
+/**
+ * 待扫图片（人脸索引候选集）的谓词 —— **唯一源**（2026-10-08 抽出）。
+ *
+ * 🔴 `batch()`（真取批）与 `estimatePendingCount()`（进度分母的抽样估计）**必须逐字同源**：
+ *    分母与候选集不同源 ⇒ 百分比与真实工作量脱钩，且**不报错**（只是数字失去意义）。
+ *
+ * 判据 = 「**没扫过**，或扫过的三样指纹与当前 `photos` 行不一致，或是**旧版本识别器**产出的」
+ * （`VERSION` 变了 ⇒ 整库重扫，这是 `v3` 那次的形状）。
+ * 唯一的 `?` = `VERSION`。
+ */
+const CANDIDATE_PRED =
+  "(s.photo_id IS NULL OR s.version != ? OR s.file_path != p.file_path" +
+  " OR s.file_size != p.file_size OR s.date_modified != COALESCE(p.date_modified, ''))";
+
 function id(value) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 1) throw new Error('FACE_ID_INVALID');
@@ -96,11 +111,11 @@ function segments(value) {
 /**
  * 按文件夹归组的键：**根目录下第 `depth` 层子目录**。
  *
- * 之所以按「根下第 N 层」而不是「照片所在目录」，是因为照片的存放深度不一：
+ * 之所以按「根下第 N 层」而不是「图片所在目录」，是因为图片的存放深度不一：
  * 真库里 `K:\COS\116\a.jpg` 与 `K:\COS\116\某图包\b.jpg` 同时存在，用户的意思
  * 都是「`K:\COS\116` 这一个人」。取根下第 1 层两种深度都会正确落到 `K:\COS\116`。
  *
- * 照片不在任何已登记根目录下时，退化为「照片所在目录」（最保守：不会把无关目录
+ * 图片不在任何已登记根目录下时，退化为「图片所在目录」（最保守：不会把无关目录
  * 合到一起）。根目录列表读不到（例如测试夹具没有 `root_folders` 表）时同样走这条路。
  */
 function folderGroupKey(filePath, roots, depth) {
@@ -132,7 +147,7 @@ function folderGroupName(key) {
  * 原始键」与「圈定的域号」，这样调用方一个字符串就能比较，不必分成两套判断。目录名里
  * 不可能出现 `@`，所以不会有歧义。
  *
- * `roots` 传空数组时退化为「照片所在目录」，与 `folderGroupKey` 的保守行为一致 ——
+ * `roots` 传空数组时退化为「图片所在目录」，与 `folderGroupKey` 的保守行为一致 ——
  * 测试夹具没有 `root_folders` 表时也照样能跑。
  */
 function domainKeyOf(filePath, roots, options) {
@@ -201,11 +216,11 @@ class FaceStore {
     }
   }
   /**
-   * 待扫照片，按**主键倒序**取（最新入库优先）。
+   * 待扫图片，按**主键倒序**取（最新入库优先）。
    *
    * 游标 `beforeId` 是**排他上界**，调用方取「本批最后一行的 id」续接（倒序下那是**最小** id）。
    * 为什么倒序：一个完整轮回的总代价与方向无关（谓词用不上索引、每行都要回表判定），
-   * 但高位区（刚导入的）命中率接近 100%、低位区可能只有个位数 —— 倒序让用户刚导入的照片
+   * 但高位区（刚导入的）命中率接近 100%、低位区可能只有个位数 —— 倒序让用户刚导入的图片
    * 先出现在人物页。⚠️ **只改查询不改调用端 = 静默零扫**：首次游标给 `0` 会让 `p.id < 0`
    * 恒空，任务「秒完成」却一张没扫、也不报错。
    *
@@ -217,10 +232,51 @@ class FaceStore {
       .prepare(
         `SELECT p.id, p.file_name, p.file_path, p.file_size, COALESCE(p.date_modified, '') date_modified,
       p.thumbnail FROM photos p LEFT JOIN faceindex.scans s ON p.id = s.photo_id
-      WHERE p.id < ? AND (s.photo_id IS NULL OR s.version != ? OR s.file_path != p.file_path
-      OR s.file_size != p.file_size OR s.date_modified != COALESCE(p.date_modified, '')) ORDER BY p.id DESC LIMIT 8`,
+      WHERE p.id < ? AND ${CANDIDATE_PRED} ORDER BY p.id DESC LIMIT 8`,
       )
       .all(beforeId, VERSION);
+  }
+
+  /**
+   * 待扫图片规模的**抽样估计值** —— 人脸索引进度条的分母（2026-10-08 加）。
+   *
+   * 手法、理由与 `index-store.js#estimatePendingCount()` **完全相同**（那边有完整推导）：
+   * 谓词跨库 JOIN 且判断列无索引 ⇒ 精确 `COUNT(*)` 要全表扫 + join，进度分母等不起；
+   * 改用 **id 轴等距抽样点查**（约 2000 次主键定位、亚秒级），`id` 空洞不计入样本。
+   * 谓词走 `CANDIDATE_PRED` 共享常量 ⇒ 与 `batch()` 逐字同源。
+   *
+   * ⚠️ 是**估计值**（调用方要标「约」）且是**起始快照**（分子可能反超 ⇒ 消费端夹 `max`）。
+   * ⚠️ 会抛；「估不出分母」只该让百分比消失，**不该让索引任务失败**（调用方兜底）。
+   */
+  estimatePendingCount(samples) {
+    var want = Number(samples);
+    if (!isFinite(want) || want <= 0) want = 2000;
+    want = Math.max(50, Math.min(20000, Math.round(want)));
+    var head = this.source.prepare('SELECT COUNT(*) AS c, MAX(id) AS m FROM photos').get();
+    var total = head && head.c != null ? Number(head.c) : 0;
+    var maxId = head && head.m != null ? Number(head.m) : 0;
+    if (total <= 0 || maxId <= 0) {
+      return { total: total, sampled: 0, hits: 0, estimate: total };
+    }
+    var step = Math.max(1, Math.floor(maxId / want));
+    var hitStmt = this.source.prepare(
+      `SELECT ${CANDIDATE_PRED} AS hit FROM photos p
+       LEFT JOIN faceindex.scans s ON p.id = s.photo_id WHERE p.id = ?`,
+    );
+    var sampled = 0;
+    var hits = 0;
+    for (var pid = step; pid <= maxId; pid += step) {
+      var row = hitStmt.get(VERSION, pid);
+      if (!row) continue; // id 空洞：不计入样本
+      sampled++;
+      if (Number(row.hit) === 1) hits++;
+    }
+    return {
+      total: total,
+      sampled: sampled,
+      hits: hits,
+      estimate: sampled > 0 ? Math.round((hits / sampled) * total) : total,
+    };
   }
   /** 倒序游标的起点用：`id` 是 rowid 别名 ⇒ `MAX(id)` 是索引定位，不是全表扫。 */
   maxPhotoId() {
@@ -247,7 +303,7 @@ class FaceStore {
     }
     return map;
   }
-  /** 已登记的根目录路径。表不存在（测试夹具）时返回空数组，让归组退化到「照片所在目录」。 */
+  /** 已登记的根目录路径。表不存在（测试夹具）时返回空数组，让归组退化到「图片所在目录」。 */
   rootPaths() {
     try {
       return this.source
@@ -304,7 +360,7 @@ class FaceStore {
     return map;
   }
   /**
-   * 把一张照片的检测结果并入人物分组。
+   * 把一张图片的检测结果并入人物分组。
    *
    * ## 为什么只按阈值判定，不再有「最佳与次佳太接近就新建一组」
    *
@@ -337,8 +393,8 @@ class FaceStore {
         .prepare('INSERT INTO scans VALUES (?, ?, ?, ?, ?)')
         .run(photo.id, photo.file_path, photo.file_size, photo.date_modified, VERSION);
       if (!detections.length) return;
-      // 按文件夹归组：同一目录的所有脸都是同一个人，所以一张照片里的多张脸
-      // 直接归同一组，「同一张照片的两张脸不得同组」这条约束在此模式下**不适用**
+      // 按文件夹归组：同一目录的所有脸都是同一个人，所以一张图片里的多张脸
+      // 直接归同一组，「同一张图片的两张脸不得同组」这条约束在此模式下**不适用**
       // （那条约束是为了防止把合照里的人并成一个人，而目录约定本身就是这么定的）。
       // `scoped` 相反：域内可能有两个人，所以这条约束照旧生效（上面 `used` 那层拦着）。
       let folderPersonId = -1;
@@ -461,7 +517,7 @@ class FaceStore {
       // 写入顺序按 `FACE_ORDER`（`photo_id, id`），**与「当初插入的顺序」无关** ——
       // 所以「同阈值重跑」的结果与「删库重建索引」一致，而且与索引的扫描方向也无关，
       // 只是省掉了模型推理。（旧注释把这个等式挂在「写入按 faces.id 升序」上，
-      // 那只在「从未重扫过任何照片」时成立 —— 重扫一张就会把它挪到节点序末尾。）
+      // 那只在「从未重扫过任何图片」时成立 —— 重扫一张就会把它挪到节点序末尾。）
       for (let i = 0; i < rows.length; i++) {
         const label = labels[i];
         let target;
@@ -620,7 +676,7 @@ class FaceStore {
    *     连自动目录名都一样；
    *   - 一个目录里有多个人：**自动拆开**（`folder` 做不到），代价是拆出来的组没有名字 ——
    *     刻意**不拿目录名去冒充**，因为那时目录名已经不能代表单一身份了；
-   *   - 同一个人的照片散在多个目录：用户在设置里把那几个目录名写进同一行（`domainGroups`），
+   *   - 同一个人的图片散在多个目录：用户在设置里把那几个目录名写进同一行（`domainGroups`），
    *     它们就并进同一个域一起聚类。
    *
    * ## 为什么域内聚类反而比全局更准
@@ -630,7 +686,7 @@ class FaceStore {
    * 原因是域边界挡住了跨目录的竞争：全局图里 116 的脸有机会被 117 的簇投票吸走，
    * 而域内不存在别的目录来"抢"。
    *
-   * ⚠️ 代价说清楚：**同一个人的照片被放在两个目录里就会被拆成两个人**（域边界是硬的）。
+   * ⚠️ 代价说清楚：**同一个人的图片被放在两个目录里就会被拆成两个人**（域边界是硬的）。
    * 这不是 bug 而是这个模式的取舍 —— 要合并就在 `domainGroups` 里把它们圈成一个域，
    * 或者事后用「合并」手工并一次（合并后命名即成为锚点，重算不会再拆开）。
    *
@@ -853,7 +909,7 @@ class FaceStore {
         label: labelForVersion(item.version),
         scans: item.scans,
       })),
-      /** 全库照片总数：覆盖率的**分母**。`indexed / library` 就是索引铺开的比例。 */
+      /** 全库图片总数：覆盖率的**分母**。`indexed / library` 就是索引铺开的比例。 */
       library: this.source.prepare('SELECT COUNT(*) n FROM photos').get().n,
     };
   }
@@ -863,7 +919,7 @@ class FaceStore {
   }
   /**
    * 索引进行中的轻量计数：只查索引库自身，不做与 photos 的指纹校验，
-   * 1.5 秒上报一次也没有明显开销。scanned 是「本轮已扫过的照片数」，
+   * 1.5 秒上报一次也没有明显开销。scanned 是「本轮已扫过的图片数」，
    * faces / people 是已检出的人脸与人物数——人物页据 people 变化增量刷新。
    * 索引收尾时 summary() 仍以校验后的数字为准，所以这里不必求全。
    */
@@ -878,7 +934,7 @@ class FaceStore {
    *
    * 所以这里只数**还有当前版本人脸**的人。刻意只按 `version` 过滤、不回 `photos` 校验指纹：
    * 这条路每 1.5 秒跑一次，`VALID` 那套三表 join 在大库上是几十到几百毫秒，塞进心跳会跟索引
-   * worker 抢锁。指纹漂移的照片本来就会被 `batch()` 重扫，不差这一会儿。权威数字仍以
+   * worker 抢锁。指纹漂移的图片本来就会被 `batch()` 重扫，不差这一会儿。权威数字仍以
    * `summary()`（走完整 `VALID`）为准。
    */
   counts() {

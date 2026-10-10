@@ -20,6 +20,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const acorn = require('acorn');
 
 const ROOT = path.join(__dirname, '..');
 const REGISTRY_REL = 'src/web/js/photo-info-fields.js';
@@ -36,6 +37,7 @@ const WEB_APP = 'src/web/js/app.js';
 const AI_VIEWS = 'src/renderer/ai-views.js';
 const PRELOAD = 'src/preload.js';
 const WEB_SERVER = 'src/web-server.js';
+const SEMANTIC_TAGS = 'src/main/semantic-tags.js';
 
 function read(rel) {
   return fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -214,8 +216,10 @@ const FULL_INFO = {
   image_datetime: '2024-01-02T03:04:05',
   user_comment: '测试注释',
   gps_altitude: 12.5,
-  // AI 标签来自搜图索引库（跨库），由主进程只读通道注入 —— 不在 getPhotoInfo() 的 SQL 里
+  // 主题标签来自搜图索引库（跨库），由主进程只读通道注入 —— 不在 getPhotoInfo() 的 SQL 里
   ai_tags: ['丝袜', '制服'],
+  // 画面标签（JoyTag）来自 tag 索引库（跨库），由主进程 JoyTagTags 通道注入（中文映射在通道内做）
+  joy_tags: ['单人', '黑发'],
 };
 
 const allHtml = PhotoInfoFields.buildSectionsHtml(FULL_INFO, {
@@ -375,12 +379,13 @@ check(
   notRegistered.length === 0,
   notRegistered.join(','),
 );
-// 没有 `column` 的字段 = 读数不走 `getPhotoInfo()`。目前只有两个，且各有明确理由：
-// `position` 来自预览页运行时状态；`ai_tags` 来自**搜图索引库**（跨库，主进程另开只读通道）。
+// 没有 `column` 的字段 = 读数不走 `getPhotoInfo()`。目前只有三个，且各有明确理由：
+// `position` 来自预览页运行时状态；`ai_tags` / `joy_tags` 各来自**搜图索引库 / tag 索引库**
+// （都跨库，主进程各开只读通道）。
 // 新增成员必须同时解释「为什么不走 getPhotoInfo」，否则这条断言会挡下它 —— 这正是它存在的意义。
-const NO_COLUMN_FIELDS = ['ai_tags', 'position'];
+const NO_COLUMN_FIELDS = ['ai_tags', 'joy_tags', 'position'];
 check(
-  '只有 position 与 ai_tags 没有 column（前者是运行时状态，后者跨库）',
+  '只有 ai_tags / joy_tags / position 没有 column（前两者跨库各走只读通道，最后者是运行时状态）',
   FIELDS.filter((f) => !f.column)
     .map((f) => f.id)
     .join(',') === NO_COLUMN_FIELDS.join(','),
@@ -470,7 +475,7 @@ check(
   !loadBody.includes('renderPreviewInfoPanel(baseInfo)'),
 );
 
-// -------------------------------------- 5c. AI 内容标签：跨库来源 + 可点跳搜图
+// -------------------------------------- 5c. 主题标签：跨库来源 + 可点跳搜图
 // 标签是本轮唯一一条**不走主库**的读数（它在搜图索引库 `embeddings.tags` 里），所以链路最长：
 // 索引 worker 算 → 主进程只读通道读 → IPC / HTTP → 注册表渲染成胶囊 → 点了跳搜图。
 // 每一段断开都是**静默**的（那块读数直接不出现，不报错），所以逐段钉住。
@@ -538,14 +543,14 @@ check(
     'preview-info-empty',
   ) &&
     PhotoInfoFields.buildSectionsHtml({}, { fields: ['ai_tags'] }).includes('preview-info-empty') &&
-    !PhotoInfoFields.buildSectionsHtml({ ai_tags: [] }, { fields: ['ai_tags'] }).includes('AI 标签'),
+    !PhotoInfoFields.buildSectionsHtml({ ai_tags: [] }, { fields: ['ai_tags'] }).includes('主题标签'),
 );
 check(
   '标签跟界语言走（词表存下标，显示时才映射）',
   PhotoInfoFields.buildSectionsHtml(
     { ai_tags: ['Stockings'] },
     { fields: ['ai_tags'], locale: 'en' },
-  ).includes('AI Tags'),
+  ).includes('Theme tags'),
 );
 check(
   '值区带上 preview-info-value-tags 容器类（CSS 靠它把胶囊排成一行）',
@@ -565,7 +570,7 @@ check(
     rendererApp.includes('openSemanticSearch('),
 );
 check(
-  '🔴 AI 标签走 patchInfo 合流（第三条异步；另起一条渲染路径就重现「谁后到谁赢」）',
+  '🔴 主题标签走 patchInfo 合流（第三条异步；另起一条渲染路径就重现「谁后到谁赢」）',
   loadBody.includes('getPhotoAiTags') && loadBody.includes('patchInfo({ ai_tags: tags })'),
 );
 check(
@@ -630,6 +635,415 @@ check(
   read(RENDERER_CSS).includes('.preview-info-tag') &&
     read(WEB_HTML).includes('.preview-info-tag'),
 );
+
+// -------------------------------------- 5e. 画面标签（JoyTag）：第二个跨库字段
+// 与 5c 同构：tag 库（tag-index.sqlite）→ 主进程 JoyTagTags 只读通道（含中文映射）→
+// IPC / HTTP → 注册表胶囊。每段断开都是静默的（整行不出现），所以逐段钉住。
+// 中文映射（ai/tag-zh.js）是**显示层**的：只查不改库，缺失回落英文原文 —— 这条回落是
+// 契约不是缺陷（瞎编的中文在 tag 路检索不到），守护钉住「查不到必须返回 null」。
+// 覆盖口径（2026-10-09 用户要求「5813 都要」）：**全量**覆盖随包标签表的 5813 个标签，
+// 与 `ai/tag-labels.js#labels()` 一一对应 —— 回落从此只对"换词表后的新标签"生效。
+// 没有通行中文译名的小众角色 / 画师名 / 表情符号保留原文（键值同文），这是刻意的。
+
+const joyField = PhotoInfoFields.fieldById('joy_tags');
+check('存在 joy_tags 字段，且落在 ai 分组里（与 ai_tags 同组连续）', !!joyField && joyField.group === 'ai');
+check(
+  '🔴 joy_tags 不声明 column（读数来自 tag 索引库，getPhotoInfo 查的是主库，跨不了库）',
+  !!joyField && !joyField.column,
+);
+check(
+  'joy_tags 声明 render: "tags" 并提供 tags() 与 value()',
+  !!joyField &&
+    joyField.render === 'tags' &&
+    typeof joyField.tags === 'function' &&
+    typeof joyField.value({ joy_tags: ['单人'] }, { locale: 'zh-CN' }) === 'string',
+);
+check(
+  'joy_tags 默认显示（用户明确要求看到它）',
+  PhotoInfoFields.DEFAULT_FIELD_IDS.includes('joy_tags'),
+);
+const joyDesktop = PhotoInfoFields.buildSectionsHtml(
+  { joy_tags: ['单人', '黑发'] },
+  { fields: ['joy_tags'], tagClickable: true },
+);
+check(
+  'joy_tags 胶囊渲染与 ai_tags 同一套（可点 button / 网页端静态 span）',
+  joyDesktop.includes('data-ai-tag="单人"') &&
+    PhotoInfoFields.buildSectionsHtml({ joy_tags: ['单人'] }, { fields: ['joy_tags'] }).includes(
+      'preview-info-tag-static',
+    ),
+);
+check(
+  '没有画面标签时整行隐藏',
+  !PhotoInfoFields.buildSectionsHtml({}, { fields: ['joy_tags'] }).includes('画面标签'),
+);
+
+// ------------------------- 5f. 点击目的地**分岔**（2026-10-09）：画面标签跳标签页，主题标签搜图
+//
+// 起因（用户诉求）：面板上点「盘腿坐」，落到了搜图 —— 而搜图走查询线 0.55 + tag 融合，
+// 标签导航页走展示线 0.35 全量，**两边本来就不是同一批图**；用户想看的是「还有哪些张」。
+// 分岔的根据不是「哪个字段」，而是「导航页里有没有这个节点」：
+//   · `joy_tags` = JoyTag 的 5813 个标签 ⇒ 有节点，且条目带英文原名与归属 ⇒ 跳得准；
+//   · `ai_tags`  = 308 条词表短语（「海滩」/`a beach`）⇒ 导航页里没有这个节点，只能搜图。
+// 四段都可能静默断开（跳错目的地 / 跳过去 0 张 / 点了没反应），所以逐段钉。
+const joyEntries = [
+  { tag: 'indian_style', name: '盘腿坐', node: 'posture', category: 'pose' },
+  { tag: 'pantyhose', name: '连裤袜', node: 'legwear', category: 'clothing' },
+];
+const joyStructured = PhotoInfoFields.buildSectionsHtml(
+  { joy_tags: joyEntries },
+  { fields: ['joy_tags'], tagClickable: true },
+);
+check(
+  '🔴 结构化画面标签渲染成 data-joy-tag，并带上英文原名与归属（node / category）',
+  joyStructured.includes('data-joy-tag="indian_style"') &&
+    joyStructured.includes('data-tag-node="posture"') &&
+    joyStructured.includes('data-tag-category="pose"'),
+  joyStructured.slice(joyStructured.indexOf('preview-info-value-tags'), 420),
+);
+check(
+  '🔴 胶囊**显示**的是中文名，`data-joy-tag` 是英文原名（两者刻意不同 —— 名字是给人看的，id 是给导航页的）',
+  joyStructured.includes('>盘腿坐</button>') && !joyStructured.includes('>indian_style</button>'),
+);
+check(
+  '🔴 tagTarget 分岔声明：joy_tags=tagnav、ai_tags=search（缺一个 = 静默走错目的地）',
+  !!joyField && joyField.tagTarget === 'tagnav' && !!tagsField && tagsField.tagTarget === 'search',
+  String(joyField && joyField.tagTarget) + '/' + String(tagsField && tagsField.tagTarget),
+);
+check(
+  '🔴 没有英文原名的条目**退回** data-ai-tag（拿中文显示名去当节点 id，跳过去只会是 0 张）',
+  joyDesktop.includes('data-ai-tag="单人"') && !joyDesktop.includes('data-joy-tag'),
+);
+check(
+  '🔴 网页端（无 tagClickable）结构化条目也渲染成不可点 span，不摆按钮',
+  (() => {
+    const html = PhotoInfoFields.buildSectionsHtml(
+      { joy_tags: joyEntries },
+      { fields: ['joy_tags'] },
+    );
+    return html.includes('preview-info-tag-static') && !html.includes('<button');
+  })(),
+);
+check(
+  '结构化条目三处（data-joy-tag / node / category）都要 HTML 转义',
+  (() => {
+    const html = PhotoInfoFields.buildSectionsHtml(
+      { joy_tags: [{ tag: 'a"b', name: 'x<y', node: 'n"1', category: 'c<2' }] },
+      { fields: ['joy_tags'], tagClickable: true },
+    );
+    return !html.includes('x<y') && !html.includes('data-joy-tag="a"b') && !html.includes('c<2');
+  })(),
+);
+check(
+  '🔴 value() 兜底对对象条目取显示名（直接 join 会拼出 [object Object] 摆进读数区）',
+  (() => {
+    const out = joyField.value({ joy_tags: [joyEntries[0], 'legacy'] });
+    return out === '盘腿坐、legacy' && !out.includes('object');
+  })(),
+);
+check(
+  '🔴 主进程通道已经把结构化条目喂过来：require 了分类表、逐条带上 tag/name/node/category',
+  (() => {
+    const src = read(SEMANTIC_TAGS);
+    return (
+      src.includes("require('../ai/tag-categories')") &&
+      src.includes('cats.subOf(tag)') &&
+      src.includes('SUB_TO_CATEGORY.get(node)') &&
+      /tag,\s*[\s\S]{0,200}?name:\s*english/.test(src)
+    );
+  })(),
+);
+check(
+  '🔴 点击分岔：两组 selectAll 各一套（漏掉 data-joy-tag = 画面标签点了没反应）',
+  rendererApp.includes(".preview-info-tag[data-joy-tag]") &&
+    rendererApp.includes(".preview-info-tag[data-ai-tag]") &&
+    rendererApp.includes('openTagNavTag('),
+);
+check(
+  '🔴 openTagNavTag：**先切页再设 state**（showTabContent 会按 tabMemory 清掉先设的 currentTag）',
+  (() => {
+    const start = rendererApp.indexOf('function openTagNavTag(');
+    if (start < 0) return false;
+    const brace = rendererApp.indexOf('{', start);
+    const body = rendererApp.slice(brace, brace + 1100);
+    const iTab = body.indexOf("showTabContent('tags')");
+    const iTag = body.indexOf('state.currentTag = id');
+    return iTab > 0 && iTag > iTab;
+  })(),
+);
+check(
+  '🔴 openTagNavTag 把 node/category 一起交给 selectTag（不带 = 侧栏不展开也不高亮）',
+  (() => {
+    const start = rendererApp.indexOf('function openTagNavTag(');
+    if (start < 0) return false;
+    const brace = rendererApp.indexOf('{', start);
+    return /selectTag\(\s*id\s*,\s*String\(node/.test(rendererApp.slice(brace, brace + 1100));
+  })(),
+);
+check(
+  '🔴 openTagNavTag 先关预览（预览是上层遮罩，不关 = 标签页渲染在它背后，看着像没反应）',
+  (() => {
+    const start = rendererApp.indexOf('function openTagNavTag(');
+    return start > 0 && rendererApp.slice(start, start + 1100).includes('closePreview()');
+  })(),
+);
+
+// 中文映射模块契约
+const tagZh = require(path.join(ROOT, 'src/ai/tag-zh.js'));
+check(
+  '🔴 tag-zh：命中返回中文、查不到返回 null（回落英文是调用方的职责，不许这里编词）',
+  tagZh.toZh('1girl') === '1个女孩' && tagZh.toZh('definitely_not_a_tag_zz') === null,
+);
+check(
+  '🔴 tag-zh 文本字面量与标签表逐条对齐（键=库内原文、无 null 占位残留）',
+  tagZh.ZH_COUNT === Object.keys(tagZh.ZH).length && tagZh.ZH_COUNT > 0,
+  String(tagZh.ZH_COUNT),
+);
+
+// 🔴 全量覆盖（2026-10-09 起）：映射表与随包标签表**一一对应**。
+//   只钉「条数够多」会放过两种真回归：
+//     ① 标签表换版/加了行而映射没跟上 ⇒ 新标签在面板上回落英文（看着像"没翻译完"，其实是契约破了）；
+//     ② 映射里塞了标签表没有的键（脏键）⇒ 永远查不到，白占体积，还让"条数"看起来更多。
+//   所以三个方向都要钉：正向覆盖、反向合法、数量相等。
+const tagLabels = require(path.join(ROOT, 'src/ai/tag-labels.js'));
+const tagTableLabels = tagLabels.labels();
+const labelSet = new Set(tagTableLabels);
+const zhMissing = tagTableLabels.filter((t) => !tagZh.hasZh(t));
+const zhDirty = Object.keys(tagZh.ZH).filter((k) => !labelSet.has(k));
+check(
+  '🔴 tag-zh 覆盖随包标签表的每一个标签（缺一个 = 面板上这个标签回落英文）',
+  tagTableLabels.length > 0 && zhMissing.length === 0,
+  `labels=${tagTableLabels.length} missing=${zhMissing.length}${
+    zhMissing.length ? ' 首个缺失=' + zhMissing[0] : ''
+  }`,
+);
+check(
+  '🔴 tag-zh 的键必须都是标签表里的合法标签（脏键永远查不到，白占体积）',
+  zhDirty.length === 0,
+  `dirty=${zhDirty.length}${zhDirty.length ? ' 首个=' + zhDirty[0] : ''}`,
+);
+check(
+  'tag-zh 条目数与标签表条目数相等（一一对应，既无遗漏也无多余）',
+  tagZh.ZH_COUNT === tagTableLabels.length,
+  `zh=${tagZh.ZH_COUNT} labels=${tagTableLabels.length}`,
+);
+check(
+  'tag-zh 没有空值（空字符串会渲染成空气泡，比回落英文更糟）',
+  Object.values(tagZh.ZH).every((v) => typeof v === 'string' && v.trim().length > 0),
+);
+
+// 通道接线：主进程 → preload → 渲染端 / web-server
+check(
+  '🔴 主进程注册 get-photo-joy-tags、preload 暴露 getPhotoJoyTags、main.js 组装 JoyTagTags',
+  read(RENDERER_MAIN).includes("ipcMain.handle('get-photo-joy-tags'") &&
+    read(PRELOAD).includes('getPhotoJoyTags') &&
+    read(RENDERER_MAIN).includes('.JoyTagTags'),
+);
+check(
+  '🔴 JoyTagTags 是只读连接（tag 库唯一写入者是 tag worker，两个写入者会互拿 SQLITE_BUSY）',
+  read('src/main/semantic-tags.js').includes('readonly: true'),
+);
+check(
+  '🔴 桌面端画面标签走 patchInfo 合流（第四条异步；另起渲染路径就重现「谁后到谁赢」）',
+  loadBody.includes('getPhotoJoyTags') && loadBody.includes('patchInfo({ joy_tags: tags })'),
+);
+check(
+  '网页端有只读接口 /api/photo-joy-tags（跨库，不能并进 /api/photo-info）',
+  read(WEB_SERVER).includes("'/api/photo-joy-tags'") &&
+    read(WEB_SERVER).includes('handlePhotoJoyTags') &&
+    read(WEB_SERVER).includes('getPhotoJoyTags'),
+);
+check(
+  '网页端把画面标签并进同一份 info 再重画（不用第二条渲染路径）',
+  read(WEB_APP).includes('/api/photo-joy-tags') && read(WEB_APP).includes('lastInfo.joy_tags'),
+);
+
+// ------------------------------- 5d. 切图必须刷新「照片信息」面板（两端同口径）
+// 🔴 面板内容原先只在四处刷新：打开面板 / 改字段 / 切语言 / 主题标签补写完成 —— **切图不在其中**。
+//    ⇒ 键盘 ←/→ 与幻灯片切图时面板一直显示上一张的读数。鼠标点两侧箭头看不出问题，只是因为
+//    那一下会命中 `_closePreviewInfoPanelOnOutside` 把面板顺手关掉（等于绕开了 bug）；
+//    网页端一直有这一步，桌面端漏了。
+//
+// 这条契约有两个半边，缺一即「看着好了其实没好」：
+//   ① **要刷**：切图出口（两端都叫 openPreview）必须重画开着的面板；
+//   ② **别刷错**：切图是同步的、读数是异步的 ⇒ 连切时上一张的回包必须被丢弃，
+//      否则面板会「显示 B 的照片、配 A 的读数」，而且不报错。
+// 用 acorn 定位函数体而不是文本切片：注释里反复提到这些函数名（本段注释就是），
+// 文本匹配会命中注释（元规则③）。
+
+function walkAst(node, visit) {
+  if (!node || typeof node.type !== 'string') return;
+  visit(node);
+  for (const key of Object.keys(node)) {
+    if (key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+    const val = node[key];
+    if (Array.isArray(val)) {
+      for (const child of val) walkAst(child, visit);
+    } else if (val && typeof val.type === 'string') {
+      walkAst(val, visit);
+    }
+  }
+}
+
+/** 名字 → 该名字的**所有**函数（含函数声明与函数表达式），用来先证明「查的是哪一个」 */
+function namedFunctions(ast) {
+  const out = new Map();
+  walkAst(ast, (n) => {
+    if (n.type === 'FunctionDeclaration' && n.id && n.id.name) {
+      if (!out.has(n.id.name)) out.set(n.id.name, []);
+      out.get(n.id.name).push(n);
+    }
+  });
+  return out;
+}
+
+function oneFn(map, name) {
+  const list = map.get(name) || [];
+  return list.length === 1 ? list[0] : null;
+}
+function fnCount(map, name) {
+  return (map.get(name) || []).length;
+}
+
+function parseScript(rel) {
+  const src = read(rel);
+  try {
+    return { src, ast: acorn.parse(src, { ecmaVersion: 2022, sourceType: 'script' }), err: null };
+  } catch (err) {
+    return { src, ast: null, err: err && err.message ? err.message : String(err) };
+  }
+}
+
+const DESKTOP_AST = parseScript(RENDERER_APP);
+const WEB_AST = parseScript(WEB_APP);
+check(
+  '夹具自证：src/renderer/app.js 可解析',
+  !!DESKTOP_AST.ast,
+  DESKTOP_AST.err || '',
+);
+check('夹具自证：src/web/js/app.js 可解析', !!WEB_AST.ast, WEB_AST.err || '');
+
+if (DESKTOP_AST.ast && WEB_AST.ast) {
+  const dFns = namedFunctions(DESKTOP_AST.ast);
+  const wFns = namedFunctions(WEB_AST.ast);
+
+  // 重名会让「查的是哪个函数」失去确定性 —— 先自证唯一，否则下面全是在猜。
+  for (const name of ['openPreview', 'loadPreviewInfoPanel', 'refreshOpenPreviewInfoPanel']) {
+    check(
+      '夹具自证：桌面端 ' + name + ' 定义唯一',
+      fnCount(dFns, name) === 1,
+      '找到 ' + fnCount(dFns, name) + ' 个',
+    );
+  }
+  for (const name of ['openPreview', 'loadPreviewInfoPanel']) {
+    check(
+      '夹具自证：网页端 ' + name + ' 定义唯一',
+      fnCount(wFns, name) === 1,
+      '找到 ' + fnCount(wFns, name) + ' 个',
+    );
+  }
+
+  // ---------- ① 桌面端：切图出口刷面板 ----------
+  const dOpen = oneFn(dFns, 'openPreview');
+  const dOpenCalls = dOpen ? callNodesOf(dOpen, 'refreshOpenPreviewInfoPanel') : [];
+  check(
+    '🔴 桌面端 openPreview 里重画开着的照片信息面板（漏了 = 键盘 ←/→ 切图后读数停在上一张）',
+    dOpenCalls.length === 1,
+    dOpen ? '调用 ' + dOpenCalls.length + ' 处' : '解析不到 openPreview',
+  );
+  check(
+    '🔴 刷新时显式传入当前张的照片（不靠 state.previewIndex 的赋值时序）',
+    dOpenCalls.length === 1 &&
+      dOpenCalls[0].arguments.length >= 1 &&
+      /previewPhotos\s*\[/.test(
+        DESKTOP_AST.src.slice(dOpenCalls[0].arguments[0].start, dOpenCalls[0].arguments[0].end),
+      ),
+    dOpenCalls.length
+      ? DESKTOP_AST.src.slice(dOpenCalls[0].start, dOpenCalls[0].end)
+      : '没有调用可看',
+  );
+  // 「面板没开就返回」的守卫在函数里，调用方（切图／设置页／切语言／标签通知）不用各写一遍
+  const dRefresh = oneFn(dFns, 'refreshOpenPreviewInfoPanel');
+  check(
+    '面板刷新自带「没开就返回」守卫（四个调用点共用同一份判断）',
+    !!dRefresh &&
+      DESKTOP_AST.src
+        .slice(dRefresh.body.start, dRefresh.body.end)
+        .includes("classList.contains('open')"),
+    '函数体里没有 open 判断',
+  );
+
+  // ---------- ② 桌面端：慢回包不许覆盖新照片 ----------
+  const dLoad = oneFn(dFns, 'loadPreviewInfoPanel');
+  const dLoadSrc = dLoad ? DESKTOP_AST.src.slice(dLoad.body.start, dLoad.body.end) : '';
+  check(
+    '🔴 桌面端面板加载自增代号（切图比 IPC 回包快）',
+    !!dLoad &&
+      /(?:\+\+\s*previewInfoLoadSeq|previewInfoLoadSeq\s*\+\+|previewInfoLoadSeq\s*\+=\s*1)/.test(
+        dLoadSrc,
+      ),
+    '函数体里没有代号自增',
+  );
+  const innerPatch = (() => {
+    if (!dLoad) return null;
+    const found = [];
+    walkAst(dLoad.body, (n) => {
+      if (n.type === 'FunctionDeclaration' && n.id && n.id.name === 'patchInfo') found.push(n);
+    });
+    return found.length === 1 ? found[0] : null;
+  })();
+  check('夹具自证：patchInfo 是面板异步读数的唯一写入口', !!innerPatch, '找不到唯一的 patchInfo');
+  check(
+    '🔴 patchInfo 丢掉过期回包（连切时不许「显示 B、读数是 A」）',
+    !!innerPatch &&
+      /seq\s*!==\s*previewInfoLoadSeq/.test(
+        DESKTOP_AST.src.slice(innerPatch.body.start, innerPatch.body.end),
+      ),
+    'patchInfo 里没有 seq !== previewInfoLoadSeq',
+  );
+
+  // ---------- ③ 网页端：同一份契约，别只修一端 ----------
+  const wOpen = oneFn(wFns, 'openPreview');
+  const wOpenSrc = wOpen ? WEB_AST.src.slice(wOpen.body.start, wOpen.body.end) : '';
+  check(
+    '🔴 网页端切图同样重画开着的面板（两端同口径）',
+    /classList\.contains\('open'\)[\s\S]{0,160}loadPreviewInfoPanel\(/.test(wOpenSrc),
+    '网页端 openPreview 里没有「面板开着就刷新」',
+  );
+  const wLoad = oneFn(wFns, 'loadPreviewInfoPanel');
+  const wRender = (() => {
+    if (!wLoad) return null;
+    const found = [];
+    walkAst(wLoad.body, (n) => {
+      if (n.type === 'FunctionDeclaration' && n.id && n.id.name === 'render') found.push(n);
+    });
+    return found.length === 1 ? found[0] : null;
+  })();
+  check('夹具自证：网页端 render 是面板唯一上屏点', !!wRender, '找不到唯一的 render');
+  check(
+    '🔴 网页端 render 丢掉过期回包（它是 async，两次调用会交错）',
+    !!wRender &&
+      /seq\s*!==\s*previewInfoLoadSeq/.test(WEB_AST.src.slice(wRender.body.start, wRender.body.end)),
+    wRender ? 'render 里没有 seq !== previewInfoLoadSeq' : '没有 render 可看',
+  );
+  // 负例自证：两个文件里的代号必须是**各自的**模块级变量（不是从别处借来的名字）
+  check(
+    '两端各自声明面板加载代号',
+    /var\s+previewInfoLoadSeq\s*=/.test(DESKTOP_AST.src) &&
+      /var\s+previewInfoLoadSeq\s*=/.test(WEB_AST.src),
+  );
+}
+
+/** 某个函数体里所有「以 name 为被调」的调用表达式 */
+function callNodesOf(fn, name) {
+  const hits = [];
+  walkAst(fn.body, (n) => {
+    if (n.type === 'CallExpression' && n.callee && n.callee.type === 'Identifier' && n.callee.name === name) {
+      hits.push(n);
+    }
+  });
+  return hits;
+}
 
 // ---------------------------------------------------- 6. 设置页控件
 

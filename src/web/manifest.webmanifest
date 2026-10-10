@@ -2,7 +2,7 @@
   "name": "拂晓图库",
   "id": "/",
   "short_name": "拂晓图库",
-  "description": "本地照片与视频浏览管理",
+  "description": "本地图片与视频浏览管理",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",

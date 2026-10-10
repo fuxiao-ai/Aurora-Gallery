@@ -1,6 +1,6 @@
 /**
  * 网页端「搜图 / 人物」视图：侧栏独占——搜索框 + 搜索历史 / 人物列表都在侧栏里，
- * 结果落进主照片网格（#photoGrid），因此卡片渲染、点击进预览、上一张/下一张全部复用
+ * 结果落进主图片网格（#photoGrid），因此卡片渲染、点击进预览、上一张/下一张全部复用
  * 网页端既有的 renderPhotoGrid + startPreview 链路。
  *
  * 与桌面端一样，这里只做使用与展示：模型下载 / 建索引留在桌面端「设置」里，
@@ -32,6 +32,18 @@
   // 因此不必为「换一批」重新跑一遍模型。太小则两批重复率太高，太大则白花请求与渲染。
   var SUGGEST_POOL_LIMIT = 24;
 
+  // 关键词档一次取多少（与桌面端同一组数字）：目录是整库分组的产出，取多了白扫索引；
+  // 文件走既有 FTS 分页，一页 60 张是「一屏多一点」，不够再点「更多」。
+  var KEYWORD_FOLDER_LIMIT = 12;
+  var KEYWORD_FILE_PAGE = 60;
+  // 没有封面图时的占位（与 app.js 的 folderCoverDefaultPlaceholderHtmlWeb 同形）。
+  var FOLDER_PLACEHOLDER =
+    '<div class="folder-cover-placeholder folder-cover-placeholder--default" aria-hidden="true">' +
+    '<svg class="folder-cover-placeholder-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" focusable="false">' +
+    '<path class="folder-cover-placeholder-shape" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1.9-2-2-2h-8l-2-2z"/>' +
+    '<path class="folder-cover-placeholder-inner" d="M4 8h16v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/>' +
+    '</svg></div>';
+
   function init(deps) {
     deps = deps || {};
     var state = deps.state || {};
@@ -47,10 +59,21 @@
         return Promise.reject(new Error('no transport'));
       };
     var renderPhotoGrid = deps.renderPhotoGrid;
+    // 关键词档渲染目录卡片后要按当前卡片尺寸档位重排一次（与目录浏览同一套契约）。
+    var applyCardSize = deps.applyCardSize || function () {};
     var escapeHtml =
       deps.escapeHtml ||
       function (s) {
         return s == null ? '' : String(s);
+      };
+    // 缩略图缓存键：由 `app.js` 注入（本文件先于它加载，见 `web/index.html` 的脚本顺序）。
+    // 兜底返回空串 = 「没有键」，等价于改动前的行为 —— 也就是「重建后封面仍是旧的」，
+    // 不会让图挂掉。**但注入本身不能少**：`photo-thumb-url-regression` 第 4 组断言
+    // `app.js` 确实把 `thumbCacheVersion` 传了进来，所以这里不是为了兜住长期缺失。
+    var thumbCacheVersion =
+      deps.thumbCacheVersion ||
+      function () {
+        return '';
       };
     var setDisplay = deps.setDisplay || function () {};
 
@@ -96,7 +119,7 @@
     var searchShown = 0;
     var SEARCH_PAGE = 200;
     var rowById = {}; // personId -> 侧栏列表项 DOM
-    var peopleQuery = ''; // 侧栏人物搜索词（只筛列表，不动主区照片）
+    var peopleQuery = ''; // 侧栏人物搜索词（只筛列表，不动主区图片）
     var renaming = null; // 正在改名的那一行，同时只允许一行进入编辑态
     var historyItems = readHistory();
     // 侧栏「预选词」这一批：进入搜索视图时抽一次，之后「换一批」才重抽。
@@ -107,6 +130,33 @@
     var suggestPool = [];
     var suggestLang = '';
     var suggestState = 'idle';
+    /**
+     * 搜图页当前档位：`'keyword'`（文件名 / 目录名子串）或 `'semantic'`（AI 向量）。
+     * 与桌面端同一口径：两套引擎必须显式二选一，不能让后端猜用户输的是哪种。
+     */
+    var searchMode = 'keyword';
+    // 关键词档的结果：目录与文件各一份，各自记「已取到多少 / 总共多少」。
+    var kwFolders = [];
+    var kwFolderTotal = 0;
+    var kwFiles = [];
+    var kwFilePage = 0;
+    var kwFileTotal = 0;
+
+    /**
+     * 上一次搜索的**保留态**：离开搜图页不再丢结果，回来时原样画回。
+     * 与桌面端同口径（见 `src/renderer/ai-views.js#retainedSearch`）：
+     * 只有**跑完过且有命中**的搜索才写这里。空结果会**作废**它（见下面的理由）——
+     * 库被改过之后同一个词会从「有」变「没有」，留着快照就会画出一屏已经不存在的结果。
+     */
+    var retainedSearch = null;
+    /**
+     * 「离开过又回来」的一次性标记：`leave()` 置位、`restoreRetainedSearch()` 消费。
+     * 不能只凭「有保留态」就还原 —— `loadSearch()` 也会被后台重载（扫描完成等）触发，
+     * 那次要的是**重搜**（结果跟着库走），不是把离开前那一屏画回来。
+     */
+    var pendingRestore = false;
+    /** 状态行文案：`setStatus` 只写 DOM、且拿不到节点时静默不写，保留态得另存一份才还原得了。 */
+    var statusText = '';
 
     // 侧栏 DOM 引用（每次重建后刷新）
     var statusEl = null;
@@ -127,6 +177,161 @@
     }
     function active() {
       return isSearch() || isPeople();
+    }
+    /** 当前是不是「关键词」档（语义档需要模型与索引，关键词档不需要，别互相串）。 */
+    function isKeyword() {
+      return isSearch() && searchMode === 'keyword';
+    }
+
+    // ---------- 搜图档位：关键词 / 语义 ----------
+
+    /** 输入框的两句提示语**不进 i18n 静态表**：同一个框两种语义，值随档位变。 */
+    function searchPlaceholder() {
+      return searchMode === 'keyword'
+        ? t('搜索文件名或文件夹名', 'Search file or folder names')
+        : t(
+            '描述你想找的画面，例如：夕阳下的海滩',
+            'Describe what you are looking for, e.g. a beach at sunset',
+          );
+    }
+
+    function renderSearchMode() {
+      if (!dom.sidebar) return;
+      // 自己遍历 `children` 而不是 `querySelectorAll`：回归替身没实现后者。
+      var buttons = collectByAttr(dom.sidebar, 'data-ai-search-mode');
+      for (var i = 0; i < buttons.length; i += 1) {
+        var on = buttons[i].getAttribute('data-ai-search-mode') === searchMode;
+        buttons[i].classList.toggle('is-active', on);
+        buttons[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+      if (inputEl) {
+        inputEl.placeholder = searchPlaceholder();
+        inputEl.setAttribute(
+          'aria-label',
+          searchMode === 'keyword'
+            ? t('文件名或文件夹名', 'File or folder name')
+            : t('画面描述', 'Scene description'),
+        );
+      }
+      // 预选词是**语义档**的引导（词来自画面词表），关键词档摆着是误导。
+      if (suggestEl) suggestEl.hidden = searchMode !== 'semantic';
+    }
+
+    /** 换档：带着当前的词**立刻按新档位重搜**（同一个词在两档里含义不同）。 */
+    function setMode(mode) {
+      var next = mode === 'semantic' ? 'semantic' : 'keyword';
+      if (!isSearch() || next === searchMode) return Promise.resolve();
+      searchMode = next;
+      gen += 1; // 让在途的旧档位响应作废
+      // 上一个档位的结果对新档位没有意义：作废保留态，让下面要么按新档位重搜、要么落到空闲态。
+      retainedSearch = null;
+      pendingRestore = false;
+      renderSearchMode();
+      var query = String(state.aiSearchQuery || '').trim();
+      // ⚠️ `startSearch` 在 `busy` 时会**静默早退**（同类请求不并发）。那时若直接返回，
+      //    界面就停在「档位按钮已经是新的、结果还是旧的」—— 比不切档更糟。
+      if (query && !busy) return startSearch(query);
+      setStatus('');
+      if (searchMode === 'keyword') {
+        renderKeywordIdle();
+        return Promise.resolve();
+      }
+      renderSearchIdle();
+      // 切**进**语义档要把预选词那块重新画 + 取回来（理由同桌面端）。
+      renderSuggest();
+      refreshSuggestions();
+      return Promise.resolve();
+    }
+
+    // ---------- 搜图结果的保留态（离开再回来） ----------
+
+    /**
+     * 这次进页会不会把上一次的结果**画回来**（而不是重搜）。
+     *
+     * 判据 = 「刚离开过一次（`pendingRestore`）」+「保留态在」+「当前查询与档位都和它同源」。
+     * **这个判据只允许一份**：`enter()`（决定要不要先画引导页）与 `loadSearch()`（决定还原
+     * 还是重搜）都要问它，各写一份必然漂移成「enter 画了引导页、loadSearch 又还原了结果」那种闪烁。
+     */
+    function searchRestorable() {
+      if (!pendingRestore || !retainedSearch) return false;
+      if (retainedSearch.mode !== searchMode) return false;
+      var query = String(state.aiSearchQuery || '').trim();
+      return !!query && retainedSearch.query === query;
+    }
+
+    /** 搜索跑完且有命中时记下「回来该画什么」。空结果 / 出错都不写（见 `retainedSearch`）。 */
+    function markSearchRetained(query) {
+      retainedSearch = { mode: searchMode, query: query };
+      refreshRetainedSearch();
+    }
+
+    /**
+     * 把活变量刷进保留态；查询 / 档位对不上就把保留态作废。
+     * 在 `leave()` 里调，于是「更多」翻过的页、以及最新那行状态文案都跟着一起带回去。
+     */
+    function refreshRetainedSearch() {
+      if (!retainedSearch) return;
+      var query = String(state.aiSearchQuery || '').trim();
+      if (!query || retainedSearch.query !== query || retainedSearch.mode !== searchMode) {
+        retainedSearch = null;
+        return;
+      }
+      retainedSearch.status = statusText;
+      retainedSearch.folders = kwFolders.slice();
+      retainedSearch.folderTotal = kwFolderTotal;
+      retainedSearch.files = kwFiles.slice();
+      retainedSearch.filePage = kwFilePage;
+      retainedSearch.fileTotal = kwFileTotal;
+      retainedSearch.hits = searchHits.slice();
+      retainedSearch.shown = searchShown;
+    }
+
+    /**
+     * 把保留态画回界面。返回 false = 保留态对不上，调用方应当去重搜。
+     * 与桌面端同口径：**不重跑搜索**（重跑会闪骨架、还会把「更多」翻过的页缩回第一页）。
+     */
+    function restoreRetainedSearch() {
+      if (!searchRestorable() || !retainedSearch) return false;
+      // 一次性：还原过就别再还原。之后来的重载该走重搜，结果要跟着库走。
+      pendingRestore = false;
+      var kept = retainedSearch;
+      if (inputEl) inputEl.value = kept.query;
+      if (kept.mode === 'keyword') {
+        kwFolders = kept.folders.slice();
+        kwFolderTotal = kept.folderTotal;
+        kwFiles = kept.files.slice();
+        kwFilePage = kept.filePage;
+        kwFileTotal = kept.fileTotal;
+        setStatus('');
+        renderKeywordResults();
+        setStatus(kept.status);
+        return true;
+      }
+      searchHits = kept.hits.slice();
+      // `renderSearchPage` 只会「+SEARCH_PAGE」，要还原到上次渲染的张数就得先把基数退回去。
+      searchShown = Math.max(0, kept.shown - SEARCH_PAGE);
+      setStatus('');
+      renderSearchPage(false);
+      setStatus(kept.status);
+      return true;
+    }
+
+    function renderKeywordIdle(message) {
+      var grid = dom.photoGrid;
+      if (!grid) return;
+      grid.innerHTML = emptyHtml(
+        SEARCH_ICON,
+        t('按文件名或文件夹名搜索', 'Search by file or folder name'),
+        message ||
+          // 口径必须写出来：两组是两个不同的判据（目录名 vs 文件名），不写的话
+          // 用户会以为「文件」组里也该出现那个命中目录下的所有图片。
+          t(
+            '输入关键词后回车：「文件夹」组按目录名匹配，「文件」组只留文件名里包含关键词的；要按画面内容找请切到「语义」。',
+            'Type a keyword and press Enter — “Folders” matches folder names, “Files” keeps only files whose own name contains it. Switch to “Semantic” to search by what is in the picture.',
+          ),
+      );
+      state.currentPhotos = [];
+      syncPreviewWindow(0);
     }
 
     // ---------- 搜索历史 ----------
@@ -345,7 +550,7 @@
     }
 
     /**
-     * 搜索只筛侧栏这个列表，不碰主区照片。
+     * 搜索只筛侧栏这个列表，不碰主区图片。
      * 没名字的人拿「未命名人物」参与匹配，于是搜「未命名」能把还没起名的人一次捞出来。
      */
     function visiblePeople() {
@@ -367,7 +572,7 @@
           h(
             'div',
             'ai-web-sidebar-empty',
-            lastStatus && lastStatus.busy
+            lastStatus && lastStatus.running
               ? t('正在识别人脸…', 'Detecting faces…')
               : t('还没有识别到人物', 'No people detected yet'),
           ),
@@ -565,7 +770,7 @@
      */
     function syncLive() {
       if (!liveEl) return;
-      var show = isPeople() && !!(lastStatus && lastStatus.busy);
+      var show = isPeople() && !!(lastStatus && lastStatus.running);
       liveEl.hidden = !show;
       if (!show) return;
       var status = lastStatus || {};
@@ -612,16 +817,47 @@
     }
 
     function buildSearchSidebar(host) {
+      // 档位切换：关键词（文件名 / 目录名）与语义（AI 向量）是两套引擎，显式二选一。
+      var modes = h('div', 'ai-web-search-modes');
+      modes.setAttribute('role', 'group');
+      modes.setAttribute('aria-label', t('搜索方式', 'Search mode'));
+      modes.addEventListener('click', function (event) {
+        // 真实浏览器里点到的是按钮内部的文字节点，要 `closest` 回到按钮本身；
+        // 回归替身没有 `closest`，那就当 `target` 已经是按钮（同一份判据两种环境都走）。
+        var btn = event.target;
+        if (btn && btn.closest) {
+          var hit = btn.closest('[data-ai-search-mode]');
+          if (hit) btn = hit;
+        }
+        if (!btn || !btn.getAttribute) return;
+        var mode = btn.getAttribute('data-ai-search-mode');
+        if (!mode) return;
+        void setMode(mode);
+      });
+      [
+        ['keyword', t('关键词', 'Keyword')],
+        ['semantic', t('语义', 'Semantic')],
+      ].forEach(function (pair) {
+        var btn = h('button', 'ai-web-search-mode', pair[1]);
+        btn.type = 'button';
+        btn.setAttribute('data-ai-search-mode', pair[0]);
+        btn.setAttribute('aria-pressed', 'false');
+        modes.appendChild(btn);
+      });
+      host.appendChild(modes);
+
       var form = h('form', 'ai-web-sidebar-search');
       var input = h('input');
       input.type = 'search';
       input.maxLength = 500;
       input.autocomplete = 'off';
-      input.placeholder = t(
-        '描述你想找的画面，例如：夕阳下的海滩',
-        'Describe what you are looking for, e.g. a beach at sunset',
+      input.placeholder = searchPlaceholder();
+      input.setAttribute(
+        'aria-label',
+        searchMode === 'keyword'
+          ? t('文件名或文件夹名', 'File or folder name')
+          : t('画面描述', 'Scene description'),
       );
-      input.setAttribute('aria-label', t('画面描述', 'Scene description'));
       input.addEventListener('keydown', function (event) {
         if (event.key !== 'Enter') return;
         event.preventDefault();
@@ -657,6 +893,9 @@
       listEl = h('div', 'ai-web-sidebar-list');
       host.appendChild(listEl);
       inputEl = input;
+      // 档位按钮的高亮 / 提示语 / 预选词显隐都在这里收口：必须等 inputEl 与 suggestEl
+      // 都建好再画，否则第一次进页面会是「按钮没高亮 + 提示语是语义档那句」。
+      renderSearchMode();
       renderHistory();
     }
 
@@ -718,6 +957,7 @@
     // ---------- 状态 ----------
 
     function setStatus(text) {
+      statusText = text || '';
       if (!statusEl) return;
       statusEl.textContent = text || '';
       statusEl.hidden = !text;
@@ -739,7 +979,7 @@
           '本地模型尚未就绪，请在桌面端「设置」完成下载。',
           'Models are not ready. Finish the download in the desktop app.',
         );
-      if (!status.indexed && !status.busy)
+      if (!status.indexed && !status.running)
         return t(
           '还没有建立索引，请在桌面端「设置」建立。',
           'Nothing is indexed yet. Build the index in the desktop app.',
@@ -806,7 +1046,7 @@
         t('描述你想找的画面', 'Describe what you are looking for'),
         message ||
           t(
-            '支持中文、英文等语言，例如「雪山下的湖泊」。照片与文字都在本机处理。',
+            '支持中文、英文等语言，例如「雪山下的湖泊」。图片与文字都在本机处理。',
             'Describe in Chinese, English or other languages, e.g. “a lake below snowy mountains”. Photos and queries stay on this machine.',
           ),
         '<div class="ai-web-chips">' + chips + '</div>',
@@ -821,7 +1061,7 @@
       grid.innerHTML = emptyHtml(
         PEOPLE_ICON,
         t('从左侧选择一个人', 'Pick a person on the left'),
-        message || t('点击左侧人物即可查看 TA 的照片。', 'Click a person to view their photos.'),
+        message || t('点击左侧人物即可查看 TA 的图片。', 'Click a person to view their photos.'),
       );
       state.currentPhotos = [];
       syncPreviewWindow(0);
@@ -932,17 +1172,26 @@
       photoCursor = null;
       searchHits = [];
       searchShown = 0;
+      kwFolders = [];
+      kwFolderTotal = 0;
+      kwFiles = [];
+      kwFilePage = 0;
+      kwFileTotal = 0;
       rowById = {};
       peopleQuery = '';
       renaming = null;
       state.currentPhotos = [];
       if (view === 'ai_search') {
-        state.aiSearchQuery = '';
+        // ⚠️ 这里**不再**无条件清 `state.aiSearchQuery`：清了就再也回不到上一次的结果
+        //    （见 `retainedSearch`）。真正的清空有两处，各有明确理由：
+        //      ① 下面 `!restoring` 的那一支 —— 干净的进入不该留着一个活的查询；
+        //      ② `startSearch()` 的空提交 —— 用户主动清空的唯一入口。
         // 每次进入搜索视图重抽一批预选词（「随机」要能被感知，就得换视图换词）。
         // 词池还没取回来时侧栏会走骨架态（见 renderSuggest），等结果回来再换真词。
         suggestBatch = pickSuggestions(SUGGEST_COUNT);
         // 取「本库点下去真有图的词」（一个会话一次、换语言重取一次）；拿回来会重绘本页。
-        refreshSuggestions();
+        // 关键词档不取：那些词是画面描述，摆在这里会被当成文件名去搜。
+        if (searchMode === 'semantic') refreshSuggestions();
       }
       state.page = 1;
       setDisplay('#pagination', 'none');
@@ -953,7 +1202,20 @@
       applyToolbar();
       if (isSearch()) {
         setStatus('');
-        renderSearchIdle();
+        // 有保留态时先别画引导页：`loadSearch()` 紧接着就会把上一次的结果画回来
+        // （判据与还原同源，见 `searchRestorable`），提前画只会闪一个空状态。
+        var restoring = searchRestorable();
+        // 不是「离开过一次又回来」的那一次 ⇒ 这是一次**干净的进入**：把上一次的词一起清掉。
+        // 只画引导页、却把查询留在 `state` 里是最坏的组合：界面看着像没有搜索在生效，
+        // 而紧接着 `loadPhotos()` 触发的那次 `loadSearch()` 又会拿这个词去重搜一遍 ——
+        // 同一页在「引导页 / 结果」之间来回翻；语义档更糟，它会跳过「模型尚未就绪」的说明
+        // （那段只在**空查询**分支里给，见 loadSearch）。与桌面端同口径。
+        if (!restoring) state.aiSearchQuery = '';
+        if (searchMode === 'keyword') {
+          if (!restoring) renderKeywordIdle();
+        } else if (!restoring) {
+          renderSearchIdle();
+        }
       } else {
         setStatus('');
         renderPeopleIdle();
@@ -962,6 +1224,10 @@
     }
 
     function leave() {
+      // 先把当前结果刷进保留态（含「更多」翻过的页与状态行文案），再照旧把活变量清干净 ——
+      // 回来时由 `loadSearch()` 按保留态重新画。
+      refreshRetainedSearch();
+      pendingRestore = !!retainedSearch;
       gen++;
       showing = false;
       stopPolling();
@@ -972,6 +1238,11 @@
       renaming = null;
       searchHits = [];
       searchShown = 0;
+      kwFolders = [];
+      kwFolderTotal = 0;
+      kwFiles = [];
+      kwFilePage = 0;
+      kwFileTotal = 0;
       if (dom.sidebar) dom.sidebar.replaceChildren();
       statusEl = null;
       listEl = null;
@@ -995,20 +1266,31 @@
 
     function loadSearch() {
       var query = String(state.aiSearchQuery || '').trim();
+      renderSearchMode();
       renderHistory();
-      if (query) return startSearch(query);
+      if (query) {
+        // 有保留态就**原样画回**（离开搜图页的两条路：点结果里的目录跳走、换视图），
+        // 不重跑一遍搜索 —— 重跑会闪骨架，还会把「更多」翻过的页缩回第一页。
+        if (restoreRetainedSearch()) return Promise.resolve();
+        return startSearch(query);
+      }
       setStatus('');
+      // 关键词档不查 AI 索引状态（跟它无关），也不必等那趟请求。
+      if (searchMode === 'keyword') {
+        renderKeywordIdle();
+        return Promise.resolve();
+      }
       renderSearchIdle();
       return fetchStatus().then(function () {
         if (!isSearch()) return;
         if (String(state.aiSearchQuery || '').trim()) return;
         var message = noticeFor(lastStatus);
         // 索引在跑、但已经有可用向量：明确告诉用户「现在就能搜，只是覆盖不全」。
-        if (!message && lastStatus && lastStatus.busy && lastStatus.indexed)
+        if (!message && lastStatus && lastStatus.running && lastStatus.indexed)
           message = t(
             '索引仍在建立中（已索引 ' +
               compactCount(lastStatus.indexed) +
-              ' 张）：现在就能搜，结果只覆盖已索引的照片。',
+              ' 张）：现在就能搜，结果只覆盖已索引的图片。',
             'The index is still building (' +
               compactCount(lastStatus.indexed) +
               ' indexed): you can search now, results cover indexed photos only.',
@@ -1018,7 +1300,8 @@
     }
 
     function fetchStatus() {
-      if (!active() || busy) return Promise.resolve();
+      // 关键词档不载模型、不查索引，轮询别白跑请求。
+      if (!active() || busy || isKeyword()) return Promise.resolve();
       var url = isSearch() ? '/api/ai-search-status' : '/api/face-status';
       return get(url)
         .then(function (data) {
@@ -1032,17 +1315,17 @@
     }
 
     // 轮询只做两件事：翻状态成一句人话；人物索引进行中人数变了就增量补列表。
-    // 结果计数（「找到 N 张照片 / N 人」）不受影响——fetchStatus 只在有提醒时覆盖状态位。
+    // 结果计数（「找到 N 张图片 / N 人」）不受影响——fetchStatus 只在有提醒时覆盖状态位。
     function startPolling() {
       stopPolling();
       pollTimer = setInterval(function () {
         if (!active() || busy) return;
-        var before = lastStatus ? { people: lastStatus.people, busy: lastStatus.busy } : null;
+        var before = lastStatus ? { people: lastStatus.people, running: lastStatus.running } : null;
         void fetchStatus().then(function () {
           if (!isPeople() || !active()) return;
           var people = lastStatus && lastStatus.people != null ? Number(lastStatus.people) : null;
           var grew = (!before || before.people !== people) && people > 0;
-          var finished = !!(before && before.busy && lastStatus && !lastStatus.busy);
+          var finished = !!(before && before.running && lastStatus && !lastStatus.running);
           if (grew || finished) void loadGroups(0, true);
         });
       }, 3000);
@@ -1055,10 +1338,83 @@
       }
     }
 
+    /**
+     * 状态行末尾那一句：这一趟 **tag 检索层**为什么没参与（参与了就返回空串）。
+     *
+     * 🔴 为什么非要有它：tag 路会**静默不参与**（词表里有但没有对应标签、索引没建、
+     *    用户在桌面端关了开关、查询当场失败），而这四种情况和「这个查询确实没结果」
+     *    在界面上长得一模一样 —— 用户唯一能得到的结论是「搜图不准」。
+     *
+     * ⚠️ `FREE_TEXT`（自由词）**刻意不提示**：随手打一句话只走语义路是**正常形态**，
+     *    每句都加提示等于噪声，噪声会把真正该看的那几种情况一起淹掉。
+     *
+     * ⚠️ 这是**镜面实现**，与桌面端 `src/web/js/semantic-search.js#tagNote` 同构
+     *    （那一份桌面端加载，这一份网页端加载，两个文件各自独立）。改一处必须改两处，
+     *    `scripts/tag-fusion-regression.js` 会逐案比对两边的 `reason` 映射。
+     *    网页端**不做**每张卡片的来源标注：它的网格是 `renderPhotoGrid`（浏览页也用同一个），
+     *    往里塞 AI 专属徽标要么泄漏到正常浏览、要么得给网格开一条分叉 —— 都不值。
+     */
+    function tagNote(tag) {
+      if (!tag || typeof tag !== 'object') return '';
+      var reason = String(tag.reason || '');
+      if (reason === 'UNSUPPORTED') {
+        var missing = Array.isArray(tag.missing) ? tag.missing.filter(Boolean) : [];
+        var detail = missing.length ? '（' + missing.join('、') + '）' : '';
+        return t(
+          '这个词的标签不在本地模型里' + detail + '，本次只用语义匹配。',
+          'This term’s tags are not in the local model' + detail + '. Semantic matching only.',
+        );
+      }
+      if (reason === 'DISABLED')
+        return t(
+          '标签检索已关闭，本次只用语义匹配。',
+          'Tag matching is off; semantic matching only.',
+        );
+      if (reason === 'NO_INDEX')
+        return t(
+          '标签索引尚未建立，本次只用语义匹配。',
+          'The tag index is not built yet; semantic matching only.',
+        );
+      if (reason === 'QUERY_FAILED')
+        return t(
+          '标签索引本次读取失败，已退回语义匹配。',
+          'Reading the tag index failed this time; fell back to semantic matching.',
+        );
+      return '';
+    }
+
     function startSearch(value) {
-      if (busy || !isSearch()) return Promise.resolve();
+      if (!isSearch()) return Promise.resolve();
       var query = String(value || '').trim();
-      if (!query) return Promise.resolve();
+      if (!query) {
+        // 空提交 = **清掉这一次搜索**（连保留态一起），回到引导页。
+        // 这一步是必需的：有了保留态之后，引导页只认「查询为空」，没有它引导页就再也回不来。
+        retainedSearch = null;
+        pendingRestore = false;
+        state.aiSearchQuery = '';
+        if (inputEl) inputEl.value = '';
+        kwFolders = [];
+        kwFolderTotal = 0;
+        kwFiles = [];
+        kwFilePage = 0;
+        kwFileTotal = 0;
+        searchHits = [];
+        searchShown = 0;
+        photoItems = [];
+        state.currentPhotos = [];
+        syncPreviewWindow(0);
+        setStatus('');
+        if (searchMode === 'keyword') renderKeywordIdle();
+        else renderSearchIdle();
+        return Promise.resolve();
+      }
+      // ⚠️ `busy` 判据必须放在空提交**之后**：清空是纯本地动作，不该因为后台在跑就点不动。
+      if (busy) return Promise.resolve();
+      if (searchMode === 'keyword') {
+        return run(function () {
+          return doKeywordSearch(query);
+        });
+      }
       return run(function () {
         var current = gen;
         state.aiSearchQuery = query;
@@ -1072,19 +1428,28 @@
             // matched 是**达标总数**，可能大于返回条数（内部为内存起见只保留最相近的一批）。
             var matched = data && data.matched != null ? Number(data.matched) : hits.length;
             // 索引进行中也能搜，用的是已经落库的那部分向量：把覆盖范围如实说出来，
-            // 免得用户以为「搜不到」就是「没有这张照片」。
+            // 免得用户以为「搜不到」就是「没有这张图片」。
             var indexed = data && data.indexed != null ? Number(data.indexed) : null;
-            var partial = lastStatus && lastStatus.busy && indexed ? compactCount(indexed) : null;
+            var partial = lastStatus && lastStatus.running && indexed ? compactCount(indexed) : null;
+            // tag 层这一趟有没有参与、为什么没有。**必须在空结果分支之前算出来**：
+            // 「0 张」+「标签索引没建」与「0 张」+「确实没有」是两件完全不同的事，
+            // 前者要用户去建索引，后者要用户换个说法 —— 而这两句话只能长在状态行上。
+            var tagLine = tagNote(data && data.tag);
             hits.forEach(function (hit) {
               if (!hit.date_taken) hit.date_taken = hit.date_modified || '';
             });
             if (!hits.length) {
-              setStatus(t('没有达到匹配阈值的照片', 'No photos above the match threshold'));
+              // 空结果必须作废保留态（理由与坑见 doKeywordSearch 那一处）。
+              retainedSearch = null;
+              setStatus(
+                t('没有达到匹配阈值的图片', 'No photos above the match threshold') +
+                  (tagLine ? ' · ' + tagLine : ''),
+              );
               renderEmpty(
-                t('没有达到匹配阈值的照片', 'No photos above the match threshold'),
+                t('没有达到匹配阈值的图片', 'No photos above the match threshold'),
                 partial
                   ? t(
-                      '索引还在建立中（已索引 ' + partial + ' 张），尚未索引的照片这次搜不到。',
+                      '索引还在建立中（已索引 ' + partial + ' 张），尚未索引的图片这次搜不到。',
                       'The index is still building (' +
                         partial +
                         ' indexed). Photos not yet indexed cannot be found.',
@@ -1096,7 +1461,7 @@
               );
               return;
             }
-            // 与桌面端同一口径：这个数字是「有多少张达到阈值」，不是「找到了多少张相关照片」。
+            // 与桌面端同一口径：这个数字是「有多少张达到阈值」，不是「找到了多少张相关图片」。
             setStatus(
               partial
                 ? t(
@@ -1112,11 +1477,12 @@
                 : t(
                     matched + ' 张达到匹配阈值 · 按相似度排序',
                     matched + ' above the match threshold · sorted by similarity',
-                  ),
+                  ) + (tagLine ? ' · ' + tagLine : ''),
             );
             photoCursor = null;
             searchHits = hits;
             renderSearchPage(true);
+            markSearchRetained(query);
             if (dom.photoGrid) dom.photoGrid.scrollTop = 0;
           })
           .catch(function (error) {
@@ -1125,6 +1491,272 @@
             renderEmpty(explain(error), t('可以稍后重试。', 'Try again shortly.'));
           });
       });
+    }
+
+    // ---------- 关键词档：结果 = 文件夹 + 文件 ----------
+
+    /** 目录卡片：与目录浏览同一套 DOM 契约（`.folder-card[data-folder-path]`），
+     *  于是 #photoGrid 上那条「点卡片跳进目录」的委托监听自动生效。 */
+    function folderCardHtml(row) {
+      var folderPath = String(row.folder_path || '');
+      var name = folderPath.split(/[\\/]/).filter(Boolean).pop() || folderPath;
+      var coverId = parseInt(row.id, 10);
+      var hasCover = !isNaN(coverId) && coverId > 0 && row.has_thumbnail !== false;
+      return (
+        '<div class="photo-card folder-card" data-folder-path="' +
+        escapeHtml(folderPath) +
+        '">' +
+        (hasCover
+          ? '<div class="thumb-blur-placeholder" aria-hidden="true"></div>' +
+            '<img src="/thumb/' +
+            coverId +
+            '?v=' +
+            thumbCacheVersion(row) +
+            '" alt="' +
+            escapeHtml(name) +
+            '" loading="lazy" class="loading grid-thumb" />'
+          : FOLDER_PLACEHOLDER) +
+        '<div class="photo-info"><div class="photo-name">\u{1F4C1} ' +
+        escapeHtml(name) +
+        '</div><div class="photo-date">' +
+        escapeHtml(String(row.folder_photo_count != null ? row.folder_photo_count : 0)) +
+        '</div></div></div>'
+      );
+    }
+
+    /**
+     * 在子树里按 class 找节点。**自己遍历 `children`，不用 `querySelector`**：
+     * 回归替身（`scripts/ai-web-views-regression.js`）只实现了 `children` / `classList`，
+     * 用 querySelector 会在测试里当场抛错 —— 而真实浏览器两者都有。
+     */
+    function findByClass(node, cls) {
+      if (!node) return null;
+      if (node.classList && node.classList.contains(cls)) return node;
+      var kids = node.children || [];
+      for (var i = 0; i < kids.length; i += 1) {
+        var hit = findByClass(kids[i], cls);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    function collectByAttr(node, attr, out) {
+      out = out || [];
+      if (!node) return out;
+      if (node.getAttribute && node.getAttribute(attr) != null) out.push(node);
+      var kids = node.children || [];
+      for (var i = 0; i < kids.length; i += 1) collectByAttr(kids[i], attr, out);
+      return out;
+    }
+
+    /** `kind` 只用来让「更多」按钮在两组里可分辨（绑定时按这个 class 找回来）。 */
+    function moreButtonHtml(kind) {
+      return (
+        '<div class="ai-web-more-row"><button type="button" class="ai-web-more-button ai-web-kw-more-' +
+        kind +
+        '">' +
+        escapeHtml(t('更多', 'More')) +
+        '</button></div>'
+      );
+    }
+
+    /** 按「哪一组」把「更多」按钮绑到对应动作上（找不到就跳过：该组没有更多可加载）。 */
+    function bindMoreButton(kind, action) {
+      var btn = findByClass(dom.photoGrid, 'ai-web-kw-more-' + kind);
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        void action();
+      });
+    }
+
+    function sectionShellHtml(title, count, bodyHtml) {
+      return (
+        '<section class="ai-web-kw-section">' +
+        '<div class="ai-web-kw-head">' +
+        '<span class="ai-web-kw-title">' +
+        escapeHtml(title) +
+        '</span>' +
+        '<span class="ai-web-kw-count">' +
+        escapeHtml(String(count)) +
+        '</span>' +
+        '</div>' +
+        '<div class="ai-web-kw-body">' +
+        bodyHtml +
+        '</div></section>'
+      );
+    }
+
+    /**
+     * 一次画完两个分组。
+     *
+     * 🔴 文件卡片**必须**交给既有的 `renderPhotoGrid`：那份 HTML 里带着 Live Photo 角标、
+     *    正方形占位、masonry 比例与 `onclick="startPreview(i)"` 的索引 —— 在这里另抄一份
+     *    等于给「两边悄悄漂开」留门。代价是它只会整体写 `#photoGrid`（没有「渲染到某个
+     *    容器」的入参），所以这里先让它画，把产出的 HTML 取出来再嵌进「文件」分组。
+     *
+     *    目录卡片则是自己拼：`renderFolderCoverGrid` 同样只会整体写 `#photoGrid`，
+     *    而它的字段（封面 / 张数）与 `/api/search-folders` 的返回形状一致，拼起来没有
+     *    会漂的东西（`.folder-card[data-folder-path]` 那套委托监听靠 class 命中）。
+     */
+    function renderKeywordResults() {
+      var grid = dom.photoGrid;
+      if (!grid) return;
+      // ① 先让既有渲染器画文件卡片，取回 HTML。
+      photoItems = kwFiles.slice();
+      state.currentPhotos = photoItems;
+      syncPreviewWindow(photoItems.length);
+      var filesBody;
+      if (kwFiles.length) {
+        renderPhotoGrid(photoItems);
+        filesBody = grid.innerHTML;
+        if (kwFileTotal > kwFiles.length) filesBody += moreButtonHtml('files');
+      } else {
+        filesBody =
+          '<div class="ai-web-kw-empty">' +
+          escapeHtml(t('没有匹配的文件', 'No matching files')) +
+          '</div>';
+      }
+      // ② 目录卡片自己拼。
+      var foldersBody;
+      if (kwFolders.length) {
+        foldersBody = '<div class="grid">';
+        for (var i = 0; i < kwFolders.length; i += 1) foldersBody += folderCardHtml(kwFolders[i]);
+        foldersBody += '</div>';
+        if (kwFolderTotal > kwFolders.length) foldersBody += moreButtonHtml('folders');
+      } else {
+        foldersBody =
+          '<div class="ai-web-kw-empty">' +
+          escapeHtml(t('没有匹配的文件夹', 'No matching folders')) +
+          '</div>';
+      }
+      grid.innerHTML =
+        sectionShellHtml(t('文件夹', 'Folders'), kwFolderTotal, foldersBody) +
+        sectionShellHtml(t('文件', 'Files'), kwFileTotal, filesBody);
+      applyCardSize();
+      // ③ 「更多」按钮：两组各一个，按各自那个 class 找回来再挂（真实 DOM 与回归替身都能走）。
+      bindMoreButton('folders', moreKeywordFolders);
+      bindMoreButton('files', moreKeywordFiles);
+    }
+
+    function moreKeywordFolders() {
+      var query = String(state.aiSearchQuery || '').trim();
+      if (!query || !isKeyword()) return Promise.resolve();
+      var limit = Math.min(60, kwFolders.length + KEYWORD_FOLDER_LIMIT);
+      if (limit <= kwFolders.length) return Promise.resolve();
+      return get(
+        '/api/search-folders?q=' + encodeURIComponent(query) + '&limit=' + limit,
+      )
+        .then(function (data) {
+          if (!isKeyword()) return;
+          var rows = (data && data.folders) || [];
+          if (!rows.length) return;
+          kwFolders = rows;
+          kwFolderTotal = Number(data.total) || kwFolderTotal;
+          renderKeywordResults();
+        })
+        .catch(function () {});
+    }
+
+    function moreKeywordFiles() {
+      var query = String(state.aiSearchQuery || '').trim();
+      if (!query || !isKeyword()) return Promise.resolve();
+      var next = kwFilePage + 1;
+      return get(
+        // `nameOnly=1`：文件名**包含**关键词（不是「文件名或所在目录」）——
+        // 目录命中的归「文件夹」组，两组不重叠。
+        '/api/search?nameOnly=1&page=' +
+          next +
+          '&pageSize=' +
+          KEYWORD_FILE_PAGE +
+          '&q=' +
+          encodeURIComponent(query),
+      )
+        .then(function (data) {
+          if (!isKeyword()) return;
+          var rows = (data && data.photos) || [];
+          if (!rows.length) return;
+          kwFilePage = next;
+          kwFiles = kwFiles.concat(rows);
+          kwFileTotal = Number(data.total) || kwFileTotal;
+          renderKeywordResults();
+        })
+        .catch(function () {});
+    }
+
+    /**
+     * 关键词搜索：目录与文件**两条请求并行**。
+     *
+     * 刻意不合到一条接口：两者排序、分页、代价模型都不同（目录是整库分组，文件是 FTS 分页），
+     * 合起来等于让用户等较慢的那一条才看得见任何东西。
+     */
+    function doKeywordSearch(query) {
+      var current = gen;
+      state.aiSearchQuery = query;
+      if (inputEl) inputEl.value = query;
+      setStatus(t('正在搜索…', 'Searching…'));
+      kwFolders = [];
+      kwFolderTotal = 0;
+      kwFiles = [];
+      kwFilePage = 0;
+      kwFileTotal = 0;
+      var folderReq = get(
+        '/api/search-folders?q=' + encodeURIComponent(query) + '&limit=' + KEYWORD_FOLDER_LIMIT,
+      ).catch(function () {
+        return { folders: [], total: 0 };
+      });
+      var fileReq = get(
+        // 🔴 `nameOnly=1` —— 「文件」组只留**文件名里包含**关键词的。
+        //    不加它就会命中「所在目录名包含关键词」的图片（一个目录里几十上百张全被列出来），
+        //    而那正是「文件夹」组负责表达的事，两组会大面积重叠。
+        '/api/search?nameOnly=1&page=1&pageSize=' +
+          KEYWORD_FILE_PAGE +
+          '&q=' +
+          encodeURIComponent(query),
+      ).catch(function () {
+        return { photos: [], total: 0 };
+      });
+      return Promise.all([folderReq, fileReq])
+        .then(function (res) {
+          if (current !== gen || !isSearch()) return;
+          rememberSearch(query);
+          var folderRes = res[0] || {};
+          var fileRes = res[1] || {};
+          kwFolders = folderRes.folders || [];
+          kwFolderTotal = Number(folderRes.total) || kwFolders.length;
+          kwFiles = fileRes.photos || [];
+          kwFileTotal = Number(fileRes.total) || kwFiles.length;
+          kwFilePage = 1;
+          if (!kwFolders.length && !kwFiles.length) {
+            // 空结果必须**作废**保留态。唯一承重的情形是「同一个词从有变没有」（库被重扫 /
+            // 删除之后真的会发生）：查询不同源时 refreshRetainedSearch 自己会作废快照，
+            // 同源时只剩这一行 —— 少了它，用户离开再回来看到的是**已经不存在的结果**。
+            retainedSearch = null;
+            setStatus(t('没有匹配的文件或文件夹', 'No matching files or folders'));
+            renderEmpty(
+              t('没有匹配的文件或文件夹', 'No matching files or folders'),
+              t(
+                '换个关键词试试；要按画面内容找，请切到「语义」档。',
+                'Try another keyword, or switch to “Semantic” to search by what is in the picture.',
+              ),
+            );
+            return;
+          }
+          setStatus(
+            isEn()
+              ? kwFolderTotal + ' folders · ' + kwFileTotal + ' files'
+              : '文件夹 ' + kwFolderTotal + ' 个 · 文件 ' + kwFileTotal + ' 个',
+          );
+          renderKeywordResults();
+          // 放在渲染之后：`markSearchRetained` 会把活变量与状态文案一起刷进保留态。
+          markSearchRetained(query);
+          if (dom.photoGrid) dom.photoGrid.scrollTop = 0;
+        })
+        .catch(function (error) {
+          if (current !== gen) return;
+          setStatus('');
+          renderEmpty(explain(error), t('可以稍后重试。', 'Try again shortly.'));
+        });
     }
 
     function loadPeople() {
@@ -1161,7 +1793,7 @@
             syncLive();
             var count =
               lastStatus && lastStatus.people != null ? lastStatus.people : groupItems.length;
-            if (!groupItems.length || (lastStatus && lastStatus.busy)) setStatus('');
+            if (!groupItems.length || (lastStatus && lastStatus.running)) setStatus('');
             else setStatus(t(count + ' 人', count + ' people'));
             if (person) return loadPersonPhotos(person, 0, true);
             return undefined;
@@ -1199,12 +1831,12 @@
             photoItems = replace ? items : photoItems.concat(items);
             if (!photoItems.length) {
               setStatus('');
-              renderPeopleIdle(t('这一组已经没有照片了。', 'No current photos in this group.'));
+              renderPeopleIdle(t('这一组已经没有图片了。', 'No current photos in this group.'));
               return;
             }
             setStatus(
               t(
-                (item.name ? item.name + ' · ' : '') + photoItems.length + ' 张照片',
+                (item.name ? item.name + ' · ' : '') + photoItems.length + ' 张图片',
                 (item.name ? item.name + ' · ' : '') + photoItems.length + ' photos',
               ),
             );

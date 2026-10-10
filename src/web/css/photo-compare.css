@@ -19,6 +19,42 @@
   opacity: 0.45;
   cursor: default;
 }
+/* ── 「整理」抽屉内的「加入对比」（2026-10-09）──────────────────────────────
+   它现在落在 `#previewOrgActions`（抽屉里「对比」分区那一行，见 mount() 的注释）。
+   🔴 这里要复刻的是同一行邻居的观感：网页端邻居是 `.preview-org-btn`（带文字的药丸），
+   桌面端邻居是 `.btn.btn-sm`。**不要**把它做成无边框裸文字：那样读起来是个标签、
+   不像按钮，跟旁边几个药丸不成一套（2026-10-09 截图确认过一次）。
+   令牌两端都有（web 端 gallery-design.css 同样定义 --border/--bg-card/--text-primary），
+   兜底值只是防御性写法。 */
+.preview-org-panel .compare-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border, var(--glass-border, #30393e));
+  border-radius: 8px;
+  background: var(--bg-card, #202629);
+  color: var(--text-primary, #eef1f2);
+  padding: 4px 10px;
+  font-family: var(--font-sans, inherit);
+  font-size: 12px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.preview-org-panel .compare-button:hover {
+  border-color: var(--accent, #83b8da);
+  background: var(--bg-hover, #293135);
+}
+.preview-org-panel .compare-button:focus-visible {
+  outline: 2px solid var(--accent, #83b8da);
+  outline-offset: 2px;
+}
+.preview-org-panel .compare-add-status {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 11px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .compare-tray {
   position: fixed;
   bottom: 18px;

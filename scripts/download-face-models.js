@@ -1,6 +1,5 @@
 'use strict';
 const path = require('node:path');
-const os = require('node:os');
 const logger = require('../src/main/logger');
 
 async function run(args) {
@@ -12,17 +11,12 @@ async function run(args) {
   }
   if (args.length && (args.length !== 2 || args[0] !== '--directory' || !args[1].trim()))
     throw new Error('Expected --directory <model-directory>; use --help for usage.');
-  const appData =
-    process.env.LOCALAPPDATA ||
-    (process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : process.platform === 'win32'
-        ? process.env.APPDATA
-        : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'));
-  if (!appData && !args.length) throw new Error('Cannot locate app data; specify --directory.');
+  // 🔴 默认落点必须跟着**活跃**数据目录走（可迁移，见 src/main/data-dir.js 的说明）——
+  //    写死 `%LOCALAPPDATA%\aurora-gallery\UserData` 的话，迁移之后模型会下到旧位置，
+  //    应用在新位置找不到模型，表现成「模型没下过」。
   const directory = args.length
     ? path.resolve(args[1])
-    : path.join(appData, 'aurora-gallery', 'UserData', 'face-index', 'models');
+    : path.join(require('../src/main/data-dir').resolveActiveDataDir().dir, 'face-index', 'models');
   const model = require('../src/ai/face-model');
   const controller = new AbortController();
   const cancel = () => controller.abort();

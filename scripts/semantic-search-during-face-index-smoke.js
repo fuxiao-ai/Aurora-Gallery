@@ -67,8 +67,8 @@ async function run() {
       preserveProgress: ['search'],
     });
     face = new FaceService(dbPath, faceRoot);
-    search.canRun = () => !face.status().busy;
-    face.canRun = () => !search.status().busy;
+    search.canRun = () => !face.status().running;
+    face.canRun = () => !search.status().running;
     assert.equal(search.canSearch, undefined, '「人脸索引在跑就拒绝搜图」的闸门必须已撤除');
 
     assert.equal((await search.refresh()).ready, true, '搜图模型必须已就绪');
@@ -93,29 +93,29 @@ async function run() {
     for (let i = 0; i < 900; i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const state = face.status();
-      if (state.busy && state.processed > 0 && state.processed < total) {
+      if (state.running && state.done > 0 && state.done < total) {
         issuedWhileBusy = true;
-        issuedAt = state.processed;
+        issuedAt = state.done;
         try {
           live = await search.run('search', 'a photo');
         } catch (error) {
           live = error.message;
         }
-        stillIndexingAtReply = face.status().busy;
+        stillIndexingAtReply = face.status().running;
         break;
       }
-      if (!state.busy && i > 3) break;
+      if (!state.running && i > 3) break;
     }
     assert.ok(issuedWhileBusy, '人脸索引必须有机会跑到「一半」时发起搜图');
     assert.notEqual(typeof live, 'string', '人脸索引进行中搜图不得被拒绝：' + live);
     assert.ok(Array.isArray(live.photos) && live.photos.length > 0, '搜图要返回已索引的照片');
     assert.equal(live.indexed, total, '搜图结果基于已建好的索引');
-    assert.equal(face.status().busy, true, '搜图不得把人脸索引顶掉');
+    assert.equal(face.status().running, true, '搜图不得把人脸索引顶掉');
 
     // 3) 人脸索引照常跑完。
     const result = await indexing;
-    assert.equal(result.processed, total, '人脸索引仍然完整跑完');
-    assert.equal(face.status().busy, false, '人脸索引结束后状态归位');
+    assert.equal(result.done, total, '人脸索引仍然完整跑完');
+    assert.equal(face.status().running, false, '人脸索引结束后状态归位');
     clearInterval(sampler);
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
     console.log(
@@ -130,7 +130,7 @@ async function run() {
         '，全程峰值 RSS ' +
         Math.round(peakRss / (1024 * 1024)) +
         ' MB），人脸索引照常跑完 ' +
-        result.processed +
+        result.done +
         '/' +
         total,
     );

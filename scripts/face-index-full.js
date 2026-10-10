@@ -75,7 +75,15 @@ function arg(name, fallback) {
   return value === undefined || value.startsWith('--') ? fallback : value;
 }
 
-const userData = path.join(process.env.LOCALAPPDATA || '', 'aurora-gallery', 'UserData');
+/**
+ * 🔴 数据目录**可迁移**（本机 2026-10-07 已搬到 `D:\AuroraGallery`），而迁移后默认位置
+ * 往往还留着一份同名旧库 ⇒ 这里**不能**硬编码 `%LOCALAPPDATA%\aurora-gallery\UserData`，
+ * 否则会对着**迁移那一刻的旧快照**扫脸、把新索引写进旧目录，全程不报错。
+ * 解析规则唯一源 = `src/main/data-dir.js#resolveActiveDataDir`。
+ */
+const dataDirLib = require('../src/main/data-dir');
+const activeDir = dataDirLib.resolveActiveDataDir();
+const userData = activeDir.dir;
 const dbPath = arg('db', path.join(userData, 'photos.db'));
 const indexPath = arg('index', path.join(userData, 'face-index'));
 const logPath = arg('log', path.join(indexPath, 'full-index.log'));
@@ -103,6 +111,15 @@ const hours = (ms) => (ms / 3600000).toFixed(1) + 'h';
 
 async function main() {
   log('===== 全库人脸索引：无界面长跑 =====');
+  log(
+    'data-dir  = ' +
+      userData +
+      (activeDir.isCustom ? '（settings.json#dataDir 指定）' : '（默认位置：settings.json 里没配 dataDir）'),
+  );
+  if (activeDir.fellBack) {
+    log('⚠️ 回退    = settings.json 配的是 ' + activeDir.configured + '，但它打不开（' + activeDir.reason + '）');
+    log('            ⇒ 本次用的是默认位置，可能是一份旧副本，先确认再让它跑完。');
+  }
   log('db        = ' + dbPath);
   log('index     = ' + indexPath);
   log('log       = ' + logPath);
@@ -111,7 +128,7 @@ async function main() {
   const service = new FaceService(dbPath, indexPath);
   // 注意：这里**不能**用 `service.refresh()`。`refresh()` 返回的是 `this.status()`，
   // 也就是 `spawn()` 退出时只挑进 state 的那几个键
-  // （ready / indexed / processed / failed / skipped / faces / people）——
+  // （ready / indexed / done / failed / skipped / faces / people）——
   // `library` / `recognizer` / `staleScans` 是 `summary()` 里新增的字段，
   // **不在这个白名单里**，用 refresh() 读会全部拿到 undefined（library 变成 0，
   // 于是脚本会误判「全库已索引、无待处理照片」而立刻退出，实测踩过）。
@@ -155,7 +172,7 @@ async function main() {
   let stalledTicks = 0;
   const timer = setInterval(() => {
     const state = service.status();
-    const processed = Number(state.processed) || 0;
+    const processed = Number(state.done) || 0;
     const failed = Number(state.failed) || 0;
     const skipped = Number(state.skipped) || 0;
     const done = processed + failed + skipped;
@@ -232,7 +249,7 @@ async function main() {
           scanned: result.scanned,
           faces: result.faces,
           people: result.people,
-          processed: result.processed,
+          done: result.done,
           failed: result.failed,
           skipped: result.skipped,
           clustered: result.clustered,

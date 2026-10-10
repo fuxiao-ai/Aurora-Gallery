@@ -23,7 +23,7 @@ function aiIndexBusy(services, onError) {
   for (const service of services || []) {
     if (!service) continue;
     try {
-      if (service.status().busy) return true;
+      if (service.status().running) return true;
     } catch (error) {
       if (onError) onError(error);
     }
@@ -112,11 +112,11 @@ function vacuumSpaceShortage(need, places) {
     .map((place) => place.label + '可用 ' + (place.free < 0 ? '未知' : formatBytes(place.free)))
     .join('，');
   return (
-    '磁盘空间不足：VACUUM 需要额外约 ' +
+    '磁盘空间不足：整理数据库需要额外约 ' +
     formatBytes(need) +
-    ' 临时空间，当前 ' +
+    ' 的临时空间，当前 ' +
     detail +
-    '。请先清理磁盘再试，或改用备份功能。'
+    '。\n\n请先腾出一些空间再试，或把图库数据迁到空间更大的磁盘（设置 → 媒体与存储 → 图库数据位置）。'
   );
 }
 

@@ -129,6 +129,17 @@
       key: 'shortcut.action.navForward',
       zh: '前进',
     },
+    {
+      // 随机跳页：只对浏览视图有意义，但判定放 handler（goToRandomPage 自己在
+      // totalPages<=1 时早退），动作表只管「按了键」。默认 Alt+R —— 裸 R 已被
+      // preview.rotate 占用（同 scope 才算冲突，这里换成带修饰键即可共存）。
+      id: 'nav.randomPage',
+      group: 'navigation',
+      scope: 'global',
+      def: ['Alt+R'],
+      key: 'shortcut.action.randomPage',
+      zh: '随机跳转页码',
+    },
     // ===== 预览 =====
     {
       id: 'preview.close',
@@ -200,7 +211,18 @@
       scope: 'preview',
       def: ['R'],
       key: 'shortcut.action.previewRotate',
-      zh: '顺时针旋转 90°',
+      zh: '顺时针旋转 90°（只改预览，保存才写回）',
+    },
+    {
+      // 🔴 待保存的编辑**只活在内存里**，没有一个「写回」的键位就等于没有出口 ——
+      //    用户会在设置页里看到别的键都有、唯独没有保存。`S` 已被 preview.findSimilar
+      //    占用（不带修饰键），所以这里必须是带修饰键的 `Ctrl+S`，两者不冲突。
+      id: 'preview.editSave',
+      group: 'preview',
+      scope: 'preview',
+      def: ['Ctrl+S'],
+      key: 'shortcut.action.previewEditSave',
+      zh: '保存预览里的编辑（写回文件）',
     },
     {
       id: 'preview.zoomIn',
@@ -232,7 +254,7 @@
       scope: 'preview',
       def: ['S'],
       key: 'shortcut.action.previewFindSimilar',
-      zh: '查找相似照片',
+      zh: '查找相似图片',
     },
     {
       id: 'preview.openExternal',
@@ -241,6 +263,87 @@
       def: ['O'],
       key: 'shortcut.action.previewOpenExternal',
       zh: '用系统默认程序打开',
+    },
+    // ── 组织元数据（2026-10-09）────────────────────────────────────────────────
+    //
+    // 🔴 键位刻意**不**照抄 Lightroom 的 P / X / U。那套默认值有个前提：右手留在
+    //    方向键上翻页。而本项目的实际用法是**右手鼠标翻页 + 左手按键**（冲片时的姿势），
+    //    前提不成立 ⇒ 结论相反：`P` 在键盘最右端、左手够不到，而 `X` 正好落在
+    //    左手无名指的基础位下方。所以标记三连放在左手区的 `Z` / `X` / `C`：
+    //    三键相邻、左手盲按不移位，右手全程不离鼠标。理由与取舍见
+    //    `docs/contracts/org-metadata.md`。
+    //    ⚠️ 左手区已占用对照表：`F` 收藏 · `S` 相似图 · `R` 旋转 —— 新增键位前先看它。
+    {
+      id: 'preview.flagPick',
+      group: 'preview',
+      scope: 'preview',
+      def: ['Z'],
+      key: 'shortcut.action.previewFlagPick',
+      zh: '标记为保留',
+    },
+    {
+      id: 'preview.flagReject',
+      group: 'preview',
+      scope: 'preview',
+      def: ['X'],
+      key: 'shortcut.action.previewFlagReject',
+      zh: '标记为淘汰',
+    },
+    {
+      id: 'preview.flagClear',
+      group: 'preview',
+      scope: 'preview',
+      def: ['C'],
+      key: 'shortcut.action.previewFlagClear',
+      zh: '清除标记',
+    },
+    // 评分：数字 1-5 直接给星。
+    //
+    // ⚠️ 与标记**刻意不一致**：标记有独立的清除键（C，幂等），评分没有 ——
+    //    因为数字 `0` 已被 `preview.zoomReset` 占用（那是更早的绑定，不动它），
+    //    所以取消评分的语义做成「再按一次当前星级」。
+    //    两者不一致是**有理由的**，别当成遗漏去「补齐」：标记是离散三态、
+    //    盲操作时需要能把状态**确定地**清掉（所以必须幂等）；
+    //    评分有星星这个明确的视觉反馈，toggle 的误操作风险低得多。
+    {
+      id: 'preview.rating1',
+      group: 'preview',
+      scope: 'preview',
+      def: ['1'],
+      key: 'shortcut.action.previewRating1',
+      zh: '评为 1 星',
+    },
+    {
+      id: 'preview.rating2',
+      group: 'preview',
+      scope: 'preview',
+      def: ['2'],
+      key: 'shortcut.action.previewRating2',
+      zh: '评为 2 星',
+    },
+    {
+      id: 'preview.rating3',
+      group: 'preview',
+      scope: 'preview',
+      def: ['3'],
+      key: 'shortcut.action.previewRating3',
+      zh: '评为 3 星',
+    },
+    {
+      id: 'preview.rating4',
+      group: 'preview',
+      scope: 'preview',
+      def: ['4'],
+      key: 'shortcut.action.previewRating4',
+      zh: '评为 4 星',
+    },
+    {
+      id: 'preview.rating5',
+      group: 'preview',
+      scope: 'preview',
+      def: ['5'],
+      key: 'shortcut.action.previewRating5',
+      zh: '评为 5 星',
     },
   ];
 

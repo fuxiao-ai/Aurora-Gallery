@@ -314,6 +314,28 @@ html {
   background: var(--accent, #8abcf5);
   opacity: 0.85;
 }
+/* 来源标注（M4）：只标「只靠一路找到的」，叠在缩略图右上角 —— 与左上的 `.search-card-rank`
+   同一套做法，**不进卡片流**，所以不会把 4:3 的卡片撑高、也不会让网格参差不齐。
+   底色用纯黑 + alpha（与 `.search-card-rank` 逐值相同），因为它压在缩略图上，
+   任何取自主题的底色都会在某些图片上失去对比度。 */
+.search-card-route {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #000000a6;
+  color: #fff;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+/* `tag`（只靠标签找到）给一点强调色，`clip`（只靠语义找到）保持中性：
+   前者是「这次融合新带回来的」，后者只是「语义路本来就会给的」。 */
+.search-card-route--tag {
+  background: color-mix(in srgb, var(--accent, #8abcf5) 78%, #000);
+}
 
 /* ---------- 加载骨架与空态 ---------- */
 .search-skeleton-grid {
@@ -385,7 +407,7 @@ html {
 }
 
 /* ---------- 桌面端整页模式已下线 ----------
-   搜图现在直接把结果渲染进主照片网格（#photoGrid），不再独占 #contentArea，
+   搜图现在直接把结果渲染进主图片网格（#photoGrid），不再独占 #contentArea，
    因此这里不再有「隐藏其它内容区子元素」的规则；侧栏让位规则统一放在
    src/renderer/navigation.css，与「重复」「设置」共用同一套写法。 */
 

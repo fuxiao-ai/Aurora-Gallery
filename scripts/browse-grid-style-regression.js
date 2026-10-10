@@ -23,6 +23,28 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+// 🔴 桩必须接**真 i18n 包**，不能「直接返回第三参兜底串」：
+//    `changeBrowseGridStyle` 从 2026-10-08 起把失败提示改走
+//    `tUiFmt('settings.gridStyleFailFmt', …)`。返回兜底串的桩会让中文那两条断言继续绿，
+//    却把「英文包漏了这条 / 英文模板漏了 `{err}`」两个坏法整个盖住。
+//    说明与实现与 `page-size-control-regression.js` 同款（同一次改动一起坏的两个守护）。
+global.document = { documentElement: { setAttribute() {} }, querySelectorAll: () => [] };
+global.window = global.window || {};
+require('../src/renderer/i18n.js');
+const I18n = global.window.I18n;
+
+/** 按 locale 取**真词条**；键在两包都不存在时 `I18n.t()` 原样返回键 ⇒ 这里判红。 */
+function i18nText(locale, key) {
+  const previous = I18n.getLocale();
+  I18n.setLocale(locale, { skipMainSync: true });
+  const value = I18n.t(key);
+  I18n.setLocale(previous, { skipMainSync: true });
+  if (value == null || value === key) {
+    throw new Error('i18n 键不存在：' + key + '（locale=' + locale + '）');
+  }
+  return String(value);
+}
+
 function extractFunction(source, name) {
   const start = source.search(new RegExp('^(?:async )?function ' + name + '\\(', 'm'));
   assert.ok(start >= 0, '源码里找不到 ' + name);
@@ -83,6 +105,12 @@ function loadPhotoGridUI() {
     getElementById: () => null,
   };
   vm.createContext(sandbox);
+  // 🔴 真实页面里 utils.js 在 ui-grid.js **之前**加载（index.html 脚本顺序），
+  //    而 ui-grid.js 的 `isLivePhotoStill` 会转发到 `RendererUtils`。
+  //    沙箱里不喂 utils.js 就等于跑一份「页面上不可能存在」的环境 ——
+  //    本回归目前只碰 `renderPagination`、碰不到那条转发，所以不会红，
+  //    但下一个想在这里验角标的人会撞上一句莫名其妙的 TypeError。
+  vm.runInContext(read('src/renderer/utils.js'), sandbox, { filename: 'utils.js' });
   vm.runInContext(read('src/renderer/ui-grid.js'), sandbox, { filename: 'ui-grid.js' });
   return sandbox.RendererPhotoGridUI;
 }
@@ -154,6 +182,16 @@ function makeHarness() {
       },
     },
     appAlert: (message) => log.alerts.push(String(message)),
+    // 真包取词桩（见文件头）。`__locale` 是用例开关，默认中文；**刻意不用第三参兜底串**。
+    __locale: 'zh-CN',
+    tUi: (key) => i18nText(context.__locale || 'zh-CN', key),
+    tUiFmt: (key, map) => {
+      let text = i18nText(context.__locale || 'zh-CN', key);
+      for (const name of Object.keys(map || {})) {
+        text = text.split('{' + name + '}').join(String(map[name]));
+      }
+      return text;
+    },
     loadPhotos: () => log.loads.push(context.state.page),
     applyCardSize() {
       log.applies += 1;
@@ -296,6 +334,28 @@ async function run() {
   assert.match(h.log.alerts[0], /settings locked/, '原始错误要留在文案里');
   assert.equal(h.log.repaints.length, 0, '没落库就不该重画');
   assert.equal(h.log.loads.length, 0, '没落库也不该重查');
+
+  // ------------------------------------------------- 6b. 同一处失败在**英文界面**下的形态
+  // 2026-10-08 起改走 `tUiFmt('settings.gridStyleFailFmt', { err }, '切换网格与比例失败：{err}')`。
+  // 中文那两条断言测不出切语言的坏法（英文包漏这条会静默回落中文），所以把 locale 拨到 en 再走一遍。
+  // ⚠️ 期望串**从真包派生**，刻意不钉英文措辞（改文案不用改守护）；坏法照样红，见 `page-size` 同段说明。
+  h = makeHarness();
+  h.context.__locale = 'en';
+  h.context.__failNextWrite = new Error('settings locked');
+  await h.context.changeBrowseGridStyle('uniform|4 / 3');
+  assert.equal(h.log.alerts.length, 1, '英文界面同样要点出失败，不能静默');
+  assert.equal(
+    h.log.alerts[0],
+    i18nText('en', 'settings.gridStyleFailFmt').split('{err}').join('settings locked'),
+    '英文界面要弹英文模板（期望从真包派生，实得：' + h.log.alerts[0] + '）',
+  );
+  assert.match(h.log.alerts[0], /settings locked/, '英文模板里也必须带 {err}，否则说不出原因');
+  assert.ok(
+    !/[\u3400-\u9fff]/.test(h.log.alerts[0]),
+    '英文界面不许露中文（含回落中文包的情形），实际：' + h.log.alerts[0],
+  );
+  assert.equal(h.context.state.cardLayoutMode, 'masonry', '英文路径同样要回滚布局');
+  assert.equal(selectValue(h), 'masonry', '英文路径读数也要一起回滚');
 
   // ------------------------------------------------- 7. 重画只在浏览视图发生
   for (const tab of ['settings', 'duplicates']) {
@@ -983,6 +1043,64 @@ async function run() {
     '网页端的判断必须用 closest —— `.grid--masonry` 是 #photoGrid 的**子节点**，挂在 root 上那层没有这个类',
   );
 
+  // ── 列宽只由容器宽度决定，不许按「卡片张数」改列数（2026-10-09）──────────────────
+  // 🔴 用户原话：「当某个文件夹或标签少于一排照片时，不要将图片占据所有宽度，保持和多图时一样宽度」。
+  //    成因是两端各有一个 `capMasonryColumns()`：瀑布流档下若「卡片数 < 可容纳列数」，就把
+  //    `grid.style.columnCount` 压成**卡片数**，让这几张图摊满整行。实测（桌面 1440 窗、
+  //    basis 180 / gap 12）：2 张 = 513px、3 张 = 338px、6 张 = 198px、14 张 = 195px ——
+  //    少图时卡片宽了近 2.6 倍。删掉之后 1/2/3/6 张一律 198px，且单张仍落在**第一列**。
+  //    ⚠️ 顺带解掉同一处 `ResizeObserver` 自反馈环（回调里改 `columnCount`，
+  //    console 反复刷 `ResizeObserver loop completed with undelivered notifications`，
+  //    `CONTRACTS.md`「本轮未修」那条）—— 写者没了，观察者也就没有存在理由，一起删了。
+  //
+  // 判据分两半，缺一条就会变成假绿：
+  //   ① 反向：两端的列布局代码里**不许再出现**按张数压列（`capMasonryColumns` / `columnCount`）；
+  //   ② 正向：列宽必须仍然由 CSS 给（`columns: calc(var(--grid-card-basis) * 1px)`），
+  //      否则「不压列」也可能退化成「根本没有列宽规则」。
+  // ① 必须先剥注释（CONTRACTS 元规则③）：两处删除点都留了同名的历史说明注释，
+  //    不剥就会拿注释里的字样判红。
+  const stripJsComments = (src) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  for (const [label, rel] of [
+    ['桌面端 renderer/app.js', 'src/renderer/app.js'],
+    ['网页端 web/js/app.js', 'src/web/js/app.js'],
+  ]) {
+    const code = stripJsComments(read(rel));
+    assert.ok(
+      !/capMasonryColumns/.test(code),
+      label + ' 里 `capMasonryColumns` 又回来了 —— 它会让「少于一排」的卡片摊满整行，' +
+        '与「保持和多图时一样宽度」直接冲突（理由与实测数字见源码里那段说明）',
+    );
+    assert.ok(
+      !/\bcolumnCount\b/.test(code),
+      label + ' 里又有代码在写 `columnCount` —— 列数一旦按卡片张数（或任何 JS 值）定，' +
+        '它就会和 auto 的列宽互相打架；列宽只由 CSS 的 `columns:` 决定',
+    );
+  }
+  for (const [label, source] of [
+    ['桌面端 styles.css', cssSource],
+    ['网页端 index.html', webHtmlSource],
+  ]) {
+    assert.match(
+      cssRuleBody(source, '\\.grid\\.grid--masonry'),
+      /columns:\s*calc\(var\(--grid-card-basis\)\s*\*\s*1px\)/,
+      label + ' 的 `.grid.grid--masonry` 必须自己给出列宽（`columns: calc(var(--grid-card-basis) * 1px)`）' +
+        '—— JS 侧已经不兜底了，这条规则就是列宽的唯一来源',
+    );
+  }
+  // 网页端手机档的 `columns: 2` 是**独立且刻意**的（基础层是固定 180px 列宽，约 317px 的
+  // 内容区装不下两列 ⇒ 会塌成单列）。它给的是 `column-count`（列宽 auto、由容器均分），
+  // 与「按张数压列」不是一回事，**不许**在清理时被连带删掉。
+  // ⚠️ 别用 `mediaBlock(webHtmlSource, '@media (max-width: 600px)')` 来取：那个 helper 命中
+  //    **第一个**同名媒体查询，而本文件里有 9 处（第 1 处还是注释里的提及）⇒ 取到的是别块、
+  //    判据恒红。这里直接定位「6 开头的媒体查询里的第一条 `.grid.grid--masonry { columns: 2 }`」。
+  assert.match(
+    webHtmlSource,
+    /@media \(max-width: 600px\)\s*\{\s*\.grid\.grid--masonry\s*\{[^}]*columns:\s*2\s*;/,
+    '网页端 ≤600px 的 `.grid.grid--masonry { columns: 2 }` 兜底不能被删 —— ' +
+      '固定 180px 列宽在手机宽度下会塌成单列、卡片几乎铺满整屏',
+  );
+
   // ── 「没有缩略图」的统一占位图（2026-10-05）────────────────────────────────────
   // 🔴 为什么单独守：同一个「没图」在两端各有两条入口（构建期 `has_thumbnail = 0` / 运行期
   //    缩略图 404），合起来是四张脸。以前桌面端构建期是「大号扩展名 + 文件名」纯文本（文件名
@@ -1046,9 +1164,29 @@ async function run() {
       applyCardSize: () => {},
     };
     vm.createContext(sandbox);
-    vm.runInContext(src.slice(from, to) + '\n' + extractFunction(src, 'renderPhotoGrid'), sandbox, {
-      filename: 'web-render-photo-grid.js',
-    });
+    // Live Photo 判据按**真代码**抽进来，不给替身：卡片角标就是被 `renderPhotoGrid`
+    // 生成的，替身化等于把「角标该不该出现」这条一起替身掉。
+    // ⚠️ 它住在 app.js 更靠前的位置（不在 `MEDIA_PLACEHOLDER_GLYPH` 那一段里），所以单独抽。
+    //
+    // 🔴 缩略图缓存键的两个函数（2026-10-07）同理必须抽**真代码**：
+    //    卡片 `<img src>` / 模糊占位现在带 `?v=<规格>` 后缀，键由这两个函数算出来。
+    //    给替身的话「有缩略图时 URL 长什么样」就变成在测替身 —— 而这条 URL 正是
+    //    「重建跑完了但卡片还是老的字节」那个静默缺陷的唯一防线。
+    //    ⚠️ 它们住在 app.js **最开头**（`photoCacheVersion` 之后紧跟 `thumbCacheVersion`，
+    //    在 `WEB_APPEARANCE_LS_KEY` 之前），跟 `from`/`to` 那一段不重叠，所以单独抽。
+    vm.runInContext(
+      extractFunction(src, 'isWebLivePhotoStill') +
+        '\n' +
+        extractFunction(src, 'photoCacheVersion') +
+        '\n' +
+        extractFunction(src, 'thumbCacheVersion') +
+        '\n' +
+        src.slice(from, to) +
+        '\n' +
+        extractFunction(src, 'renderPhotoGrid'),
+      sandbox,
+      { filename: 'web-render-photo-grid.js' },
+    );
     return { sandbox, el };
   }
 
@@ -1140,11 +1278,32 @@ async function run() {
     );
 
     const webWithThumb = renderWebCard(
-      Object.assign({}, noThumb, { has_thumbnail: 1, width: 1600, height: 1067 }),
+      Object.assign({}, noThumb, {
+        has_thumbnail: 1,
+        width: 1600,
+        height: 1067,
+        // 规格两列由列表接口带出来（`photo-list-columns.js`），缓存键就靠它们。
+        file_size: 5242880,
+        date_modified: '2026-01-01 10:00:00',
+        thumb_size: 512,
+        thumb_format: 'webp',
+      }),
       'masonry',
     );
     assert.match(webWithThumb, /class="loading grid-thumb"/, '有缩略图时必须照旧渲染 <img>');
     assert.ok(!/placeholder--media/.test(webWithThumb), '有缩略图不该再出占位图');
+    // 🔴 真渲染出来的 URL 必须带**这一行自己的**规格 —— 这是「全量重建跑完了、
+    //    卡片却还在显示上一档 / 上一格式的字节」唯一能挡住的地方：
+    //    桌面端一路读 Chromium 内存缓存，网页端 `/thumb/:id` 是 `max-age=86400`，
+    //    只要 URL 不变，重建等于白跑（最长一天后才自愈）。
+    //    夹具刻意取 512/webp 而不是「默认档」：默认档会让「键里有没有规格」变成
+    //    「反正也算得出一个值」，换档场景下这条断言就抓不到东西了。
+    assert.match(
+      webWithThumb,
+      /\/thumb\/8811\?v=524288020260101100000-512webp/,
+      '网页端卡片的缩略图 URL 必须把 `thumb_size` + `thumb_format` 拼进缓存键' +
+        '（公式：`file_size` + `date_modified` 的数字 + `-` + 档位 + 格式）',
+    );
 
     const webMissing = renderWebCard(
       Object.assign({}, noThumb, { has_thumbnail: undefined }),
@@ -1154,6 +1313,32 @@ async function run() {
       webMissing,
       /class="loading grid-thumb"/,
       '🔴 `has_thumbnail` 缺失时仍按「有」处理 —— 不能把老接口的卡片擅自改成占位图',
+    );
+
+    // ── Live Photo 角标：驱动**真的**判据 + 真的卡片构建函数 ──
+    // 只断言「源码里有 media-type-badge-live 这个类名」抓不住「判据接错字段」：
+    // 角标会静默地永不出现。这里直接喂两种行，要求一端出一端不出。
+    const webLive = renderWebCard(
+      Object.assign({}, noThumb, { has_thumbnail: 1, live_motion_id: 42 }),
+      'masonry',
+    );
+    assert.match(
+      webLive,
+      /class="media-type-badge media-type-badge-live">LIVE</,
+      '🔴 live_motion_id > 0 的照片必须渲染 LIVE 角标',
+    );
+    const webPlain = renderWebCard(
+      Object.assign({}, noThumb, { has_thumbnail: 1, live_motion_id: 0 }),
+      'masonry',
+    );
+    assert.ok(
+      !/media-type-badge-live/.test(webPlain),
+      'live_motion_id = 0 的照片不许出 LIVE 角标',
+    );
+    const webNoField = renderWebCard(Object.assign({}, noThumb, { has_thumbnail: 1 }), 'masonry');
+    assert.ok(
+      !/media-type-badge-live/.test(webNoField),
+      '🔴 列表接口没带 live_motion_id 时不许误判成 Live Photo（缺字段按「不是」处理）',
     );
   }
 
@@ -1189,6 +1374,6 @@ async function run() {
 }
 
 run().catch((err) => {
-  console.error('[browse-grid-style] 回归失败：', err && err.message ? err.message : err);
+  console.error('[browse-grid-style] 回归失败：', err && err.stack ? err.stack : err);
   process.exit(1);
 });

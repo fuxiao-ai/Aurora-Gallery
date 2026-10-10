@@ -49,8 +49,19 @@
   }
 
   function mount(options) {
-    var anchor = document.getElementById('previewFavoriteBtn');
-    if (!anchor) return;
+    /* 落点优先级（2026-10-09 起）：
+       ① `#previewOrgActions` —— 「整理」抽屉（`#previewOrgPanel`）里给对比留的
+          **专用空槽**。首选即专用：此前靠「锚点是否落在冲片条内」猜分组，
+          而那个判据读的是**别人的排版**（冲片条被删 / 改分区都会让落点漂），
+          于是改成「有槽就进槽」。
+       ② 没有槽（精简页面 / 旧结构）⇒ 退回「评分之星之后」的老行为 ——
+          至少不会 `appendChild` 到 body 上，变成一条没人管的裸按钮。
+       用户口径（2026-10-09）：「加入对比和标记功能有点类似，可以放一起」：
+       两者都是**挑图**动作（标记 = 要哪些、对比 = 挑 2–4 张并排看），
+       与播放/编辑那排工具型操作不是一类。 */
+    var slot = document.getElementById('previewOrgActions');
+    var anchor = document.getElementById('previewRatingStars');
+    if (!slot && !anchor) return;
     var selection = createSelection();
     var words = {
       en: {
@@ -75,23 +86,23 @@
       },
       zh: {
         add: '加入对比',
-        title: '照片对比',
+        title: '图片对比',
         open: '开始对比',
         clear: '清空',
         close: '关闭',
         remove: '移除',
         zoom: '同步缩放',
         reset: '适应窗口',
-        hint: '从预览中加入 2–4 张照片。拖动图片可同步查看各图相同区域。',
+        hint: '从预览中加入 2–4 张图片。拖动图片可同步查看各图相同区域。',
         added: '已加入对比',
         duplicate: '已在对比列表中',
         full: '最多对比 4 张，请先移除一张',
-        video: '对比仅支持静态照片',
-        invalid: '尚未选择照片',
+        video: '对比仅支持静态图片',
+        invalid: '尚未选择图片',
         error: '图片无法加载',
         loading: '加载中…',
-        need: '请至少加入 2 张照片',
-        empty: '尚未选择照片',
+        need: '请至少加入 2 张图片',
+        empty: '尚未选择图片',
       },
     };
     function t(key) {
@@ -116,7 +127,10 @@
       addStatus.textContent = t(result);
     });
     addButton.id = 'photoCompareAdd';
-    anchor.insertAdjacentElement('afterend', addButton);
+    // 有专用槽 ⇒ `appendChild` 进槽（槽本身就是那一行的容器）；
+    // 没有槽 ⇒ 退回「插在之星之后」，与 2026-10-09 之前的落点一致。
+    if (slot) slot.appendChild(addButton);
+    else anchor.insertAdjacentElement('afterend', addButton);
     var addStatus = element('span', 'compare-add-status');
     addStatus.setAttribute('role', 'status');
     addButton.insertAdjacentElement('afterend', addStatus);

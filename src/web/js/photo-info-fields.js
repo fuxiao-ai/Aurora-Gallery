@@ -1,7 +1,7 @@
 /**
- * 照片信息面板：可选字段的**唯一真相源**。
+ * 图片信息面板：可选字段的**唯一真相源**。
  *
- * 背景（2026-10-04）：预览页「照片信息」侧栏原先在桌面端 `renderer/app.js` 与网页端
+ * 背景（2026-10-04）：预览页「图片信息」侧栏原先在桌面端 `renderer/app.js` 与网页端
  * `web/js/app.js` 各写一份，字段只有 8 个且完全硬编码 —— 想加一个字段要改两处，
  * 想让用户自己挑显示哪些字段更无从下手。
  *
@@ -19,10 +19,11 @@
  *   - `column` 声明这条读数的来源列（`photos` 行里的字段名，可给数组）。
  *     它不只是注释 —— `scripts/photo-info-fields-regression.js` 会拿它逐条比对
  *     `src/database.js` 的 `getPhotoInfo()` SQL，忘加列会在回归里被抓到，
- *     而不是等用户看到一行空数据。没有 DB 来源的字段不写 `column`，目前只有两个：
- *     `position`（只来自预览页运行时状态）、`ai_tags`（来自**搜图索引库**，跨库，
- *     由主进程 `SemanticTags` 那条独立只读通道注入 —— 不走 `getPhotoInfo()`，
- *     那个方法查的是主库连接，跨不了库）。守护对这两个是显式白名单。
+ *     而不是等用户看到一行空数据。没有 DB 来源的字段不写 `column`，目前只有三个：
+ *     `position`（只来自预览页运行时状态）、`ai_tags`（来自**搜图索引库**）与
+ *     `joy_tags`（来自 **tag 索引库**）—— 后两者都跨库，由主进程各自的独立只读通道
+ *     注入（`SemanticTags` / `JoyTagTags`），不走 `getPhotoInfo()`。
+ *     守护对这三个是显式白名单。
  *   - `value(info, ctx)` 返回**已格式化好的字符串**；返回空串 / null 表示这一条不显示
  *     （不留空行、不留空分组）。所以「0 字节」「已收藏/未收藏」这类真实读数必须在
  *     `value()` 里显式转成字符串 —— 不能指望调用方拿假值判断。
@@ -397,7 +398,7 @@
       id: 'photo_id',
       column: 'id',
       group: 'basic',
-      zh: '照片 ID',
+      zh: '图片 ID',
       en: 'Photo ID',
       def: false,
       value: function (i) {
@@ -472,8 +473,8 @@
       group: 'time',
       zh: '拍摄时间（EXIF）',
       en: 'Taken at (EXIF)',
-      // 默认**显示**：没有 EXIF 拍摄时间的照片（~77%）这一行会被「空值整行隐藏」吞掉，
-      // 所以打开它不会给多数照片添噪音，只在真有拍摄时间时多给一条读数。
+      // 默认**显示**：没有 EXIF 拍摄时间的图片（~77%）这一行会被「空值整行隐藏」吞掉，
+      // 所以打开它不会给多数图片添噪音，只在真有拍摄时间时多给一条读数。
       def: true,
       value: function (i) {
         return formatDateTime(i.exif_date_taken);
@@ -492,7 +493,7 @@
     },
     {
       // IFD0 的 `DateTime`：相机或编辑软件写这张图时的墙上时间，
-      // 与 `date_modified`（文件落盘时间）不是一回事 —— 但**只有半数照片有**。
+      // 与 `date_modified`（文件落盘时间）不是一回事 —— 但**只有半数图片有**。
       id: 'image_datetime',
       column: 'image_datetime',
       group: 'time',
@@ -715,7 +716,7 @@
     },
     {
       // 镜头规格（`LensSpecification` = 焦距范围 + 光圈范围）在人话里比 `lens_model` 更好认：
-      // 采集侧已把它格式化成 `24-70mm f/2.8`；没有它的照片这一行会被隐藏。
+      // 采集侧已把它格式化成 `24-70mm f/2.8`；没有它的图片这一行会被隐藏。
       id: 'lens_spec',
       column: 'lens_spec',
       group: 'device',
@@ -796,7 +797,7 @@
       },
     },
     {
-      // 只有 0.5% 的照片带 GPS，而带上 GPS 的又大多带海拔 —— 单独一条比塞进 GPS 那行更好读。
+      // 只有 0.5% 的图片带 GPS，而带上 GPS 的又大多带海拔 —— 单独一条比塞进 GPS 那行更好读。
       id: 'gps_altitude',
       column: 'gps_altitude',
       group: 'location',
@@ -810,8 +811,8 @@
     {
       id: 'ai_tags',
       group: 'ai',
-      zh: 'AI 标签',
-      en: 'AI Tags',
+      zh: '主题标签',
+      en: 'Theme tags',
       def: true,
       // 第三类来源：既不是 `photos` 的列，也不是预览页的运行时状态，而是**搜图索引库**
       // （`ai-search/semantic-index.sqlite` 的 `embeddings.tags`）。跨库、且那个库可能根本
@@ -820,6 +821,9 @@
       //
       // 值 = 当前语言的标签文本数组（库里存的是**词表下标**，见 `src/ai/photo-tags.js`）。
       render: 'tags',
+      // 点它去**搜图**：这些词来自 308 条词表短语（`src/ai/search-vocabulary.js`），
+      // 标签导航页里**没有对应节点**（那是 JoyTag 的 5813 个标签），只能当查询词用。
+      tagTarget: 'search',
       tags: function (i) {
         return Array.isArray(i.ai_tags) ? i.ai_tags.filter(Boolean) : [];
       },
@@ -827,6 +831,37 @@
       value: function (i) {
         var tags = Array.isArray(i.ai_tags) ? i.ai_tags.filter(Boolean) : [];
         return tags.length ? tags.join('、') : '';
+      },
+    },
+    {
+      id: 'joy_tags',
+      group: 'ai',
+      zh: '画面标签',
+      en: 'Visual tags',
+      def: true,
+      // 第三类来源的第二个成员：JoyTag 打标的结果，在 **tag 索引库**
+      // （`ai-search/tag-index.sqlite` 的 `photo_tag` × `tag_vocab`）里 —— 与 ai_tags
+      // 一样跨库、库可能不存在或被 worker 占写锁，由主进程 `JoyTagTags` 只读通道单独
+      // 注入（`get-photo-joy-tags` / `/api/photo-joy-tags`），读不到就是空数组 → 整行隐藏。
+      //
+      // 值 = 当前语言的显示文本数组：主进程通道内做了中文映射（`ai/tag-zh.js`），
+      // 查不到的标签回落英文原文；`locale: 'en'` 时直接返回英文原文。
+      // 通道按分数降序最多给 24 个（`JOYTAG_PANEL_LIMIT`）—— 面板是摘要不是清单。
+      //
+      // 🔴 条目是**对象** `{tag, name, node, category}`（2026-10-09 起）：`tag` = 英文原名
+      // （标签导航页的节点 id），`node`/`category` = 归属 —— 跳过去要靠它展开侧栏树并高亮，
+      // 而渲染层没有 `ai/tag-categories` 可以自己反查。显示名是中文，原名一开始丢掉的话，
+      // 跳转就只剩「拿中文名去猜节点」这一条死路。
+      render: 'tags',
+      // 点它去**标签导航页的那个标签** —— 与 `ai_tags` 的「只能搜图」刻意分岔。
+      tagTarget: 'tagnav',
+      tags: function (i) {
+        return Array.isArray(i.joy_tags) ? i.joy_tags.filter(Boolean) : [];
+      },
+      // 兜底纯文本：不支持胶囊渲染的调用方（或胶囊被关掉时）拿到的是「、」连起来的一行。
+      // ⚠️ 条目是对象 ⇒ 必须取显示名，直接 `join` 会得到一串 `[object Object]`。
+      value: function (i) {
+        return tagTextOf(i.joy_tags);
       },
     },
     {
@@ -923,12 +958,51 @@
   }
 
   /**
-   * 字段值的 HTML。默认是转义后的纯文本；`render: 'tags'` 的字段（目前只有 AI 标签）
-   * 渲染成一组胶囊。
+   * 胶囊条目归一化 —— 两种形状都收：
    *
-   * `ctx.tagClickable` 决定胶囊是 `<button>`（桌面端：点了跳搜图，认领方读 `data-ai-tag`）
-   * 还是 `<span>`（网页端没有搜图页 —— 渲染成不可点的胶囊，而不是摆一排点了没反应的按钮）。
+   *   · 字符串（`ai_tags` 主题标签：词来自 308 条词表短语）
+   *   · 对象 `{tag, name, node, category}`（`joy_tags` 画面标签：带英文原名与归属）
+   *
+   * 「跳哪儿」由**字段声明**（`tagTarget`）决定，不靠形状猜；形状只决定「跳不跳得动」——
+   * 只有拿到英文原名的条目才跳得动（拿中文显示名去当节点 id，跳过去只会是 0 张）。
+   */
+  function tagEntry(entry) {
+    if (entry && typeof entry === 'object') {
+      var tag = String(entry.tag == null ? '' : entry.tag);
+      var name = String(entry.name == null ? '' : entry.name);
+      return {
+        text: name || tag,
+        tag: tag,
+        node: String(entry.node == null ? '' : entry.node),
+        category: String(entry.category == null ? '' : entry.category),
+      };
+    }
+    return { text: String(entry == null ? '' : entry), tag: '', node: '', category: '' };
+  }
+
+  /** 胶囊的显示文本（`value()` 的兜底用 —— 对象条目直接 `join` 会拼出 `[object Object]`）。 */
+  function tagTextOf(list) {
+    var tags = Array.isArray(list) ? list : [];
+    var out = [];
+    for (var i = 0; i < tags.length; i++) {
+      var text = tagEntry(tags[i]).text;
+      if (text) out.push(text);
+    }
+    return out.join('、');
+  }
+
+  /**
+   * 字段值的 HTML。默认是转义后的纯文本；`render: 'tags'` 的字段渲染成一组胶囊。
+   *
+   * `ctx.tagClickable` 决定胶囊是 `<button>`（桌面端）还是 `<span>`（网页端既没有搜图页、
+   * 也没有标签导航页 —— 渲染成不可点的胶囊，而不是摆一排点了没反应的按钮）。
    * 两种形态共用同一个类名，样式只有一处。
+   *
+   * 桌面端按**字段声明的 `tagTarget`** 分岔（2026-10-09 起）：
+   *   · `'tagnav'` 且条目带英文原名 ⇒ `data-joy-tag`（＋`data-tag-node` / `data-tag-category`），
+   *     认领方跳**标签导航页的那个标签**；
+   *   · 其余 ⇒ `data-ai-tag`，认领方拿去**搜图**。
+   * 之所以分岔而不是统一：`ai_tags` 的词在标签导航页里**没有节点**，`joy_tags` 有。
    */
   function valueHtml(field, info, ctx, value) {
     if (field.render !== 'tags') return escapeHtml(String(value));
@@ -939,15 +1013,36 @@
       labels = [];
     }
     if (!labels.length) return escapeHtml(String(value));
+    var toTagNav = field.tagTarget === 'tagnav';
     var parts = [];
     for (var i = 0; i < labels.length; i++) {
-      var text = escapeHtml(String(labels[i]));
+      var e = tagEntry(labels[i]);
+      if (!e.text) continue;
+      var text = escapeHtml(e.text);
+      if (!ctx.tagClickable) {
+        parts.push('<span class="preview-info-tag preview-info-tag-static">' + text + '</span>');
+        continue;
+      }
+      if (toTagNav && e.tag) {
+        parts.push(
+          '<button type="button" class="preview-info-tag" data-joy-tag="' +
+            escapeHtml(e.tag) +
+            '" data-tag-node="' +
+            escapeHtml(e.node) +
+            '" data-tag-category="' +
+            escapeHtml(e.category) +
+            '">' +
+            text +
+            '</button>',
+        );
+        continue;
+      }
       parts.push(
-        ctx.tagClickable
-          ? '<button type="button" class="preview-info-tag" data-ai-tag="' + text + '">' + text + '</button>'
-          : '<span class="preview-info-tag preview-info-tag-static">' + text + '</span>',
+        '<button type="button" class="preview-info-tag" data-ai-tag="' + text + '">' + text + '</button>',
       );
     }
+    // 条目全是空文本（`['']` 这种）：与「没有标签」同样处理，交给调用方的空态路径。
+    if (!parts.length) return escapeHtml(String(value));
     return parts.join('');
   }
 
@@ -960,7 +1055,7 @@
    *   - position: 预览页「浏览位置」的文案（如 `12 / 3400`），没有就不显示该行
    *   - sectionBody: true 时在标题与行之间包一层 `.preview-info-section-body`
    *     （网页端样式依赖这个容器；桌面端不包，保持既有 DOM 不变）
-   *   - tagClickable: true 时 AI 标签渲染成可点胶囊（桌面端点了跳搜图）
+   *   - tagClickable: true 时 主题标签渲染成可点胶囊（桌面端点了跳搜图）
    *   - emptyHtml: 一条都没命中时的占位 HTML
    */
   function buildSectionsHtml(info, options) {

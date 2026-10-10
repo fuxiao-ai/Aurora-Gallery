@@ -95,6 +95,8 @@
     <link rel="stylesheet" href="navigation.css" />
     <link rel="stylesheet" href="theme-polish.css" />
     <link rel="stylesheet" href="ai-views.css" />
+    <!-- 标签导航页（桌面端专用：网页端那份在 web/css/tag-nav.css，两端的类名刻意不共用） -->
+    <link rel="stylesheet" href="tag-nav.css" />
   </head>
   <body>
     <!-- Aurora 极光背景 -->
@@ -381,6 +383,56 @@
         <rect x="3" y="3" width="14" height="14" rx="2" ry="2" />
         <rect x="7" y="7" width="14" height="14" rx="2" ry="2" />
       </symbol>
+      <!-- 水平翻转：左半虚线（镜像结果）+ 右半实线 -->
+      <symbol
+        id="icon-flip"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M11 4 5 20h6z" stroke-dasharray="3 2" />
+        <path d="M13 4l6 16h-6z" />
+      </symbol>
+      <!-- 裁剪：两条互成镜像的折线 -->
+      <symbol
+        id="icon-crop"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+        <path d="M2 6h14a2 2 0 0 1 2 2v14" />
+      </symbol>
+      <!-- 保存 / 放弃：预览态编辑（先预览、点保存才写回）工具条上那两个 -->
+      <symbol
+        id="icon-check"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M4 12.5 9.5 18 20 6" />
+      </symbol>
+      <symbol
+        id="icon-undo"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M3 8h11a5.5 5.5 0 0 1 0 11H8" />
+        <path d="M7 4 3 8l4 4" />
+      </symbol>
     </svg>
 
     <!-- 顶栏（与网页 header 对齐） -->
@@ -532,13 +584,13 @@
       <div class="task-panel-body" id="taskPanelBody">
         <div id="taskScanSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="progressText" data-i18n="task.scanning">正在扫描...</span>
+            <span id="taskScanText" data-i18n="task.scanning">正在扫描...</span>
             <div class="progress-actions">
-              <span id="progressCount">0 / 0</span>
+              <span id="taskScanCount">0 / 0</span>
               <button
                 type="button"
                 class="btn btn-sm"
-                id="pauseResumeScanBtn"
+                id="taskScanPause"
                 data-i18n="task.pause"
               >
                 暂停
@@ -546,7 +598,7 @@
               <button
                 type="button"
                 class="btn btn-sm progress-cancel-btn"
-                id="cancelScanBtn"
+                id="taskScanCancel"
                 data-i18n="task.stop"
               >
                 停止
@@ -554,22 +606,22 @@
             </div>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+            <div class="progress-fill" id="taskScanFill" style="width: 0%"></div>
           </div>
-          <div class="progress-file" id="progressFile"></div>
-          <div class="progress-file progress-eta" id="scanProgressEta"></div>
+          <div class="progress-file" id="taskScanFile"></div>
+          <div class="progress-file progress-eta" id="taskScanEta"></div>
         </div>
         <div id="taskThumbSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="thumbProgressTitle" data-i18n="task.thumbTitle"
+            <span id="taskThumbTitle" data-i18n="task.thumbTitle"
               >缩略图与图片信息补全</span
             >
             <div class="progress-actions">
-              <span id="thumbProgressCount">0 / 0</span>
+              <span id="taskThumbCount">0 / 0</span>
               <button
                 type="button"
                 class="btn btn-sm progress-cancel-btn"
-                id="taskCancelThumbBtn"
+                id="taskThumbStop"
                 data-i18n="task.thumbStop"
               >
                 停止补全
@@ -577,39 +629,71 @@
             </div>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" id="thumbProgressFill" style="width: 0%"></div>
+            <div class="progress-fill" id="taskThumbFill" style="width: 0%"></div>
           </div>
-          <div class="progress-file" id="thumbProgressDetail"></div>
-          <div class="progress-file" id="thumbProgressFile"></div>
-          <div class="progress-file progress-eta" id="thumbProgressEta"></div>
+          <div class="progress-file" id="taskThumbDetail"></div>
+          <div class="progress-file" id="taskThumbFile"></div>
+          <div class="progress-file progress-eta" id="taskThumbEta"></div>
+        </div>
+        <!--
+          缩略图**全量重建**（与上面「补全」是两件事：补全是把缺的补上，重建是把已入库的
+          按新档位 / 新编码整体重跑一遍）。
+          🔴 主进程 `get-background-tasks` 把两者分成 `thumbs` / `thumbRebuild` **两个字段**报
+             （分子分母口径不同，合成一个数会让「补了 3 张」和「重跑了 3 张」分不清），
+             所以面板这边也必须各画一块 —— 否则重建在跑时顶栏看着像什么都没干。
+        -->
+        <div id="taskThumbRebuildSection" class="task-section" style="display: none">
+          <div class="progress-header">
+            <span id="taskThumbRebuildTitle" data-i18n="task.thumbRebuildTitle"
+              >重建全部缩略图</span
+            >
+            <div class="progress-actions">
+              <span id="taskThumbRebuildCount">0 / 0</span>
+              <button
+                type="button"
+                class="btn btn-sm progress-cancel-btn"
+                id="taskThumbRebuildStop"
+                data-i18n="task.thumbRebuildStop"
+              >
+                停止重建
+              </button>
+            </div>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="taskThumbRebuildFill" style="width: 0%"></div>
+          </div>
+          <div class="progress-file" id="taskThumbRebuildDetail"></div>
+          <div class="progress-file" id="taskThumbRebuildFile"></div>
+          <div class="progress-file progress-eta" id="taskThumbRebuildEta"></div>
         </div>
         <div id="taskInvalidCleanupSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="invalidCleanupProgressTitle" data-i18n="task.invalidCleanup"
+            <span id="taskInvalidCleanupTitle" data-i18n="task.invalidCleanup"
               >清理无效文件记录</span
             >
             <div class="progress-actions">
-              <span id="invalidCleanupProgressCount">0 / 0</span>
+              <span id="taskInvalidCleanupCount">0 / 0</span>
             </div>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" id="invalidCleanupProgressFill" style="width: 0%"></div>
+            <div class="progress-fill" id="taskInvalidCleanupFill" style="width: 0%"></div>
           </div>
-          <div class="progress-file" id="invalidCleanupProgressFile"></div>
-          <div class="progress-file progress-eta" id="invalidCleanupProgressEta"></div>
+          <div class="progress-file" id="taskInvalidCleanupDetail"></div>
+          <div class="progress-file" id="taskInvalidCleanupFile"></div>
+          <div class="progress-file progress-eta" id="taskInvalidCleanupEta"></div>
         </div>
         <div id="taskOptimizeSection" class="task-section task-optimize-row" style="display: none">
-          <span id="optimizeTaskText" data-i18n="task.optimizeDb">正在优化数据库</span>
+          <span id="taskOptimizeText" data-i18n="task.optimizeDb">正在整理数据库</span>
         </div>
         <div id="taskFaceSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="faceTaskTitle" data-i18n="task.faceTitle">人脸索引</span>
+            <span id="taskFaceTitle" data-i18n="task.faceTitle">人脸模型 / 索引</span>
             <div class="progress-actions">
-              <span id="faceTaskCount"></span>
+              <span id="taskFaceCount"></span>
               <button
                 type="button"
                 class="btn btn-sm"
-                id="faceTaskSettings"
+                id="taskFaceSettings"
                 data-i18n="nav.settings"
               >
                 设置
@@ -617,33 +701,41 @@
               <button
                 type="button"
                 class="btn btn-sm progress-cancel-btn"
-                id="faceTaskStop"
+                id="taskFaceStop"
                 data-i18n="task.stop"
               >
                 停止
               </button>
             </div>
           </div>
-          <progress
-            id="faceTaskProgress"
-            max="100"
+          <div
+            class="progress-bar"
+            role="progressbar"
             aria-label="人脸索引进度"
             data-i18n-aria-label="task.faceTitle"
-            style="width: 100%"
-          ></progress>
-          <div class="progress-file" id="faceTaskFile"></div>
-          <div class="progress-file progress-eta" id="faceTaskRate"></div>
-          <div class="progress-file" id="faceTaskError" role="alert"></div>
+          >
+            <div class="progress-fill" id="taskFaceProgress" style="width: 0%"></div>
+          </div>
+          <div class="progress-file" id="taskFaceFile"></div>
+          <div class="progress-file progress-eta" id="taskFaceRate"></div>
+          <!--
+            「预计剩余」。⚠️ 这一行是**欠账补上的**（2026-10-08）：其余 7 节一直有
+            `task<节>Eta`，只有 AI 这两节没有 —— 因为这两节原先**没有分母**，只能报速率
+            （契约 §7）。加了抽样估计分母（`totalEstimated`）之后分母有了，ETA 就能算了。
+            ⚠️ 分母是估值 ⇒ 文案里那个「约」不是装饰（词条 `task.etaPrefix` 自带）。
+          -->
+          <div class="progress-file progress-eta" id="taskFaceEta"></div>
+          <div class="progress-file" id="taskFaceError" role="alert"></div>
         </div>
         <div id="taskSemanticSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="semanticTaskTitle" data-i18n="task.semanticTitle">AI 搜图索引</span>
+            <span id="taskSemanticTitle" data-i18n="task.semanticTitle">AI 模型 / 索引</span>
             <div class="progress-actions">
-              <span id="semanticTaskCount"></span>
+              <span id="taskSemanticCount"></span>
               <button
                 type="button"
                 class="btn btn-sm"
-                id="semanticTaskSettings"
+                id="taskSemanticSettings"
                 data-i18n="nav.settings"
               >
                 设置
@@ -651,33 +743,46 @@
               <button
                 type="button"
                 class="btn btn-sm progress-cancel-btn"
-                id="semanticTaskStop"
+                id="taskSemanticStop"
                 data-i18n="task.stop"
               >
                 停止
               </button>
             </div>
           </div>
-          <progress
-            id="semanticTaskProgress"
-            max="100"
+          <div
+            class="progress-bar"
+            role="progressbar"
             aria-label="AI 搜图索引进度"
             data-i18n-aria-label="task.semanticTitle"
-            style="width: 100%"
-          ></progress>
-          <div class="progress-file" id="semanticTaskFile"></div>
-          <div class="progress-file progress-eta" id="semanticTaskRate"></div>
-          <div class="progress-file" id="semanticTaskError" role="alert"></div>
+          >
+            <div class="progress-fill" id="taskSemanticProgress" style="width: 0%"></div>
+          </div>
+          <div class="progress-file" id="taskSemanticFile"></div>
+          <div class="progress-file progress-eta" id="taskSemanticRate"></div>
+          <!--
+            同人脸节：ETA 属于**主路**（上面那根进度条 / 计数行），所以紧跟在速率行后面；
+            下面那条 `TagCount` 是**第二路**（tag 倒排）自己的计数，排在主路块之后。
+            两节的相对次序一致（File → Rate → Eta → …），人脸节的 `…TagCount` 是刻意不存在的。
+          -->
+          <div class="progress-file progress-eta" id="taskSemanticEta"></div>
+          <!--
+            第二路（tag 倒排 / JoyTag）的计数。**只属于这一节** —— 人脸节刻意没有这一格
+            （`scan-flow.js` 是按 `prefix + 'TagCount'` 拼 id 的，所以 `taskFaceTagCount`
+            必须保持不存在，别顺手给两个节补齐）。
+          -->
+          <div class="progress-file" id="taskSemanticTagCount"></div>
+          <div class="progress-file" id="taskSemanticError" role="alert"></div>
         </div>
         <div id="taskDupHashSection" class="task-section" style="display: none">
           <div class="progress-header">
-            <span id="dupHashProgressTitle" data-i18n="task.dupTitle">查找重复照片</span>
+            <span id="taskDupHashTitle" data-i18n="task.dupTitle">查找重复图片</span>
             <div class="progress-actions">
-              <span id="dupHashProgressCount">0 / 0</span>
+              <span id="taskDupHashCount">0 / 0</span>
               <button
                 type="button"
                 class="btn btn-sm progress-cancel-btn"
-                id="taskCancelDupHashBtn"
+                id="taskDupHashStop"
                 data-i18n="task.stop"
               >
                 停止
@@ -685,11 +790,12 @@
             </div>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" id="dupHashProgressFill" style="width: 0%"></div>
+            <div class="progress-fill" id="taskDupHashFill" style="width: 0%"></div>
           </div>
-          <div class="progress-file" id="dupHashProgressFile"></div>
-          <div class="progress-file" id="dupHashProgressHash"></div>
-          <div class="progress-file progress-eta" id="dupHashProgressEta"></div>
+          <div class="progress-file" id="taskDupHashDetail"></div>
+          <div class="progress-file" id="taskDupHashFile"></div>
+          <div class="progress-file" id="taskDupHashHash"></div>
+          <div class="progress-file progress-eta" id="taskDupHashEta"></div>
         </div>
       </div>
     </div>
@@ -734,9 +840,9 @@
           type="button"
           class="rail-item nav-tab active"
           data-tab="folders"
-          title="文件"
+          title="文件夹"
           data-i18n-title="nav.folders"
-          aria-label="文件"
+          aria-label="文件夹"
           data-i18n-aria-label="nav.folders"
         >
           <svg
@@ -752,7 +858,7 @@
               d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"
             />
           </svg>
-          <span data-i18n="nav.folders">文件</span>
+          <span data-i18n="nav.folders">文件夹</span>
         </button>
         <button
           type="button"
@@ -825,6 +931,30 @@
           </svg>
           <span data-i18n="nav.people">人物</span>
         </button>
+        <button
+          type="button"
+          class="rail-item nav-tab"
+          data-tab="tags"
+          title="标签"
+          data-i18n-title="nav.tags"
+          aria-label="标签"
+          data-i18n-aria-label="nav.tags"
+        >
+          <!-- 图标：一个「标签」轮廓（lucide-static `tag` 的形态，ISC） -->
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12.6 3H20a1 1 0 0 1 1 1v7.4a2 2 0 0 1-.6 1.4l-7.6 7.6a2 2 0 0 1-2.8 0l-5-5a2 2 0 0 1 0-2.8l7.6-7.6a2 2 0 0 1 1.4-.6Z" />
+            <circle cx="16.5" cy="7.5" r="1.3" />
+          </svg>
+          <span data-i18n="nav.tags">标签</span>
+        </button>
         <!-- 第二条分组线：上面 4 项是「换内容看的视图」，下面是「干活用的工具 / 配置」。
              没有它，「重复」看起来就是第五个视图。 -->
         <div class="rail-divider" aria-hidden="true"></div>
@@ -887,11 +1017,45 @@
       <!-- 侧边栏 -->
       <div class="sidebar" id="sidebar">
         <div class="sidebar-section-heading" id="navigationHeading" data-i18n="nav.folders">
-          文件
+          文件夹
         </div>
         <div id="settingsSidebar" class="sidebar-content" hidden></div>
         <!-- 搜图页侧栏：搜索框 + 搜索历史（侧栏独占，文件夹树让位） -->
         <div id="searchSidebar" class="sidebar-content" hidden>
+          <!--
+            搜图方式：关键词（文件名 / 目录名子串匹配，零依赖、即时可用）与语义
+            （AI 向量，需要模型与索引）是**两套引擎**，必须让用户显式二选一 ——
+            混在一个框里由后端猜，会出现「输了个文件名却被当成画面描述去匹配」。
+            默认落在关键词：它不依赖索引，任何人进这一页立刻能搜。
+          -->
+          <div
+            class="ai-search-modes"
+            id="aiSearchModes"
+            role="group"
+            aria-label="搜索方式"
+            data-i18n-aria-label="ai.modeAria"
+          >
+            <button
+              type="button"
+              class="ai-search-mode is-active"
+              id="aiSearchModeKeyword"
+              data-ai-search-mode="keyword"
+              aria-pressed="true"
+              data-i18n="ai.modeKeyword"
+            >
+              关键词
+            </button>
+            <button
+              type="button"
+              class="ai-search-mode"
+              id="aiSearchModeSemantic"
+              data-ai-search-mode="semantic"
+              aria-pressed="false"
+              data-i18n="ai.modeSemantic"
+            >
+              语义
+            </button>
+          </div>
           <form class="ai-search-form ai-sidebar-search" id="aiSearchForm">
             <span class="ai-search-field">
               <svg
@@ -1123,6 +1287,77 @@
             <option value="image" data-i18n="filter.image">仅图片</option>
             <option value="video" data-i18n="filter.video">仅视频</option>
           </select>
+          <!-- 组织元数据筛选（评分 / 标记 / 标签）。
+               ⚠️ 这三档走的是**服务端筛选**（`photos.rating` / `photos.flag` / `photo_tags`），
+               不是前端过滤 —— 前端过滤只能筛当前这一页，而用户期待的是「筛整个库」。
+               取值与主进程判据同源：`0`（未评分）与 `none`（未标记）都是**合法的具体值**，
+               与「不限」（空串）刻意分开。 -->
+          <select
+            class="sort-select"
+            id="orgFilterRatingSelect"
+            data-i18n-aria-label="org.filterRatingAria"
+            aria-label="评分筛选"
+            title="按评分筛选"
+          >
+            <option value="" selected data-i18n="org.filterAnyRating">全部评分</option>
+            <option value="5" data-i18n="org.filterRating5">5 星</option>
+            <option value="4" data-i18n="org.filterRating4">4 星</option>
+            <option value="3" data-i18n="org.filterRating3">3 星</option>
+            <option value="2" data-i18n="org.filterRating2">2 星</option>
+            <option value="1" data-i18n="org.filterRating1">1 星</option>
+            <option value="0" data-i18n="org.filterRatingNone">未评分</option>
+          </select>
+          <select
+            class="sort-select"
+            id="orgFilterFlagSelect"
+            data-i18n-aria-label="org.filterFlagAria"
+            aria-label="标记筛选"
+            title="按标记筛选"
+          >
+            <option value="" selected data-i18n="org.filterAnyFlag">全部标记</option>
+            <option value="pick" data-i18n="org.flag.pick">已选</option>
+            <option value="reject" data-i18n="org.flag.reject">已否</option>
+            <option value="none" data-i18n="org.filterFlagNone">未标记</option>
+          </select>
+          <button
+            type="button"
+            class="sort-select org-filter-tags-btn"
+            id="orgFilterTagsBtn"
+            data-i18n-aria-label="org.filterTagsAria"
+            aria-label="标签筛选"
+            title="按标签筛选（可多选，同时具备）"
+          >
+            <span data-i18n="org.filterTags">标签</span>
+            <span class="org-filter-tags-count"></span>
+          </button>
+          <button
+            type="button"
+            class="sort-select org-filter-clear-btn"
+            id="orgFilterClearBtn"
+            data-i18n="org.filterClear"
+            title="清除全部筛选"
+            style="display: none"
+          >
+            清除筛选
+          </button>
+          <!-- 标签筛选面板（多选）。挂在工具条内、绝对定位悬浮在工具条下方。
+               用手写面板而不是 `<select multiple>`：原生多选在 Windows 上要按住 Ctrl
+               点选，而「同时具备两个标签」正是这里最常用的操作 —— 逼用户按住修饰键
+               才敢点第二下，等于把这个功能的用法藏起来了。 -->
+          <div class="org-filter-tags-panel" id="orgFilterTagsPanel" style="display: none">
+            <div class="org-filter-tags-panel-header">
+              <span data-i18n="org.filterTagsHint">选中多个标签 = 必须同时具备</span>
+              <button
+                type="button"
+                class="org-filter-tags-close"
+                id="orgFilterTagsClose"
+                aria-label="关闭"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-close" /></svg>
+              </button>
+            </div>
+            <div class="org-filter-tags-list" id="orgFilterTagsList"></div>
+          </div>
           <select class="sort-select" id="sortSelect">
             <option value="date_taken|DESC" data-i18n="sort.dateTakenDesc">最新拍摄</option>
             <option value="date_taken|ASC" data-i18n="sort.dateTakenAsc">最早拍摄</option>
@@ -1133,7 +1368,7 @@
           </select>
         </div>
 
-        <!-- 照片网格 -->
+        <!-- 图片网格 -->
         <div class="photo-grid" id="photoGrid">
           <!-- 🔴 这里原有静态欢迎页 `#emptyState`（.welcome-mark + 4 张 .feature-card），
                已整体移除：它是「启动欢迎页专用」的节点，而启动欢迎页现在换成了独立的
@@ -1276,8 +1511,12 @@
         键鼠天然双可达，click 与 Enter/Space 走同一条委托分支（见 app.js 的 handleHomeGoto）。
         卡片本体刻意不可点 —— 它是介绍容器，样式里没有 cursor:pointer、也没有 hover 抬升。
 
-        装饰（.home-brand 与样式段里的 ①–⑧）一律是 aria-hidden / 伪元素，**不引入新的
-        可点节点、不引入新的 data-home-goto**：可点节点数恒为 10，这是守护 §5 的硬口径。
+        🔴 视觉语言（2026-10-06 翻新为「编辑感」）：**层级靠结构与排版，不靠装饰。**
+        装饰从上一版的 8 处砍到 3 处（① 顶部线性光 ② 品牌徽标描边 ③ 图标底座描边），
+        省下的注意力全给三个主语：标题 / 库概览主数字 / 主按钮。
+        形态语言只有三种：**实心 = 主行动，描边 = 次级入口，无边界 = 纯信息。**
+        装饰一律是 aria-hidden / 伪元素，**不引入新的可点节点、不引入新的 data-home-goto**
+        —— 可点节点数恒为 11（主按钮 1 + 卡内 chip 10），这是守护 §5 的硬口径。
       -->
       <div class="home-page" id="homePage">
         <div class="home-head">
@@ -1300,7 +1539,50 @@
           </span>
           <div class="home-title" data-i18n="brand">拂晓图库</div>
           <div class="home-sub" data-i18n="home.subtitle">
-            照片都放在自己电脑里：原图不动、不上传，打开就能看。
+            图片都放在自己电脑里：原图不动、不上传，打开就能看。
+          </div>
+        </div>
+
+        <!--
+          库概览（2026-10-06）—— 首页上**唯一**的数据块。
+
+          🔴 版式刻意是「**四项平铺**」：张图片 / 个视频 / 总大小 / 个目录。
+             上一版是「1 主数字（30px）+ 3 次级（15px）」，把图片数抬到主行；用户 2026-10-06
+             否决：**「图片和视频不在一个层级好吗」** —— 图片与视频是同一维度的两个取值
+             （底栏 `#mediaFilterSelect` 里它俩就是并列的 image / video），谁高谁低没有依据。
+             ⇒ 四项同字号同权重、一行排开，没有主次就没有那条 border-top 分隔线。
+             四项各自是独立的可测节点（id 不变）。
+
+          🔴 数据是「白拿」的：值是 `state.stats`，而那个字段由启动路径上本来就会跑的
+             `loadStats()` 写入。所以首页**零新增 IPC、零新增查询**：本节点自己不请求、
+             不读数据库，守护 §7「Home 代码段零 api. / 零 invoke」那条范围线**没有被放宽**。
+
+          🔴 骨架恒高：「数据晚到不跳字」的判据是补写前后 getBoundingClientRect() 逐值相同。
+             三条保障各管一件事 ——
+               ① 数值**字号在骨架态就用终值**（`—` 也是那个字号，HTML 与 CSS 共同保证）；
+               ② 四项是 `repeat(4, minmax(0, 1fr))` 均分 ⇒ 格宽与位数无关；
+               ③ 所有数值单行 nowrap ⇒ 不因换行而改高。
+
+          🔴 纯展示，不是入口：不带 data-home-goto、不带 <button>，样式里也没有
+             cursor:pointer / :hover（那两样在 Home 段内各只允许 1 处，只能属于 .home-chip）。
+             可点节点数恒为 11 是守护 §5 的硬口径。
+        -->
+        <div class="home-stats" id="homeStats">
+          <div class="home-stat-item">
+            <span class="home-stat-value" id="homeStatPhotos">—</span>
+            <span class="home-stat-label" data-i18n="home.stats.photos">张图片</span>
+          </div>
+          <div class="home-stat-item">
+            <span class="home-stat-value" id="homeStatVideos">—</span>
+            <span class="home-stat-label" data-i18n="home.stats.videos">个视频</span>
+          </div>
+          <div class="home-stat-item">
+            <span class="home-stat-value" id="homeStatSize">—</span>
+            <span class="home-stat-label" data-i18n="home.stats.size">总大小</span>
+          </div>
+          <div class="home-stat-item">
+            <span class="home-stat-value" id="homeStatFolders">—</span>
+            <span class="home-stat-label" data-i18n="home.stats.folders">个目录</span>
           </div>
         </div>
 
@@ -1343,7 +1625,7 @@
               </span>
               <div class="home-feature-body">
                 <div class="home-feature-title" data-i18n="home.grp.browse.title">
-                  照片再多也找得到
+                  图片再多也找得到
                 </div>
                 <div class="home-feature-desc" data-i18n="home.grp.browse.desc">
                   按文件夹翻、按日期翻，几万张也一目了然。
@@ -1351,8 +1633,14 @@
               </div>
             </div>
             <div class="home-feature-links">
+              <!-- ⚠️ 文案是「所有文件」而不是「所有图片」：这个落点是 view:all，**不筛媒体类型**
+                   （下面的「只看图片 / 只看视频」各带一个 mediaFilter）。叫「所有图片」会与
+                   「只看图片」读起来像同一件事，也会盖掉视频 —— 而它其实两样都给。
+                   🔴 复用侧栏那条 `sidebar.allFiles`，**不另开 home.* 词条**：侧栏树顶那一行
+                   落到的是同一个 view=all。同一句文案放在两条词条里 = 迟早只改一边
+                   （本项目「两份清单各自演化」的老病）。 -->
               <button type="button" class="home-chip" data-home-goto="view:all">
-                <span data-i18n="sidebar.allPhotos">所有照片</span>
+                <span data-i18n="sidebar.allFiles">所有文件</span>
               </button>
               <button type="button" class="home-chip" data-home-goto="view:folder_overview">
                 <span data-i18n="sidebar.allFolders">所有目录</span>
@@ -1380,10 +1668,10 @@
               </span>
               <div class="home-feature-body">
                 <div class="home-feature-title" data-i18n="home.grp.search.title">
-                  一句话找到那张照片
+                  一句话找到那张图片
                 </div>
                 <div class="home-feature-desc" data-i18n="home.grp.search.desc">
-                  说一句「海边的日落」就能找到；照片里的人会自动归类。
+                  说一句「海边的日落」就能找到；图片里的人会自动归类。
                 </div>
               </div>
             </div>
@@ -1415,11 +1703,17 @@
               <div class="home-feature-body">
                 <div class="home-feature-title" data-i18n="home.grp.large.title">再多也不卡</div>
                 <div class="home-feature-desc" data-i18n="home.grp.large.desc">
-                  上百万张照片照样流畅，视频点开就看，字幕自动加载。
+                  上百万张图片照样流畅，视频点开就看，字幕自动加载。
                 </div>
               </div>
             </div>
             <div class="home-feature-links">
+              <!-- 「只看图片」必须排在「只看视频」**之前**：两者是同一个维度的两个取值
+                   （底栏 #mediaFilterSelect 的 image / video），图片在前才与统计带
+                   「张图片 → 个视频」以及卡 1 的「所有文件」读起来同序。 -->
+              <button type="button" class="home-chip" data-home-goto="view:all:image">
+                <span data-i18n="home.chip.photos">只看图片</span>
+              </button>
               <button type="button" class="home-chip" data-home-goto="view:all:video">
                 <span data-i18n="home.chip.videos">只看视频</span>
               </button>
@@ -1519,7 +1813,7 @@
                 浏览与显示
               </div>
               <div class="settings-section-desc" data-i18n="settings.section.browseDesc">
-                决定照片以什么顺序、多大、按什么比例铺在相册里。改完立即生效。
+                决定图片以什么顺序、多大、按什么比例铺在相册里。改完立即生效。
               </div>
             </div>
           </div>
@@ -1753,7 +2047,7 @@
               id="settingsBrowseGroupInfoPanelHeading"
               data-i18n="settings.infoPanel.group"
             >
-              照片信息面板
+              图片信息面板
             </h3>
             <div class="settings-browse-group-body">
               <p class="settings-browse-hint" data-i18n-html="settings.infoPanel.hintHtml"></p>
@@ -1937,7 +2231,7 @@
                 id="thumbSettingHint"
                 data-i18n="settings.thumbSizeQualityDesc"
               >
-                尺寸越大越清晰、占用的磁盘也越多。只影响之后新生成的缩略图，已有的不会自动重做。
+                尺寸越大越清晰、占用的磁盘也越多；编码固定为 WebP。改动只影响之后新生成的缩略图，已在库里的要用下方的「重建全部缩略图」转换。
               </div>
               <div class="thumb-settings-current" id="thumbSettingsCurrentLine" aria-live="polite">
                 当前生效：读取中...
@@ -1958,8 +2252,9 @@
               <select id="settingThumbSize" class="sort-select">
                 <option value="128" data-i18n="settings.thumb.edge128">128 px（省空间）</option>
                 <option value="192">192 px</option>
-                <option value="256" data-i18n="settings.thumb.edge256">256 px（默认）</option>
+                <option value="256" data-i18n="settings.thumb.edge256">256 px</option>
                 <option value="320" data-i18n="settings.thumb.edge320">320 px（更清晰）</option>
+                <option value="512" data-i18n="settings.thumb.edge512">512 px（默认，更清晰）</option>
               </select>
               <label
                 class="setting-inline-label"
@@ -1981,6 +2276,31 @@
                 data-i18n="settings.apply"
               >
                 确认应用
+              </button>
+            </div>
+            <!-- 全量重建：改了档位 / 画质之后，把**已经在库里**的缩略图按新规格重跑一遍。
+                 刻意放在「尺寸与质量」这一项**内部**、而不是任务区：两个下拉只影响「之后新生成的」，
+                 这一行才是「把已有的也换过去」—— 两者必须挨着看，否则用户会以为改完就生效了。 -->
+            <div class="thumb-settings-current" id="thumbRebuildStatus" aria-live="polite">
+              已入库缩略图：读取中...
+            </div>
+            <div class="stg-row-tight">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="thumbRebuildStartBtn"
+                data-i18n="settings.thumbRebuildStart"
+              >
+                重建全部缩略图
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-danger"
+                id="thumbRebuildCancelBtn"
+                style="display: none"
+                data-i18n="settings.thumbRebuildStop"
+              >
+                停止重建
               </button>
             </div>
           </div>
@@ -2035,6 +2355,44 @@
               建议 1GB / 48 个目录。保存后从下一次播放开始生效。
             </div>
           </div>
+
+          <div class="setting-item setting-item--stack" id="dataDirRow">
+            <div class="setting-info">
+              <div class="setting-label" data-i18n="settings.storage.dataDir">图库数据位置</div>
+              <div class="setting-desc" data-i18n="settings.storage.dataDirDesc">
+                图片信息、缩略图、AI 索引和缓存都放在这个文件夹里，用久了会占很多空间。想换到空间更大的磁盘，用下面的「迁移到…」整份搬过去。
+              </div>
+              <!-- 迁移结果会是两三行（搬了多少 / 原文件进了回收站还是直接删了），所以要认换行 -->
+              <div
+                class="thumb-settings-current"
+                id="dataDirCurrentLine"
+                aria-live="polite"
+                style="white-space: pre-line"
+              >
+                读取中…
+              </div>
+            </div>
+            <div class="stg-row-tight">
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                id="dataDirMigrateBtn"
+                data-i18n="settings.storage.dataDirMigrate"
+              >
+                迁移到…
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="dataDirOpenBtn"
+                data-i18n="settings.storage.dataDirOpen"
+                data-i18n-title="settings.storage.dataDirOpenTitle"
+                title="在系统的文件管理器里打开这个位置"
+              >
+                打开文件夹
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- 5 后台任务 -->
@@ -2060,7 +2418,7 @@
                     id="thumbBackfillStatus"
                     data-i18n="settings.task.thumbBackfillDesc"
                   >
-                    为还没有预览图的照片生成缩略图
+                    为还没有预览图的图片生成缩略图
                   </div>
                 </div>
                 <div class="settings-task-actions stg-actions-tight">
@@ -2124,13 +2482,13 @@
 
             <div class="setting-item settings-task-row">
               <div class="setting-info">
-                <div class="setting-label" data-i18n="settings.task.dupHash">查找重复照片</div>
+                <div class="setting-label" data-i18n="settings.task.dupHash">查找重复图片</div>
                 <div
                   class="setting-desc"
                   id="duplicateHashStatus"
                   data-i18n="settings.task.dupHashDesc"
                 >
-                  逐张比对照片内容，找出完全相同的重复项。只处理还没比对过、并且文件仍在电脑上的照片。
+                  逐张比对图片内容，找出完全相同的重复项。只处理还没比对过、并且文件仍在电脑上的图片。
                 </div>
               </div>
               <div class="settings-task-actions">
@@ -2167,14 +2525,14 @@
             <div class="setting-item settings-task-row setting-item--stack">
               <div class="setting-info">
                 <div class="setting-label" data-i18n="settings.task.maintenance">
-                  数据库维护
+                  图库维护工具
                 </div>
                 <div
                   class="setting-desc"
                   id="maintenanceStatus"
                   data-i18n="settings.task.maintenanceDesc"
                 >
-                  清理已失效的记录、重建缩略图标记、压缩数据库，或先备份一份再动手
+                  清理失效记录、校正缩略图记录、整理数据库，或先备份一份再动手
                 </div>
               </div>
               <div class="settings-maintenance-actions settings-maintenance-row">
@@ -2192,7 +2550,7 @@
                   id="maintenanceRebuildThumbFlagsBtn"
                   data-i18n="settings.task.rebuildThumbFlags"
                 >
-                  重建缩略图标记
+                  重建缩略图记录
                 </button>
                 <button
                   type="button"
@@ -2200,7 +2558,7 @@
                   id="maintenanceOptimizeBtn"
                   data-i18n="settings.task.optimizeDb"
                 >
-                  压缩数据库
+                  整理数据库
                 </button>
                 <button
                   type="button"
@@ -2208,7 +2566,7 @@
                   id="maintenanceOpenDbFolderBtn"
                   data-i18n="settings.task.openDbFolder"
                 >
-                  打开数据目录
+                  打开所在文件夹
                 </button>
                 <button
                   type="button"
@@ -2235,7 +2593,7 @@
                 <div class="setting-info">
                   <div class="setting-label" data-i18n="settings.autoScan">启动时自动扫描</div>
                   <div class="setting-desc" data-i18n="settings.autoScanDesc">
-                    打开应用后自动重新扫描已添加的目录，把新增或变动的照片补进索引
+                    打开应用后自动重新扫描已添加的目录，把新增或变动的图片补进索引
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -2249,7 +2607,7 @@
                     启动时自动补齐缩略图与指纹
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoThumbDesc">
-                    在后台为缺少预览图或缺少视觉指纹的照片补齐数据，闲下来才会跑
+                    在后台为缺少预览图或缺少视觉指纹的图片补齐数据，闲下来才会跑
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -2260,10 +2618,10 @@
               <div class="settings-toggle-col">
                 <div class="setting-info">
                   <div class="setting-label" data-i18n="settings.autoDup">
-                    启动后自动查找重复照片
+                    启动后自动查找重复图片
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoDupDesc">
-                    在后台比对还没处理过的照片。若同时开启了自动扫描，会等扫描结束后再开始。
+                    在后台比对还没处理过的图片。若同时开启了自动扫描，会等扫描结束后再开始。
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -2277,7 +2635,7 @@
                     启动后自动建搜图索引
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoSemanticDesc">
-                    把还没索引的照片交给搜图模型处理，完成后可以按画面内容搜图。首次会跑很久，期间请保持应用开着。
+                    把还没索引的图片交给搜图模型处理，完成后可以按画面内容搜图。首次会跑很久，期间请保持应用开着。
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -2291,7 +2649,7 @@
                     启动后自动建人脸索引
                   </div>
                   <div class="setting-desc" data-i18n="settings.autoFaceDesc">
-                    识别照片里的人脸并自动分组，完成后「人物」页才有内容。首次会跑很久，期间请保持应用开着。
+                    识别图片里的人脸并自动分组，完成后「人物」页才有内容。首次会跑很久，期间请保持应用开着。
                   </div>
                 </div>
                 <label class="toggle-switch">
@@ -2304,7 +2662,7 @@
                   class="setting-inline-label"
                   for="settingSimilarThreshold"
                   data-i18n="settings.similarThreshold"
-                  >相似照片判定</label
+                  >相似图片判定</label
                 >
                 <select
                   id="settingSimilarThreshold"
@@ -2320,7 +2678,7 @@
                   <option value="24">非常宽松</option>
                 </select>
                 <p class="settings-browse-hint" data-i18n="settings.similarThresholdDesc">
-                  越严格，找出的照片越接近「同一张」。用于预览页的「查找相似照片」和重复页的「视觉相似」。
+                  越严格，找出的图片越接近「同一张」。用于预览页的「查找相似图片」和重复页的「视觉相似」。
                 </p>
               </div>
             </div>
@@ -2337,7 +2695,7 @@
             <div class="settings-header-main">
               <div class="settings-section-title" data-i18n="settings.section.ai">AI 与索引</div>
               <div class="settings-section-desc" data-i18n="settings.section.aiDesc">
-                搜图与人物识别都在本机运行，照片不外传。这一页放模型、索引与识别参数。
+                搜图与人物识别都在本机运行，图片不外传。这一页放模型、索引与识别参数。
               </div>
             </div>
           </div>
@@ -2599,8 +2957,11 @@
                       aria-label="启动后先看"
                     >
                       <option value="welcome" data-i18n="settings.launch.welcome">欢迎页</option>
-                      <option value="all_photos" data-i18n="settings.launch.allPhotos">
-                        所有照片
+                      <!-- ⚠️ value="all_photos" 是**持久化值**（settings.launchDefaultPage），
+                           绝不随文案改；它也不非要与 key 名对应 —— 同一排的
+                           value="last_position" 配的就是 `settings.launch.last`。 -->
+                      <option value="all_photos" data-i18n="settings.launch.allFiles">
+                        所有文件
                       </option>
                       <option value="all_folders" data-i18n="settings.launch.allFolders">
                         所有目录
@@ -2805,6 +3166,14 @@
     </div>
 
     <!-- 预览（对齐网页端毛玻璃样式 + preview-body 包裹） -->
+    <!-- 🔴🔴 本浮层内所有带图标的按钮，`data-i18n` 必须挂在 **`<span class="btn-label">`** 上，
+         绝不能挂在 `<button>` 自己身上 —— 挂错的话 `i18n.js#applyDom()` 的
+         `el.textContent = val` 会把按钮里的 `<svg class="btn-icon">` 和这个 span
+         **整棵删掉**（实测子节点从 2 变 0），按钮只剩下一串纯文本、图标永久消失。
+         它不崩、不报错、**静态断言一条都不会红**（属性在、类名在、键也在），
+         只有渲染出来或用探针读 DOM 才看得见 —— 这里 18 个按钮从上线起就一直是这个状态。
+         挂对了的样子参考本行的 `slideshowRandomBtn`（`#icon-shuffle` 一直正常）。
+         2026-10-09 全量订正为 span 挂法；`data-i18n-title` 不受影响，仍留在 button 上。 -->
     <div class="preview-overlay" id="previewOverlay">
       <div class="preview-chrome-top">
         <div class="preview-chrome-hit-layer">
@@ -2814,10 +3183,14 @@
                 type="button"
                 class="btn btn-sm"
                 id="slideshowToggleBtn"
-                data-i18n="preview.slideshow.play"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-play" /></svg>
-                <span class="btn-label">播放</span>
+                <!-- 🔴 这个按钮**刻意没有图标**，别照着隔壁「全屏 / 随机」的样子补一个：
+                     它的图标就是状态本身（播 / 停），而雪碧图里只有 `#icon-play`、
+                     没有 `#icon-pause` ⇒ 用 `<svg>` 表达不了「正在播放」那一态。
+                     所以状态由 label 文案承载（`preview.slideshow.play` = `▶ 播放` /
+                     `pause` = `⏸ 暂停`），由 `ui-preview.js` 的 start/stopSlideshow
+                     直接改这个 span —— 挂 `data-i18n` 的也必须是 span（详见下方按钮的说明）。 -->
+                <span class="btn-label" data-i18n="preview.slideshow.play">▶ 播放</span>
               </button>
               <select
                 id="slideshowIntervalSelect"
@@ -2846,21 +3219,61 @@
                 type="button"
                 class="btn btn-sm"
                 id="previewFullscreenBtn"
-                data-i18n="preview.fullscreen"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-fullscreen" /></svg>
-                <span class="btn-label">全屏</span>
+                <span class="btn-label" data-i18n="preview.fullscreen">全屏</span>
               </button>
               <button
                 type="button"
                 class="btn btn-sm"
                 id="previewRotateBtn"
-                data-i18n="preview.rotate"
                 data-i18n-title="preview.rotateTitle"
-                title="顺时针旋转 90°（仅显示，不写文件）快捷键 R"
+                title="顺时针旋转 90° 并保存（Shift 为逆时针）快捷键 R"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-rotate" /></svg>
-                <span class="btn-label">旋转</span>
+                <span class="btn-label" data-i18n="preview.rotate">旋转</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewFlipBtn"
+                data-i18n-title="preview.flipTitle"
+                title="水平翻转并保存（Shift 为垂直翻转）"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-flip" /></svg>
+                <span class="btn-label" data-i18n="preview.flip">翻转</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewCropBtn"
+                data-i18n-title="preview.cropTitle"
+                title="裁剪并另存副本"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-crop" /></svg>
+                <span class="btn-label" data-i18n="preview.crop">裁剪</span>
+              </button>
+              <!-- 预览态编辑的两个结算键：**只在有待保存的编辑时出现**（行内 display 放行），
+                   点「保存」才真的写盘 —— 旋转 / 翻转 / 裁剪本身都只改预览。 -->
+              <button
+                type="button"
+                class="btn btn-sm preview-edit-commit"
+                id="previewEditSaveBtn"
+                data-i18n-title="preview.editSaveTitle"
+                title="保存编辑并写回文件（Ctrl+S）"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-check" /></svg>
+                <span class="btn-label" data-i18n="preview.editSave">保存</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewEditDiscardBtn"
+                data-i18n-title="preview.editDiscardTitle"
+                title="放弃未保存的编辑（不写回文件）"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-undo" /></svg>
+                <span class="btn-label" data-i18n="preview.editDiscard">放弃</span>
               </button>
               <select
                 id="previewSubtitleTrackSelect"
@@ -2878,68 +3291,86 @@
                 type="button"
                 class="btn btn-sm"
                 id="previewSubtitleSettingsBtn"
-                data-i18n="preview.subtitle.styleBtn"
                 data-i18n-title="preview.subtitle.styleTitle"
                 title="字幕样式"
                 style="display: none"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-subtitle" /></svg>
-                <span class="btn-label">字幕样式</span>
+                <span class="btn-label" data-i18n="preview.subtitle.styleBtn">字幕样式</span>
               </button>
+              <!-- 整理（收藏 + 标记 + 评分 + 标签）。
+                   🔴 2026-10-09 起这四组控件**只有这一个入口**，全部住在
+                   `#previewOrgPanel`（右侧抽屉，见 `#previewInfoPanel` 之后）。
+                   历史：先在顶栏工具条里混着（15+ 控件，视线要扫全条才找得到），
+                   然后搬进 `#previewCullingBar`（贴大图下缘居中的浮条）——
+                   浮条实测两个毛病：① 压在大图下缘，冲片时正是要看的地方；
+                   ② 它是 `.preview-body`（`pointer-events: none`）的子元素，
+                   要额外写 `auto` 才点得动（用户报过「点不动」）。
+                   抽屉一次解决两条：不再盖图，且不必与那条 `none` 纠缠。
+                   ⚠️ id 是 `previewOrgBtn`（不是 `previewTagsBtn`）—— 它开的是
+                   「整理」抽屉，不再只是标签面板；旧 id 会让下一个读代码的人
+                   以为它只管标签。计数角标仍然只数标签（见 `org-meta-ui.js`）。 -->
               <button
                 type="button"
                 class="btn btn-sm"
-                id="previewFavoriteBtn"
-                data-i18n="preview.favorite"
-                data-i18n-title="preview.favoriteTitle"
-                title="收藏 (F)"
+                id="previewOrgBtn"
+                data-i18n-title="org.panelTitle"
+                title="整理：收藏 / 标记 / 评分 / 标签"
               >
-                <svg class="btn-icon" aria-hidden="true"><use href="#icon-star" /></svg>
-                <span class="btn-label">收藏</span>
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-info" /></svg>
+                <span class="btn-label" data-i18n="org.panel">整理</span>
+                <span class="preview-tags-count"></span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm preview-live-btn"
+                id="previewLiveBtn"
+                data-i18n-title="preview.liveTitle"
+                title="播放实况（含动态的那一段）"
+                style="display: none"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-play" /></svg>
+                <span class="btn-label" data-i18n="preview.live">实况</span>
               </button>
               <button
                 type="button"
                 class="btn btn-sm"
                 id="previewFindSimilarBtn"
-                data-i18n="preview.findSimilar"
                 data-i18n-title="preview.findSimilarTitle"
-                title="查找相似照片"
+                title="查找相似图片"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-similar" /></svg>
-                <span class="btn-label">相似</span>
+                <span class="btn-label" data-i18n="preview.findSimilar">相似</span>
               </button>
               <button
                 type="button"
                 class="btn btn-sm"
                 id="previewShowInFolderBtn"
-                data-i18n="preview.showInFolder"
                 data-i18n-title="preview.showInFolderTitle"
                 title="在资源管理器中显示"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-folder" /></svg>
-                <span class="btn-label">位置</span>
+                <span class="btn-label" data-i18n="preview.showInFolder">位置</span>
               </button>
               <button
                 type="button"
                 class="btn btn-sm"
                 id="previewOpenExternalBtn"
-                data-i18n="preview.openExternal"
                 data-i18n-title="preview.openExternalTitle"
                 title="用系统默认程序打开当前图 (O)"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-external" /></svg>
-                <span class="btn-label">打开</span>
+                <span class="btn-label" data-i18n="preview.openExternal">打开</span>
               </button>
               <button
                 type="button"
                 class="btn btn-sm btn-danger"
                 id="previewMoveToTrashBtn"
-                data-i18n="preview.trash"
                 data-i18n-title="preview.trashTitle"
                 title="移到回收站"
               >
                 <svg class="btn-icon" aria-hidden="true"><use href="#icon-trash" /></svg>
-                <span class="btn-label">删除</span>
+                <span class="btn-label" data-i18n="preview.trash">删除</span>
               </button>
             </div>
           </div>
@@ -2949,8 +3380,8 @@
               id="previewInfoToggle"
               type="button"
               data-i18n-title="preview.info"
-              title="照片信息"
-              aria-label="照片信息"
+              title="图片信息"
+              aria-label="图片信息"
             >
               <svg class="btn-icon" aria-hidden="true"><use href="#icon-info" /></svg>
             </button>
@@ -3020,6 +3451,18 @@
                 <path d="M8 5.5v13l11-6.5z"></path>
               </svg>
             </button>
+            <!--
+              Live Photo 的伴生视频。它**叠在**静止图上（不是替换它）：
+              内层是 flex row，两个 100% 宽的子元素同时可见会被挤成左右两半，
+              所以这一层必须绝对定位脱离流 —— 见 styles.css 的 .preview-live-video。
+            -->
+            <video
+              class="preview-live-video"
+              id="previewLiveVideo"
+              playsinline
+              preload="none"
+              style="display: none"
+            ></video>
           </div>
           <button
             type="button"
@@ -3068,9 +3511,9 @@
             </svg>
           </button>
         </div>
-        <div class="preview-info-panel" id="previewInfoPanel">
+      <div class="preview-info-panel" id="previewInfoPanel">
           <div class="preview-info-panel-header">
-            <h3>照片信息</h3>
+            <h3>图片信息</h3>
             <button
               class="preview-info-panel-close"
               id="previewInfoPanelClose"
@@ -3081,7 +3524,7 @@
             </button>
           </div>
           <div id="previewInfoPanelContent">
-            <div class="preview-info-empty">打开照片后查看信息</div>
+            <div class="preview-info-empty">打开图片后查看信息</div>
           </div>
         </div>
         <div
@@ -3145,6 +3588,198 @@
             </button>
           </div>
         </div>
+      <!-- 整理抽屉（2026-10-09）：收藏 / 标记 / 评分 / 标签 / 对比 全部住这里。
+           形态与 `#previewInfoPanel`（图片信息）**同构但完全独立**：同一套右侧 360px
+           滑出抽屉、同一层 z-index。两者**互斥**（见 `app.js#togglePreviewOrgPanel`）——
+           都占右侧 360px，同时开着就是叠在一起。
+           🔴 三条设计判据（用户 2026-10-09 提出「冲片条遮挡图片不美观」后的结论）：
+           ① **不是弹窗遮罩**。冲片时用户要一边看图一边决定，盖住大图等于逼他先想好
+              再打开；抽屉只吃右侧 360px，大图主体仍然看得见。
+           ② **不随切图关闭**。翻着看图、一路标下去是这个抽屉的主用法；每翻一张
+              就收起来等于逼用户按 N 次。
+           ③ **不随点外部关闭**。它是「工作台」，不是「提示」。
+              `#previewInfoPanel` 那套「点外部收起 + Esc 收起」的监听**刻意不抄**。
+           历史（两次搬迁）：先在顶栏工具条里跟播放/字幕/编辑 15+ 控件混在一起
+           （视线要扫全条才找得到）→ 再搬进 `#previewCullingBar`（贴大图下缘的浮条）
+           → 浮条实测两个毛病：① 正压在看图的地方；② 它是 `.preview-body`
+           （`pointer-events: none`）的子元素，必须额外写 `auto` 才点得动
+           （用户报过「冲片条无法点击」）。抽屉两条一起解决。
+           🔴 键位（F / Z / X / C / 1-5）只在 title 里，不写到按钮上（用户要求）；
+              键位与 `shortcuts.js` 的默认绑定同源，改键要两处同步。
+           🔴 `pointer-events` 由 `.preview-org-panel.open` 那条规则给 ——
+              本节点的父元素 `.preview-body` 是 `pointer-events: none`，
+              而指针事件是**继承**属性，少那一行就是「看得见、点不动」。 -->
+      <div class="preview-org-panel" id="previewOrgPanel">
+        <div class="preview-org-panel-header">
+          <h3 data-i18n="org.panelHeader">整理</h3>
+          <button
+            class="preview-org-panel-close"
+            id="previewOrgPanelClose"
+            type="button"
+            aria-label="关闭"
+          >
+            <svg class="btn-icon" aria-hidden="true"><use href="#icon-close" /></svg>
+          </button>
+        </div>
+        <div class="preview-org-panel-body">
+          <!-- 分区顺序 = 冲片时的实际决策顺序：先定去留（标记）→ 再定好坏（评分）
+               → 再长期收藏 → 最后归类打标签 → 对比（挑图动作的延伸）。
+               顺序不是随手排的：抽屉从上到下就是眼睛走的顺序，把低频项
+               （收藏 / 标签）垫在上面会让每次冲片都先扫过两个不用的区。 -->
+          <div class="preview-org-section">
+            <div class="preview-org-section-title" data-i18n="org.sectionFlag">标记</div>
+            <!-- 与「收藏」刻意做成两组控件：收藏是**累积**语义（我喜欢的，长期不动），
+                 标记是**工作流**语义（这一批我要哪些）。并成一个控件会让
+                 「冲片时标否」和「长期收藏」互相污染。
+                 🔴 「清除」是独立按钮，不是把「选 / 否」做成切换 —— 冲片是盲操作，
+                 做成切换会让「以为没按上、又按一次」静默清掉上一张的标记。 -->
+            <div class="preview-org-row">
+              <div class="preview-flag-group" id="previewFlagGroup">
+                <button
+                  type="button"
+                  class="btn btn-sm preview-flag-btn"
+                  id="previewFlagPickBtn"
+                  data-i18n-title="org.flag.pickTitle"
+                  title="标记为「选」(Z)"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-check" /></svg>
+                  <span class="btn-label" data-i18n="org.flag.pick">选</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm preview-flag-btn"
+                  id="previewFlagRejectBtn"
+                  data-i18n-title="org.flag.rejectTitle"
+                  title="标记为「否」(X)"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-close" /></svg>
+                  <span class="btn-label" data-i18n="org.flag.reject">否</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm preview-flag-btn"
+                  id="previewFlagClearBtn"
+                  data-i18n-title="org.flag.clearTitle"
+                  title="清除标记 (C)"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-undo" /></svg>
+                  <span class="btn-label" data-i18n="org.flag.clear">清除</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title" data-i18n="org.ratingLabel">评分</div>
+            <!-- 评分：5 颗星。**再点同一颗 = 取消**（回 0）—— 与快捷键同一条判据
+                 （`org-meta-ui.js#nextRating`），所以按钮与数字键的行为永远一致。 -->
+            <div class="preview-org-row">
+              <div
+                class="preview-rating-stars"
+                id="previewRatingStars"
+                role="group"
+                aria-label="评分"
+              >
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="1"
+                  title="1 星 (1)"
+                  aria-label="1 星"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-star-filled" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="2"
+                  title="2 星 (2)"
+                  aria-label="2 星"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-star-filled" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="3"
+                  title="3 星 (3)"
+                  aria-label="3 星"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-star-filled" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="4"
+                  title="4 星 (4)"
+                  aria-label="4 星"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-star-filled" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="5"
+                  title="5 星 (5)"
+                  aria-label="5 星"
+                >
+                  <svg class="btn-icon" aria-hidden="true"><use href="#icon-star-filled" /></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title" data-i18n="preview.favorite">收藏</div>
+            <div class="preview-org-row">
+              <button
+                type="button"
+                class="btn btn-sm"
+                id="previewFavoriteBtn"
+                data-i18n-title="preview.favoriteTitle"
+                title="收藏 (F)"
+              >
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                <span class="btn-label" data-i18n="preview.favorite">收藏</span>
+              </button>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title" data-i18n="org.tagsPanelTitle">标签</div>
+            <!-- 标签从「点开一个小悬浮面板」改成抽屉里的一个分区：入口已经只剩
+                 `#previewOrgBtn` 一个，再留一层「点开面板」就是抽屉里套抽屉。
+                 改动仍然**立即保存**（没有「确定」按钮）—— 与原来那条契约一致。 -->
+            <div class="preview-org-tags-chips" id="previewOrgTagsChips"></div>
+            <div class="preview-org-tags-input-row">
+              <input
+                id="previewOrgTagsInput"
+                type="text"
+                class="settings-text-input"
+                data-i18n-placeholder="org.tagsPlaceholder"
+                placeholder="输入标签后回车"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                id="previewOrgTagsAddBtn"
+                data-i18n="org.tagsAdd"
+              >
+                添加
+              </button>
+            </div>
+            <div class="preview-org-tags-hint" data-i18n="org.tagsHint">
+              回车添加；点标签上的 × 删除。改动立即保存。
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title" data-i18n="org.sectionCompare">对比</div>
+            <!-- 与标记同类的**挑图**动作（标记 = 要哪些、对比 = 挑 2–4 张并排看）。
+                 `photo-compare.js#mount()` 现在优先找这个**专用空槽**，
+                 不再靠「锚点是否在某容器内」猜落点 —— 那个判据的落点是别人
+                 的排版，改一次分区就得重新猜一次。 -->
+            <div class="preview-org-row" id="previewOrgActions"></div>
+          </div>
+        </div>
+      </div>
       </div>
       <div class="preview-zoom-box" id="previewZoomBox">
         <div
@@ -3176,6 +3811,9 @@
         <div class="close-choice-desc" data-i18n="closeOverlay.desc">
           请选择本次操作。可在下方勾选「设为默认」，也可随时在「管理设置 → 关闭按钮」中修改
         </div>
+        <!-- 后台任务警告：平时 hidden，打开弹窗时由 app.js 查 get-background-tasks
+             决定显隐与内容（动态文本不走 data-i18n —— 列表是运行时算出来的）。 -->
+        <div class="close-choice-tasks" id="closeChoiceTasksWarning" hidden></div>
         <div class="close-choice-actions">
           <button
             type="button"
@@ -3261,7 +3899,7 @@
          它们的事件处理都改成「问注册表这一下按的是什么动作」，
          晚于它们加载就会在首帧把用户改过的键位丢掉。 -->
     <script src="shortcuts.js"></script>
-    <!-- 照片信息面板的字段注册表：桌面端与网页端共用同一份（主进程也 require 它做设置项校验） -->
+    <!-- 图片信息面板的字段注册表：桌面端与网页端共用同一份（主进程也 require 它做设置项校验） -->
     <script src="../web/js/photo-info-fields.js"></script>
     <script src="logger.js"></script>
     <script src="api.js"></script>
@@ -3280,9 +3918,16 @@
     <script src="../playback-strategy.js"></script>
     <script src="preview-flow.js"></script>
     <script src="ui-preview.js"></script>
+    <script src="preview-crop.js"></script>
+    <!-- 组织元数据（标记 / 评分 / 用户标签）的界面与状态。必须在 ui-grid.js 之前：
+         网格卡片要调 `RendererOrgMetaUI.cardBadgeHtml` 画角标。 -->
+    <script src="org-meta-ui.js"></script>
     <script src="ui-grid.js"></script>
     <script src="ai-views.js"></script>
     <script src="ui-duplicates.js"></script>
+    <!-- 标签导航页的侧栏树 + 主区卡片列表（照片网格仍走 app.js 的通用通路）。
+         必须在 app.js 之前：app.js 在 init() 里用它的工厂函数挂 deps。 -->
+    <script src="tag-nav-ui.js"></script>
     <script src="ui-events.js"></script>
     <script src="../web/js/photo-compare.js"></script>
     <script src="../web/js/semantic-search.js"></script>

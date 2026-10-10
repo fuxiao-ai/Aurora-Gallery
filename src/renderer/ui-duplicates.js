@@ -1,6 +1,19 @@
 (function (global) {
   'use strict';
 
+  /**
+   * 缩略图 URL 的缓存键 —— 转发到唯一真相源（`utils.js#thumbCacheVersion`）。
+   *
+   * 这一侧的行来自 `database.js#getPhotosByFileHash` 那条**窄投影**（重复项行只画
+   * 一张图 + 文件名 + 路径 + 大小）。规格那两列是 2026-10-07 特意加进去的：
+   * 少了它们，重复项页的缩略图在重建之后会一直显示旧档位的图
+   * （桌面端读 Chromium 内存缓存），而同一个文件在网格里已经是新图 ——
+   * 「同一张图片两副面孔」是最难被当成缓存问题来查的形态。
+   */
+  function thumbCacheVersion(photo) {
+    return global.RendererUtils.thumbCacheVersion(photo);
+  }
+
   function normalizeDuplicateGroups(rows) {
     if (!Array.isArray(rows)) return [];
     return rows.filter(function (g) {
@@ -30,11 +43,11 @@
       (scanned
         ? '请在左侧选一个分组查看。'
         : isSimilar
-          ? '还没有数据。点击下方开始查找视觉相似的照片。'
-          : '还没有数据。点击下方开始查找内容相同的照片。') +
+          ? '还没有数据。点击下方开始查找视觉相似的图片。'
+          : '还没有数据。点击下方开始查找内容相同的图片。') +
       '<div style="margin-top:10px;">' +
       '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">' +
-      (isSimilar ? '查找视觉相似照片' : '查找重复照片') +
+      (isSimilar ? '查找视觉相似图片' : '查找重复图片') +
       '</button>' +
       '</div>' +
       '</div>';
@@ -42,12 +55,12 @@
       '<div class="dup-page-head">' +
       '<div>' +
       '<div class="dup-page-title">' +
-      (isSimilar ? '视觉相似照片' : '重复照片') +
+      (isSimilar ? '视觉相似图片' : '重复图片') +
       '</div>' +
       '<div class="dup-page-desc">' +
       (isSimilar
-        ? '感知哈希相似的照片会归为一组（视觉相似，内容可能不同）'
-        : '内容相同的照片会归为一组，界面会随主题自动切换') +
+        ? '感知哈希相似的图片会归为一组（视觉相似，内容可能不同）'
+        : '内容相同的图片会归为一组，界面会随主题自动切换') +
       '</div>' +
       '</div>' +
       '<div class="dup-toolbar">' +
@@ -60,7 +73,7 @@
       '" data-dup-action="switch-mode" data-mode="similar">视觉相似</button>' +
       '</div>' +
       '<button type="button" class="btn btn-sm" data-dup-action="start-hash">' +
-      (scanned ? '重新查找' : isSimilar ? '查找视觉相似照片' : '查找重复照片') +
+      (scanned ? '重新查找' : isSimilar ? '查找视觉相似图片' : '查找重复图片') +
       '</button>' +
       '<button type="button" class="btn btn-sm" data-dup-action="load-groups" data-page="1" ' +
       (scanned ? '' : 'disabled') +
@@ -97,7 +110,7 @@
       '<div class="folder-item active" data-sidebar-duplicates="1">' +
       '<span class="icon">\u{1F9E9}</span>' +
       '<span class="name">' +
-      (isSimilar ? '视觉相似照片' : '重复照片') +
+      (isSimilar ? '视觉相似图片' : '重复图片') +
       '</span>' +
       '<span class="count">' +
       formatNumber(groups.length) +
@@ -150,7 +163,7 @@
       '<div class="folder-item active" data-sidebar-duplicates="1">' +
       '<span class="icon">\u{1F9E9}</span>' +
       '<span class="name">' +
-      (isSimilar ? '视觉相似照片' : '重复照片') +
+      (isSimilar ? '视觉相似图片' : '重复图片') +
       '</span>' +
       '<span class="count">' +
       formatNumber(groups.length) +
@@ -164,7 +177,7 @@
         (isSimilar ? '还没有视觉相似分组' : '还没有重复分组') +
         '</div>' +
         '<button type="button" class="btn btn-sm btn-primary" data-dup-action="start-hash">' +
-        (isSimilar ? '查找视觉相似照片' : '查找重复照片') +
+        (isSimilar ? '查找视觉相似图片' : '查找重复图片') +
         '</button>' +
         '</div>';
       if (gate) {
@@ -236,15 +249,15 @@
 
     var photos = state.duplicatePhotosByHash[hash];
     if (!photos) {
-      return '<div class="dup-empty">正在加载组内照片...</div>';
+      return '<div class="dup-empty">正在加载组内图片...</div>';
     }
     if (!photos.length) {
-      return '<div class="dup-empty">该组暂无可展示照片</div>';
+      return '<div class="dup-empty">该组暂无可展示图片</div>';
     }
     var html = '';
     for (var i = 0; i < photos.length; i++) {
       var p = photos[i];
-      var thumb = p.has_thumbnail ? 'thumb://' + p.id : '';
+      var thumb = p.has_thumbnail ? 'thumb://' + p.id + '?v=' + thumbCacheVersion(p) : '';
       html +=
         '<div class="dup-photo-row">' +
         (thumb
@@ -506,7 +519,7 @@
     onRenderDuplicateSidebar(gate);
     var wrap = document.getElementById('dupListWrap');
     if (!wrap) return;
-    wrap.innerHTML = '<div class="dup-empty">正在加载组内照片...</div>';
+    wrap.innerHTML = '<div class="dup-empty">正在加载组内图片...</div>';
 
     if (!state.duplicatePhotosByHash[hash]) {
       // 相似模式下优先使用预加载的 photos（第零层查询时已包含）

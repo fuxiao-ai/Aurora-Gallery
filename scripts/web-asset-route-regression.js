@@ -25,6 +25,9 @@
  *   ④ 只读快照白名单（不得含密码 / 凭据 / 本机绝对路径）；
  *   ⑤ 卡片比例：见上；
  *   ⑥ 面板 id ↔ RENDERERS ↔ panelMeta 自洽：见文末那组注释。
+ *   ⑦ `sw.js#SHELL_ASSETS` 每条必须与 `index.html` 的引用**逐字相同（含 `?v=`）**：
+ *      改到清单里的资源却忘了抬 `CACHE_NAME` = cache-first 客户端永远拿不到改动，
+ *      而所有静态守护依旧全绿（2026-10-07 本批真栽过）。
  *
  * ⚠️ 判定刻意保守：只认 `/api/`、`/thumb`、`/photo`、`/preview-image`、`/video`、`/hls/`
  *    这些**按动态段匹配**的前缀直接跳过（它们本来就靠 `startsWith` 分支处理），
@@ -66,8 +69,12 @@ check(
   `实际取到 ${routing.length} 字符，说明源码结构变了，本脚本的锚点要跟着改`,
 );
 
-/** 动态段前缀：这些路径由 `startsWith` 分支处理，不参与逐文件对账。 */
-const DYNAMIC_PREFIXES = ['/api/', '/thumb', '/photo', '/preview-image/', '/video', '/hls/'];
+/** 动态段前缀：这些路径由 `startsWith` 分支处理，不参与逐文件对账。
+ *  ⚠️ 必须与 `web-server.js` 里那几条分支**逐字同形**（都带尾斜杠），别写裸 `'/photo'`：
+ *  那样会把 `/photo-compare.css` 这类静态资源一起吃掉 —— 2026-10-07 实测它正是被
+ *  `startsWith('/photo')` 静默跳过的，当时恰好有路由才没出事，否则「HTML 引了一个 404
+ *  的资源」这条判据会永远绿。 */
+const DYNAMIC_PREFIXES = ['/api/', '/thumb/', '/photo/', '/preview-image/', '/video/', '/hls/'];
 
 function htmlFiles() {
   const dir = path.join(ROOT, 'src', 'web');
@@ -340,6 +347,85 @@ check(
   metaMismatch.join('；') + ' —— 复制粘贴渲染器时最容易把 id 留下不改',
 );
 
+// ------------------------------------------------- ⑦ PWA 预缓存清单 ⟷ 页面引用
+// 背景（2026-10-07）：本批把「搜图结果保留态」补到网页端时，改了 `src/web/js/app.js`
+// 与 `src/web/js/ai-views.js`（两个都在 `sw.js` 的 SHELL_ASSETS 里），却忘了抬
+// `CACHE_NAME` ⇒ **cache-first 的客户端永远拿不到这次修复**，而所有静态守护全绿。
+// 更隐蔽的一半：`SHELL_ASSETS` 里 `/js/app.js`、`/js/web-theme-shared.js` 两条**没带
+// `?v=`**，而 `index.html` 请求的是 `/js/app.js?v=5` —— `caches.match(req)` 按**完整 URL
+// （含 query）**做键，于是这两条预缓存是**死条目**，首屏离线时根本命中不了。
+// 这里把「两侧逐字相同」钉成判据（🔴 光看源码读不出来：两处相隔 5000 行 + 另一个文件）。
+const SW_JS = 'src/web/sw.js';
+const swSrc = read(SW_JS);
+const cacheNameMatch = /var CACHE_NAME = '([^']+)'/.exec(swSrc);
+check('sw.js 声明了 CACHE_NAME', !!cacheNameMatch);
+check(
+  'CACHE_NAME 用的是 aurora-gallery-shell-v<N> 形状',
+  !!cacheNameMatch && /^aurora-gallery-shell-v\d+$/.test(cacheNameMatch[1]),
+  cacheNameMatch ? `实际是 ${cacheNameMatch[1]}` : '',
+);
+
+const shellListMatch = /var SHELL_ASSETS = \[([\s\S]*?)\n\];/.exec(swSrc);
+check('sw.js 能解析出 SHELL_ASSETS 列表', !!shellListMatch);
+const shellAssets = shellListMatch
+  ? [...shellListMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+  : [];
+
+/** 页面（或 PWA manifest）里出现的全部站内静态 URL —— **保留 query**，这一组的关键就在 query 上。
+ *  ⚠️ 刻意不过 `DYNAMIC_PREFIXES` 那道闸：那条闸是给「路由对账」用的，会把
+ *  `/photo-compare.css` 误当成 `/photo` 动态路由（`startsWith('/photo')` 为真）而漏掉。
+ *  这里只做**同一个 pathname** 的逐字比较，动态段天然不会撞上清单里的具体文件名。 */
+const pageAssetUrls = new Set();
+/** 两个来源各用一条朴素正则，别揉成一条（揉过一版，可读性差且容易漏分支）。 */
+function collectAssetUrls(src, re) {
+  let m;
+  while ((m = re.exec(src))) {
+    const raw = m[1].trim();
+    if (raw.startsWith('/')) pageAssetUrls.add(raw);
+  }
+}
+collectAssetUrls(webHtml, /(?:src|href)\s*=\s*"([^"]+)"/g); // index.html 的标签属性
+collectAssetUrls(read('src/web/manifest.webmanifest'), /"src"\s*:\s*"([^"]+)"/g); // PWA 图标声明
+
+/** 纯函数：挑出「与页面引用对不上」的清单条目（便于夹具自证）。 */
+function assetListProblems(list) {
+  const problems = [];
+  for (const entry of list) {
+    if (entry === '/' || entry === '/index.html') continue;
+    if (pageAssetUrls.has(entry)) continue;
+    // 只有 query 不同 ⇒ 预缓存键与请求键对不上，那条预缓存等于没写。
+    const variant = [...pageAssetUrls].find((u) => u.split('?')[0] === entry.split('?')[0]);
+    problems.push(
+      variant
+        ? `${entry} （页面请求的是 ${variant} —— caches.match 按完整 URL 做键，这条预缓存是死条目）`
+        : `${entry} （页面与 manifest 里都没有任何一处按这个 URL 请求它 —— 死条目，预缓存时白下载一次）`,
+    );
+  }
+  return problems;
+}
+
+const assetProblems = assetListProblems(shellAssets);
+check(
+  'SHELL_ASSETS 每一条都与 index.html 的引用逐字相同（含 ?v=）',
+  assetProblems.length === 0,
+  assetProblems.length ? assetProblems.join('\n      ') : '',
+);
+
+// 夹具自证：把两条已知条目换成「少一个 ?v=」的形态，必须抓得到（防上面那段永远为真）
+const fixtureProblems = assetListProblems([
+  '/js/app.js', // 页面请求的是 /js/app.js?v=5
+  '/js/__definitely-not-referenced.js',
+  '/',
+  '/index.html',
+]);
+check(
+  '夹具自证：漏 ?v= 的条目与凭空多出的条目都必须被抓到',
+  fixtureProblems.length === 2
+    && fixtureProblems[0].includes('/js/app.js')
+    && fixtureProblems[1].includes('__definitely-not-referenced'),
+  `实际挑出 ${fixtureProblems.length} 条：${fixtureProblems.join(' | ')}`,
+);
+
 // ------------------------------------------------------------------ 输出
 if (failures.length) {
   console.error('[web-asset-route-regression] FAIL：网页端静态资源 / 设置页契约不成立');
@@ -349,6 +435,7 @@ if (failures.length) {
   console.log(
     `[web-asset-route-regression] PASS（对账 ${wanted.size} 个站内静态资源、`
       + `${webTitles.length} 个设置面板、快照白名单 4 条、`
-      + `卡片比例 ${webRatios.length} 档、面板↔渲染器 ${Object.keys(rendererMap).length} 项）`,
+      + `卡片比例 ${webRatios.length} 档、面板↔渲染器 ${Object.keys(rendererMap).length} 项、`
+      + `预缓存 ${shellAssets.length} 条）`,
   );
 }

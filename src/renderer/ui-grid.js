@@ -28,6 +28,60 @@
     '</svg>';
 
   /** 占位图的「内芯」（图形 + 说明）。字符串版与 DOM 版共用，别各写一份。 */
+  /**
+   * 网格空态 / 骨架屏的**媒体档位三档文案**（全部 / 仅图片 / 仅视频）。
+   *
+   * 唯一真相源在这里。三档的「词」必须与底栏 `#mediaFilterSelect` 的选项一致：
+   * `all` 档**含视频**，所以说「图片与视频」；`image` / `video` 各说各的。
+   *
+   * ⚠️ 网页端是**另一份实现**（`web/js/app.js#renderPhotoGrid` / `#showSkeleton`），
+   *    改这里必须同改那边 —— 两端没有共享模块。
+   * ⚠️ 这里不复用 `stats.bar*Fmt` 那三条：那是**顶栏统计**的句式
+   *    （`{photos} 张图片 | 视频 {videos} 条`），和「空态 / 加载中」不是一句话。
+   * ⚠️ `suffix` 同时是 i18n 键的尾巴（`grid.emptyTitle` + `All` …），改名要同步词条表。
+   */
+  var MEDIA_FILTER_TEXTS = {
+    all: {
+      suffix: 'All',
+      title: '暂无图片与视频',
+      hint: '换个位置看看，或到「设置」里点「添加目录」加入文件夹。',
+      loading: '正在加载图片与视频…',
+    },
+    image: {
+      suffix: 'Image',
+      title: '暂无图片',
+      hint: '这里没有图片，可切到「全部」或「仅视频」看看。',
+      loading: '正在加载图片…',
+    },
+    video: {
+      suffix: 'Video',
+      title: '暂无视频',
+      hint: '这里没有视频，可切到「全部」或「仅图片」看看。',
+      loading: '正在加载视频…',
+    },
+  };
+
+  /** 把任意输入收敛成三档之一（与 `app.js#normalizeMediaFilter` 同口径） */
+  function mediaFilterTexts(mediaFilter) {
+    return MEDIA_FILTER_TEXTS[mediaFilter === 'image' || mediaFilter === 'video' ? mediaFilter : 'all'];
+  }
+
+  /**
+   * 词条 + 中文兜底。
+   *
+   * ⚠️ `I18n.t()` 取不到键时**返回键本身**而不是空串 ⇒ 必须显式判等，
+   *    否则界面上会直接出现 `grid.emptyTitleAll` 这种原始键。
+   *    没有 `window.I18n` 时（vm 回归夹具）走中文兜底。
+   */
+  function tGrid(key, zhFallback) {
+    var t = global.I18n && global.I18n.t;
+    if (typeof t === 'function') {
+      var s = t(key);
+      if (s && s !== key) return s;
+    }
+    return zhFallback;
+  }
+
   function mediaPlaceholderInnerHtml(caption) {
     return (
       MEDIA_PLACEHOLDER_GLYPH +
@@ -92,12 +146,15 @@
     var hasPhotos = n > 0;
 
     if (!hasSubs && !hasPhotos) {
-      var emptyTitle = '没有找到照片';
-      if (mediaFilter === 'video') emptyTitle = '没有找到视频';
-      else if (mediaFilter === 'image') emptyTitle = '没有找到图片';
+      // 文案按媒体档位切换（三档的标题 / 副提示都在 MEDIA_FILTER_TEXTS 里）。
+      // 🔴 副提示必须给**可执行下一步**：`image` / `video` 档空多半是「筛掉了」，
+      //    引导去另一档比笼统的「换个条件看看」有用得多。
+      var emptyTexts = mediaFilterTexts(mediaFilter);
       dom.photoGrid.innerHTML =
         '<div class="empty-state"><div class="icon">📭</div><div class="title">' +
-        emptyTitle +
+        escapeHtml(tGrid('grid.emptyTitle' + emptyTexts.suffix, emptyTexts.title)) +
+        '</div><div class="desc">' +
+        escapeHtml(tGrid('grid.emptyHint' + emptyTexts.suffix, emptyTexts.hint)) +
         '</div></div>';
       onApplyCardSize();
       return;
@@ -130,7 +187,7 @@
     var prefixHtml = hasSubs ? buildSubfolderSectionHtml() : '';
     var photosLabelHtml =
       hasSubs && hasPhotos
-        ? '<div class="browse-folder-section-label browse-folder-section-label--photos">此文件夹中的照片与视频</div>'
+        ? '<div class="browse-folder-section-label browse-folder-section-label--photos">此文件夹中的图片与视频</div>'
         : '';
 
     if (!hasPhotos) {
@@ -200,6 +257,29 @@
     appendNextChunk();
   }
 
+  /**
+   * 这张图片有没有伴生视频（= 是不是 Live Photo 的静帧）。
+   *
+   * 一律转发到 `utils.js` 的唯一实现（预览里的播放按钮用的是同一个判据 ——
+   * 各写一份就会出现「卡片有 LIVE 角标、点开却按不出播放」）。
+   */
+  function isLivePhotoStill(photo) {
+    return global.RendererUtils.isLivePhotoStill(photo);
+  }
+
+  /**
+   * 缩略图 URL 的缓存键 —— 转发到唯一真相源（`utils.js#thumbCacheVersion`）。
+   *
+   * 🔴 这里以前**根本没有键**：卡片直接写 `thumb://<id>`。缩略图全量重建（换档 / 转 WebP）
+   *    之后每一行的字节都变了，而 URL 一个都没变 ⇒ 桌面端一路读 Chromium 内存缓存、
+   *    网页端还有 `max-age=86400`，「重建跑完了，卡片还是老的」。
+   *    键里带的是**这一行自己的规格**，所以混规格库（重建进行到一半）也不会串：
+   *    已重建的行换新 URL、未重建的行继续命中旧缓存。
+   */
+  function thumbCacheVersion(photo) {
+    return global.RendererUtils.thumbCacheVersion(photo);
+  }
+
   function isVideoPhoto(photo) {
     var row = photo || {};
     var mt = String(row.media_type || row.mediaType || '').toLowerCase();
@@ -242,7 +322,7 @@
     var isVideo = isVideoPhoto(photo);
     var ratioObj = useMediaRatio ? getMediaAspectRatioDims(photo) : null;
     var ratio = ratioObj ? ratioObj.ratio : '';
-    var thumbUrl = photo.has_thumbnail ? 'thumb://' + photo.id : '';
+    var thumbUrl = photo.has_thumbnail ? 'thumb://' + photo.id + '?v=' + thumbCacheVersion(photo) : '';
     var delay = Math.min(i * 30, 600);
     var favIcon = photo.is_favorite ? '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star-filled"/></svg>' : '<svg class="fav-icon" aria-hidden="true"><use href="#icon-star"/></svg>';
     var cardStyle = 'animation-delay:' + delay + 'ms;';
@@ -254,6 +334,12 @@
     // 统一给死 --photo-card-ratio，占位块 height:100% 自然铺满。
     var cardClass = 'photo-card';
     if (!thumbUrl && useMediaRatio) cardClass += ' photo-card--square-placeholder';
+    // 组织元数据（标记 / 评分）：角标 HTML 与 data 属性都由 `org-meta-ui.js` 产出。
+    // ⚠️ 走模块而不是在这里手拼：增量更新那张卡时（用户点了星）走的是同一个函数，
+    //    两处各拼一份必然漂移，症状是「刚点过的卡片角标跑到别的位置 / 消失」。
+    var orgUi = window.RendererOrgMetaUI || {};
+    var orgAttrs = typeof orgUi.cardOrgDataAttrs === 'function' ? orgUi.cardOrgDataAttrs(photo) : '';
+    var orgBadges = typeof orgUi.cardBadgeHtml === 'function' ? orgUi.cardBadgeHtml(photo) : '';
     var html =
       '<div class="' +
       cardClass +
@@ -261,7 +347,9 @@
       photo.id +
       '" data-preview-index="' +
       i +
-      '" style="' +
+      '"' +
+      orgAttrs +
+      ' style="' +
       cardStyle +
       '">' +
       '<button type="button" class="photo-card-fav" title="收藏（鼠标悬停卡片时显示）" aria-label="收藏" data-fav-photo-id="' +
@@ -272,6 +360,15 @@
     if (isVideo) {
       html += '<span class="media-type-badge media-type-badge-video"><svg class="badge-icon" aria-hidden="true"><use href="#icon-video"/></svg></span>';
     }
+    // Live Photo：图片本体 + 一段可播放的动态。与视频徽标**互斥**（本列只写在图片行上），
+    // 所以两者共用左上角不会撞位。用文字而不是图标是刻意的 —— iOS 本来的角标就是
+    // 「LIVE」字样，且不必为此往 SVG sprite 里加 symbol（改 sprite 要动 index.html + 升 SW）。
+    if (isLivePhotoStill(photo)) {
+      html += '<span class="media-type-badge media-type-badge-live" title="Live Photo：含可播放的动态">LIVE</span>';
+    }
+    // 组织元数据角标（标记右下、评分左下）。插在缩略图**之前**：
+    // 缩略图是绝对定位铺满的层，角标要跟它在同一层叠上下文里才压得住。
+    html += orgBadges;
     if (thumbUrl) {
       var imgWH = ratioObj ? ' width="' + ratioObj.w + '" height="' + ratioObj.h + '"' : '';
       html +=
@@ -374,12 +471,16 @@
     options = options || {};
     var dom = options.dom || {};
     var loadingLabel = options.loadingLabel;
+    var mediaFilter = options.mediaFilter;
     var escapeHtml = options.escapeHtml;
     var onApplyCardSize = options.onApplyCardSize;
     if (!dom.photoGrid) return;
     if (typeof escapeHtml !== 'function' || typeof onApplyCardSize !== 'function') return;
 
-    var label = loadingLabel || '\u6B63\u5728\u52A0\u8F7D\u7167\u7247\u2026';
+    // 没显式给 label 的调用方（浏览页那条）按**当前媒体档位**取文案；
+    // 搜图 / 目录封面那几条自己传了 label（如「正在本机搜索…」），不受影响。
+    var loadingTexts = mediaFilterTexts(mediaFilter);
+    var label = loadingLabel || tGrid('grid.loading' + loadingTexts.suffix, loadingTexts.loading);
     var html =
       '<div class="photos-loading-wrap">' +
       '<div class="photos-loading-header">' +
@@ -473,7 +574,12 @@
   function buildFolderCoverCardHtml(row, normalizePath, escapeHtml, escapeAttr, formatNumber) {
     var fp = normalizePath(row.folder_path || '');
     var coverId = parseInt(row.id, 10);
-    var thumbUrl = !isNaN(coverId) && coverId > 0 && row.has_thumbnail ? 'thumb://' + coverId : '';
+    // 封面行也带规格了（`db-heavy-read.js` 里三条封面查询都按主键回查了 `thumb_size`/`thumb_format`），
+    // 所以封面与卡片用同一个键：重建之后封面也跟着刷新，不会再出现「卡片是新的、封面还是旧的」。
+    var thumbUrl =
+      !isNaN(coverId) && coverId > 0 && row.has_thumbnail
+        ? 'thumb://' + coverId + '?v=' + thumbCacheVersion(row)
+        : '';
     var base = folderDisplayBasename(fp, normalizePath);
     var cnt = row.folder_photo_count != null ? row.folder_photo_count : 0;
     var html =
@@ -504,7 +610,7 @@
       '</div>' +
       '<div class="folder-cover-count">' +
       formatNumber(cnt) +
-      ' \u5F20\u7167\u7247</div>' +
+      ' \u5F20\u56FE\u7247</div>' +
       '</div></div>';
     return html;
   }
@@ -531,7 +637,7 @@
       dom.photoGrid.innerHTML =
         '<div class="empty-state"><div class="icon">\u{1F5C2}\uFE0F</div>' +
         '<div class="title">\u6682\u65E0\u76EE\u5F55</div>' +
-        '<div class="desc">\u6DFB\u52A0\u5E76\u626B\u63CF\u7167\u7247\u6587\u4EF6\u5939\u540E\u5C06\u663E\u793A\u6BCF\u4E2A\u76EE\u5F55\u7684\u5C01\u9762</div></div>';
+        '<div class="desc">\u6DFB\u52A0\u5E76\u626B\u63CF\u56FE\u7247\u6587\u4EF6\u5939\u540E\u5C06\u663E\u793A\u6BCF\u4E2A\u76EE\u5F55\u7684\u5C01\u9762</div></div>';
       return;
     }
 

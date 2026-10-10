@@ -18,7 +18,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5" />
     <link rel="preload" href="/playback-strategy.js" as="script" />
     <link rel="preload" href="/js/web-theme-shared.js?v=9" as="script" />
-    <link rel="preload" href="/js/app.js?v=4" as="script" />
+    <link rel="preload" href="/js/app.js?v=10" as="script" />
     <title>拂晓图库 · Aurora Gallery</title>
     <style>
       * {
@@ -418,6 +418,22 @@
         flex: 1;
         overflow-y: auto;
         padding: 6px 12px 14px;
+      }
+      /* ── 侧栏顶部视图入口（所有文件 / 所有目录）────────────────────────
+         sticky 钉在滚动容器可视顶：树滚到深处时入口仍抬手可点（与桌面端
+         styles.css 的 .sidebar-view-entries 同一契约）。--glass 半透明，
+         挡不住下面滚过的树行，靠本层 backdrop-filter 糊掉（.theme-menu 同款配方）。 */
+      .sidebar-view-entries {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        /* 负 margin 盖住 .sidebar-content 左右 12px padding，避免树行从缝里露出 */
+        margin: 0 -12px 4px;
+        padding: 2px 12px 6px;
+        background: var(--glass);
+        backdrop-filter: blur(20px) saturate(1.3);
+        -webkit-backdrop-filter: blur(20px) saturate(1.3);
+        border-bottom: 1px solid var(--glass-border);
       }
       .sidebar-content::-webkit-scrollbar {
         width: 6px;
@@ -1116,6 +1132,15 @@
         background: color-mix(in srgb, var(--bg-card) 78%, #4a8fd4);
         border-color: color-mix(in srgb, var(--glass-border) 70%, #6da9df);
       }
+      /* Live Photo 角标：与桌面端 `src/renderer/styles.css` 的配方同值（那边 padding 略窄，
+         因为它和 svg 图标同排；这里是纯文字）。与视频角标共用左上角是安全的 ——
+         视频角标只画在视频行上、Live 角标只画在图片行上，两者互斥。 */
+      .media-type-badge-live {
+        color: color-mix(in srgb, #fff3d9 76%, var(--text-primary));
+        background: color-mix(in srgb, var(--bg-card) 74%, #c9922f);
+        border-color: color-mix(in srgb, var(--glass-border) 68%, #e0b055);
+        letter-spacing: 0.06em;
+      }
 
       @media (hover: none) {
         .photo-card:hover {
@@ -1622,7 +1647,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 18px 24px;
+        padding: 12px 16px;
         border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
         position: sticky;
         top: 0;
@@ -1638,7 +1663,7 @@
       }
       .preview-info-panel-header h3 {
         margin: 0;
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 700;
         color: var(--text);
         letter-spacing: 0.01em;
@@ -1660,7 +1685,7 @@
         border: none;
         color: var(--text-muted);
         cursor: pointer;
-        padding: 5px;
+        padding: 3px;
         border-radius: 8px;
         display: flex;
         align-items: center;
@@ -1678,19 +1703,19 @@
         padding: 0;
       }
       .preview-info-section {
-        padding: 18px 24px;
+        padding: 12px 16px;
         border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 40%, transparent);
       }
       .preview-info-section:last-child {
         border-bottom: none;
       }
       .preview-info-section-title {
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 700;
         color: var(--accent);
         letter-spacing: 0.1em;
         text-transform: uppercase;
-        margin-bottom: 10px;
+        margin-bottom: 6px;
         display: flex;
         align-items: center;
         gap: 8px;
@@ -1717,14 +1742,14 @@
       }
       .preview-info-row {
         display: flex;
-        gap: 8px;
-        padding: 6px 0;
-        font-size: 0.8rem;
-        line-height: 1.45;
+        gap: 6px;
+        padding: 4px 0;
+        font-size: 0.75rem;
+        line-height: 1.35;
       }
       .preview-info-label {
         flex-shrink: 0;
-        width: 72px;
+        width: 64px;
         color: var(--text-muted);
       }
       .preview-info-value {
@@ -1732,25 +1757,25 @@
         word-break: break-all;
         color: var(--text);
       }
-      /* AI 标签：与桌面端同一套类名、同一份注册表产出。网页端没有搜图页，
+      /* 主题标签：与桌面端同一套类名、同一份注册表产出。网页端没有搜图页，
          所以这里只有不可点的 <span>（注册表不传 tagClickable 时的分支）。 */
       .preview-info-value-tags {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 4px;
       }
       .preview-info-tag {
-        padding: 2px 9px;
+        padding: 1px 8px;
         border: 1px solid var(--glass-border);
         border-radius: 999px;
-        font-size: 12px;
-        line-height: 1.6;
+        font-size: 11px;
+        line-height: 1.4;
         color: var(--text-secondary);
         background: color-mix(in srgb, var(--bg-card) 62%, transparent);
         cursor: default;
       }
       .preview-info-empty {
-        padding: 20px 16px;
+        padding: 16px 12px;
         color: var(--text-muted);
         font-size: 0.83rem;
         text-align: center;
@@ -1855,6 +1880,35 @@
       .preview-video.subtitle-size-lg::cue {
         font-size: 22px;
       }
+      /*
+       * Live Photo 的伴生视频 —— **叠在**静止图上播，不是替换它。
+       * 🔴 必须绝对定位：`.preview-body` 里 `.preview-img` 与 `.preview-video` 都是
+       *    `width:100%`，再多一个参与流的子元素就会把画面挤变形。
+       * `pointer-events: none` 是刻意的：底下那张图还要能拖拽/缩放，
+       * 停动态走工具条上的「实况」按钮（或等它自己播完）。
+       */
+      .preview-live-video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        max-width: 100vw;
+        max-height: 100vh;
+        object-fit: contain;
+        border-radius: 6px;
+        background: transparent;
+        z-index: 2;
+        pointer-events: none;
+      }
+      /* Live 按钮的显隐一律走内联 `style="display"`（与桌面端同构）。
+         ⚠️ 这里**不许**写 `.preview-live-btn { display: none }`：JS 显示时用的是
+         `style.display = ''`（清掉内联值），清掉后会回落到这条规则 ⇒ 按钮永远出不来。
+         激活色用 id 选择器：`.preview-action-btn.active` 是收藏的粉色，两者特异性相同，
+         靠书写顺序压不住（本文件里那条在上面）。 */
+      #previewLiveBtn.active {
+        color: #f5a623;
+      }
+
       .preview-nav {
         position: absolute;
         top: 50%;
@@ -1885,6 +1939,19 @@
       }
       .preview-next {
         right: 16px;
+      }
+      /* 🔴 右侧抽屉（图片信息 / 整理）打开时，把「下一张」让开。
+         两个抽屉都是 `right: 0; width: 360px; z-index: 20`，而 `.preview-nav` 是
+         `right: 16px; z-index: 6` ⇒ 抽屉一开就把右箭头**整个**盖住：点它没反应，
+         也不报错。与桌面端 `styles.css` 同名规则逐条同源（那段注释里有实测）。 */
+      .preview-overlay.has-right-drawer .preview-next {
+        right: min(376px, calc(85vw + 16px));
+      }
+      /* 同一个类还要管「缩放百分比」：它是 `#previewOverlay` 的直接子元素，
+         抽屉的 `z-index: 20` 压不住它（`.preview-body` 自成层叠上下文）。
+         类挂 `#previewOverlay` 才够得着，详见桌面端 `styles.css` 同名规则的注释。 */
+      .preview-overlay.has-right-drawer .preview-zoom-box {
+        right: min(372px, calc(85vw + 12px));
       }
 
       /* === 全屏浮层控件显隐 ===
@@ -1988,6 +2055,113 @@
       .preview-action-btn .icon {
         width: 18px;
         height: 18px;
+      }
+      /* 编辑三连（旋转 / 翻转 / 裁剪）。只在静止图片上亮；由 openPreview 控制显隐。 */
+      .preview-action-btn.preview-edit-btn[hidden] {
+        display: none;
+      }
+      /* 「保存」键：给一点强调色，让它在工具条里一眼能找到（与桌面端同名类同语义） */
+      .preview-action-btn.preview-edit-commit {
+        color: #f5a623;
+      }
+      .preview-action-btn.preview-edit-commit:hover {
+        background: rgba(245, 166, 35, 0.18);
+        color: #ffc457;
+      }
+      /*
+        裁剪选区层。
+        🔴 `position: fixed` + 视口坐标，不能用 absolute：`.preview-body` / `.preview-img`
+           这条链上有 transform 与 overflow，absolute 的定位上下文会跟着变，算错的
+           表现是「选框和图片错位」。
+        🔴 z-index 取 15050：高于预览层（1000）与首屏加载（12000），
+           低于照片对比（100050，那是另一个视图，二者不会同时出现）。
+           与桌面端 `src/renderer/styles.css` 里的同名块**刻意同值**。
+      */
+      .preview-crop-layer {
+        position: fixed;
+        z-index: 15050;
+        cursor: crosshair;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+      }
+      .preview-crop-box {
+        position: absolute;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.95);
+        /* 遮罩用一个巨大的外阴影画出来：选区一改，暗区自动跟着变 ——
+           比铺四块暗 div 少一份「四边尺寸要同时更新」的漂移风险。 */
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+        cursor: move;
+      }
+      /*
+        选区已确认、正等「保存 / 放弃」：遮罩与三分线留着（用户看到的就是将要裁出来的那块），
+        但整层**不再吃事件** —— 否则那 9999px 的外阴影会把工具条上的两个按钮一起挡住，
+        点「保存」等于点在遮罩上（什么都不发生，且不报错）。
+        与桌面端 `src/renderer/styles.css` 里的同名块**刻意同语义**。
+      */
+      .preview-crop-layer.is-pending {
+        pointer-events: none;
+        cursor: default;
+      }
+      .preview-crop-layer.is-pending .preview-crop-handle {
+        display: none;
+      }
+      .preview-crop-layer.is-pending .preview-crop-box {
+        border-style: dashed;
+        cursor: default;
+      }
+      /* 三分线：只在视觉上帮助构图，不吃鼠标事件（否则四角拖动会被它挡住） */
+      .preview-crop-box::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(to right, rgba(255, 255, 255, 0.3) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.3) 1px, transparent 1px);
+        background-size: 33.333% 33.333%;
+        pointer-events: none;
+      }
+      .preview-crop-handle {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        background: #fff;
+        border-radius: 2px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      }
+      .preview-crop-handle[data-corner='nw'] {
+        left: -6px;
+        top: -6px;
+        cursor: nwse-resize;
+      }
+      .preview-crop-handle[data-corner='ne'] {
+        right: -6px;
+        top: -6px;
+        cursor: nesw-resize;
+      }
+      .preview-crop-handle[data-corner='se'] {
+        right: -6px;
+        bottom: -6px;
+        cursor: nwse-resize;
+      }
+      .preview-crop-handle[data-corner='sw'] {
+        left: -6px;
+        bottom: -6px;
+        cursor: nesw-resize;
+      }
+      .preview-crop-hint {
+        position: absolute;
+        left: 50%;
+        bottom: 12px;
+        transform: translateX(-50%);
+        padding: 6px 12px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.72);
+        color: #fff;
+        font-size: 12px;
+        white-space: nowrap;
+        pointer-events: none;
       }
       .preview-zoom-box {
         position: absolute;
@@ -2254,7 +2428,8 @@
           opacity: 0.95;
           pointer-events: auto;
         }
-        .preview-info-panel {
+        .preview-info-panel,
+        .preview-org-panel {
           width: 280px;
           max-width: 80vw;
         }
@@ -2842,14 +3017,14 @@
            旧实现写死 `color-mix(in srgb, var(--bg) 94%, #05050b)` —— 浅色档等于往
            淡蓝/暖沙底里掺黑，整页顶部发灰。 */
         --page-veil: color-mix(in srgb, #05050b 6%, transparent);
-        /* 卡片文字压底：叠在**照片**上、压白字，两档都必须偏暗，故刻意不随明暗翻转 */
+        /* 卡片文字压底：叠在**图片**上、压白字，两档都必须偏暗，故刻意不随明暗翻转 */
         --card-scrim: linear-gradient(
           to top,
           rgb(8 10 20 / 82%) 0%,
           rgb(8 10 20 / 50%) 60%,
           transparent 100%
         );
-        /* 图片查看器底色：也刻意偏暗（照片主体优先），浅色档只减淡一点 */
+        /* 图片查看器底色：也刻意偏暗（图片主体优先），浅色档只减淡一点 */
         --viewer-scrim: color-mix(in srgb, #05070d 78%, transparent);
         /* 压在 --card-scrim / --viewer-scrim 上的文字色。同样**刻意不随明暗翻转**：
            这两层遮罩两档都偏暗，文字必须两档都浅。
@@ -2900,7 +3075,7 @@
           var(--bg);
       }
       /* 触屏通用：去掉点击高亮、避免双击缩放延迟；滚动不做链式传递（弹层滚到底时
-         不会把背后的照片网格一起带着滚） */
+         不会把背后的图片网格一起带着滚） */
       html {
         -webkit-text-size-adjust: 100%;
         text-size-adjust: 100%;
@@ -2910,14 +3085,16 @@
       .sidebar-content,
       .mobile-filter-sheet,
       .web-settings,
-      .preview-info-panel {
+      .preview-info-panel,
+      .preview-org-panel {
         touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
       }
       .photo-grid,
       .sidebar-content,
       .mobile-filter-sheet,
-      .preview-info-panel {
+      .preview-info-panel,
+      .preview-org-panel {
         overscroll-behavior: contain;
       }
       .header {
@@ -3661,7 +3838,7 @@
          与源码顺序无关地把这几面收回外壳层。
          ⚠️ 刻意**不动** `.photo-card`：契约层对卡片是接管式的（圆角 / 投影 / 悬停 /
             `::before` / 图片滤波一律以它为准，见契约层 .photo-card 那一段），
-            硬盖会把 `opacity: 1` 一起盖掉，照片立刻隐形。
+            硬盖会把 `opacity: 1` 一起盖掉，图片立刻隐形。
          这三条只声明「面」的材质，不碰任何几何 —— 因此不会被上面各断点的几何规则打架。 */
       html body .header {
         background: var(--surface-raised);
@@ -3696,15 +3873,21 @@
          自己的下拉平铺在顶栏，全条共 11 个控件 —— 换行位置完全由控件宽度**偶然**
          决定：实测 1920 是 1 行、1440 是 2 行、1024 与 768 是 3 行（1024 那档第三行
          只剩「最新拍摄」一个控件孤零零挂着）。缺的是信息层级，不是宽度。
-         那五维现在收进外观面板（顶栏「外观」按钮打开），顶栏只剩 7 项。实测宽度：
-           标题 271 + 统计 130 + 媒体类型 104 + 卡片比例 123 + 排序 123 + 外观 68 + 设置 32
-         合计 851，加 6 个 gap(12px) = 923；内宽 = 视口 − 84
-         ⇒ 视口 ≥ 1008 才装得下，阈值取 1020（留 12px 余量）。
-         ⚠️ 不能取更小：阈值以上就不折行了，若阈值 < 1008，落在
-         「阈值 ~ 1008」之间的视口会 kept nowrap 却装不下 ⇒ 控件被挤出视口右侧。
+         那五维现在收进外观面板（顶栏「外观」按钮打开）。
+         2026-10-09 再加「筛选」按钮（评分/标记/标签面板入口，+69px +1 gap），
+         顶栏共 8 项。实测宽度：
+           标题 271 + 统计 100 + 媒体类型 104 + 卡片比例 123 + 排序 123 + 外观 68 + 筛选 69 + 设置 32
+         合计 890，加 7 个 gap(12px) = 974；加上标题的 `margin-right: auto`
+         在满行时会先被吃掉、不够了再压标题自身（flex-shrink，271→258 实测）
+         ⇒ 视口 ≥ 1021 仍单行装得下（CDP 逐档实测 1021/1024/1030/1060/1080/1100/1150/1200/1440
+         全部 rows=1 且无右溢出），阈值维持 1020 不动。
+         ⚠️ 若以后再往顶栏加控件，必须重跑顶栏适配探针逐档实测 ——
+         这里的余量只剩标题的收缩空间，没有名义余量了。
+         ⚠️ 不能取更小：阈值以上就不折行了，若阈值 < 需求，落在
+         「阈值 ~ 需求」之间的视口会 kept nowrap 却装不下 ⇒ 控件被挤出视口右侧。
 
-         折行后：行 1 = 标题（拿满整行，品牌名完整）；行 2 = 其余 6 项。
-         实测 768px 平板（视口 754 / 内宽 669）控件行需 620 ⇒ 2 行，孤行消失。
+         折行后：行 1 = 标题（拿满整行，品牌名完整）；行 2 = 其余 7 项。
+         实测 768px 平板（视口 754 / 内宽 669）控件行需 ~700 ⇒ 2 行，孤行消失。
 
          ⚠️ 这里**不能**改用「隐藏」：外观虽已进面板，但顶栏按钮只在 >600px 出现，
          ≤600px 走底栏「设置」抽屉里那套等价控件。601–1020 若隐藏控件，就等于这几维
@@ -3743,9 +3926,12 @@
           white-space: nowrap;
         }
         /* 折行后「外观」与「设置」一起贴控件行最右，其余控件左对齐。
-           ⚠️ 只给外观按钮一个 auto：两个 margin-left: auto 会平分剩余空间，
-           把两颗按钮一起推到行中间。 */
-        .header-appearance-btn {
+           ⚠️ auto 只许有一颗：「筛选」按钮（#headerOrgFilterBtn）复用了
+           header-appearance-btn 类 —— 若沿用类选择器，两颗按钮各得一个
+           margin-left:auto，会平分剩余空间、在行内撑出一段幻影间隙
+           （实测 768px：外观右缘 601 → 筛选左缘 628，凭空 27px）。
+           所以这里改钉 id；基座档（>1020px）的右推由别处负责，不经过这条。 */
+        #headerAppearanceBtn {
           margin-left: auto;
         }
         .header-settings-btn {
@@ -3806,6 +3992,462 @@
         background: linear-gradient(135deg, var(--accent), var(--accent-hover));
         box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 24%, transparent);
       }
+
+      /* ── ⑥b 组织元数据：网格角标（标记 / 评分）────────────────────────────
+         与桌面端 src/renderer/styles.css 同名块**刻意同值**（换主题也要一眼可辨），
+         两处各一份是刻意的：网页端没有 styles.css，契约层也不管这事。
+         位置分配（别改，改了会与已有的角标撞位）：
+           左上 = 视频 / LIVE（互斥，见卡片构建处注释）
+           右上 = 收藏交互区（**悬停/点按才出现**的交互热区）⇒ 标记不放右上
+           左下 = 评分
+           右下 = 标记（选 / 否）
+         「选」绿、「否」红 —— 刻意不走 CSS 变量（六套主题间色相差异太大，
+         20px 的角标一偏色就与缩略图糊在一起）。 */
+      .photo-card-flag {
+        position: absolute;
+        bottom: 9px;
+        right: 9px;
+        z-index: 6;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid transparent;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        opacity: 0.94;
+        pointer-events: none;
+      }
+      .photo-card-flag .icon {
+        width: 12px;
+        height: 12px;
+      }
+      .photo-card-flag--pick {
+        color: #eafff2;
+        background: color-mix(in srgb, var(--bg-card) 62%, #2f9e63);
+        border-color: color-mix(in srgb, var(--surface-stroke) 60%, #4cc184);
+      }
+      .photo-card-flag--reject {
+        color: #fff0f0;
+        background: color-mix(in srgb, var(--bg-card) 62%, #b8453f);
+        border-color: color-mix(in srgb, var(--surface-stroke) 60%, #d96b64);
+      }
+      /* 评分：图区左下角。用「实心星 × 数字」而不是画 N 颗星 ——
+         180px 的卡片上单颗星不到 8px，五连星只是一排灰点。 */
+      .photo-card-rating {
+        position: absolute;
+        left: 9px;
+        bottom: 9px;
+        z-index: 6;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px 6px 2px 4px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        color: color-mix(in srgb, #fff4d6 78%, var(--text-primary));
+        background: color-mix(in srgb, var(--bg-card) 30%, #000000);
+        border: 1px solid color-mix(in srgb, var(--surface-stroke) 70%, #e0b055);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        opacity: 0.94;
+        pointer-events: none;
+      }
+      .photo-card-rating .icon {
+        width: 11px;
+        height: 11px;
+        color: #f0c255;
+      }
+      .photo-card-rating em {
+        font-style: normal;
+        line-height: 1;
+      }
+      /* 悬停 / 点按信息层让位：只在「该卡真的有对应角标」时缩窄文本可用宽。
+         特异性 (0,5,0) 压过基础层 `.photo-card .photo-info` 的 (0,2,0) 与
+         契约收尾层 `html body .photo-card .photo-info` 的 (0,2,2)。 */
+      .photo-card[data-org-rating]:not([data-org-rating='0']):hover .photo-info,
+      .photo-card[data-org-rating]:not([data-org-rating='0']):active .photo-info {
+        padding-left: 46px;
+      }
+      .photo-card[data-org-flag]:not([data-org-flag='none']):hover .photo-info,
+      .photo-card[data-org-flag]:not([data-org-flag='none']):active .photo-info {
+        padding-right: 46px;
+      }
+
+      /* ── ⑥c 组织元数据：预览工具条控件 ─────────────────────────────────── */
+      .preview-flag-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .preview-flag-btn.active {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 26%, var(--bg-card));
+      }
+      #previewFlagPickBtn.active {
+        border-color: #4cc184;
+        background: color-mix(in srgb, #2f9e63 32%, var(--bg-card));
+      }
+      #previewFlagRejectBtn.active {
+        border-color: #d96b64;
+        background: color-mix(in srgb, #b8453f 32%, var(--bg-card));
+      }
+      .preview-rating-stars {
+        display: inline-flex;
+        align-items: center;
+        gap: 1px;
+      }
+      /* 🔴 特异性必须压过容器规则 `.preview-slideshow-controls button(.active)` 的
+         (0,1,1)/(0,2,1)：那套是「药丸按钮」皮肤（ border + 底色圆角），套在星标上
+         会把五颗星画成五个蓝圈按钮（实测截图确认）。星标要的是「金色实心 / 灰色空心」
+         —— 与桌面端 `styles.css#preview-rating-star` 同一语义，id 前缀 (1,x,x) 稳赢。 */
+      #previewRatingStars .preview-rating-star {
+        border: none;
+        background: none;
+        padding: 2px;
+        color: color-mix(in srgb, var(--text-primary) 34%, transparent);
+        cursor: pointer;
+        line-height: 1;
+      }
+      #previewRatingStars .preview-rating-star .icon {
+        width: 16px;
+        height: 16px;
+      }
+      #previewRatingStars .preview-rating-star.active {
+        color: #f0c255;
+      }
+      .preview-tags-count {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text-secondary);
+      }
+      .preview-tags-count:empty {
+        display: none;
+      }
+
+      /* ── 「整理」抽屉（2026-10-09）────────────────────────────────────────
+         收藏 / 标记 / 评分 / 标签 / 对比 全部住在这里；形态与「图片信息」抽屉
+         （`.preview-info-panel`）同构 —— 右侧 360px 滑出、同一层 z-index、
+         同一段 transform 过渡，两者**互斥**（`toggleWebPreviewOrgPanel`）。
+         为什么从「贴大图下缘的浮条」改成抽屉，写在 `index.html` 该节点上方的注释里。 */
+      .preview-org-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 360px;
+        max-width: 85vw;
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 92%, transparent) 0%,
+          color-mix(in srgb, var(--bg-primary) 85%, transparent) 100%
+        );
+        backdrop-filter: blur(36px) saturate(1.5);
+        -webkit-backdrop-filter: blur(36px) saturate(1.5);
+        border-left: 1px solid color-mix(in srgb, var(--glass-border) 70%, var(--accent) 10%);
+        box-shadow:
+          -8px 0 40px color-mix(in srgb, var(--bg-primary) 60%, transparent),
+          0 0 0 1px color-mix(in srgb, var(--glass-border) 30%, transparent) inset;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        transform: translateX(100%);
+        visibility: hidden;
+        transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+        overflow: hidden;
+        /* 🔴 `pointer-events: auto` 必须打。网页端虽然本节点的父元素是
+           `#previewOverlay`（没有 `none`），但两端的这条规则号称「同构」——
+           桌面端的父元素 `.preview-body` 是 `pointer-events: none`，
+           指针事件是**继承**属性，少这一行就是「看得见、点不动」
+           （2026-10-09 用户报的「冲片条无法点击」正是同一机制）。
+           一起写死，免得将来谁把本节点挪进 `.preview-body` 时重踩。
+           关闭态靠 `visibility: hidden` 彻底不参与命中，不必再收 `auto`。 */
+        pointer-events: auto;
+      }
+      .preview-org-panel.open {
+        transform: translateX(0);
+        visibility: visible;
+      }
+      .preview-org-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--bg-card) 96%, transparent) 0%,
+          color-mix(in srgb, var(--bg-card) 82%, transparent) 100%
+        );
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        flex-shrink: 0;
+      }
+      .preview-org-panel-header h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        letter-spacing: 0.01em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .preview-org-panel-header h3::before {
+        content: '';
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+      }
+      .preview-org-panel-close {
+        border: none;
+        background: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        padding: 3px;
+        border-radius: 8px;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+      }
+      .preview-org-panel-close:hover {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        color: var(--text-primary);
+      }
+      .preview-org-panel-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0;
+      }
+      .preview-org-section {
+        padding: 12px 16px;
+        border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 40%, transparent);
+      }
+      .preview-org-section:last-child {
+        border-bottom: none;
+      }
+      /* 分区标题与「图片信息」抽屉同一套（小号大写 + 圆点 + 右侧渐隐横线）——
+         两块抽屉挨着出现，标题长得不一样会像两个人做的。 */
+      .preview-org-section-title {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .preview-org-section-title::before {
+        content: '';
+        display: inline-block;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+        flex-shrink: 0;
+      }
+      .preview-org-section-title::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--accent) 20%, transparent),
+          transparent
+        );
+      }
+      /* 分区里的一行控件。`wrap` 必须开：窄视口下（`max-width: 85vw`）
+         五颗星 + 三个标记药丸挤不下，换行比横向溢出好。 */
+      .preview-org-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      /* 抽屉里的按钮皮肤。**不复用 `.preview-action-btn`**：那个类是给压在图片上的
+         浮条用的（32×32、`color: rgba(255,255,255,.7)`），搬进跟随主题变色的抽屉后，
+         浅色主题下白图标直接看不见。这里做带文字的药丸，与桌面端 `.btn.btn-sm` 同观感。
+         `:not(.active)` 是为了别把 `.preview-flag-btn.active` 的底色盖掉。 */
+      .preview-org-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid var(--surface-stroke);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--bg-card) 72%, transparent);
+        color: var(--text-primary);
+        font-size: 12px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .preview-org-btn:hover:not(.active) {
+        border-color: color-mix(in srgb, var(--accent) 60%, var(--surface-stroke));
+        background: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+      }
+      .preview-org-btn .icon {
+        width: 14px;
+        height: 14px;
+      }
+      /* 收藏的激活态。`#previewFavoriteBtn` 原来靠 `.preview-action-btn.active`
+         的粉色，现在它不在那个类下了，得自己带上（id 前缀保证压过 `.preview-org-btn`）。 */
+      #previewFavoriteBtn.active {
+        color: #ff6b81;
+        border-color: color-mix(in srgb, #ff6b81 60%, var(--surface-stroke));
+        background: color-mix(in srgb, #ff6b81 18%, var(--bg-card));
+      }
+      /* 标记按钮的激活态底色由既有的 `.preview-flag-btn.active` /
+         `#previewFlagPickBtn.active` / `#previewFlagRejectBtn.active` 提供（在 ⑥c 那段），
+         这里只补一处：文字色必须压过 `.preview-org-btn` 的 `--text-primary`，
+         免得以后有人把底色调亮时文字糊进背景。 */
+      .preview-org-panel .preview-flag-btn.active {
+        color: var(--text-primary);
+      }
+      .preview-org-tags-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .preview-org-tags-chips:empty {
+        display: none;
+      }
+      .preview-org-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        color: var(--text-primary);
+        background: color-mix(in srgb, var(--accent) 18%, var(--bg-card));
+        border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+      }
+      .preview-org-tag-remove {
+        border: none;
+        background: none;
+        padding: 0;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1;
+      }
+      .preview-org-tags-input-row {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .preview-org-tags-input-row input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 30px;
+        padding: 0 9px;
+        border: 1px solid var(--surface-stroke);
+        border-radius: 7px;
+        background: var(--bg-card);
+        color: var(--text-primary);
+        font-size: 12px;
+      }
+      .preview-org-tags-input-row button {
+        flex: 0 0 auto;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid var(--accent);
+        border-radius: 7px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .preview-org-tags-hint {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+
+      /* ── ⑥d 组织元数据：筛选按钮与面板（与「外观」同款形态）──────────────── */
+      .header-org-filter-panel {
+        width: min(340px, calc(100vw - 24px));
+        gap: 12px;
+      }
+      .header-org-filter-select {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .org-filter-tags-block {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .org-filter-tags-hint {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+      .org-filter-tags-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .org-filter-tags-empty {
+        font-size: 12px;
+        color: var(--text-secondary);
+        padding: 4px 0;
+      }
+      .org-filter-tag-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 4px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--text-primary);
+      }
+      .org-filter-tag-row:hover {
+        background: var(--bg-hover);
+      }
+      .org-filter-tag-row input[type='checkbox'] {
+        flex: 0 0 auto;
+        accent-color: var(--accent);
+      }
+      .org-filter-tag-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .org-filter-tag-count {
+        flex: 0 0 auto;
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+      .org-filter-clear-btn {
+        height: 32px;
+        border: 1px solid var(--surface-stroke);
+        border-radius: 8px;
+        background: var(--bg-card);
+        color: var(--text-primary);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .org-filter-clear-btn:hover {
+        border-color: var(--accent);
+        background: var(--bg-hover);
+      }
       .header-appearance-panel {
         position: fixed;
         z-index: 60;
@@ -3819,10 +4461,10 @@
         /* 底色分两层：`background-color` 垫在下面，`--surface-raised` 那层渐变浮在上面
            （保留顶面高光的材质感）。
            ⚠️ 只写 `background: var(--surface-raised)` 会太透：实测它的 alpha 只有 0.67，
-           叠在照片上会透出 33% 的**锐利**照片，label 与下拉就像浮在噪点上。
+           叠在图片上会透出 33% 的**锐利**图片，label 与下拉就像浮在噪点上。
            `backdrop-filter` 虽然也设了（真机会把透出部分糊掉），但不能只靠它 ——
            无头渲染 / 部分浏览器下它不生效，那时可读性就全指望底色。
-           两层叠加后不透明度 ≈ 0.90：既是浮层，又压得住照片。 */
+           两层叠加后不透明度 ≈ 0.90：既是浮层，又压得住图片。 */
         background-color: color-mix(in srgb, var(--bg-card) 70%, transparent);
         background-image: var(--surface-raised);
         box-shadow: var(--panel-shadow-strong);
@@ -3856,9 +4498,10 @@
       /* ── ② 手机档瀑布流固定两列：窄屏固定 180px 列宽 → 只剩 1 列 ──────────
          `.grid.grid--masonry` 用的是 `columns: calc(var(--grid-card-basis) * 1px)`，
          即**固定 px 列宽**。手机内容区只有约 317px，装不下两列 180px → 只剩 1 列，
-         卡片几乎铺满整屏，浏览体验退化。
-         `capMasonryColumns()` 只在「卡片数少于最大列数」时**减少**列数、从不增加，
-         所以必须从 CSS 侧兜底。
+         卡片几乎铺满整屏，浏览体验退化。所以必须从 CSS 侧兜底。
+         （JS 从前还会按「卡片数 < 可容纳列数」把列数压成卡片数，那次只会**减少**列数、
+         从不增加，本来就兜不住这里；那个函数 2026-10-09 已整体删除，见
+         `js/app.js#applyCardSize` 上方的说明 —— 所以**别指望 JS 侧再有别的兜底**。）
 
          ⚠️ 两个踩过的坑，别改回去：
          ① 不能用 `columns: min(calc(basis*1px), 46%)` 这类**百分比上限**。`column-width`
@@ -3901,7 +4544,7 @@
          而网页端的两张主面 `.header` 与 `.content` **不在列**。
          后果：网页端把「面板透明度」调到「通透」时顶栏与内容区毫无反应，
          只有侧栏 / 工具栏 / 底栏变透 —— 正是契约层自己警告过的「一块板不透、其余都透」。
-         这里按同一口径补上：只动界面框架的底色，**不碰照片**（.photo-card 不在列）。
+         这里按同一口径补上：只动界面框架的底色，**不碰图片**（.photo-card 不在列）。
          `.content` 要连 background-image 一起清掉，否则它自带的 accent 渐变会继续兜底。 */
       html[data-opacity] .header,
       html[data-opacity] .content,
@@ -3963,7 +4606,7 @@
         }
         /* 🔴 统计徽章：基础层 `.header-stats:not(:empty) { display: flex }` 特异性 (0,2,0)，
            压过了手机档的 `.header-stats { display: none }` (0,1,0) ——
-           于是手机顶栏被「照片 18.4K · 4」占满、标题被截成「拂晓图库 · Aurora Ga」。 */
+           于是手机顶栏被「图片 18.4K · 4」占满、标题被截成「拂晓图库 · Aurora Ga」。 */
         .header-stats,
         .header-stats:not(:empty) {
           display: none;
@@ -3971,7 +4614,10 @@
         /* 顶栏「外观」按钮在手机档隐藏：底栏「设置」抽屉（#mobileFilterSheet）
            里本来就有一套等价的外观五维控件（mobileThemeStyleSelect 等），
            两边是同一份状态、app.js 按 id 成对同步 —— 实测两处永远一致。
-           顶栏在手机上只有 3 个位置，留给汉堡 + 标题 + 设置更值。 */
+           顶栏在手机上只有 3 个位置，留给汉堡 + 标题 + 设置更值。
+           「筛选」按钮（#headerOrgFilterBtn）刻意复用 header-appearance-btn 类，
+           被同一条规则一起藏掉 —— 手机端顶栏同样没有它的位置；评分/标记/标签
+           筛选属于桌面端冲片工作流，移动端暂无等价入口（与外观面板同一取舍）。 */
         .header-appearance-btn {
           display: none;
         }
@@ -4043,7 +4689,7 @@
          内联样式里 `.photo-card` 声明的是 `opacity: 0` + `animation: cardEnter … forwards`
          ——卡片靠动画的 forwards 定格才可见（本来还叠加了 reduce-motion 下
          `.photo-card { animation: none !important }`，见契约层同名媒体查询）。
-         所以这条 `opacity: 1` 一旦被内联样式盖过，**整个网格的照片会全部隐形**。
+         所以这条 `opacity: 1` 一旦被内联样式盖过，**整个网格的图片会全部隐形**。
          2026-10-06 实测：把本行上移到内联样式之前，375 张卡片 opacity 全为 0、
          截图里只剩一片纯色空卡（同页 DOM 读数却完全正常，极易误判为「截图坏了」）。
 
@@ -4297,6 +4943,78 @@
             fill="currentColor"
           />
         </symbol>
+        <!--
+          编辑三连（旋转 / 翻转 / 裁剪）。与桌面端 `src/renderer/index.html` 的
+          `#icon-rotate` / `#icon-flip` / `#icon-crop` **刻意同形**（两端各存一份，不共用文件）。
+        -->
+        <symbol id="icon-rotate" viewBox="0 0 24 24">
+          <path
+            d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- 水平翻转：左半虚线（镜像结果）+ 右半实线 -->
+        <symbol id="icon-flip" viewBox="0 0 24 24">
+          <path
+            d="M11 4 5 20h6z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-dasharray="3 2"
+          />
+          <path
+            d="M13 4l6 16h-6z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- 裁剪：两条互成镜像的折线 -->
+        <symbol id="icon-crop" viewBox="0 0 24 24">
+          <path
+            d="M6 2v14a2 2 0 0 0 2 2h14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M2 6h14a2 2 0 0 1 2 2v14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- Undo：待保存编辑的「放弃」键（`icon-check` 是「保存」键，sprite 里已有） -->
+        <symbol id="icon-undo" viewBox="0 0 24 24">
+          <path
+            d="M3 8h11a5.5 5.5 0 0 1 0 11H8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M7 4 3 8l4 4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
         <!-- Download -->
         <symbol id="icon-download" viewBox="0 0 24 24">
           <path
@@ -4372,6 +5090,17 @@
             stroke="currentColor"
             stroke-width="2"
             stroke-linecap="round"
+          />
+        </symbol>
+        <!-- Filter（组织元数据筛选按钮用；漏斗 = 「按条件筛掉」的通用隐喻） -->
+        <symbol id="icon-filter" viewBox="0 0 24 24">
+          <path
+            d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
           />
         </symbol>
         <!-- Shuffle/Random -->
@@ -4493,6 +5222,23 @@
       >
         <span class="header-appearance-dot" aria-hidden="true"></span>
         <span>外观</span>
+      </button>
+      <!-- 组织元数据筛选（评分 / 标记 / 标签）。
+           形态与「外观」同款：顶栏一个按钮 + 与 .header 平级的 fixed 面板。
+           刻意不往顶栏塞更多下拉 —— 顶栏折行阈值没有名义余量（见上方
+           ⑤ 段推导），加控件前必须逐档实测。 -->
+      <button
+        type="button"
+        class="header-appearance-btn header-org-filter-btn"
+        id="headerOrgFilterBtn"
+        onclick="toggleOrgFilterPanel()"
+        aria-label="筛选"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        title="筛选：评分 / 标记 / 标签"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#icon-filter" /></svg>
+        <span>筛选</span>
       </button>
       <button
         type="button"
@@ -4620,7 +5366,7 @@
           id="webOpacitySelect"
           class="header-background-select"
           aria-label="面板透明度"
-          title="面板透明度（只影响界面框架，照片不受影响；与「材质纹理」独立，可任意叠加）"
+          title="面板透明度（只影响界面框架，图片不受影响；与「材质纹理」独立，可任意叠加）"
           onchange="changeWebOpacity(this.value)"
         >
           <option value="opaque">不透明</option>
@@ -4629,6 +5375,65 @@
           <option value="clear">通透</option>
         </select>
       </div>
+    </div>
+
+    <!-- 组织元数据筛选面板（评分 / 标记 / 标签）。与外观面板同款形态：
+         与 .header 平级（外壳层 .header > * { position: relative } 会把 fixed 改掉），
+         位置由 JS 按按钮矩形算（positionOrgFilterPanel）。
+         标签多选 = 必须同时具备（服务端 HAVING COUNT(*) = N），用手写复选行
+         而不是 <select multiple>：手机上原生多选要按住 Ctrl 点第二下，等于把用法藏起来。 -->
+    <div
+      class="header-appearance-panel header-org-filter-panel"
+      id="headerOrgFilterPanel"
+      role="dialog"
+      aria-label="筛选"
+    >
+      <div class="appearance-field">
+        <label for="orgFilterRatingSelect">评分</label>
+        <select
+          id="orgFilterRatingSelect"
+          class="header-org-filter-select"
+          aria-label="评分筛选"
+          title="按评分筛选"
+          onchange="changeOrgFilter()"
+        >
+          <option value="" selected>全部评分</option>
+          <option value="5">5 星</option>
+          <option value="4">4 星</option>
+          <option value="3">3 星</option>
+          <option value="2">2 星</option>
+          <option value="1">1 星</option>
+          <option value="0">未评分</option>
+        </select>
+      </div>
+      <div class="appearance-field">
+        <label for="orgFilterFlagSelect">标记</label>
+        <select
+          id="orgFilterFlagSelect"
+          class="header-org-filter-select"
+          aria-label="标记筛选"
+          title="按标记筛选"
+          onchange="changeOrgFilter()"
+        >
+          <option value="" selected>全部标记</option>
+          <option value="pick">已选</option>
+          <option value="reject">已否</option>
+          <option value="none">未标记</option>
+        </select>
+      </div>
+      <div class="org-filter-tags-block">
+        <div class="org-filter-tags-hint">标签（勾选多个 = 必须同时具备）</div>
+        <div class="org-filter-tags-list" id="orgFilterTagsList"></div>
+      </div>
+      <button
+        type="button"
+        class="org-filter-clear-btn"
+        id="orgFilterClearBtn"
+        onclick="clearOrgFilter()"
+        style="display: none"
+      >
+        清除全部筛选
+      </button>
     </div>
 
     <!-- Main -->
@@ -4645,6 +5450,7 @@
           <div class="sidebar-tab" data-tab="dates" onclick="switchTab('dates')">日期</div>
           <div class="sidebar-tab" data-tab="ai_search" onclick="switchTab('ai_search')">搜图</div>
           <div class="sidebar-tab" data-tab="people" onclick="switchTab('people')">人物</div>
+          <div class="sidebar-tab" data-tab="tags" onclick="switchTab('tags')">标签</div>
         </div>
         <div class="sidebar-content" id="sidebarContent"></div>
         <!-- 搜图 / 人物页签的侧栏独占内容（搜索框 + 历史 / 人物列表），由 ai-views.js 渲染 -->
@@ -4913,27 +5719,113 @@
         </button>
         <button id="previewSubtitleToggleBtn" onclick="toggleSubtitleEnabled()">字幕:开</button>
         <button id="previewFullscreenBtn" onclick="togglePreviewFullscreen()">全屏</button>
+        <!-- 整理（收藏 / 标记 / 评分 / 标签）。与桌面端同构：这四组控件原本也是
+             15+ 控件里的一部分，后来进过一条贴大图下缘的浮条，现在全部住进
+             `#previewOrgPanel`（右侧抽屉）—— 浮条压在要看的地方，抽屉不压。
+             🔴 网页端**没有**桌面端那组键位（F / Z / X / C / 1-5），所以 title 里不写。
+             ⚠️ id 是 `previewOrgBtn` 而不是 `previewTagsBtn`：它开的是整个「整理」
+             抽屉。计数角标仍然只数标签（`syncWebPreviewOrgMeta`）。 -->
         <button
-          id="previewFavoriteBtn"
+          type="button"
           class="preview-action-btn"
-          title="收藏"
-          onclick="
-            (function () {
-              var p = state.previewPhotos && state.previewPhotos[state.previewIndex];
-              if (p) toggleFavoriteForPhoto(p.id);
-            })()
-          "
+          id="previewOrgBtn"
+          title="整理：收藏 / 标记 / 评分 / 标签"
+          aria-label="整理"
+          onclick="toggleWebPreviewOrgPanel()"
         >
-          <svg class="icon" aria-hidden="true"><use href="#icon-heart" /></svg>
+          <svg class="icon" aria-hidden="true"><use href="#icon-info" /></svg>
+          <span class="preview-tags-count" id="previewOrgCount"></span>
+        </button>
+        <button
+          id="previewLiveBtn"
+          class="preview-action-btn preview-live-btn"
+          type="button"
+          title="播放实况（含动态的那一段）"
+          aria-label="播放实况"
+          style="display: none"
+          onclick="toggleWebLivePlayback()"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-play" /></svg>
+        </button>
+        <!--
+          编辑三连（旋转 / 翻转 / 裁剪）。
+          🔴 从 2026-10-09 起这三个**只改预览、不写文件**（用户要求「旋转需要确认才写入变化」）：
+             点一下只是把动作攒进待保存串 / 记录裁剪选区，工具条随即亮出右边那两个结算键。
+          🔴 由 `openPreview` 按 `isWebVideoFileType(photo.file_type)` 决定显隐 ——
+             视频不做编辑（后端 `photo-edit-service` 也会拒），但按钮如果一直亮着，
+             用户点了只会拿到一个「视频不支持编辑」的报错，属于把错误留给用户去发现。
+          🔴 文案用「图片」不用「照片」（`ui-wording-regression` 有一条零「照片」红线）。
+        -->
+        <button
+          id="previewRotateBtn"
+          class="preview-action-btn preview-edit-btn"
+          type="button"
+          title="顺时针旋转 90°（只改预览；点「保存」或 Ctrl+S 才写回）Shift 为逆时针"
+          aria-label="旋转"
+          onclick="previewRotateAction(event)"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-rotate" /></svg>
+        </button>
+        <button
+          id="previewFlipBtn"
+          class="preview-action-btn preview-edit-btn"
+          type="button"
+          title="水平翻转（只改预览；点「保存」才写回）Shift 为垂直翻转"
+          aria-label="翻转"
+          onclick="previewFlipAction(event)"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-flip" /></svg>
+        </button>
+        <button
+          id="previewCropBtn"
+          class="preview-action-btn preview-edit-btn"
+          type="button"
+          title="裁剪并另存为副本（只记录选区；回车确认 / Esc 取消，点「保存」才写回）"
+          aria-label="裁剪"
+          onclick="previewCropAction()"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-crop" /></svg>
+        </button>
+        <!--
+          待保存编辑的两个结算键：**只在有东西可保存时出现**（`syncPreviewEditButtons` 控制）。
+          点「保存」= 一次 POST `/api/photo-edit-apply`（动作串 + 裁剪 rect 一起发）。
+        -->
+        <button
+          id="previewEditSaveBtn"
+          class="preview-action-btn preview-edit-btn preview-edit-commit"
+          type="button"
+          title="保存编辑并写回文件（Ctrl+S）"
+          aria-label="保存编辑"
+          hidden="hidden"
+          onclick="previewEditSaveAction()"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-check" /></svg>
+        </button>
+        <button
+          id="previewEditDiscardBtn"
+          class="preview-action-btn preview-edit-btn"
+          type="button"
+          title="放弃未保存的编辑（不写回文件）"
+          aria-label="放弃编辑"
+          hidden="hidden"
+          onclick="previewEditDiscardAction()"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#icon-undo" /></svg>
         </button>
       </div>
+      <!-- 🔴 这个开标签曾被误删（闭标签还在 5733 行）—— 后果是整个预览浮层
+           在浏览器解析时提前闭合：.preview-body / 图片信息面板 / 标签面板全部
+           变成 body 直接子元素、被 z-index:1000 的 scrim（94% 不透明）整体埋掉，
+           预览只剩一条工具条。视觉验证抓出来的（截图里图片几乎全黑）。
+           它还挂着全屏/移动端显隐的 CSS 钩子（.is-fullscreen / .mobile-ui-hidden），
+           删了开标签这些选择器就全部落空 —— 不许再动。 -->
       <div class="preview-window-controls">
         <button
           class="preview-info-toggle"
           id="previewInfoToggle"
           onclick="togglePreviewInfoPanel()"
-          title="照片信息"
-          aria-label="照片信息"
+          title="图片信息"
+          aria-label="图片信息"
         >
           <svg class="icon" aria-hidden="true"><use href="#icon-info" /></svg>
         </button>
@@ -4973,6 +5865,17 @@
         >
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>
         </button>
+        <!--
+          Live Photo 的伴生视频。叠在静止图上（不是替换它）—— 见上方 .preview-live-video 的说明。
+          放在这一列的**最后**，靠 z-index 与文档序一起盖住底下的静止图。
+        -->
+        <video
+          class="preview-live-video"
+          id="previewLiveVideo"
+          playsinline
+          preload="none"
+          style="display: none"
+        ></video>
         <button
           class="preview-nav preview-next"
           onclick="navigatePreview(1, event)"
@@ -4983,7 +5886,7 @@
       </div>
       <div class="preview-info-panel" id="previewInfoPanel">
         <div class="preview-info-panel-header">
-          <h3>照片信息</h3>
+          <h3>图片信息</h3>
           <button
             class="preview-info-panel-close"
             onclick="togglePreviewInfoPanel()"
@@ -4993,7 +5896,194 @@
           </button>
         </div>
         <div id="previewInfoPanelContent">
-          <div class="preview-info-empty">打开照片后查看信息</div>
+          <div class="preview-info-empty">打开图片后查看信息</div>
+        </div>
+      </div>
+      <!-- 整理抽屉（2026-10-09）：收藏 / 标记 / 评分 / 标签 / 对比 全部住这里。
+           形态与 `#previewInfoPanel`（图片信息）**同构但完全独立**：同一套右侧 360px
+           滑出抽屉、同一层 z-index。两者**互斥**（见 `toggleWebPreviewOrgPanel`）。
+           🔴 三条设计判据（用户 2026-10-09 提出「冲片条遮挡图片不美观」后的结论）：
+           ① **不是弹窗遮罩**：抽屉只吃右侧 360px，大图主体仍然看得见；
+           ② **不随切图关闭**：翻着图一路标下去是主用法；
+           ③ **不随点外部关闭**：它是工作台不是提示。
+           （②③ 与桌面端逐条同源，见 `src/renderer/index.html` 同名节点的注释。）
+           🔴 抽屉里的按钮**不用 `.preview-action-btn`**：那个类是给「压在图片上的
+           浮条」用的（32×32、`color: rgba(255,255,255,.7)` 的白图标），
+           搬进跟随主题变色的抽屉后，浅色主题下白图标直接看不见。
+           这里用 `.preview-org-btn`（带文字的药丸），与桌面端 `.btn.btn-sm` 同观感。
+           🔴 本节点是 `#previewOverlay` 的直接子元素（与 `#previewBody` 平级），
+           所以不吃 `.preview-body` 的任何布局约束；`pointer-events` 由
+           `.preview-org-panel.open` 那条规则给（与 `.preview-info-panel.open` 同写法）。 -->
+      <div class="preview-org-panel" id="previewOrgPanel">
+        <div class="preview-org-panel-header">
+          <h3>整理</h3>
+          <button
+            class="preview-org-panel-close"
+            type="button"
+            onclick="toggleWebPreviewOrgPanel(false)"
+            aria-label="关闭"
+          >
+            <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg>
+          </button>
+        </div>
+        <div class="preview-org-panel-body">
+          <!-- 分区顺序 = 冲片时的实际决策顺序：先定去留（标记）→ 再定好坏（评分）
+               → 再长期收藏 → 最后归类打标签 → 对比（挑图动作的延伸）。 -->
+          <div class="preview-org-section">
+            <div class="preview-org-section-title">标记</div>
+            <!-- 与「收藏」刻意做成两组控件：收藏是**累积**语义（我喜欢的，长期不动），
+                 标记是**工作流**语义（这一批我要哪些）。并成一个控件会让
+                 「冲片时标否」和「长期收藏」互相污染。
+                 🔴 「清除」是独立按钮，不是把「选 / 否」做成切换 —— 冲片是盲操作，
+                 做成切换会让「以为没按上、又按一次」静默清掉上一张的标记。 -->
+            <div class="preview-org-row">
+              <span class="preview-flag-group" id="previewFlagGroup">
+                <button
+                  type="button"
+                  class="preview-org-btn preview-flag-btn"
+                  id="previewFlagPickBtn"
+                  title="标记为「选」"
+                  aria-label="标记为选"
+                  onclick="setWebPreviewFlag('pick')"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-check" /></svg>
+                  <span>选</span>
+                </button>
+                <button
+                  type="button"
+                  class="preview-org-btn preview-flag-btn"
+                  id="previewFlagRejectBtn"
+                  title="标记为「否」"
+                  aria-label="标记为否"
+                  onclick="setWebPreviewFlag('reject')"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg>
+                  <span>否</span>
+                </button>
+                <button
+                  type="button"
+                  class="preview-org-btn preview-flag-btn"
+                  id="previewFlagClearBtn"
+                  title="清除标记"
+                  aria-label="清除标记"
+                  onclick="setWebPreviewFlag('none')"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-undo" /></svg>
+                  <span>清除</span>
+                </button>
+              </span>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title">评分</div>
+            <!-- 评分：5 颗星。**再点同一颗 = 取消**（回 0）—— 与数据层同一条判据
+                 （normalizeRating 的取值域里 0 是合法的「未评分」）。 -->
+            <div class="preview-org-row">
+              <span class="preview-rating-stars" id="previewRatingStars" role="group" aria-label="评分">
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="1"
+                  title="1 星"
+                  aria-label="1 星"
+                  onclick="setWebPreviewRating(1)"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="2"
+                  title="2 星"
+                  aria-label="2 星"
+                  onclick="setWebPreviewRating(2)"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="3"
+                  title="3 星"
+                  aria-label="3 星"
+                  onclick="setWebPreviewRating(3)"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="4"
+                  title="4 星"
+                  aria-label="4 星"
+                  onclick="setWebPreviewRating(4)"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                </button>
+                <button
+                  type="button"
+                  class="preview-rating-star"
+                  data-rating="5"
+                  title="5 星"
+                  aria-label="5 星"
+                  onclick="setWebPreviewRating(5)"
+                >
+                  <svg class="icon" aria-hidden="true"><use href="#icon-star" /></svg>
+                </button>
+              </span>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title">收藏</div>
+            <div class="preview-org-row">
+              <button
+                id="previewFavoriteBtn"
+                class="preview-org-btn"
+                title="收藏"
+                aria-label="收藏"
+                onclick="
+                  (function () {
+                    var p = state.previewPhotos && state.previewPhotos[state.previewIndex];
+                    if (p) toggleFavoriteForPhoto(p.id);
+                  })()
+                "
+              >
+                <svg class="icon" aria-hidden="true"><use href="#icon-heart" /></svg>
+                <span>收藏</span>
+              </button>
+            </div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title">标签</div>
+            <!-- 标签从「点开一个小悬浮面板」改成抽屉里的一个分区：入口已经只剩
+                 `#previewOrgBtn` 一个，再留一层「点开面板」就是抽屉里套抽屉。
+                 改动仍然**立即保存**（没有「确定」按钮）—— 与原来那条契约一致。 -->
+            <div class="preview-org-tags-chips" id="previewOrgTagsChips"></div>
+            <div class="preview-org-tags-input-row">
+              <input
+                type="text"
+                id="previewOrgTagsInput"
+                placeholder="输入标签后回车"
+                aria-label="新标签名"
+                onkeydown="
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    webPreviewSubmitTagInput();
+                  }
+                "
+              />
+              <button type="button" onclick="webPreviewSubmitTagInput()">添加</button>
+            </div>
+            <div class="preview-org-tags-hint">回车添加；点标签上的 × 删除。改动立即保存。</div>
+          </div>
+          <div class="preview-org-section">
+            <div class="preview-org-section-title">对比</div>
+            <!-- 与标记同类的**挑图**动作（标记 = 要哪些、对比 = 挑 2–4 张并排看）。
+                 `photo-compare.js#mount()` 现在优先找这个**专用空槽**，
+                 不再靠「锚点是否在某容器内」猜落点 —— 那个判据的落点是别人
+                 的排版，改一次分区就得重新猜一次。 -->
+            <div class="preview-org-row" id="previewOrgActions"></div>
+          </div>
         </div>
       </div>
       <div class="preview-zoom-box" id="previewZoomBox">
@@ -5020,7 +6110,7 @@
       </div>
       <div class="context-menu-item" data-action="info" role="menuitem">
         <svg class="icon" aria-hidden="true"><use href="#icon-info" /></svg>
-        <span>照片信息</span>
+        <span>图片信息</span>
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item" data-action="select" role="menuitem">
@@ -5079,8 +6169,8 @@
           <input
             type="text"
             id="searchOverlayInput"
-            placeholder="搜索照片（回车）"
-            aria-label="搜索照片"
+            placeholder="搜索图片（回车）"
+            aria-label="搜索图片"
           />
           <button class="search-overlay-close" onclick="closeSearchOverlay()" aria-label="关闭">
             <svg class="icon" aria-hidden="true"><use href="#icon-close" /></svg>
@@ -5097,15 +6187,19 @@
     <script src="/hls-attach.js"></script>
     <script src="/playback-strategy.js"></script>
     <script src="/js/web-theme-shared.js?v=9"></script>
-    <link rel="stylesheet" href="/photo-compare.css?v=1" />
-    <script src="/js/photo-compare.js?v=1"></script>
-    <!-- 照片信息面板的字段注册表：与桌面端共用同一份，网页端只读桌面端勾好的字段集 -->
+    <link rel="stylesheet" href="/photo-compare.css?v=2" />
+    <script src="/js/photo-compare.js?v=3"></script>
+    <!-- 图片信息面板的字段注册表：与桌面端共用同一份，网页端只读桌面端勾好的字段集 -->
     <script src="/js/photo-info-fields.js?v=1"></script>
-    <!-- 搜图 / 人物的入口在文件栏，结果落进主照片网格，不再需要独立弹窗样式 -->
-    <link rel="stylesheet" href="/ai-web-views.css?v=1" />
+    <!-- 搜图 / 人物的入口在文件栏，结果落进主图片网格，不再需要独立弹窗样式 -->
+    <link rel="stylesheet" href="/ai-web-views.css?v=2" />
     <link rel="stylesheet" href="/settings-page.css?v=1" />
-    <script src="/js/ai-views.js?v=1"></script>
-    <script src="/js/app.js?v=4"></script>
+    <!-- 标签导航页：类名两端刻意不共用（见两份 css 文件头），缩进与展开契约同源 -->
+    <link rel="stylesheet" href="/tag-nav.css?v=2" />
+    <script src="/js/ai-views.js?v=3"></script>
+    <!-- 标签导航页的界面层：先于 app.js 加载（app.js 挂载时它必须已在 window 上） -->
+    <script src="/js/tag-nav.js?v=3"></script>
+    <script src="/js/app.js?v=10"></script>
     <!-- 必须排在 app.js 之后：它要调用 app.js 挂到 window 上的换主题 / 换每页数量等入口 -->
     <script src="/js/settings-page.js?v=1"></script>
   </body>

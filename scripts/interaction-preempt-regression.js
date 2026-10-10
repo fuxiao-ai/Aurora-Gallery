@@ -234,9 +234,34 @@ function testBackoffPointsExist() {
     '启动期失效清理的避让条件要含「扫描 + 交互抢占 + 预览降载」三条（2026-10-06 起刻意不再含补全/查重）',
   );
 
+  /**
+   * 🔴 2026-10-08 **翻面**：抢占状态从 `get-background-tasks` 挪到了 `get-diagnostics`。
+   *
+   * 原判据是 `/interaction:\s*interactionPreempt\.status\(\)/.test(mainCode)` —— 它只在
+   * 「整个 main.js 里出现过这个形状」，**不管出现在哪个 handler 里**，所以挪走之后照样绿；
+   * 而它想守的是「抢占状态要能被读到」（消息里写的就是 `getBackgroundTasks`）。
+   *
+   * 现在拆成两条：**新位置必须有**、**旧位置必须没有**（后者才是防回退的那一条 ——
+   * 否则「有人顺手把诊断字段又塞回任务返回」没人管，而那正好是
+   * `docs/contracts/background-tasks.md` §0 要划清的边界）。
+   */
+  const bgTasksHandler = sliceBetween(
+    mainCode,
+    "ipcMain.handle('get-background-tasks'",
+    "ipcMain.handle('get-diagnostics'",
+  );
+  const diagHandler = sliceBetween(
+    mainCode,
+    "ipcMain.handle('get-diagnostics'",
+    "ipcMain.handle('open-database-folder'",
+  );
   assert(
-    /interaction:\s*interactionPreempt\.status\(\)/.test(mainCode),
-    'getBackgroundTasks 要暴露抢占状态，否则「后台为什么变慢了」没有任何线索',
+    /interaction:\s*interactionPreempt\.status\(\)/.test(diagHandler),
+    '交互抢占状态要走 `get-diagnostics`（它是诊断数据、不是后台任务），否则「后台为什么变慢了」没有线索',
+  );
+  assert(
+    !/interaction:\s*interactionPreempt\.status\(\)/.test(bgTasksHandler),
+    '`get-background-tasks` 不许再报抢占状态：诊断数据混进任务返回，会让人以为它是一项任务（见契约 §0）',
   );
 }
 

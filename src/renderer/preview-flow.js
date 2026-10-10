@@ -1,11 +1,14 @@
 (function (global) {
   'use strict';
 
-  function photoCacheVersion(photo) {
-    if (!photo) return '';
-    var v = (photo.file_size || '') + '|' + (photo.date_modified || '');
-    return v.replace(/[^0-9]/g, '');
-  }
+  // 缓存键的唯一真相源在 `utils.js`（它先于本文件加载，见 index.html 的脚本顺序）。
+  // ⚠️ 原来这里有一份**私有**的 `photoCacheVersion`，只服务本文件 —— 于是网格卡片那条路
+  //    （`ui-grid.js`）压根没有缓存键，缩略图重建后卡片一直显示旧图。
+  //    收成一处之后，预览占位图与网格卡片用的是同一个键。
+  // 缩略图与原图**用不同的键**：`thumb://` 的字节会随 `thumb_size`/`thumb_format` 变，
+  // 而 `photo://` 的字节只随原图变 —— 并成一个键会让「重建缩略图」把原图预览也一起作废。
+  var photoCacheVersion = global.RendererUtils.photoCacheVersion;
+  var thumbCacheVersion = global.RendererUtils.thumbCacheVersion;
 
   function isVideoFileType(fileType) {
     var t = fileType != null ? String(fileType).toLowerCase() : '';
@@ -976,6 +979,13 @@
     var onSchedulePreviewImageLayoutBounds = options.onSchedulePreviewImageLayoutBounds;
     var onSyncFullscreenButton = options.onSyncFullscreenButton;
     var onSyncPreviewFavoriteButton = options.onSyncPreviewFavoriteButton;
+    var onSyncPreviewLiveButton = options.onSyncPreviewLiveButton;
+    /**
+     * 编辑三连（旋转 / 翻转 / 裁剪）的显隐同步。与 `onSyncPreviewLiveButton` 同一位置调用：
+     * 它必须随**每一次**切图跑（视频不亮编辑按钮），写进「打开预览」那一条路径只会覆盖一半。
+     * ⚠️ 与 LIVE 按钮同样**刻意不做成必需回调**：不传只是按钮不置灰，不该让整个预览 `return`。
+     */
+    var onSyncPreviewEditButtons = options.onSyncPreviewEditButtons;
     var onPreloadAdjacentPages = options.onPreloadAdjacentPages;
     if (typeof onSyncRandomButton !== 'function' || typeof onResetZoom !== 'function') return;
     if (
@@ -1019,6 +1029,18 @@
     onSyncRandomButton();
     // 视频不走缩放/旋转交互（只需播放），图片继续用原逻辑
     if (!isVideo) onResetZoom();
+
+    /**
+     * Live Photo：**每次**切图都先在这里把动态收支干净，再决定 LIVE 按钮的显隐。
+     * 它必须落在分支**之前** —— 打开预览与左右切换是两条各自独立的代码路径，
+     * 写进任一条都只能覆盖一半。新图片的静止图尚未铺好时按钮就该先就位，
+     * 否则会出现「刚切过来按钮还是上一张的」的错位。
+     * ⚠️ 刻意不做成必需回调（不像 `onSyncPreviewFavoriteButton` 那样进守卫链）：
+     *    漏传时它只是不播动态，而漏传必需回调会让整个预览 `return` 掉。
+     */
+    if (typeof onSyncPreviewLiveButton === 'function') onSyncPreviewLiveButton(photo, isVideo);
+    // 编辑按钮同一条路径：视频不亮（后端也会拒，但一直亮着等于把报错留给用户去发现）
+    if (typeof onSyncPreviewEditButtons === 'function') onSyncPreviewEditButtons(photo, isVideo);
 
     var overlay = dom.previewOverlay;
     var img = dom.previewImage;
@@ -1097,7 +1119,7 @@
             img.removeAttribute('height');
             // 如果有缩略图，先加载缩略图作为占位，然后加载原图
             if (photo.has_thumbnail) {
-              img.src = 'thumb://' + photo.id + '?v=' + photoCacheVersion(photo);
+              img.src = 'thumb://' + photo.id + '?v=' + thumbCacheVersion(photo);
             }
             // 并行加载原图，和web端一样加快显示速度
             var originalImg = new Image();
@@ -1202,7 +1224,7 @@
           img.removeAttribute('height');
           // 如果有缩略图，先加载缩略图作为占位，然后加载原图
           if (photo.has_thumbnail) {
-            img.src = 'thumb://' + photo.id + '?v=' + photoCacheVersion(photo);
+            img.src = 'thumb://' + photo.id + '?v=' + thumbCacheVersion(photo);
           }
           img.onload = onPreviewImageDecoded;
           // 并行加载原图，加快显示速度

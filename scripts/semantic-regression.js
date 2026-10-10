@@ -6,7 +6,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { DIMENSIONS, normalize, pack, score, dot } = require('../src/ai/embedding');
 const { IndexStore, MATCH_THRESHOLD_RANGE } = require('../src/ai/index-store');
-const { SemanticSearch } = require('../src/main/semantic-search');
+const { SemanticSearch, readRoute, RELAY_READY_ATTEMPTS } = require('../src/main/semantic-search');
 
 async function run() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'aurora-semantic-'));
@@ -220,7 +220,7 @@ async function run() {
       [{ operation: 'search', query: '猫', primary: false }],
       '索引进行中搜图必须走并发只读分支（同一时间只有一个主任务占用 worker）',
     );
-    assert.equal(allowed.status().busy, false, '并发只读不得写任务状态');
+    assert.equal(allowed.status().running, false, '并发只读不得写任务状态');
     assert.equal(allowed.status().phase, 'idle', '并发只读不得改 phase');
 
     // canRun 只拦重活：另一个索引服务在跑时，搜图照常，建索引 / 下载模型仍然互斥。
@@ -283,12 +283,189 @@ async function run() {
       { primary: false, worker: fakeWorker, onDone() {} },
     );
     await assert.rejects(failing, /AI_CANCELLED/, 'worker 报错要原样冒给调用方');
-    assert.equal(relayed.status().busy, false, 'relay 期间不得改任务状态');
+    assert.equal(relayed.status().running, false, 'relay 期间不得改任务状态');
     assert.equal(relayed.status().operation, 'index', 'relay 期间索引任务的身份不变');
+
+    // ---- 只读请求的路由表（2026-10-09：用户报「语义搜索时提示后台任务正在运行，请稍后再试」）----
+    // 🔴 症状：进搜图页会自动取预选词（suggest）、启动后 3 秒会自动补 tag 倒排（tag）、
+    //    会话第一次查状态要起 worker（status）—— 这三个窗口里搜图从前一律 `AI_BUSY`，
+    //    而它们**要么本身就是只读、要么连编码器都没载**，凭什么挡搜图？
+    // 判据全在纯函数 `readRoute` 里，所以先钉表格本身，再钉接线与退避重试。
+    assert.deepEqual(
+      [
+        readRoute('index', false),
+        readRoute('search', false),
+        readRoute('suggest', false),
+        readRoute('status', false),
+        readRoute('tag', false),
+        readRoute('install', false),
+        readRoute('index', true),
+      ],
+      ['relay', 'relay', 'relay', 'spawn', 'spawn', 'busy', 'spawn'],
+      '路由表：手里有编码器的托给它；status/tag（没载编码器）与已退出的 worker 自起只读 worker；' +
+        '只有「模型正在下载」才真的拒绝',
+    );
+    // `relay()` 自己也要有这道门（防御性，别只信调用方）：对端已退出时**不许投出去** ——
+    // 投出去既不报错也不回话，调用方会挂满 120 s 超时（见 `workerExited` 的推导）。
+    const guarded = new SemanticSearch(sourcePath, aiPath, {
+      concurrentReads: ['search'],
+      relayReads: ['search'],
+      preserveProgress: ['search'],
+    });
+    guarded.worker = {
+      postMessage: () => assert.fail('已退出的 worker 不许再收到 relay 请求'),
+      terminate() {},
+    };
+    guarded.workerExited = true;
+    guarded.state.operation = 'index';
+    await assert.rejects(guarded.relay('search', '猫'), /AI_BUSY/, 'relay 必须拒绝已退出的对端');
+
+    // `status` / `tag` 对端 + 已退出的 worker：**不许再拒**，要自己起一个只读 worker
+    // （`primary: false` —— 它不得占主任务槽、不得改任务状态）。
+    const routed = new SemanticSearch(sourcePath, aiPath, {
+      concurrentReads: ['search'],
+      relayReads: ['search'],
+      preserveProgress: ['search'],
+    });
+    const routedSpawns = [];
+    routed.spawn = (operation, query, options) => {
+      routedSpawns.push({ operation, query, primary: options.primary });
+      return Promise.resolve({ photos: [{ id: 3 }], indexed: 1 });
+    };
+    for (const occupying of ['status', 'tag']) {
+      routed.worker = { postMessage() {}, terminate() {} };
+      routed.state.operation = occupying;
+      assert.deepEqual(
+        await routed.run('search', '猫'),
+        { photos: [{ id: 3 }], indexed: 1 },
+        occupying + ' 占着 worker 时搜图必须照常（它手里没有可复用的编码器 ⇒ 自己起一个）',
+      );
+    }
+    // 🔴 双 worker 的尾巴：CLIP 路收场后 JoyTag 路还在跑（大库上几小时），槽里留着那具尸体。
+    //    往尸体上 postMessage 不报错也不回话 ⇒ 从前这里每次搜索都挂满 120 s 超时。
+    routed.workerExited = true;
+    routed.state.operation = 'index';
+    assert.deepEqual(
+      await routed.run('search', '猫'),
+      { photos: [{ id: 3 }], indexed: 1 },
+      '对端已退出时不许把请求投给尸体（那只会在 120 s 后超时），必须自起 worker',
+    );
+    assert.deepEqual(
+      routedSpawns,
+      [
+        { operation: 'search', query: '猫', primary: false },
+        { operation: 'search', query: '猫', primary: false },
+        { operation: 'search', query: '猫', primary: false },
+      ],
+      '这三趟都是并发只读：primary 必须为 false（不得顶替主任务、不得写任务状态）',
+    );
+    assert.equal(routed.status().running, false, '并发只读不得写任务状态（三轮都要保持）');
+    assert.equal(routed.status().operation, 'index', '并发只读也不许改索引任务的身份');
+
+    // ---- 索引起手那几秒：对端回 AI_BUSY 是「等我一下」，不是「别搜」----
+    // 索引刚起手时编码器还在载（loadEncoder 实测 ≈2.1 s），此时 relay 会被回 `AI_BUSY`。
+    // 直接把这句话给用户 = 一句「后台任务正在运行，请稍后再试」，而明明再过一两秒就能搜。
+    const scripted = new SemanticSearch(sourcePath, aiPath, {
+      concurrentReads: ['search'],
+      relayReads: ['search'],
+      preserveProgress: ['search'],
+    });
+    scripted.spawn = () => {
+      throw new Error('这一趟不该另起 worker：对端一直在，重试就够了');
+    };
+    scripted.state.operation = 'index';
+    const busyThenAnswer = { posted: [], turn: 0, terminate() {} };
+    busyThenAnswer.postMessage = function (message) {
+      this.posted.push(message);
+      if (message.relay == null) return;
+      this.turn += 1;
+      const answer =
+        this.turn === 1 ? { error: 'AI_BUSY' } : { result: { photos: [{ id: 7 }], indexed: 4 } };
+      scripted.handleWorkerMessage(
+        { relay: message.relay, ...answer },
+        { primary: false, worker: this, onDone() {} },
+      );
+    };
+    scripted.worker = busyThenAnswer;
+    assert.deepEqual(
+      await scripted.run('search', '猫'),
+      { photos: [{ id: 7 }], indexed: 4 },
+      '「还没就位」要退避重试成一次成功，而不是把 AI_BUSY 扔给用户',
+    );
+    assert.equal(busyThenAnswer.posted.length, 2, '重试就是再投一次（票据要换新的）');
+
+    // 🔴 但重试**每一轮都要重看路由**：对端可能在等待期间收场，那时再投就是往尸体上投。
+    //    这一支必须立刻停下、落到「自己起 worker」，而不是把预算烧完再拒。
+    const halfway = new SemanticSearch(sourcePath, aiPath, {
+      concurrentReads: ['search'],
+      relayReads: ['search'],
+      preserveProgress: ['search'],
+    });
+    const halfwaySpawns = [];
+    halfway.spawn = (operation, query, options) => {
+      halfwaySpawns.push({ operation, primary: options.primary });
+      return Promise.resolve({ photos: [{ id: 8 }], indexed: 2 });
+    };
+    halfway.state.operation = 'index';
+    const dying = { posted: [], terminate() {} };
+    dying.postMessage = function (message) {
+      this.posted.push(message);
+      if (message.relay == null) return;
+      halfway.workerExited = true; // 第一条回话之后对端就没了（索引整趟收场 / CLIP 路退出）
+      halfway.handleWorkerMessage(
+        { relay: message.relay, error: 'AI_BUSY' },
+        { primary: false, worker: this, onDone() {} },
+      );
+    };
+    halfway.worker = dying;
+    assert.deepEqual(
+      await halfway.run('search', '猫'),
+      { photos: [{ id: 8 }], indexed: 2 },
+      '重试当中对端收场 ⇒ 立刻改走「自起 worker」，不许继续投尸体',
+    );
+    assert.equal(dying.posted.length, 1, '对端已退出时只投过一次（不再重投）');
+    assert.deepEqual(
+      halfwaySpawns,
+      [{ operation: 'search', primary: false }],
+      '落到自起 worker 时仍是并发只读（primary: false）',
+    );
+
+    // 预算用尽仍是 relay（真出事了）：才允许把 AI_BUSY 交出去 —— 而且要**有界**（不许无限重试）。
+    const stuck = new SemanticSearch(sourcePath, aiPath, {
+      concurrentReads: ['search'],
+      relayReads: ['search'],
+      preserveProgress: ['search'],
+    });
+    stuck.spawn = () => {
+      throw new Error('对端还在（只是没就位），这一趟不该另起 worker');
+    };
+    stuck.state.operation = 'index';
+    const never = { posted: [], terminate() {} };
+    never.postMessage = function (message) {
+      this.posted.push(message);
+      if (message.relay == null) return;
+      stuck.handleWorkerMessage(
+        { relay: message.relay, error: 'AI_BUSY' },
+        { primary: false, worker: this, onDone() {} },
+      );
+    };
+    stuck.worker = never;
+    const stuckStartedAt = Date.now();
+    await assert.rejects(
+      stuck.run('search', '猫'),
+      /AI_BUSY/,
+      '预算用尽且对端仍是 relay，才交 AI_BUSY',
+    );
+    assert.equal(
+      never.posted.length,
+      RELAY_READY_ATTEMPTS + 1,
+      '重试次数就是预算（多一次首投）—— 这条闸门防的是「无界重试把搜图挂死」',
+    );
+    assert.ok(Date.now() - stuckStartedAt < 60000, '预算必须有界（不许无限等）');
 
     // ---- 「另一个索引在跑就拒绝搜图」那道闸门（canSearch）已撤除 ----
     // 根子是内存，而真正致命的是**同一份 SigLIP2 被并发载入两遍**；那条路已被 relay 堵死
-    // （有 worker 在跑必然走 relay），而单独起 worker 的那条现在只载文本编码器（textOnly）。
+    // （对端手里有编码器时一律走 relay），没编码器的那几种则自起 worker（只载文本编码器）。
     const alone = new SemanticSearch(sourcePath, aiPath, {
       concurrentReads: ['search'],
       relayReads: ['search'],
@@ -352,8 +529,17 @@ async function run() {
     ])
       assert.ok(!/search\([^)]*,\s*60\b/.test(src), name + ' 里不许再出现写死的「60 条」上限');
     // 至少两个回归断言要能抓住「又改回取前 N 条」
-    assert.match(indexStoreSrc, /matched\s*\+= 1/, '达标要计数（不再是取前 N 条）');
+    assert.match(indexStoreSrc, /candidates\s*\+= 1/, '达标要计数（不再是取前 N 条）');
     assert.match(indexStoreSrc, /adjusted\s*<\s*threshold/, '不达标就跳过');
+    // 自适应阈值：公式与 α 是本方案的核心契约，删掉就等于悄悄退回固定阈值
+    // （固定阈值的两难：定高了整条杀掉排序正确的概念，定低了灌噪声 —— 见 DEFAULT_MATCH_THRESHOLD 注释）。
+    assert.match(indexStoreSrc, /const ADAPTIVE_ALPHA = 0\.3;/, '自适应阈值的 α 定义没了');
+    assert.match(
+      indexStoreSrc,
+      /Math\.max\(threshold,\s*ADAPTIVE_ALPHA\s*\*\s*top1\)/,
+      '自适应阈值公式必须仍是 max(用户阈值, α×top1) —— 用户设的阈值永远优先，' +
+        '写成 α×top1 单独一项就等于把用户的手动收紧吞掉',
+    );
     // 阈值默认值只能有一处定义。渲染层拿不到主进程模块，面板里的范围靠这条断言对齐。
     const panelRange =
       /var MATCH_RANGE = \{ min: ([\d.]+), max: ([\d.]+), step: ([\d.]+), default: ([\d.]+) \}/.exec(
@@ -395,7 +581,23 @@ async function run() {
       /concurrentReads: \['search', 'suggest'\]/,
       '打分与检索同为只读，走同一条并发 / relay 通道',
     );
-    assert.match(serverSrc, /run\('search', query\.q, \{ threshold \}\)/, '网页端检索同样带阈值');
+    // 网页端检索：M4 之前这里是内联的 `{ threshold }` 字面量，加了 tag 检索层之后改成
+    // 先拼一个 `options`（阈值 + tag 层的开关 / 查询线）再传下去。
+    // ⚠️ 断言跟着形状改，但**要钉的是「阈值仍然传下去了」这件事**，不是那个字面量 ——
+    //    只钉字面量会让「为了加一个键而重写成 options」被误判成回归。
+    //    融合本身的判据（RRF、route、去重、matched 口径）在 `tag-fusion-regression.js` 里，
+    //    这里只管「接线还通着」。
+    assert.match(serverSrc, /run\('search', query\.q, options\)/, '网页端检索要带 options 下去');
+    assert.match(
+      serverSrc,
+      /options\.threshold = Number\(this\.getAiSearchMatchThreshold\(\)\)/,
+      '网页端检索必须仍然把阈值传下去',
+    );
+    assert.match(
+      serverSrc,
+      /options\.tagEnabled = tagOptions\.tagEnabled !== false/,
+      '网页端检索要带上 tag 层的开关（否则网页端永远走默认而不是用户设置）',
+    );
     assert.match(serverSrc, /handleAiSearchSuggest/, '网页端要有预选词打分路由');
     assert.match(preloadSrc, /aiSearchSuggest:/, 'preload 要暴露 aiSearchSuggest');
 
@@ -503,7 +705,7 @@ async function run() {
       '取样必须确定性（同一份库重跑结果一致是硬契约），不许用随机起点',
     );
     // padding 长度是不能动的刻度：改成动态 padding 快 15 倍，但向量差 0.38，
-    // 而整个阈值标定（0.01）是在 max_length=64 下做的。
+    // 而整个阈值标定（默认 0.02）是在 max_length=64 下做的。
     assert.match(embeddingSrc, /padding: 'max_length'/, "text() 必须用 'max_length' 补齐");
     assert.ok(
       !/padding:\s*true/.test(embeddingSrc),

@@ -88,7 +88,7 @@ const TEMPLATE = [
 ];
 /** YuNet 的导出把输入边长写死成 640，放大画布是做不到的（见 refinePoints）。 */
 const DETECT_CANVAS = 640;
-/** 检测前把照片压到的长边上限；对齐裁剪也取自这张中间图。 */
+/** 检测前把图片压到的长边上限；对齐裁剪也取自这张中间图。 */
 const DETECT_MAX = 1600;
 /** 局部复核的外扩倍率。 */
 const REFINE_MARGIN = 1.8;
@@ -98,6 +98,21 @@ const REFINE_MARGIN = 1.8;
  * 这时宁可保留粗定位的关键点，也不要把对齐锚到别人脸上。
  */
 const REFINE_MAX_DRIFT = 0.75;
+/**
+ * ONNX 会话的执行提供器。**默认必须是 CPU**。
+ *
+ * DirectML 只在「单进程连续处理很多张图片」这条长跑路上有收益（人脸索引恰好是这个形状），
+ * 而零星调用换 EP 只会多担一份「这台机器没有可用 DirectML 设备」的风险。
+ * ⇒ 只有**自带 CPU 回退**的调用方才该显式传 `['dml']`。
+ * ⚠️ `onnxruntime-node` 在 win32 上确实随包带 `DirectML.dll`，但**建会话成功才是唯一判据**
+ * （`InferenceSession.create` 抛错就是不可用，不许靠「平台是 win32」推断）。
+ */
+const DEFAULT_PROVIDERS = ['cpu'];
+/**
+ * 会话 intra-op 线程数。默认 2：人脸索引与其它 AI 任务可能同时在跑，线程开满会互相抢核心。
+ * 实测提到 8 对同类任务**没有收益**（见 `docs/contracts/semantic-search.md`「EP 与计时纪律」）。
+ */
+const DEFAULT_THREADS = 2;
 
 function normalize(values) {
   if (values.length !== VECTOR_DIM || !Array.from(values).every(Number.isFinite))
@@ -410,7 +425,7 @@ async function detectCanvas(detector, rgb, info, size) {
 /**
  * 局部复核：把「脸周 1.8× 的那块区域」单独裁出来再塞进 640 画布跑一次 YuNet，换取更准的 5 点。
  *
- * 为什么需要它：YuNet 的导出把输入边长写死成 640，而照片是先压到 ≤1600（中间图）再字母框
+ * 为什么需要它：YuNet 的导出把输入边长写死成 640，而图片是先压到 ≤1600（中间图）再字母框
  * 塞进这个画布的 —— 一张只占画布 15% 宽的脸，在模型眼里只有 96px，5 个关键点必然带误差。
  * 而 5 点相似变换对误差极敏感：关键点偏一点，整张 112×112 就跟着偏，embedding 立刻变味。
  *
@@ -420,7 +435,7 @@ async function detectCanvas(detector, rgb, info, size) {
  *   - 最优 F1 0.746 → 0.800、0.764 → 0.838。
  * 也就是说「同一人不同造型被判成两个人」的主因不是模型看发色，而是**对齐没对准**。
  *
- * 代价：每张脸多一次 640 画布推理。单张照片的脸数通常很少，相对解码整图的成本可忽略。
+ * 代价：每张脸多一次 640 画布推理。单张图片的脸数通常很少，相对解码整图的成本可忽略。
  */
 async function refinePoints(detector, rgb, info, face) {
   const region = refineRegion(face, info.width, info.height);
@@ -441,11 +456,11 @@ async function refinePoints(detector, rgb, info, face) {
   );
 }
 
-async function load(directory) {
+async function load(directory, { providers = DEFAULT_PROVIDERS, threads = DEFAULT_THREADS } = {}) {
   if (!(await verify(directory))) throw new Error('AI_MODEL_MISSING');
   const options = {
-    executionProviders: ['cpu'],
-    intraOpNumThreads: 2,
+    executionProviders: providers,
+    intraOpNumThreads: threads,
     interOpNumThreads: 1,
     logSeverityLevel: 3,
   };
@@ -522,6 +537,8 @@ module.exports = {
   PACK_BYTES,
   DETECT_CANVAS,
   DETECT_MAX,
+  DEFAULT_PROVIDERS,
+  DEFAULT_THREADS,
   REFINE_MARGIN,
   REFINE_MAX_DRIFT,
   normalize,

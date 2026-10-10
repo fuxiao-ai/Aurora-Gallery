@@ -1,0 +1,4264 @@
+{
+ "corpus": 1500,
+ "threshold": 0.55,
+ "labelFile": {
+  "sha256": "32b1963a234af848643b2bbf47d8eff1f1c7889406810c57b980f41b2b9e01d0",
+  "lines": 5813,
+  "bytes": 76752
+ },
+ "terms": {
+  "海滩": {
+   "term": "海滩",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "beach",
+    "ocean",
+    "waves"
+   ],
+   "max": 0.6281,
+   "n50": 6,
+   "n55": 2,
+   "n60": 1
+  },
+  "夕阳下的海滩": {
+   "term": "夕阳下的海滩",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "beach",
+    "sunset"
+   ],
+   "max": 0.6281,
+   "n50": 6,
+   "n55": 2,
+   "n60": 1
+  },
+  "海边的礁石": {
+   "term": "海边的礁石",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rock",
+    "cliff"
+   ],
+   "max": 0.514,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "海浪": {
+   "term": "海浪",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "waves",
+    "ocean"
+   ],
+   "max": 0.4922,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "沙滩": {
+   "term": "沙滩",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "beach",
+    "sand"
+   ],
+   "max": 0.6281,
+   "n50": 6,
+   "n55": 2,
+   "n60": 1
+  },
+  "雪山": {
+   "term": "雪山",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "snow",
+    "mountain"
+   ],
+   "max": 0.5174,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "雪山和湖泊": {
+   "term": "雪山和湖泊",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "mountain",
+    "lake"
+   ],
+   "max": 0.1733,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "湖泊": {
+   "term": "湖泊",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lake"
+   ],
+   "max": 0.1733,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "森林": {
+   "term": "森林",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "forest",
+    "tree"
+   ],
+   "max": 0.6594,
+   "n50": 3,
+   "n55": 1,
+   "n60": 1
+  },
+  "树林": {
+   "term": "树林",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "tree",
+    "tree_shade"
+   ],
+   "max": 0.6594,
+   "n50": 3,
+   "n55": 1,
+   "n60": 1
+  },
+  "草地": {
+   "term": "草地",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "grass"
+   ],
+   "max": 0.2877,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "草原": {
+   "term": "草原",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "field"
+   ],
+   "max": 0.1429,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "沙漠": {
+   "term": "沙漠",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "desert"
+   ],
+   "max": 0.1388,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "瀑布": {
+   "term": "瀑布",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "waterfall"
+   ],
+   "max": 0.2531,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "溪流": {
+   "term": "溪流",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "river",
+    "waterfall"
+   ],
+   "max": 0.2724,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "河流": {
+   "term": "河流",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "river"
+   ],
+   "max": 0.2724,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "峡谷": {
+   "term": "峡谷",
+   "supported": false,
+   "missing": [
+    "canyon"
+   ]
+  },
+  "火山": {
+   "term": "火山",
+   "supported": false,
+   "missing": [
+    "volcano"
+   ]
+  },
+  "冰川": {
+   "term": "冰川",
+   "supported": false,
+   "missing": [
+    "glacier"
+   ]
+  },
+  "岛屿": {
+   "term": "岛屿",
+   "supported": false,
+   "missing": [
+    "island"
+   ]
+  },
+  "山谷": {
+   "term": "山谷",
+   "supported": false,
+   "missing": [
+    "valley"
+   ]
+  },
+  "山间徒步": {
+   "term": "山间徒步",
+   "supported": false,
+   "missing": [
+    "hiking"
+   ]
+  },
+  "山顶": {
+   "term": "山顶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "mountain",
+    "mountainous_horizon"
+   ],
+   "max": 0.1229,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "云海": {
+   "term": "云海",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cloudy_sky",
+    "sky"
+   ],
+   "max": 0.4955,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "日落": {
+   "term": "日落",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sunset",
+    "dusk"
+   ],
+   "max": 0.1517,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "日出": {
+   "term": "日出",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sunrise"
+   ],
+   "max": 0.0918,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "星空": {
+   "term": "星空",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "starry_sky",
+    "night_sky"
+   ],
+   "max": 0.2107,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "夜空": {
+   "term": "夜空",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "night_sky",
+    "night"
+   ],
+   "max": 0.4796,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蓝天白云": {
+   "term": "蓝天白云",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blue_sky",
+    "cloudy_sky"
+   ],
+   "max": 0.3769,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "彩虹": {
+   "term": "彩虹",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rainbow"
+   ],
+   "max": 0.0817,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "花海": {
+   "term": "花海",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "flower_field",
+    "field"
+   ],
+   "max": 0.1429,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "樱花": {
+   "term": "樱花",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cherry_blossoms"
+   ],
+   "max": 0.4207,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "枫叶": {
+   "term": "枫叶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "maple_leaf",
+    "autumn_leaves"
+   ],
+   "max": 0.1708,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "秋天的落叶": {
+   "term": "秋天的落叶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "autumn_leaves"
+   ],
+   "max": 0.1708,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "荷叶": {
+   "term": "荷叶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lotus"
+   ],
+   "max": 0.1543,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "竹林": {
+   "term": "竹林",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bamboo_forest",
+    "bamboo"
+   ],
+   "max": 0.1036,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "梯田": {
+   "term": "梯田",
+   "supported": false,
+   "missing": [
+    "terraced_fields"
+   ]
+  },
+  "稻田": {
+   "term": "稻田",
+   "supported": false,
+   "missing": [
+    "rice_field"
+   ]
+  },
+  "田野": {
+   "term": "田野",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "field"
+   ],
+   "max": 0.1429,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "泥土": {
+   "term": "泥土",
+   "supported": false,
+   "missing": [
+    "soil",
+    "dirt"
+   ]
+  },
+  "岩石": {
+   "term": "岩石",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rock"
+   ],
+   "max": 0.514,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "苔藓": {
+   "term": "苔藓",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "moss"
+   ],
+   "max": 0.0883,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "下雪": {
+   "term": "下雪",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "snow",
+    "snowing",
+    "snowflakes"
+   ],
+   "max": 0.5174,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "雪地": {
+   "term": "雪地",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "snow",
+    "snowing"
+   ],
+   "max": 0.5174,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "雪后的街道": {
+   "term": "雪后的街道",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "street",
+    "snow"
+   ],
+   "max": 0.5174,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "雨天": {
+   "term": "雨天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rain"
+   ],
+   "max": 0.2453,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "雨天的倒影": {
+   "term": "雨天的倒影",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "rain",
+    "reflection"
+   ],
+   "max": 0.6829,
+   "n50": 1,
+   "n55": 1,
+   "n60": 1
+  },
+  "雨伞": {
+   "term": "雨伞",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "umbrella"
+   ],
+   "max": 0.2772,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "雾": {
+   "term": "雾",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fog"
+   ],
+   "max": 0.1871,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "阴天": {
+   "term": "阴天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cloudy_sky"
+   ],
+   "max": 0.1128,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "晴天": {
+   "term": "晴天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blue_sky",
+    "day"
+   ],
+   "max": 0.7718,
+   "n50": 24,
+   "n55": 15,
+   "n60": 9
+  },
+  "乌云": {
+   "term": "乌云",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cloudy_sky"
+   ],
+   "max": 0.1128,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "闪电": {
+   "term": "闪电",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lightning"
+   ],
+   "max": 0.1208,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "春天": {
+   "term": "春天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "spring_(season)"
+   ],
+   "max": 0.0598,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "夏天": {
+   "term": "夏天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "summer"
+   ],
+   "max": 0.1986,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "秋天": {
+   "term": "秋天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "autumn"
+   ],
+   "max": 0.2574,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "冬天": {
+   "term": "冬天",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "winter"
+   ],
+   "max": 0.2461,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "黄昏": {
+   "term": "黄昏",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dusk",
+    "sunset"
+   ],
+   "max": 0.1517,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "夜晚": {
+   "term": "夜晚",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "night"
+   ],
+   "max": 0.4796,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "清晨": {
+   "term": "清晨",
+   "supported": false,
+   "missing": [
+    "early_morning",
+    "morning"
+   ]
+  },
+  "城市夜景": {
+   "term": "城市夜景",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "city_lights",
+    "cityscape"
+   ],
+   "max": 0.2734,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "高楼": {
+   "term": "高楼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "skyscraper",
+    "building"
+   ],
+   "max": 0.3281,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "街道": {
+   "term": "街道",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "street"
+   ],
+   "max": 0.1824,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "街上的行人": {
+   "term": "街上的行人",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "street",
+    "crowd"
+   ],
+   "max": 0.1824,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "小巷": {
+   "term": "小巷",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "alley"
+   ],
+   "max": 0.0957,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "桥梁": {
+   "term": "桥梁",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bridge"
+   ],
+   "max": 0.1551,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "古建筑": {
+   "term": "古建筑",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "ruins"
+   ],
+   "max": 0.2488,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "寺庙": {
+   "term": "寺庙",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "shrine"
+   ],
+   "max": 0.0999,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "教堂": {
+   "term": "教堂",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "church"
+   ],
+   "max": 0.2088,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "城堡": {
+   "term": "城堡",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "castle"
+   ],
+   "max": 0.2469,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "宫殿": {
+   "term": "宫殿",
+   "supported": false,
+   "missing": [
+    "palace"
+   ]
+  },
+  "地铁": {
+   "term": "地铁",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "train_interior"
+   ],
+   "max": 0.2029,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "车站": {
+   "term": "车站",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "train_station"
+   ],
+   "max": 0.1673,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "机场": {
+   "term": "机场",
+   "supported": false,
+   "missing": [
+    "airport"
+   ]
+  },
+  "公路": {
+   "term": "公路",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "road"
+   ],
+   "max": 0.1832,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "铁轨": {
+   "term": "铁轨",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "railroad_tracks"
+   ],
+   "max": 0.1117,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "天台": {
+   "term": "天台",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rooftop"
+   ],
+   "max": 0.2764,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "广场": {
+   "term": "广场",
+   "supported": false,
+   "missing": [
+    "plaza"
+   ]
+  },
+  "喷泉": {
+   "term": "喷泉",
+   "supported": false,
+   "missing": [
+    "fountain"
+   ]
+  },
+  "霓虹灯": {
+   "term": "霓虹灯",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "city_lights"
+   ],
+   "max": 0.0901,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "招牌": {
+   "term": "招牌",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sign"
+   ],
+   "max": 0.1376,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "窗户": {
+   "term": "窗户",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "window"
+   ],
+   "max": 0.6616,
+   "n50": 6,
+   "n55": 3,
+   "n60": 2
+  },
+  "楼梯": {
+   "term": "楼梯",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "stairs"
+   ],
+   "max": 0.4973,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "走廊": {
+   "term": "走廊",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "hallway"
+   ],
+   "max": 0.2768,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "玻璃幕墙": {
+   "term": "玻璃幕墙",
+   "supported": false,
+   "missing": [
+    "glass_facade",
+    "curtain_wall"
+   ]
+  },
+  "人物肖像": {
+   "term": "人物肖像",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "portrait"
+   ],
+   "max": 0.1814,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "人像写真": {
+   "term": "人像写真",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "portrait",
+    "photo_background"
+   ],
+   "max": 0.3438,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "自拍": {
+   "term": "自拍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "selfie"
+   ],
+   "max": 0.9323,
+   "n50": 27,
+   "n55": 24,
+   "n60": 22
+  },
+  "合影": {
+   "term": "合影",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "multiple_girls",
+    "multiple_boys"
+   ],
+   "max": 0.9458,
+   "n50": 7,
+   "n55": 6,
+   "n60": 6
+  },
+  "背影": {
+   "term": "背影",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "from_behind"
+   ],
+   "max": 0.864,
+   "n50": 62,
+   "n55": 39,
+   "n60": 25
+  },
+  "侧脸": {
+   "term": "侧脸",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "profile"
+   ],
+   "max": 0.3891,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "特写脸部": {
+   "term": "特写脸部",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "close-up",
+    "portrait"
+   ],
+   "max": 0.6957,
+   "n50": 13,
+   "n55": 9,
+   "n60": 5
+  },
+  "微笑": {
+   "term": "微笑",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "smile"
+   ],
+   "max": 0.6176,
+   "n50": 1,
+   "n55": 1,
+   "n60": 1
+  },
+  "大笑": {
+   "term": "大笑",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "laughing"
+   ],
+   "max": 0.1582,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "哭泣": {
+   "term": "哭泣",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "crying",
+    "tears"
+   ],
+   "max": 0.2416,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "儿童": {
+   "term": "儿童",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "child"
+   ],
+   "max": 0.3697,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "婴儿": {
+   "term": "婴儿",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "baby"
+   ],
+   "max": 0.0877,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "老人": {
+   "term": "老人",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "old_woman",
+    "old_man"
+   ],
+   "max": 0.1297,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "情侣": {
+   "term": "情侣",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "couple"
+   ],
+   "max": 0.2802,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "婚礼": {
+   "term": "婚礼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "wedding",
+    "wedding_dress"
+   ],
+   "max": 0.597,
+   "n50": 2,
+   "n55": 2,
+   "n60": 0
+  },
+  "毕业照": {
+   "term": "毕业照",
+   "supported": false,
+   "missing": [
+    "graduation"
+   ]
+  },
+  "生日聚会": {
+   "term": "生日聚会",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "birthday",
+    "cake"
+   ],
+   "max": 0.7152,
+   "n50": 3,
+   "n55": 2,
+   "n60": 1
+  },
+  "举杯": {
+   "term": "举杯",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "drinking_glass",
+    "holding_cup"
+   ],
+   "max": 0.5094,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "聚会": {
+   "term": "聚会",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "milestone_celebration",
+    "confetti",
+    "banner"
+   ],
+   "max": 0.2375,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "跳舞": {
+   "term": "跳舞",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dancing"
+   ],
+   "max": 0.1965,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "舞台演出": {
+   "term": "舞台演出",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "stage",
+    "stage_lights"
+   ],
+   "max": 0.1922,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "唱歌": {
+   "term": "唱歌",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "singing"
+   ],
+   "max": 0.1194,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "弹吉他": {
+   "term": "弹吉他",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "guitar",
+    "playing_instrument"
+   ],
+   "max": 0.2517,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "弹钢琴": {
+   "term": "弹钢琴",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "piano",
+    "playing_instrument"
+   ],
+   "max": 0.2995,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "画画": {
+   "term": "画画",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "drawing"
+   ],
+   "max": 0.1957,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "看书": {
+   "term": "看书",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "reading",
+    "holding_book"
+   ],
+   "max": 0.1927,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "喝茶": {
+   "term": "喝茶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "tea",
+    "teacup"
+   ],
+   "max": 0.2687,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "喝咖啡": {
+   "term": "喝咖啡",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "coffee",
+    "coffee_cup"
+   ],
+   "max": 0.2479,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "吃饭": {
+   "term": "吃饭",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "eating",
+    "food"
+   ],
+   "max": 0.7361,
+   "n50": 6,
+   "n55": 2,
+   "n60": 2
+  },
+  "睡觉": {
+   "term": "睡觉",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sleeping"
+   ],
+   "max": 0.5439,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "跑步": {
+   "term": "跑步",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "running"
+   ],
+   "max": 0.1944,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "骑车": {
+   "term": "骑车",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bicycle"
+   ],
+   "max": 0.1761,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "游泳": {
+   "term": "游泳",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "swimming"
+   ],
+   "max": 0.1317,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "露营": {
+   "term": "露营",
+   "supported": false,
+   "missing": [
+    "camping",
+    "tent"
+   ]
+  },
+  "钓鱼": {
+   "term": "钓鱼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fishing",
+    "fishing_rod"
+   ],
+   "max": 0.1237,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "滑雪": {
+   "term": "滑雪",
+   "supported": false,
+   "missing": [
+    "skiing",
+    "snowboard"
+   ]
+  },
+  "冲浪": {
+   "term": "冲浪",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "surfboard"
+   ],
+   "max": 0.2369,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "瑜伽": {
+   "term": "瑜伽",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "stretch"
+   ],
+   "max": 0.1934,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "健身": {
+   "term": "健身",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "exercise",
+    "gym_shirt",
+    "sportswear"
+   ],
+   "max": 0.5835,
+   "n50": 1,
+   "n55": 1,
+   "n60": 0
+  },
+  "打球": {
+   "term": "打球",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_ball"
+   ],
+   "max": 0.1487,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "拍照的人": {
+   "term": "拍照的人",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_camera",
+    "camera"
+   ],
+   "max": 0.4018,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "抱着宠物": {
+   "term": "抱着宠物",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_animal",
+    "holding_cat"
+   ],
+   "max": 0.0602,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "打电话": {
+   "term": "打电话",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_phone",
+    "phone"
+   ],
+   "max": 0.9099,
+   "n50": 37,
+   "n55": 31,
+   "n60": 26
+  },
+  "看镜头": {
+   "term": "看镜头",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "looking_at_viewer"
+   ],
+   "max": 0.7333,
+   "n50": 16,
+   "n55": 10,
+   "n60": 6
+  },
+  "回头": {
+   "term": "回头",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "looking_back"
+   ],
+   "max": 0.6607,
+   "n50": 6,
+   "n55": 5,
+   "n60": 3
+  },
+  "躺着": {
+   "term": "躺着",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lying"
+   ],
+   "max": 0.8304,
+   "n50": 39,
+   "n55": 25,
+   "n60": 13
+  },
+  "坐着": {
+   "term": "坐着",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sitting"
+   ],
+   "max": 0.867,
+   "n50": 135,
+   "n55": 102,
+   "n60": 84
+  },
+  "站着": {
+   "term": "站着",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "standing"
+   ],
+   "max": 0.8486,
+   "n50": 84,
+   "n55": 59,
+   "n60": 42
+  },
+  "伸展手臂": {
+   "term": "伸展手臂",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "outstretched_arm",
+    "arms_up"
+   ],
+   "max": 0.598,
+   "n50": 3,
+   "n55": 3,
+   "n60": 0
+  },
+  "比手势": {
+   "term": "比手势",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "thumbs_up",
+    "double_v",
+    "pointing"
+   ],
+   "max": 0.2807,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "cosplay": {
+   "term": "cosplay",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cosplay",
+    "cosplay_photo",
+    "costume"
+   ],
+   "max": 0.9888,
+   "n50": 230,
+   "n55": 178,
+   "n60": 137
+  },
+  "制服": {
+   "term": "制服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "school_uniform",
+    "uniform",
+    "serafuku"
+   ],
+   "max": 0.7924,
+   "n50": 42,
+   "n55": 37,
+   "n60": 26
+  },
+  "校服": {
+   "term": "校服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "school_uniform",
+    "serafuku"
+   ],
+   "max": 0.7924,
+   "n50": 42,
+   "n55": 37,
+   "n60": 26
+  },
+  "水手服": {
+   "term": "水手服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "serafuku",
+    "sailor",
+    "sailor_collar",
+    "sailor_dress"
+   ],
+   "max": 0.6456,
+   "n50": 7,
+   "n55": 3,
+   "n60": 3
+  },
+  "和服": {
+   "term": "和服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "kimono",
+    "japanese_clothes",
+    "yukata"
+   ],
+   "max": 0.6963,
+   "n50": 15,
+   "n55": 10,
+   "n60": 5
+  },
+  "汉服": {
+   "term": "汉服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "hanfu",
+    "chinese_clothes"
+   ],
+   "max": 0.76,
+   "n50": 4,
+   "n55": 4,
+   "n60": 3
+  },
+  "旗袍": {
+   "term": "旗袍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "china_dress",
+    "chinese_clothes"
+   ],
+   "max": 0.76,
+   "n50": 4,
+   "n55": 4,
+   "n60": 3
+  },
+  "婚纱": {
+   "term": "婚纱",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "wedding_dress",
+    "wedding"
+   ],
+   "max": 0.597,
+   "n50": 2,
+   "n55": 2,
+   "n60": 0
+  },
+  "西装": {
+   "term": "西装",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "suit",
+    "suit_jacket"
+   ],
+   "max": 0.204,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "连衣裙": {
+   "term": "连衣裙",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dress",
+    "sundress"
+   ],
+   "max": 0.8419,
+   "n50": 44,
+   "n55": 30,
+   "n60": 18
+  },
+  "短裙": {
+   "term": "短裙",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "miniskirt",
+    "skirt",
+    "pleated_skirt"
+   ],
+   "max": 0.8764,
+   "n50": 87,
+   "n55": 68,
+   "n60": 50
+  },
+  "泳装": {
+   "term": "泳装",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "swimsuit",
+    "one-piece_swimsuit",
+    "school_swimsuit",
+    "competition_swimsuit"
+   ],
+   "max": 0.9102,
+   "n50": 115,
+   "n55": 107,
+   "n60": 100
+  },
+  "比基尼": {
+   "term": "比基尼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bikini",
+    "sports_bikini"
+   ],
+   "max": 0.864,
+   "n50": 67,
+   "n55": 61,
+   "n60": 55
+  },
+  "丝袜": {
+   "term": "丝袜",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "pantyhose",
+    "thighhighs"
+   ],
+   "max": 0.9147,
+   "n50": 456,
+   "n55": 404,
+   "n60": 326
+  },
+  "长靴": {
+   "term": "长靴",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "boots",
+    "knee_boots",
+    "thigh_boots"
+   ],
+   "max": 0.6736,
+   "n50": 26,
+   "n55": 14,
+   "n60": 3
+  },
+  "高跟鞋": {
+   "term": "高跟鞋",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "high_heels"
+   ],
+   "max": 0.8281,
+   "n50": 25,
+   "n55": 16,
+   "n60": 8
+  },
+  "帽子": {
+   "term": "帽子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "hat",
+    "beret"
+   ],
+   "max": 0.7769,
+   "n50": 14,
+   "n55": 13,
+   "n60": 13
+  },
+  "兔耳": {
+   "term": "兔耳",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rabbit_ears"
+   ],
+   "max": 0.8592,
+   "n50": 30,
+   "n55": 30,
+   "n60": 28
+  },
+  "猫耳": {
+   "term": "猫耳",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cat_ears"
+   ],
+   "max": 0.7241,
+   "n50": 15,
+   "n55": 11,
+   "n60": 9
+  },
+  "眼镜": {
+   "term": "眼镜",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "glasses"
+   ],
+   "max": 0.5445,
+   "n50": 2,
+   "n55": 0,
+   "n60": 0
+  },
+  "面具": {
+   "term": "面具",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "mask"
+   ],
+   "max": 0.77,
+   "n50": 16,
+   "n55": 12,
+   "n60": 8
+  },
+  "假发": {
+   "term": "假发",
+   "supported": false,
+   "missing": [
+    "wig"
+   ]
+  },
+  "长发": {
+   "term": "长发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "long_hair",
+    "very_long_hair"
+   ],
+   "max": 0.8216,
+   "n50": 237,
+   "n55": 171,
+   "n60": 110
+  },
+  "短发": {
+   "term": "短发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "short_hair"
+   ],
+   "max": 0.6673,
+   "n50": 23,
+   "n55": 6,
+   "n60": 4
+  },
+  "双马尾": {
+   "term": "双马尾",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "twintails",
+    "short_twintails",
+    "low_twintails"
+   ],
+   "max": 0.8039,
+   "n50": 62,
+   "n55": 53,
+   "n60": 41
+  },
+  "马尾辫": {
+   "term": "马尾辫",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "ponytail",
+    "side_ponytail",
+    "braided_ponytail"
+   ],
+   "max": 0.5199,
+   "n50": 2,
+   "n55": 0,
+   "n60": 0
+  },
+  "银发": {
+   "term": "银发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "grey_hair",
+    "white_hair"
+   ],
+   "max": 0.5826,
+   "n50": 2,
+   "n55": 2,
+   "n60": 0
+  },
+  "金发": {
+   "term": "金发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blonde_hair"
+   ],
+   "max": 0.7954,
+   "n50": 49,
+   "n55": 28,
+   "n60": 18
+  },
+  "粉发": {
+   "term": "粉发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "pink_hair"
+   ],
+   "max": 0.8305,
+   "n50": 36,
+   "n55": 27,
+   "n60": 16
+  },
+  "蓝发": {
+   "term": "蓝发",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blue_hair"
+   ],
+   "max": 0.688,
+   "n50": 16,
+   "n55": 11,
+   "n60": 6
+  },
+  "刘海": {
+   "term": "刘海",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bangs",
+    "hair_between_eyes"
+   ],
+   "max": 0.727,
+   "n50": 5,
+   "n55": 5,
+   "n60": 4
+  },
+  "化妆": {
+   "term": "化妆",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "makeup",
+    "lipstick",
+    "blush"
+   ],
+   "max": 0.8748,
+   "n50": 12,
+   "n55": 12,
+   "n60": 9
+  },
+  "口红": {
+   "term": "口红",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lipstick"
+   ],
+   "max": 0.8158,
+   "n50": 10,
+   "n55": 6,
+   "n60": 3
+  },
+  "纹身": {
+   "term": "纹身",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "tattoo"
+   ],
+   "max": 0.8607,
+   "n50": 19,
+   "n55": 14,
+   "n60": 10
+  },
+  "盔甲": {
+   "term": "盔甲",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "armor"
+   ],
+   "max": 0.697,
+   "n50": 2,
+   "n55": 1,
+   "n60": 1
+  },
+  "斗篷": {
+   "term": "斗篷",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cape",
+    "cloak",
+    "capelet"
+   ],
+   "max": 0.4706,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "翅膀": {
+   "term": "翅膀",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "wings"
+   ],
+   "max": 0.7665,
+   "n50": 14,
+   "n55": 12,
+   "n60": 10
+  },
+  "尾巴": {
+   "term": "尾巴",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "tail"
+   ],
+   "max": 0.8683,
+   "n50": 12,
+   "n55": 9,
+   "n60": 5
+  },
+  "武器": {
+   "term": "武器",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_weapon"
+   ],
+   "max": 0.4976,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "手持刀剑": {
+   "term": "手持刀剑",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_sword"
+   ],
+   "max": 0.539,
+   "n50": 1,
+   "n55": 0,
+   "n60": 0
+  },
+  "丝带": {
+   "term": "丝带",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "ribbon",
+    "hair_ribbon"
+   ],
+   "max": 0.7023,
+   "n50": 11,
+   "n55": 5,
+   "n60": 4
+  },
+  "蕾丝": {
+   "term": "蕾丝",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lace",
+    "frills"
+   ],
+   "max": 0.8892,
+   "n50": 37,
+   "n55": 20,
+   "n60": 15
+  },
+  "项链": {
+   "term": "项链",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "necklace",
+    "choker"
+   ],
+   "max": 0.6542,
+   "n50": 15,
+   "n55": 9,
+   "n60": 8
+  },
+  "耳环": {
+   "term": "耳环",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "earrings"
+   ],
+   "max": 0.7609,
+   "n50": 5,
+   "n55": 4,
+   "n60": 3
+  },
+  "背包": {
+   "term": "背包",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "backpack",
+    "school_bag"
+   ],
+   "max": 0.7127,
+   "n50": 3,
+   "n55": 3,
+   "n60": 2
+  },
+  "手持扇子": {
+   "term": "手持扇子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_fan",
+    "hand_fan"
+   ],
+   "max": 0.2804,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "撑着伞": {
+   "term": "撑着伞",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "holding_umbrella",
+    "umbrella",
+    "parasol"
+   ],
+   "max": 0.2772,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "街拍": {
+   "term": "街拍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "street"
+   ],
+   "max": 0.1824,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "棚拍": {
+   "term": "棚拍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "photo_background",
+    "simple_background"
+   ],
+   "max": 0.4955,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "室内": {
+   "term": "室内",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "indoors"
+   ],
+   "max": 0.8502,
+   "n50": 185,
+   "n55": 146,
+   "n60": 107
+  },
+  "室外": {
+   "term": "室外",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "outdoors"
+   ],
+   "max": 0.721,
+   "n50": 17,
+   "n55": 12,
+   "n60": 7
+  },
+  "逆光": {
+   "term": "逆光",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "backlighting"
+   ],
+   "max": 0.4389,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "剪影": {
+   "term": "剪影",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "silhouette"
+   ],
+   "max": 0.1966,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "特写": {
+   "term": "特写",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "close-up"
+   ],
+   "max": 0.6957,
+   "n50": 13,
+   "n55": 9,
+   "n60": 5
+  },
+  "远景": {
+   "term": "远景",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "wide_shot",
+    "full_body"
+   ],
+   "max": 0.5948,
+   "n50": 8,
+   "n55": 4,
+   "n60": 0
+  },
+  "俯拍": {
+   "term": "俯拍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "from_above"
+   ],
+   "max": 0.5485,
+   "n50": 4,
+   "n55": 0,
+   "n60": 0
+  },
+  "仰拍": {
+   "term": "仰拍",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "from_below"
+   ],
+   "max": 0.6004,
+   "n50": 1,
+   "n55": 1,
+   "n60": 1
+  },
+  "镜面反射": {
+   "term": "镜面反射",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "mirror",
+    "reflection"
+   ],
+   "max": 0.7236,
+   "n50": 7,
+   "n55": 2,
+   "n60": 2
+  },
+  "水中倒影": {
+   "term": "水中倒影",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "reflection"
+   ],
+   "max": 0.6829,
+   "n50": 1,
+   "n55": 1,
+   "n60": 1
+  },
+  "黑白照片": {
+   "term": "黑白照片",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "monochrome",
+    "greyscale"
+   ],
+   "max": 0.2741,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "胶片感": {
+   "term": "胶片感",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "film_grain"
+   ],
+   "max": 0.3763,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "复古风": {
+   "term": "复古风",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "retro_artstyle"
+   ],
+   "max": 0.2464,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "唯美": {
+   "term": "唯美",
+   "supported": false,
+   "missing": [
+    "dreamy",
+    "aesthetic"
+   ]
+  },
+  "清新": {
+   "term": "清新",
+   "supported": false,
+   "missing": [
+    "fresh"
+   ]
+  },
+  "日系": {
+   "term": "日系",
+   "supported": false,
+   "missing": [
+    "japanese_style"
+   ]
+  },
+  "暗黑风": {
+   "term": "暗黑风",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dark_background"
+   ],
+   "max": 0.2203,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "高饱和": {
+   "term": "高饱和",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "colorful"
+   ],
+   "max": 0.1243,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "低饱和": {
+   "term": "低饱和",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "muted_color"
+   ],
+   "max": 0.1479,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "柔和光线": {
+   "term": "柔和光线",
+   "supported": false,
+   "missing": [
+    "soft_lighting"
+   ]
+  },
+  "强阴影": {
+   "term": "强阴影",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "shadow",
+    "high_contrast"
+   ],
+   "max": 0.3723,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "暖色调": {
+   "term": "暖色调",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "orange_theme",
+    "sepia"
+   ],
+   "max": 0.2639,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "冷色调": {
+   "term": "冷色调",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blue_theme",
+    "blue_background"
+   ],
+   "max": 0.2741,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "浅景深": {
+   "term": "浅景深",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "depth_of_field",
+    "blurry_background"
+   ],
+   "max": 0.6485,
+   "n50": 19,
+   "n55": 8,
+   "n60": 4
+  },
+  "虚化背景": {
+   "term": "虚化背景",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blurry_background",
+    "bokeh"
+   ],
+   "max": 0.6391,
+   "n50": 13,
+   "n55": 5,
+   "n60": 3
+  },
+  "长曝光": {
+   "term": "长曝光",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "light_trail",
+    "motion_blur"
+   ],
+   "max": 0.3195,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "闪光灯": {
+   "term": "闪光灯",
+   "supported": false,
+   "missing": [
+    "flash",
+    "camera_flash"
+   ]
+  },
+  "窗光": {
+   "term": "窗光",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dappled_sunlight",
+    "sunbeam"
+   ],
+   "max": 0.2188,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "动漫插画": {
+   "term": "动漫插画",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "anime_coloring"
+   ],
+   "max": 0.0435,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "3D渲染": {
+   "term": "3D渲染",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "3d"
+   ],
+   "max": 0.66,
+   "n50": 12,
+   "n55": 6,
+   "n60": 2
+  },
+  "像素风": {
+   "term": "像素风",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "pixel_art"
+   ],
+   "max": 0.3674,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "水彩画": {
+   "term": "水彩画",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "watercolor_(medium)"
+   ],
+   "max": 0.1691,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "油画": {
+   "term": "油画",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "painting_(medium)"
+   ],
+   "max": 0.2415,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "素描": {
+   "term": "素描",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sketch",
+    "pencil"
+   ],
+   "max": 0.3933,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "手办": {
+   "term": "手办",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "doll_joints",
+    "doll"
+   ],
+   "max": 0.3507,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "玩偶": {
+   "term": "玩偶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "stuffed_toy",
+    "doll"
+   ],
+   "max": 0.5884,
+   "n50": 3,
+   "n55": 2,
+   "n60": 0
+  },
+  "海报": {
+   "term": "海报",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "poster_(object)"
+   ],
+   "max": 0.202,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "美食特写": {
+   "term": "美食特写",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "food_focus",
+    "food"
+   ],
+   "max": 0.7361,
+   "n50": 6,
+   "n55": 2,
+   "n60": 2
+  },
+  "蛋糕": {
+   "term": "蛋糕",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cake",
+    "cake_slice",
+    "cupcake"
+   ],
+   "max": 0.7152,
+   "n50": 3,
+   "n55": 2,
+   "n60": 1
+  },
+  "甜点": {
+   "term": "甜点",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dessert",
+    "sweets"
+   ],
+   "max": 0.2226,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "咖啡": {
+   "term": "咖啡",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "coffee",
+    "coffee_cup",
+    "coffee_mug"
+   ],
+   "max": 0.2479,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "咖啡馆一角": {
+   "term": "咖啡馆一角",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "restaurant"
+   ],
+   "max": 0.2266,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "奶茶": {
+   "term": "奶茶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bubble_tea"
+   ],
+   "max": 0.0536,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "火锅": {
+   "term": "火锅",
+   "supported": false,
+   "missing": [
+    "hot_pot"
+   ]
+  },
+  "烧烤": {
+   "term": "烧烤",
+   "supported": false,
+   "missing": [
+    "barbecue"
+   ]
+  },
+  "寿司": {
+   "term": "寿司",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sushi"
+   ],
+   "max": 0.1057,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "拉面": {
+   "term": "拉面",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "ramen"
+   ],
+   "max": 0.0909,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "面包": {
+   "term": "面包",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bread"
+   ],
+   "max": 0.1639,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "水果": {
+   "term": "水果",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fruit"
+   ],
+   "max": 0.6085,
+   "n50": 2,
+   "n55": 2,
+   "n60": 2
+  },
+  "餐桌上的水果": {
+   "term": "餐桌上的水果",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "fruit",
+    "table"
+   ],
+   "max": 0.6085,
+   "n50": 2,
+   "n55": 2,
+   "n60": 2
+  },
+  "冰淇淋": {
+   "term": "冰淇淋",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "ice_cream",
+    "ice_cream_cone"
+   ],
+   "max": 0.1533,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "红酒": {
+   "term": "红酒",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "wine",
+    "wine_glass",
+    "wine_bottle"
+   ],
+   "max": 0.3033,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "啤酒": {
+   "term": "啤酒",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "beer",
+    "beer_mug"
+   ],
+   "max": 0.3682,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "餐桌": {
+   "term": "餐桌",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "table"
+   ],
+   "max": 0.4492,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "便当": {
+   "term": "便当",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bento"
+   ],
+   "max": 0.0774,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蔬菜": {
+   "term": "蔬菜",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "vegetable"
+   ],
+   "max": 0.1754,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "海鲜": {
+   "term": "海鲜",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "shrimp",
+    "crab"
+   ],
+   "max": 0.1296,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "猫": {
+   "term": "猫",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cat",
+    "cat_girl",
+    "cat_ears"
+   ],
+   "max": 0.7241,
+   "n50": 15,
+   "n55": 11,
+   "n60": 9
+  },
+  "沙发上的猫": {
+   "term": "沙发上的猫",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "cat",
+    "couch"
+   ],
+   "max": 0.8492,
+   "n50": 9,
+   "n55": 7,
+   "n60": 5
+  },
+  "狗": {
+   "term": "狗",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dog",
+    "dog_girl"
+   ],
+   "max": 0.2137,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "鸟": {
+   "term": "鸟",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bird"
+   ],
+   "max": 0.2793,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "鱼": {
+   "term": "鱼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fish"
+   ],
+   "max": 0.1909,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "兔子": {
+   "term": "兔子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "rabbit_girl",
+    "stuffed_bunny",
+    "rabbit_ears"
+   ],
+   "max": 0.8592,
+   "n50": 30,
+   "n55": 30,
+   "n60": 28
+  },
+  "马": {
+   "term": "马",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "horse",
+    "horse_girl"
+   ],
+   "max": 0.2295,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "熊猫": {
+   "term": "熊猫",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "panda"
+   ],
+   "max": 0.1421,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蝴蝶": {
+   "term": "蝴蝶",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "butterfly"
+   ],
+   "max": 0.3202,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蜜蜂": {
+   "term": "蜜蜂",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bug"
+   ],
+   "max": 0.3238,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "宠物": {
+   "term": "宠物",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "animal_focus",
+    "holding_animal"
+   ],
+   "max": 0.1774,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "盛开的花朵": {
+   "term": "盛开的花朵",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "flower",
+    "bloom",
+    "flower_field"
+   ],
+   "max": 0.63,
+   "n50": 5,
+   "n55": 1,
+   "n60": 1
+  },
+  "花束": {
+   "term": "花束",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bouquet",
+    "holding_bouquet"
+   ],
+   "max": 0.3687,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "盆栽": {
+   "term": "盆栽",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "potted_plant",
+    "flower_pot"
+   ],
+   "max": 0.3975,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "窗边的绿植": {
+   "term": "窗边的绿植",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "potted_plant",
+    "window"
+   ],
+   "max": 0.6616,
+   "n50": 6,
+   "n55": 3,
+   "n60": 2
+  },
+  "树": {
+   "term": "树",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "tree",
+    "tree_shade"
+   ],
+   "max": 0.6594,
+   "n50": 3,
+   "n55": 1,
+   "n60": 1
+  },
+  "书": {
+   "term": "书",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "book",
+    "book_stack",
+    "bookshelf",
+    "notebook"
+   ],
+   "max": 0.564,
+   "n50": 2,
+   "n55": 1,
+   "n60": 0
+  },
+  "相机": {
+   "term": "相机",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "camera",
+    "holding_camera"
+   ],
+   "max": 0.4018,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "手机": {
+   "term": "手机",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cellphone",
+    "smartphone",
+    "phone"
+   ],
+   "max": 0.9099,
+   "n50": 37,
+   "n55": 31,
+   "n60": 26
+  },
+  "笔记本电脑": {
+   "term": "笔记本电脑",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "laptop"
+   ],
+   "max": 0.2339,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "键盘": {
+   "term": "键盘",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "keyboard_(computer)",
+    "keyboard_(instrument)"
+   ],
+   "max": 0.3641,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "吉他": {
+   "term": "吉他",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "guitar"
+   ],
+   "max": 0.2517,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "钢琴": {
+   "term": "钢琴",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "piano"
+   ],
+   "max": 0.2995,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "小提琴": {
+   "term": "小提琴",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "violin"
+   ],
+   "max": 0.2435,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "自行车": {
+   "term": "自行车",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bicycle"
+   ],
+   "max": 0.1761,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "汽车": {
+   "term": "汽车",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "car",
+    "car_interior"
+   ],
+   "max": 0.2742,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "摩托车": {
+   "term": "摩托车",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "motorcycle"
+   ],
+   "max": 0.7547,
+   "n50": 2,
+   "n55": 2,
+   "n60": 2
+  },
+  "船": {
+   "term": "船",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "boat"
+   ],
+   "max": 0.1844,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "飞机": {
+   "term": "飞机",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "airplane"
+   ],
+   "max": 0.1124,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "火车": {
+   "term": "火车",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "train",
+    "train_interior"
+   ],
+   "max": 0.2029,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "气球": {
+   "term": "气球",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "balloon"
+   ],
+   "max": 0.2261,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蜡烛": {
+   "term": "蜡烛",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "candle"
+   ],
+   "max": 0.6957,
+   "n50": 2,
+   "n55": 2,
+   "n60": 1
+  },
+  "灯笼": {
+   "term": "灯笼",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "paper_lantern",
+    "lantern"
+   ],
+   "max": 0.3288,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "烟花": {
+   "term": "烟花",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fireworks"
+   ],
+   "max": 0.0836,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "玩具": {
+   "term": "玩具",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "toy",
+    "stuffed_toy",
+    "doll"
+   ],
+   "max": 0.5884,
+   "n50": 3,
+   "n55": 2,
+   "n60": 0
+  },
+  "镜子": {
+   "term": "镜子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "mirror"
+   ],
+   "max": 0.7236,
+   "n50": 7,
+   "n55": 2,
+   "n60": 2
+  },
+  "窗帘": {
+   "term": "窗帘",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "curtains"
+   ],
+   "max": 0.6944,
+   "n50": 9,
+   "n55": 6,
+   "n60": 2
+  },
+  "台灯": {
+   "term": "台灯",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "lamp",
+    "light_bulb"
+   ],
+   "max": 0.4252,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "时钟": {
+   "term": "时钟",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "clock"
+   ],
+   "max": 0.3055,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "杯子": {
+   "term": "杯子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "cup",
+    "teacup",
+    "coffee_cup"
+   ],
+   "max": 0.605,
+   "n50": 1,
+   "n55": 1,
+   "n60": 1
+  },
+  "瓶子": {
+   "term": "瓶子",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bottle"
+   ],
+   "max": 0.4955,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "花盆": {
+   "term": "花盆",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "flower_pot"
+   ],
+   "max": 0.3375,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "卧室": {
+   "term": "卧室",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bedroom",
+    "bed"
+   ],
+   "max": 0.7996,
+   "n50": 145,
+   "n55": 105,
+   "n60": 67
+  },
+  "厨房": {
+   "term": "厨房",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "kitchen"
+   ],
+   "max": 0.4625,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "书房": {
+   "term": "书房",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "desk",
+    "bookshelf"
+   ],
+   "max": 0.5732,
+   "n50": 5,
+   "n55": 1,
+   "n60": 0
+  },
+  "客厅": {
+   "term": "客厅",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "couch",
+    "armchair"
+   ],
+   "max": 0.8492,
+   "n50": 9,
+   "n55": 7,
+   "n60": 5
+  },
+  "教室": {
+   "term": "教室",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "classroom",
+    "school_desk"
+   ],
+   "max": 0.6258,
+   "n50": 8,
+   "n55": 4,
+   "n60": 3
+  },
+  "图书馆": {
+   "term": "图书馆",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "library"
+   ],
+   "max": 0.5657,
+   "n50": 1,
+   "n55": 1,
+   "n60": 0
+  },
+  "健身房": {
+   "term": "健身房",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "exercise",
+    "gym_uniform"
+   ],
+   "max": 0.3335,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "后台": {
+   "term": "后台",
+   "supported": false,
+   "missing": [
+    "backstage"
+   ]
+  },
+  "化妆间": {
+   "term": "化妆间",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "dressing"
+   ],
+   "max": 0.3148,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "浴室": {
+   "term": "浴室",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bathroom",
+    "bathtub",
+    "showering"
+   ],
+   "max": 0.7289,
+   "n50": 24,
+   "n55": 13,
+   "n60": 8
+  },
+  "楼梯间": {
+   "term": "楼梯间",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "stairs",
+    "hallway"
+   ],
+   "max": 0.4973,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "阳台": {
+   "term": "阳台",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "balcony"
+   ],
+   "max": 0.1322,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "红色": {
+   "term": "红色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "red_theme",
+    "red_background"
+   ],
+   "max": 0.1951,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "蓝色": {
+   "term": "蓝色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "blue_theme",
+    "blue_background"
+   ],
+   "max": 0.2741,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "绿色": {
+   "term": "绿色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "green_theme",
+    "green_background"
+   ],
+   "max": 0.3026,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "黄色": {
+   "term": "黄色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "yellow_theme",
+    "yellow_background"
+   ],
+   "max": 0.0836,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "粉色": {
+   "term": "粉色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "pink_theme",
+    "pink_background"
+   ],
+   "max": 0.3207,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "紫色": {
+   "term": "紫色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "purple_theme",
+    "purple_background"
+   ],
+   "max": 0.3116,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "白色": {
+   "term": "白色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "white_theme",
+    "white_background"
+   ],
+   "max": 0.6092,
+   "n50": 2,
+   "n55": 1,
+   "n60": 1
+  },
+  "黑色": {
+   "term": "黑色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "black_background"
+   ],
+   "max": 0.2199,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "金色": {
+   "term": "金色",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "gold"
+   ],
+   "max": 0.2165,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "圣诞": {
+   "term": "圣诞",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "santa_costume",
+    "santa_hat",
+    "candy_cane",
+    "snowman"
+   ],
+   "max": 0.5907,
+   "n50": 4,
+   "n55": 2,
+   "n60": 0
+  },
+  "万圣节": {
+   "term": "万圣节",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "halloween",
+    "halloween_costume"
+   ],
+   "max": 0.465,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "新年": {
+   "term": "新年",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "new_year"
+   ],
+   "max": 0.0899,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "灯笼夜景": {
+   "term": "灯笼夜景",
+   "supported": true,
+   "mode": "all",
+   "tags": [
+    "paper_lantern",
+    "night"
+   ],
+   "max": 0.4796,
+   "n50": 0,
+   "n55": 0,
+   "n60": 0
+  },
+  "JK制服": {
+   "term": "JK制服",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "school_uniform",
+    "serafuku",
+    "pleated_skirt"
+   ],
+   "max": 0.7924,
+   "n50": 44,
+   "n55": 38,
+   "n60": 26
+  },
+  "女仆": {
+   "term": "女仆",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "maid",
+    "maid_headdress",
+    "maid_apron"
+   ],
+   "max": 0.799,
+   "n50": 36,
+   "n55": 28,
+   "n60": 20
+  },
+  "黑丝": {
+   "term": "黑丝",
+   "supported": false,
+   "missing": [
+    "black_pantyhose",
+    "black_thighhighs"
+   ]
+  },
+  "白丝": {
+   "term": "白丝",
+   "supported": false,
+   "missing": [
+    "white_pantyhose",
+    "white_thighhighs",
+    "white_socks"
+   ]
+  },
+  "网袜": {
+   "term": "网袜",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "fishnets"
+   ],
+   "max": 0.9214,
+   "n50": 27,
+   "n55": 26,
+   "n60": 25
+  },
+  "吊带": {
+   "term": "吊带",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "camisole",
+    "garter_belt"
+   ],
+   "max": 0.6773,
+   "n50": 12,
+   "n55": 5,
+   "n60": 3
+  },
+  "毛衣": {
+   "term": "毛衣",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "sweater",
+    "turtleneck"
+   ],
+   "max": 0.855,
+   "n50": 11,
+   "n55": 9,
+   "n60": 6
+  },
+  "内衣": {
+   "term": "内衣",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "underwear",
+    "lingerie",
+    "bra"
+   ],
+   "max": 0.9532,
+   "n50": 316,
+   "n55": 265,
+   "n60": 218
+  },
+  "死库水": {
+   "term": "死库水",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "school_swimsuit",
+    "competition_swimsuit"
+   ],
+   "max": 0.7077,
+   "n50": 25,
+   "n55": 19,
+   "n60": 14
+  },
+  "绳艺": {
+   "term": "绳艺",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "bondage",
+    "ribbon_bondage"
+   ],
+   "max": 0.7738,
+   "n50": 23,
+   "n55": 22,
+   "n60": 13
+  },
+  "护士": {
+   "term": "护士",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "nurse",
+    "nurse_cap"
+   ],
+   "max": 0.8915,
+   "n50": 11,
+   "n55": 9,
+   "n60": 8
+  },
+  "洗手间": {
+   "term": "洗手间",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "toilet",
+    "bathroom"
+   ],
+   "max": 0.7289,
+   "n50": 23,
+   "n55": 11,
+   "n60": 5
+  },
+  "停车场": {
+   "term": "停车场",
+   "supported": false,
+   "missing": [
+    "parking_lot"
+   ]
+  },
+  "空姐": {
+   "term": "空姐",
+   "supported": false,
+   "missing": [
+    "flight_attendant",
+    "stewardess"
+   ]
+  },
+  "兔女郎": {
+   "term": "兔女郎",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "playboy_bunny"
+   ],
+   "max": 0.7233,
+   "n50": 26,
+   "n55": 19,
+   "n60": 13
+  },
+  "鲜花": {
+   "term": "鲜花",
+   "supported": true,
+   "mode": "any",
+   "tags": [
+    "flower",
+    "bouquet"
+   ],
+   "max": 0.63,
+   "n50": 5,
+   "n55": 1,
+   "n60": 1
+  }
+ },
+ "evidence": {
+  "制服": {
+   "positivesInCorpus": 65,
+   "maxOnPositives": 0.7924,
+   "h50": 19,
+   "h55": 16,
+   "h60": 11,
+   "tags": [
+    "school_uniform",
+    "uniform",
+    "serafuku"
+   ]
+  },
+  "JK制服": {
+   "positivesInCorpus": 93,
+   "maxOnPositives": 0.7924,
+   "h50": 39,
+   "h55": 34,
+   "h60": 26,
+   "tags": [
+    "school_uniform",
+    "serafuku",
+    "pleated_skirt"
+   ]
+  },
+  "比基尼": {
+   "positivesInCorpus": 54,
+   "maxOnPositives": 0.864,
+   "h50": 37,
+   "h55": 35,
+   "h60": 32,
+   "tags": [
+    "bikini",
+    "sports_bikini"
+   ]
+  },
+  "泳装": {
+   "positivesInCorpus": 23,
+   "maxOnPositives": 0.3068,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "swimsuit",
+    "one-piece_swimsuit",
+    "school_swimsuit",
+    "competition_swimsuit"
+   ]
+  },
+  "女仆": {
+   "positivesInCorpus": 59,
+   "maxOnPositives": 0.799,
+   "h50": 23,
+   "h55": 19,
+   "h60": 14,
+   "tags": [
+    "maid",
+    "maid_headdress",
+    "maid_apron"
+   ]
+  },
+  "丝袜": {
+   "positivesInCorpus": 8,
+   "maxOnPositives": 0.3597,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "pantyhose",
+    "thighhighs"
+   ]
+  },
+  "网袜": {
+   "positivesInCorpus": 10,
+   "maxOnPositives": 0.9214,
+   "h50": 10,
+   "h55": 10,
+   "h60": 10,
+   "tags": [
+    "fishnets"
+   ]
+  },
+  "旗袍": {
+   "positivesInCorpus": 41,
+   "maxOnPositives": 0.76,
+   "h50": 4,
+   "h55": 4,
+   "h60": 3,
+   "tags": [
+    "china_dress",
+    "chinese_clothes"
+   ]
+  },
+  "吊带": {
+   "positivesInCorpus": 48,
+   "maxOnPositives": 0.645,
+   "h50": 3,
+   "h55": 2,
+   "h60": 1,
+   "tags": [
+    "camisole",
+    "garter_belt"
+   ]
+  },
+  "毛衣": {
+   "positivesInCorpus": 33,
+   "maxOnPositives": 0.5888,
+   "h50": 3,
+   "h55": 2,
+   "h60": 0,
+   "tags": [
+    "sweater",
+    "turtleneck"
+   ]
+  },
+  "短裙": {
+   "positivesInCorpus": 27,
+   "maxOnPositives": 0.859,
+   "h50": 19,
+   "h55": 18,
+   "h60": 17,
+   "tags": [
+    "miniskirt",
+    "skirt",
+    "pleated_skirt"
+   ]
+  },
+  "内衣": {
+   "positivesInCorpus": 22,
+   "maxOnPositives": 0.8241,
+   "h50": 13,
+   "h55": 12,
+   "h60": 11,
+   "tags": [
+    "underwear",
+    "lingerie",
+    "bra"
+   ]
+  },
+  "蕾丝": {
+   "positivesInCorpus": 18,
+   "maxOnPositives": 0.5124,
+   "h50": 2,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "lace",
+    "frills"
+   ]
+  },
+  "死库水": {
+   "positivesInCorpus": 31,
+   "maxOnPositives": 0.7077,
+   "h50": 25,
+   "h55": 19,
+   "h60": 14,
+   "tags": [
+    "school_swimsuit",
+    "competition_swimsuit"
+   ]
+  },
+  "绳艺": {
+   "positivesInCorpus": 24,
+   "maxOnPositives": 0.7738,
+   "h50": 12,
+   "h55": 12,
+   "h60": 9,
+   "tags": [
+    "bondage",
+    "ribbon_bondage"
+   ]
+  },
+  "兔子": {
+   "positivesInCorpus": 12,
+   "maxOnPositives": 0.1551,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "rabbit_girl",
+    "stuffed_bunny",
+    "rabbit_ears"
+   ]
+  },
+  "护士": {
+   "positivesInCorpus": 10,
+   "maxOnPositives": 0.6149,
+   "h50": 3,
+   "h55": 2,
+   "h60": 1,
+   "tags": [
+    "nurse",
+    "nurse_cap"
+   ]
+  },
+  "圣诞": {
+   "positivesInCorpus": 8,
+   "maxOnPositives": 0.5907,
+   "h50": 4,
+   "h55": 2,
+   "h60": 0,
+   "tags": [
+    "santa_costume",
+    "santa_hat",
+    "candy_cane",
+    "snowman"
+   ]
+  },
+  "教室": {
+   "positivesInCorpus": 7,
+   "maxOnPositives": 0.5743,
+   "h50": 1,
+   "h55": 1,
+   "h60": 0,
+   "tags": [
+    "classroom",
+    "school_desk"
+   ]
+  },
+  "浴室": {
+   "positivesInCorpus": 6,
+   "maxOnPositives": 0.4605,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "bathroom",
+    "bathtub",
+    "showering"
+   ]
+  },
+  "洗手间": {
+   "positivesInCorpus": 13,
+   "maxOnPositives": 0.5863,
+   "h50": 2,
+   "h55": 1,
+   "h60": 0,
+   "tags": [
+    "toilet",
+    "bathroom"
+   ]
+  },
+  "猫": {
+   "positivesInCorpus": 10,
+   "maxOnPositives": 0.672,
+   "h50": 6,
+   "h55": 5,
+   "h60": 3,
+   "tags": [
+    "cat",
+    "cat_girl",
+    "cat_ears"
+   ]
+  },
+  "蛋糕": {
+   "positivesInCorpus": 7,
+   "maxOnPositives": 0.7152,
+   "h50": 3,
+   "h55": 2,
+   "h60": 1,
+   "tags": [
+    "cake",
+    "cake_slice",
+    "cupcake"
+   ]
+  },
+  "雪山": {
+   "positivesInCorpus": 0,
+   "maxOnPositives": 0,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "snow",
+    "mountain"
+   ]
+  },
+  "汽车": {
+   "positivesInCorpus": 0,
+   "maxOnPositives": 0,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "car",
+    "car_interior"
+   ]
+  },
+  "咖啡": {
+   "positivesInCorpus": 0,
+   "maxOnPositives": 0,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "coffee",
+    "coffee_cup",
+    "coffee_mug"
+   ]
+  },
+  "鲜花": {
+   "positivesInCorpus": 0,
+   "maxOnPositives": 0,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "flower",
+    "bouquet"
+   ]
+  },
+  "婴儿": {
+   "positivesInCorpus": 0,
+   "maxOnPositives": 0,
+   "h50": 0,
+   "h55": 0,
+   "h60": 0,
+   "tags": [
+    "baby"
+   ]
+  }
+ }
+}

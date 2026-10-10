@@ -20,12 +20,12 @@ function testAiIndexBusy() {
   assert.equal(guard.aiIndexBusy([]), false, '没有服务时不算忙');
   assert.equal(guard.aiIndexBusy([null, undefined]), false, '服务未初始化不算忙');
   assert.equal(
-    guard.aiIndexBusy([{ status: () => ({ busy: false }) }, { status: () => ({ busy: false }) }]),
+    guard.aiIndexBusy([{ status: () => ({ running: false }) }, { status: () => ({ running: false }) }]),
     false,
     '两套索引都空闲',
   );
   assert.equal(
-    guard.aiIndexBusy([{ status: () => ({ busy: false }) }, { status: () => ({ busy: true }) }]),
+    guard.aiIndexBusy([{ status: () => ({ running: false }) }, { status: () => ({ running: true }) }]),
     true,
     '任一套索引在跑都算忙',
   );
@@ -55,7 +55,7 @@ function testAiIndexBusy() {
             throw new Error('probe-boom');
           },
         },
-        { status: () => ({ busy: true }) },
+        { status: () => ({ running: true }) },
       ],
       () => {},
     ),
@@ -279,9 +279,12 @@ function testWiringContracts() {
     /maintenanceGuard\.aiIndexBusy\(\s*\[semanticSearch, faceService\]/,
     'AI 忙碌探活要覆盖两套索引',
   );
+  // 顺序契约：先算磁盘再问用户。弹窗从「系统弹窗」换成了主题弹窗（`confirmInApp`，见
+  // `app-dialog-bridge-regression.js`），但**判据本身不变** —— 这里钉的始终是先后顺序，
+  // 不是那个具体的弹窗 API。
   assert.match(
     mainSource,
-    /vacuumSpaceShortage\(\)[\s\S]{0,200}?dialog\.showMessageBox/,
+    /vacuumSpaceShortage\(\)[\s\S]{0,400}?confirmInApp\(/,
     '优化数据库前必须先做磁盘预检，再做确认弹窗',
   );
   // T4b 起「维护期间给 AI_MAINTENANCE」的判据搬进了 `src/main/ai-index-gate.js`（剥出来才能

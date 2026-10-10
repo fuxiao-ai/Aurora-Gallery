@@ -7,7 +7,7 @@
  *
  *   1. `applyLocation` 期间没抑制记录 —— 点一次「后退」先把目标位置记成新的一步，
  *      栈原地长出来，按钮态越点越怪（能点但就是回不去）。
- *   2. 位置键漏字段 —— 「所有照片」与「所有日期」都算 `view:'all'`，不带上 date/tab 就撞键，
+ *   2. 位置键漏字段 —— 「所有文件」与「所有日期」都算 `view:'all'`，不带上 date/tab 就撞键，
  *      后退会卡在原地（栈顶被判成"同一位置"）。
  *   3. `keyIntent` 把**无修饰键**的 ←/→ 也吃掉 —— 那是预览翻页的键，会变成一按就跳目录。
  *   4. 恢复位置时给 `showTabContent` 传了 fromTab —— 它会套用 tabMemory，
@@ -145,12 +145,12 @@ function testPure() {
   assert.notEqual(
     nav.keyOf({ view: 'all', tab: 'folders' }),
     nav.keyOf({ view: 'all', tab: 'dates' }),
-    '同一个「所有照片」挂在两个 tab 下不是同一个位置',
+    '同一个「所有文件」挂在两个 tab 下不是同一个位置',
   );
   assert.notEqual(
     nav.keyOf({ view: 'all', date: '2024-01-01' }),
     nav.keyOf({ view: 'all', date: '' }),
-    '「所有照片」与「所有日期」view 都是 all，必须靠 date 区分开 —— 否则后退卡在原地',
+    '「所有文件」与「所有日期」view 都是 all，必须靠 date 区分开 —— 否则后退卡在原地',
   );
   assert.equal(nav.keyOf(null), '');
 
@@ -399,7 +399,7 @@ function testWiring() {
     'captureBrowseLocation 应走白名单（搜图 / 人物 / 设置各有独立视图态，不该进这条栈）',
   );
   // 路径只能进 folder 分支：`viewAllPhotos()` 不清 currentPath（下面有夹具自证），
-  // 把 path 塞进 all/favorites 的键，会让同一个「所有照片」因上一个目录不同而算出两个位置。
+  // 把 path 塞进 all/favorites 的键，会让同一个「所有文件」因上一个目录不同而算出两个位置。
   const dateBranchIdx = capSrc.indexOf("view === 'date'");
   assert.ok(dateBranchIdx > 0, 'captureBrowseLocation 结构变了（找不到 date 分支）');
   assert.equal(

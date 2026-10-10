@@ -1,6 +1,6 @@
 /**
  * 网页端「搜图 / 人物」视图：入口在侧栏页签，侧栏独占（搜索框 + 历史 / 人物列表），
- * 结果落进主照片网格。这里只补两块样式——侧栏控件（#aiSidebar 内）与网格里的
+ * 结果落进主图片网格。这里只补两块样式——侧栏控件（#aiSidebar 内）与网格里的
  * 空态 / 示例词 /「更多」按钮。卡片本身仍由 renderPhotoGrid 的通用样式负责。
  */
 
@@ -20,6 +20,84 @@
   gap: 10px;
   padding: 14px 12px 14px;
   overflow: hidden;
+}
+
+/* ---------- 搜图档位：关键词 / 语义 ----------
+   两套引擎（文件名子串 vs AI 向量），必须让用户看见自己在哪一套上，
+   所以做成常驻的二选一，而不是藏在菜单里。 */
+.ai-web-search-modes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-card) 45%, transparent);
+}
+.ai-web-search-mode {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+.ai-web-search-mode:hover:not(.is-active) {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.ai-web-search-mode.is-active {
+  color: var(--accent);
+  background: var(--accent-dim, rgba(127, 127, 127, 0.12));
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.ai-web-search-mode:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---------- 关键词档结果：文件夹 + 文件 ---------- */
+.ai-web-kw-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 22px;
+}
+.ai-web-kw-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+.ai-web-kw-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+.ai-web-kw-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.ai-web-kw-body {
+  min-width: 0;
+}
+.ai-web-kw-empty {
+  padding: 10px 4px;
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 
 .ai-web-sidebar-search {
