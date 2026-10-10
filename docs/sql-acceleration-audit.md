@@ -19,7 +19,7 @@
 | **P1-1** | 按根浏览 + 排序键 `file_name` / `file_size` | **40.0 s** / 同型 | 新增 `(root_id, file_name)`、`(root_id, file_size)` | ≈ **0.5 ms** | ✅ 两条索引 |
 | **P1-2** | 查重收尾 + 侧栏：按 `file_hash` 分组 | **174 s**（每次调用，内部跑两遍） | 新增部分覆盖索引 | 夹具 **280→43 ms** | ✅ 一条部分索引 |
 | **P1-3** | 日期视图 `GROUP BY date(date_taken)` | **3.5 s**（冷）/ 0.5 s（热） | 表达式索引（形态 C / E，见 §4） | 夹具 **91.9→18.9 ms** | ✅ 一条表达式索引 |
-| **P1-4** | 「查找相似照片」`buildFolderSimilarGroups` | **140 s** | 覆盖索引免回表 | 未建（只给诊断） | ✅ 一条部分索引 |
+| **P1-4** | 「查找相似图片」`buildFolderSimilarGroups` | **140 s** | 覆盖索引免回表 | 未建（只给诊断） | ✅ 一条部分索引 |
 
 **已量过、确认不用动**的见 §6（含一条我自己差点误报的）。
 
@@ -229,7 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_photos_dup_hash_full ON photos(file_hash, file_si
 ⇒ 全库视图要 **C**，单根视图要 **E**，两条形态不同、不能互相顶替。
 若只想要一条：优先 **E**（单根 2,311→26.5 ms），全库继续用现在那条（也可改走记忆化）。
 
-### P1-4 「查找相似照片」：140 s
+### P1-4 「查找相似图片」：140 s
 
 ```
 F3  SELECT id, folder_path, dhash FROM photos
@@ -296,7 +296,7 @@ F3  SELECT id, folder_path, dhash FROM photos
 | 不含子目录的目录页 | 4.1 ms | 够快 |
 | 目录内按 `date_taken` 排 | 2.2 ms | 够快 |
 | 全库列表各排序（`file_name`/`file_size`/`folder_path`/`date_modified`） | 6.7 / 7.2 / 8.8 / 1.3 ms | 各有索引 |
-| 某一天的照片 | 0.3 ms（范围写法） | 够快 |
+| 某一天的图片 | 0.3 ms（范围写法） | 够快 |
 | `getPhotoInfo(id)` | 0.4 ms | 够快 |
 | 缺缩略图计数 | 10.0 ms | 够快 |
 | 缺 `file_hash` 计数 | 133.0 ms（热 6.6） | 够快 |
@@ -496,7 +496,7 @@ Phase 5 的五条索引 DDL 抽到了独立模块，**worker 与回归共用同�
 
 ### 8.6 刻意没做的三件事
 
-1. **P1-4「查找相似照片」的 `(folder_path, dhash)` 部分索引**：`dhash` 是 cid 29、
+1. **P1-4「查找相似图片」的 `(folder_path, dhash)` 部分索引**：`dhash` 是 cid 29、
    排在 7.6 KB 的内联 BLOB **之后**，回表要穿整条溢出页链 —— 收益与代价都**还没在真库上量过**。
    不拿没量过的东西上生产。它那条 139,862 ms 先留在「待量化」里。
 2. **P1-2 提到的「`getDuplicateHashGroupsBundle` 内部跑两遍同一个 GROUP BY」合并**：

@@ -57,7 +57,7 @@
 → `changes = 0` → 返回 `'ignored'`，`file_size` / `date_modified` / `thumbnail` / `has_thumbnail` /
 `dhash` / `file_hash` **全保持旧值**。下一轮它**再次**被判定为变更 ⇒ **候选永不收敛**。
 全工程**没有任何** `UPDATE photos SET file_size = ?` / `date_modified = ?`。
-影响：就地替换的照片，缩略图与指纹**永远不失效**。（与 CONTRACTS 里 `width=0` 那起是同一类 bug。）
+影响：就地替换的图片，缩略图与指纹**永远不失效**。（与 CONTRACTS 里 `width=0` 那起是同一类 bug。）
 
 **改动要点**
 

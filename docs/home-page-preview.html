@@ -15,7 +15,7 @@
   --bg-hover: #1c1c40; --bg-active: #2a2a58;
   --text-primary: #eaeaff; --text-secondary: #b0b0d0; --text-muted: #5c5c88;
   --accent: #7b8cff; --accent-hover: #9aa8ff;
-  --accent-2: #b388ff; /* 装饰层用（徽标渐变 / 段头菱块 / 左上副光），与 styles.css 同名 */
+  --accent-2: #b388ff; /* 2026-10-06 起 Home 段已不再使用它（原先供徽标渐变/段头菱块/左上副光） */
   --accent-dim: rgba(123, 140, 255, 0.1); --accent-glow: rgba(123, 140, 255, 0.4);
   --border: #1a1a3c;
   --radius: 12px;
@@ -30,7 +30,7 @@
   --bg-hover: #e0e4f2; --bg-active: #d0d6ea;
   --text-primary: #1a1d2e; --text-secondary: #4a5070; --text-muted: #7a8199;
   --accent: #5568ff; --accent-hover: #6b7cff;
-  --accent-2: #6b7cff; /* 浅色档副色与主色同族（styles.css 同值） */
+  --accent-2: #6b7cff; /* 浅色档副色与主色同族（styles.css 同值；Home 段已不使用） */
   --accent-dim: rgba(85, 104, 255, 0.12); --accent-glow: rgba(85, 104, 255, 0.35);
   --border: #d8deef; --glass: rgba(255, 255, 255, 0.9);
   --glass-border: rgba(85, 104, 255, 0.16);
@@ -109,8 +109,17 @@ body {
 }
 .btn-ghost:hover { background: var(--bg-hover); border-color: var(--accent-dim); color: var(--text-primary); }
 
-/* ══ 装饰层（2026-10-05「美化启动页」）═══════════════════════════════════════
- * 下面 ①–⑧ 与 src/renderer/styles.css 的「首页（Home）」段一一对应，编号同源。
+/* ══ 视觉语言「编辑感」（2026-10-06 翻新；装饰 8 处 → 3 处）═════════════════
+ * 与 src/renderer/styles.css 的「首页（Home）」段一一对应，编号同源。
+ * 设计主张：**层级靠结构与排版，不靠装饰。**
+ * 上一版 8 处装饰单独看都不难看，叠在一起却是「到处都在发光，反而不知道先看哪」——
+ * 四张卡各像一块小海报，唯一的主按钮淹没在其中。这一版做减法，装饰只剩 3 处：
+ *   ① 顶部一层线性光 ② 品牌徽标描边 ③ 图标底座描边
+ * 砍掉：三层径向光 / 段头菱块 / accent 渐隐细线 / 卡右上角光晕 / 卡左竖条 /
+ *       图标实心淡底 / chip 偏色描边 / CTA 外投影。
+ * 形态语言（它同时也是「哪能点」的答案）：
+ *   **实心 = 主行动**（全页只有 .btn-primary 一个）｜**描边 = 次级入口**（.link-chip）
+ *   ｜**无边界 = 纯信息**（卡片本体、数字、标签、说明）。
  * 🔴 全部静态：不加 :hover、不加 cursor、不加动效（真实工程里由 home-page-regression
  *    §6 机械兜底：Home 段内 cursor:pointer 与 :hover 各只允许 1 处，属于 .home-chip）。
  * 🔴 光晕一律走元素自己的背景层，不放定位伪元素 —— 伪元素画在行内内容之上会蒙住文字。
@@ -118,60 +127,84 @@ body {
  */
 
 .home-page {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 26px 30px 32px;
-  /* ① 环境光：右上暖光 + 左上冷光 + 底部收束光 */
+  flex: 1; min-height: 0; overflow-y: auto; padding: 34px 40px 48px;
+  /* ① 环境光：只声明「页首」这一件事，落在 320px 内就化干净。
+     上一版是三层径向光（右上暖 / 左上冷 / 底部收束），读起来像被打了三个聚光灯，
+     却没有一个指向内容。
+     ⚠️ background-repeat: no-repeat 不能省 —— 渐变默认平铺，会和内容一起滚成条纹。 */
   background-color: var(--bg);
-  background-image:
-    radial-gradient(760px 460px at 88% -16%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 72%),
-    radial-gradient(620px 380px at -6% -10%, color-mix(in srgb, var(--accent-2, var(--accent)) 12%, transparent) 0%, transparent 70%),
-    radial-gradient(900px 300px at 50% 106%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 70%);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 7%, transparent) 0%,
+    transparent 320px
+  );
+  background-repeat: no-repeat;
 }
 
 /* ── 页头 ── */
 .home-head { display: flex; align-items: flex-start; gap: 12px; }
-/* ② 品牌徽标：纯装饰（真实工程里是 aria-hidden、无文案 ⇒ 不占 i18n 词条）。
-   底是 accent 渐变 ⇒ 白线在深浅两档都成立，与主题无关。 */
+/* ② 品牌徽标：**描边风格**（纯装饰：真实工程里 aria-hidden、无文案 ⇒ 不占 i18n 词条）。
+   上一版是实心 accent 渐变底，属页面上最亮的实心块之一，会和唯一的主按钮抢
+   「实心 = 可点」这个角色。描边版保留识别度，但不争重量。
+   ⚠️ 32px ≤ 标题行高（26px × 1.25 ≈ 33px）⇒ .home-head 高度不被它撑高。 */
 .home-brand {
-  flex: 0 0 30px; width: 30px; height: 30px;
+  flex: 0 0 32px; width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 9px; color: #fff;
-  background-image: linear-gradient(145deg, var(--accent), var(--accent-2, var(--accent)));
-  box-shadow: 0 4px 12px -5px var(--accent-glow),
-              inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent);
+  border-radius: 10px; color: var(--accent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 42%, transparent);
 }
-.home-brand svg { display: block; width: 17px; height: 17px; }
-.home-title { font-size: 21px; font-weight: 600; letter-spacing: -0.015em; }
-.home-sub { font-size: 13px; color: var(--text-secondary); margin-top: 6px; }
+.home-brand svg { display: block; width: 18px; height: 18px; }
+.home-title { font-size: 26px; font-weight: 600; line-height: 1.25; letter-spacing: -0.02em; }
+.home-sub { font-size: 14px; color: var(--text-secondary); margin-top: 7px; line-height: 1.6; max-width: 52ch; }
 
-/* ── 主行动 ── */
-.home-cta { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+/* ── 库概览：四项平铺（取消主次层级）──
+ * 上一版让图片数拿 30px 独占主行、其余三项退成 15px 次级。本轮取消：图片 / 视频 / 大小 /
+ * 目录是四个**独立的事实**（底栏那个筛选下拉里 image / video 本来就是并列取值），
+ * 谁高谁低没有依据 —— 而高低一旦只由**字号**表达，就会被读成「视频不重要」。
+ * ⇒ 四项同字号同权重、一行排开；层级改由**本块与页头/卡片的关系**给出。
+ * 顺带：没有主次就没有那条 border-top 分隔线，本块的结构装饰归零。
+ * 纯展示：无指针、无 hover、零 data-goto（可点节点数恒 11）。 */
+.home-stats {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px;
+  margin-top: 30px; padding: 20px 22px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background-color: var(--bg-card);
+}
+.home-stat-item { min-width: 0; line-height: 1; }
+.home-stat-value {
+  display: inline-block; font-size: 20px; font-weight: 600; line-height: 1.2;
+  letter-spacing: -0.01em; color: var(--text-primary);
+  /* tabular-nums：占位符 `—` ↔ 数字切换时字面宽度不抖（恒形的第三条件）。 */
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.home-stat-label {
+  display: inline-block; margin-left: 6px; font-size: 12.5px; line-height: 1.4;
+  color: var(--text-muted); white-space: nowrap;
+}
+
+/* ── 主行动 ── 全页**唯一**的实心块（形态语言：实心 = 主行动）。
+   上一版给它叠了 accent 外投影「让它浮起来」，本轮去掉：页面上只有它一个实心元素，
+   这本身就是最强的重量信号；再叠投影就变成「实心 + 发光」，与「装饰克制」自相矛盾。 */
+.home-cta { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 26px; }
 .btn-primary {
-  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
-  padding: 10px 20px; border: 0; border-radius: 9px;
+  font: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer;
+  padding: 11px 22px; border: 0; border-radius: 10px;
   background-color: var(--accent); color: var(--btn-primary-text);
-  /* ⑧ 主按钮浮起来（走 box-shadow，不碰背景/文字 ⇒ 不影响白字对比度） */
-  box-shadow: 0 6px 18px -8px var(--accent-glow);
   transition: background-color var(--dur-fast) var(--ease-standard);
 }
 .btn-primary:hover { background-color: var(--accent-hover); }
 .cta-hint { font-size: 13px; color: var(--text-muted); }
 
-/* ── 分段标题（细线） ── */
-.sec-head { display: flex; align-items: center; gap: 12px; margin: 26px 0 13px; }
-.sec-head span { font-size: 13px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-/* ③ 段头前的强调色小菱块（真实工程用伪元素实现，免得为符号再进 i18n 表）
-   ⚠️ 必须排除 .sec-note —— 它也是 .sec-head 里的 <span>，不排除就会多出一颗点在右侧说明上 */
-.sec-head span:not(.sec-note)::before {
-  content: ''; display: inline-block;
-  width: 6px; height: 6px; margin-right: 8px;
-  border-radius: 2px; vertical-align: 1px;
-  background-image: linear-gradient(140deg, var(--accent), var(--accent-2, var(--accent)));
-}
-/* ④ 细线由强调色向透明渐隐（原先是纯 var(--border) 平线） */
-.sec-head i {
-  flex: 1; height: 1px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 42%, var(--border)), transparent);
-}
+/* ── 分段标题：一个标签 + 一条纯色细线（全页**唯一**的分隔线） ──
+   上一版这里是「强调色菱块 + accent 渐隐细线」两处装饰，本轮都去掉 ——
+   段头的职责只是**分组**，一条 1px 中性线就够；加渐变反而让「能做什么」这四个字
+   比它要分组的卡片更抢眼。
+   ⚠️ `.sec-note`（「卡片是介绍，点里面的按钮直接去」）必须保留：它是守护 R9 的
+      补偿信号，删掉会变红。这一版把版式本身做对了，但用户仍可能先在卡片上点一下。 */
+.sec-head { display: flex; align-items: center; gap: 14px; margin: 38px 0 16px; }
+.sec-head span { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-secondary); white-space: nowrap; }
+.sec-head i { flex: 1; height: 1px; background: var(--border); }
 .sec-note { font-size: 12px; font-weight: 400; color: var(--text-muted); }
 
 /* ── 能力卡：介绍与入口合体 ──
@@ -179,50 +212,47 @@ body {
  *    只有卡内的 chip 才是入口。这是 §4.0 契约的直接体现：
  *    「看起来能点」就必须「真的能点」，容器不冒充按钮。
  */
-.feature-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.feature-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: stretch; }
 .feature {
-  display: flex; flex-direction: column; gap: 14px;
-  padding: 16px 16px 15px;
-  border: 1px solid var(--border); border-radius: 12px;
-  position: relative; /* 给 ⑥ 的左侧竖条做定位锚点 */
-  /* ⑤ 右上角一层极淡的强调色晕（走背景层 ⇒ 永远在文字之下） */
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 20px 20px 18px;
+  border: 1px solid var(--border); border-radius: 14px;
+  /* 表面只有「一层底色 + 1px 边框」。
+     上一版这里有四层：底色 + 右上角 accent 径向光晕 + 左侧 3px 渐变竖条 + 投影片影
+     —— 每张卡都像一块小海报，四张并排时页面找不到重点。
+     🔴 卡片仍是「介绍容器」不是入口：无 cursor、无 transform、无 :hover。 */
   background-color: var(--bg-card);
-  background-image: radial-gradient(180px 120px at 100% 0%, color-mix(in srgb, var(--accent) 11%, transparent) 0%, transparent 72%);
-  box-shadow: 0 1px 3px #0000000f;
 }
-/* ⑥ 左侧强调色竖条：宽 3px 落在 16px 内边距里，压不到文字。
-   ⚠️ position:absolute 不能省 —— .feature 是 flex 容器，不脱离文档流它会变成 flex item。 */
-.feature::before {
-  content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
-  border-radius: 0 3px 3px 0; opacity: 0.85;
-  background-image: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 18%, transparent));
-}
-.feature-head { display: flex; gap: 11px; }
-/* ⑦ 图标底座：20px 线稿裸放太单薄，给一块强调色淡板托住（30px 仍矮于两行文案 ⇒ 卡高不变） */
+.feature-head { display: flex; gap: 12px; min-width: 0; }
+/* ③ 图标底座：**描边**风格，与品牌徽标同一套语言（描边 = 静态标识，实心 = 可点）。
+   ⚠️ 底座 30px 仍矮于右侧两行文案（≈46px）⇒ 卡片高度不被它撑高。 */
 .feature-icon {
   flex: 0 0 30px; width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 9px; color: var(--accent);
-  background: var(--accent-dim);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 30%, transparent);
 }
-.feature-icon svg { width: 18px; height: 18px; }
-.feature-title { font-size: 14px; font-weight: 600; }
-.feature-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.55; margin-top: 4px; }
+.feature-icon svg { width: 17px; height: 17px; }
+.feature-body { min-width: 0; }
+.feature-title { font-size: 15px; font-weight: 600; line-height: 1.4; }
+.feature-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-top: 5px; }
 
 /* 卡内入口 chips：整卡唯一可点的东西，原生 button ⇒ 键鼠天然双可达 */
-.feature-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.feature-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
 .link-chip {
   font: inherit; font-size: 12.5px; line-height: 1; cursor: pointer;
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 10px; border-radius: 7px;
-  /* ⑧ 描边往强调色偏 28% —— 常态就透出「这是个按钮」 */
-  background: var(--bg-hover); border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  padding: 7px 12px; border-radius: 8px;
+  /* 形态语言：**描边 = 次级入口** —— 常态中性 --border，hover 才转 accent。
+     上一版常态就偏 accent 28%，于是「卡片边框（中性）/ 图标底座（淡 accent 底）/
+     chip 边框（偏 accent）」三种描边各说各话，静态看是一堆彩色盒子。 */
+  background: transparent; border: 1px solid var(--border);
   color: var(--text-secondary);
   transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 .link-chip:hover { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
-.link-chip::after { content: '›'; font-size: 13px; opacity: 0.65; margin-left: -1px; }
+.link-chip::after { content: '›'; font-size: 13px; line-height: 1; opacity: 0.6; margin-left: -1px; }
 
 /* ── 键盘可达：焦点环（真实落地同样要求，不能只在鼠标下可用） ── */
 .link-chip:focus-visible,
@@ -266,7 +296,7 @@ body {
 
 <div class="preview-bar">
   <b>启动页（Home）视觉预览</b>
-  <span>4 张能力卡：介绍 + 卡内入口 · 全页只跳转，不执行任何动作</span>
+  <span>库概览（纯展示）+ 4 张能力卡：介绍 + 卡内入口 · 全页只跳转，不执行任何动作</span>
   <span class="spacer"></span>
   <span>主题</span>
   <span class="seg" id="segTheme">
@@ -303,7 +333,28 @@ body {
         </span>
         <div style="flex:1;min-width:0">
           <div class="home-title">拂晓图库</div>
-          <div class="home-sub">照片都放在自己电脑里：原图不动、不上传，打开就能看。</div>
+          <div class="home-sub">图片都放在自己电脑里：原图不动、不上传，打开就能看。</div>
+        </div>
+      </div>
+
+      <!-- 库概览：四项平铺（取消主次）。纯展示 ⇒ 无 data-goto（可点节点数恒 11）。
+           数字取自启动路径上本来就会跑的 loadStats()，首页自身零新增请求。 -->
+      <div class="home-stats">
+        <div class="home-stat-item">
+          <span class="home-stat-value">1,199,030</span>
+          <span class="home-stat-label">张图片</span>
+        </div>
+        <div class="home-stat-item">
+          <span class="home-stat-value">25,585</span>
+          <span class="home-stat-label">个视频</span>
+        </div>
+        <div class="home-stat-item">
+          <span class="home-stat-value">12.7 TB</span>
+          <span class="home-stat-label">总大小</span>
+        </div>
+        <div class="home-stat-item">
+          <span class="home-stat-value">31,240</span>
+          <span class="home-stat-label">个目录</span>
         </div>
       </div>
 
@@ -319,13 +370,13 @@ body {
         <div class="feature">
           <div class="feature-head">
             <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h5l2 3h11v10H3z"/></svg></div>
-            <div>
-              <div class="feature-title">照片再多也找得到</div>
+            <div class="feature-body">
+              <div class="feature-title">图片再多也找得到</div>
               <div class="feature-desc">按文件夹翻、按日期翻，几万张也一目了然。</div>
             </div>
           </div>
           <div class="feature-links">
-            <button type="button" class="link-chip" data-kind="视图" data-goto="所有照片">所有照片</button>
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有文件">所有文件</button>
             <button type="button" class="link-chip" data-kind="视图" data-goto="所有目录">所有目录</button>
             <button type="button" class="link-chip" data-kind="标签页" data-goto="日期">日期</button>
           </div>
@@ -335,9 +386,9 @@ body {
         <div class="feature">
           <div class="feature-head">
             <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></div>
-            <div>
-              <div class="feature-title">一句话找到那张照片</div>
-              <div class="feature-desc">说一句「海边的日落」就能找到；照片里的人会自动归类。</div>
+            <div class="feature-body">
+              <div class="feature-title">一句话找到那张图片</div>
+              <div class="feature-desc">说一句「海边的日落」就能找到；图片里的人会自动归到人物里。</div>
             </div>
           </div>
           <div class="feature-links">
@@ -350,13 +401,14 @@ body {
         <div class="feature">
           <div class="feature-head">
             <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3.5-5 3.5z"/></svg></div>
-            <div>
+            <div class="feature-body">
               <div class="feature-title">再多也不卡</div>
-              <div class="feature-desc">上百万张照片照样流畅，视频点开就看，字幕自动加载。</div>
+              <div class="feature-desc">上百万张图片照样流畅，视频点开就看，字幕自动加载。</div>
             </div>
           </div>
           <div class="feature-links">
-            <button type="button" class="link-chip" data-kind="视图" data-goto="所有照片（筛选：仅视频）">只看视频</button>
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有文件（筛选：仅图片）">只看图片</button>
+            <button type="button" class="link-chip" data-kind="视图" data-goto="所有文件（筛选：仅视频）">只看视频</button>
           </div>
         </div>
 
@@ -364,7 +416,7 @@ body {
         <div class="feature">
           <div class="feature-head">
             <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 2.4 14.6 0 17-2.4-2.4-2.4-14.6 0-17z"/></svg></div>
-            <div>
+            <div class="feature-body">
               <div class="feature-title">换个样子，多台设备看</div>
               <div class="feature-desc">主题配色、快捷键都能改成顺手的；手机扫个码，家人一起看。</div>
             </div>
@@ -380,6 +432,9 @@ body {
       <div class="footnote">
         <b>预览说明</b>：本页只用于确认排版、跳转目标与两档主题下的观感，<b>不是实现代码</b>。
         点任意按钮可看到它落到哪里；<code>Tab</code> 切换焦点、<code>Enter</code> 触发。<br />
+        <b>形态语言</b>（2026-10-06「编辑感」翻新）：<b>实心 = 主行动</b>（全页只有「＋ 添加目录」一个）｜
+        <b>描边 = 次级入口</b>（卡内 chips）｜<b>无边界 = 纯信息</b>（卡片本体、库概览数字、说明）。
+        装饰从 8 处减到 3 处，档案里没有径向光晕、没有卡片投影、没有段头菱块。<br />
         <b>文案规范</b>：面向客户、口语化，每条说明 ≤30 字（超一行会把同行卡片一起撑高）；
         不出现「索引 / 转码 / 数据库 / 阈值」等技术词；<b>说明里提到的能力都必须在卡内的按钮里够得着</b>。
       </div>

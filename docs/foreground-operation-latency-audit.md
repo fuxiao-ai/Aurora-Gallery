@@ -31,7 +31,7 @@
 | 文件树加载 | `get-root-folders` / `get-folder-tree` / `get-folder-covers` | **读池**（+ `catalogCache` 24 h） | ❌ 无 |
 | 图片列表加载 | `get-photos` / `get-folder-photos` / `get-date-photos` | **读池** | ❌ 无 |
 | 搜图 | `ai-search-query` | 语义 worker | ✅ `withPreempt` |
-| 搜图预选词 | `ai-search-suggest` | 语义 worker | ✅ `withPreempt` |
+| 搜图预选词 | `ai-search-suggest` | ⚠️ **2026-10-09 起常规路径不在这里**：主进程只读 SQL 读 `embeddings.tags`（70–90 ms、不起 worker、不载模型）；只有老契约形状（给一组指定的词打分）仍落到语义 worker | ✅ `withPreempt`（两条路都包） |
 | 人脸列表加载 | `face-action(groups/photos)` | 人脸 worker | ✅ `concurrentReads` |
 
 ### 2.1 最重要的结构性事实
@@ -117,7 +117,7 @@ SEARCH photos USING INDEX idx_photos_root_folder (root_id=?)
 
 **触发点**：`loadRootFolders` → `sidebarTree.prefetchFolderTreeMap` → **对 3 个根目录各调一次**（`renderer/app.js`）。三个根目录分别是 912,222 / 431,996 / 312,362 行。
 
-**你什么时候会撞上**：缓存是**持久化 SQLite + 24 h TTL**（`catalog-cache-db.js`），失效点**只有四处** —— 扫描结束（`processScanQueue`）、删照片、切收藏、移除目录。
+**你什么时候会撞上**：缓存是**持久化 SQLite + 24 h TTL**（`catalog-cache-db.js`），失效点**只有四处** —— 扫描结束（`processScanQueue`）、删图片、切收藏、移除目录。
 
 ⇒ 🔴 **扫描完成后第一次加载文件树 = 3 个根目录全部重算**。而你刚扫完，往往正想看目录树。
 ⇒ ⚠️ **缩略图补全刻意不清这个缓存**（补全只改 `has_thumbnail` / 尺寸 / EXIF，不动目录结构）—— 这是对的。
@@ -250,6 +250,6 @@ USE TEMP B-TREE FOR ORDER BY          ← 就是它
 ## 8.5 数字汇总
 
 - `getPhotos` 的 COUNT：38.2 ms → **命中时 ~0（不进 SQLite）**；未命中仍是 38 ms 级。
-- 最坏陈旧度：**5 s**（删一张照片后页面数最多旧 5 s）。缓存**不参与任何正确性判定**，只喂「共 N 张」与 `totalPages`。
+- 最坏陈旧度：**5 s**（删一张图片后页面数最多旧 5 s）。缓存**不参与任何正确性判定**，只喂「共 N 张」与 `totalPages`。
 - 读池只读连接：`cache_size` 2 MB（默认）→ **128 MB**；`mmap_size` 0（关闭）→ **1 GB**。
 

@@ -29,7 +29,7 @@ High-level overview; details follow the in-app **Settings** pages.
 
 ### Desktop browsing & preview
 
-- **Navigation**: sidebar **folder tree**, **by date**, **search** results; works with “All photos / All folders” and related entry points.
+- **Navigation**: sidebar **folder tree**, **by date**, **search** results; works with “All files / All folders” and related entry points.
 - **Preferences** (persisted): default **sort** (capture/modify time, name, size, path, etc.), **scope** (folder only / include subfolders), **page size**, **grid layout** (masonry, fixed height + aspect presets), card size, thumb crop, and more.
 - **Favorites & OS integration**: favorites participate in filters; open files or folders in the **system file manager**.
 - **Image preview**: zoom, pan, rotate, fullscreen; optional filename/time/size **info bar**.
@@ -45,7 +45,7 @@ High-level overview; details follow the in-app **Settings** pages.
 
 ### Filters, duplicates & search
 
-- **Filters**: media type (all / images / videos), dimensions, size, time range, folder scope, favorites, etc.; sidebar counts and “All folders” stay **consistent** with the active filter (empty folders can be hidden).
+- **Filters**: media type (all / photos / videos), dimensions, size, time range, folder scope, favorites, etc.; sidebar counts and “All folders” stay **consistent** with the active filter (empty folders can be hidden).
 - **Duplicates**: **hash**-based grouping with a dedicated view.
 - **Search**: indexed fields and syntax as shown in the UI.
 

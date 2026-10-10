@@ -1,8 +1,8 @@
 # 与 Lap 项目功能对比及更新计划
 
 日期：2026-09-27
-对比对象：[julyx10/lap](https://github.com/julyx10/lap)（Tauri + Rust + Vue，本地优先照片管理器，GPL-3.0）
-本项目：Aurora Gallery / 拂晓图库（Electron + 原生 JS，本地优先照片库，MIT）
+对比对象：[julyx10/lap](https://github.com/julyx10/lap)（Tauri + Rust + Vue，本地优先图片管理器，GPL-3.0）
+本项目：Aurora Gallery / 拂晓图库（Electron + 原生 JS，本地优先图片库，MIT）
 
 > 说明：本文只做功能层面对比与排期建议，不引入 Lap 源码或依赖。实现仍按本项目 Electron / 原生 JS 结构独立完成。
 
