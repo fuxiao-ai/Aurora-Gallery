@@ -127,7 +127,7 @@ fun BrowseScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("搜索照片...") },
+                        placeholder = { Text("搜索图片...") },
                         leadingIcon = { Icon(Icons.Default.Search, null) },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
@@ -190,7 +190,7 @@ fun BrowseScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         NavigationDrawerItem(
-                            label = { Text("全部照片") },
+                            label = { Text("所有文件") },
                             selected = selectedTab == NavTab.All,
                             onClick = { selectedTab = NavTab.All; viewModel.setView("all") },
                             icon = { Icon(Icons.Default.PhotoLibrary, null) }
@@ -237,7 +237,7 @@ fun BrowseScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("搜索照片...") },
+                        placeholder = { Text("搜索图片...") },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
@@ -387,7 +387,7 @@ fun FolderList(folders: List<Folder>, onFolderClick: (Folder) -> Unit) {
         items(folders) { folder ->
             ListItem(
                 headlineContent = { Text(folder.name) },
-                supportingContent = { Text("${folder.photoCount} 张照片") },
+                supportingContent = { Text("${folder.photoCount} 张图片") },
                 leadingContent = { Icon(Icons.Default.Folder, null) },
                 modifier = Modifier.clickable { onFolderClick(folder) }
             )
@@ -402,7 +402,7 @@ fun DateList(dates: List<DateGroup>, onDateClick: (DateGroup) -> Unit) {
         items(dates) { date ->
             ListItem(
                 headlineContent = { Text(date.date) },
-                supportingContent = { Text("${date.count} 张照片") },
+                supportingContent = { Text("${date.count} 张图片") },
                 leadingContent = { Icon(Icons.Default.CalendarToday, null) },
                 modifier = Modifier.clickable { onDateClick(date) }
             )
