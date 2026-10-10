@@ -8,6 +8,401 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 ### Added
 
+- 🔴 **组织元数据（标记 / 评分 / 用户标签）+ 「整理」抽屉，桌面端 + 网页端**（2026-10-09，用户诉求「做 P0」，Plan 里点名 `标记 + 评分 + 用户标签`，并明确「这一轮不做 XMP」）。契约 → `docs/contracts/org-metadata.md`（**已写**：四个维度的语义分工 / 取值域与归一 / 幂等设值 / 两列两表与延迟索引 / 六处查询同一批图 / `photosTotalCache` 键 / 三条通道 / 渲染端镜像 / 「整理」抽屉 / 守护覆盖）；守护 → `scripts/org-metadata-regression.js`（**已建**，注册进 `run-regressions.js`，覆盖六组：取值域与归一 / 筛选谓词（`rating = 0` 与 `flag = 'none'` 必须**真的进筛选**、`hasOrgMetaFilter` 与 `pushOrgMetaConditions` 逐输入同源、标签 AND 语义与占位符顺序）/ 真库行为（写入语义 + 六处查询取同一批图 + 排序白名单含 `rating`）/ 三条通道名字对齐（IPC / HTTP / 渲染端 api）/ 渲染端真模块 vm 加载（两端镜像逐输入等价、卡片 `data-org-*` 回读、抽屉内控件状态、标签回包校验 `photoId`）/ 「整理」抽屉（可点性 / 结构 / 唯一入口 / 让位规则））。
+
+  **① 数据层** —— `photos` 加 `flag`（`none` / `pick` / `reject`）与 `rating`（0–5）两列，新表 `tags` / `photo_tags`；读写走 `src/main/org-meta-*.js`，筛选谓词的**唯一源**放叶子模块 `src/main/org-meta-filter.js`（`db-heavy-read.js` 被 `database.js` require，谓词只能下沉，否则循环 require）。
+  - 🔴 **`photosTotalCache` 的键是「SQL 文本 + 参数按 `\u0000` 拼接」**：`rating = ?` 在换值时 SQL 文本**一模一样** ⇒ 不同的筛选值会命中同一个 total。所以 `orgParams` 必须进**每一处**参数列表，否则「切筛选后总页数不变」这种静默错会一直在。
+  - 写入语义：标记与评分都是**幂等设值**（连按两下 = 按一下），清除是**独立动作**；评分再点同一颗星 = 归 0。
+
+  **② 「整理」抽屉（`#previewOrgPanel`）** —— 收藏 / 标记三连 / 评分五星 / 标签 / 加入对比全部住进**右侧独立抽屉**（与 `#previewInfoPanel` 同构：360px 宽、`translateX(100%)` 滑出、`z-index: 20`、同一段过渡；两者**互斥**）。入口是工具条上那颗 `#previewOrgBtn`。用户口径演变：「冲片条无法点击，而且遮挡图片不美观，是否收入类似图片信息的弹窗」→「独立操作入口、弹窗可以不共用」→「1 暂时不做，做 2 独立抽屉」（1 = 批量删除，本轮不做）。
+  三条设计判据：**不是弹窗遮罩**（冲片时用户要一边看图一边决定，盖住大图等于逼他先想好再打开；抽屉只吃右侧 360px）、**不随切图关闭**（翻着图一路标下去是主用法）、**不随点外部关闭**（它是「工作台」不是「提示」—— 信息抽屉那套「点外部 / `Esc` 收起」刻意不抄）。
+  - **搬迁史（两次）**：顶栏工具条 15+ 控件里 → `#previewCullingBar`（贴大图下缘的浮条，方案 B）→ 本节这个抽屉。换掉浮条的两个实测理由：① 正压在看图的位置（用户口径「遮挡图片不美观」）；② 它是 `.preview-body`（`pointer-events: none`）的子元素，必须额外补 `auto` 才点得动（就是 `### Fixed` 里那条「冲片条点不动」）。抽屉两条一起解决：不盖图主体，且 `auto` 写在 `.preview-org-panel.open` 上、与既有的 `.preview-info-panel.open` 逐字同构。
+  - 🔴 **`#previewNext` 与 `#previewZoomBox` 必须让位**（本轮新修，见 `### Fixed`）：两者分别是 `right: 16px; z-index: 6` 与 `right: 12px; bottom: 12px; z-index: 12`，而抽屉是 `right: 0; width: 360px; z-index: 20`。修法 = 在 `#previewOverlay` 上挂 `has-right-drawer`，CSS 把两者左移一个抽屉宽（`min(376px, calc(85vw + 16px))` / `min(372px, calc(85vw + 12px))`，与抽屉自己的 `width` / `max-width` 逐字对应，改抽屉宽度要一起改）。⚠️ **类只能挂 `#previewOverlay`**：`.preview-zoom-box` 不在 `.preview-body` 里，挂那边够不着它。
+  - 🔴 **「加入对比」的落点改成专用槽**：`photo-compare.js#mount()` 优先找 `#previewOrgActions`（抽屉「对比」分区里那个空槽），**找不到才退回**「插在 `#previewRatingStars` 之后」。旧判据是「锚点是否落在冲片条内」（`bar.contains(anchor)`）—— 那读的是**别人的排版**，冲片条一删就失效；专用槽是「有就进、没有就退」。随之删掉 `.preview-culling-divider`（抽屉用分区隔，条内那条竖分隔线没有意义了）。
+    - ⚠️ `scripts/compare-regression.js` 的 `TestNode` 桩同步升级为「**逐 id 返回不同节点**」：旧桩对任何 id 都返回同一个节点 ⇒「进了槽」与「插在之星之后」分不出来，落点断言**恒真**（典型假绿）。另外新增一条**降级路径**用例（没有槽时不许静默不挂），并顺手钉了槽内顺序（按钮 → 状态文字）。
+  - **id 取舍**：`previewFavoriteBtn` / `previewFlagPickBtn` / `previewFlagRejectBtn` / `previewFlagClearBtn` / `previewRatingStars` / `previewOrgTagsChips` / `previewOrgTagsInput` / `previewOrgTagsAddBtn` **全部不变**（只搬位置）⇒ `org-meta-ui.js` 与网页端 `syncWebPreviewOrgMeta` 基本零改动。**只有入口按钮改名** `previewTagsBtn → previewOrgBtn`（网页端计数 `previewTagsCount → previewOrgCount`）—— 它开的是整个抽屉，旧名会让下一个读代码的人以为它只管标签。
+  - 同时删掉整套「标签悬浮小面板」（`#previewOrgTagsPanel` / `togglePreviewTagsPanel` / 网页端 `toggleWebPreviewTagsPanel` / 那份「点外部收起」分支），标签变成抽屉里的一个分区：入口只剩一个，再留一层「点开面板」就是抽屉套抽屉。改动仍**立即保存**（没有「确定」按钮），与原来那条契约一致。
+  - ⚠️ **网页端抽屉里的按钮不能用 `.preview-action-btn`**：那个类是给「压在图片上的浮条」用的（32×32、`color: rgba(255,255,255,.7)` 的白图标），搬进跟随主题变色的抽屉后浅色主题下白图标直接看不见。改走新类 `.preview-org-btn`（带文字的药丸，与桌面端 `.btn.btn-sm` 同观感），收藏的激活态自己带（`#previewFavoriteBtn.active`）。
+  - 🔴 **键位只在 title 里，不写在按钮上**（用户要求「按钮不要显示快捷键」）。绑定仍是 Z=选 / X=否 / C=清除 / 1–5=评分（`shortcuts.js`），冲片是盲操作，所以做成**幂等设值**而不是切换。顶栏那排按钮的文案同时从 `'R 旋转'` / `'F 收藏'` / `'S 相似'` / `'O 系统打开'` 改回 `'旋转'` / `'收藏'` / `'相似'` / `'系统打开'`，键位回填进各自的 `title`（`preview.rotateTitle` = `顺时针旋转 90° (R)（只改预览；点「保存」或 Ctrl+S 才写回）Shift 为逆时针`）—— 只搬位置、不丢可发现性。
+    ⚠️ 去前缀时**别连图案一起削**：标记三连的 `✓ / ✕ / ↺` 不是快捷键。本轮一度把它们写进了文案（`'✓ 选'` …）—— 那是为了绕开 `applyDom` 抹掉图标的问题；**同批已根治**（见 `### Fixed`），现在图案全部由按钮自己的 `<svg class="btn-icon">` 渲染，词条只剩 `'选'` / `'否'` / `'清除'`。万一以后看到文案里又出现图案符号，那是绕路又回来了。
+  - 键位与 `shortcuts.js` 默认绑定同源，改键要两处同步（网页端没有这组快捷键，故不放键位提示）。`web/index.html` 在 `SHELL_ASSETS` 里 ⇒ `sw.js#CACHE_NAME` 升 `v65 → v66`。
+
+- 🔴 **启动即最大化 + 侧栏视图入口钉顶 + 随机页码快捷键 + 退出前停后台任务**（2026-10-09，用户连续四条诉求）。
+  - **启动即最大化**：默认 1400×900 是按 100% 缩放屏定的，高 DPI（本机 dpr≈1.5 ⇒ 逻辑宽只有 1280）会被 workArea 压小，侧栏导航与浏览工具条展示不全 ⇒ `createWindow()` 后 `mainWindow.maximize()`（渲染层本就监听 `window-maximized-change`，无需新链路）。刻意**不做**窗口尺寸持久化（本轮范围外）。
+  - **侧栏「所有文件 / 收藏 / 所有目录」sticky 钉顶**：新增 `.sidebar-view-entries` 包住这三个视图入口（桌面端 `sidebar-tree.js` 的同步与渐进**两条**渲染路径都要包；网页端 `renderRootFoldersSidebarHtml` 同形）。滚动容器是 `.sidebar-content`（`overflow-y:auto`），钉顶块用 `--glass + backdrop-filter` 的同款配方把滚过的树行糊掉，左右负 margin 盖住容器 padding（否则树行从缝里露出）。不给三行各自 sticky —— 三行各自钉会互相叠压、top 偏移还得写死行高。
+  - **随机页码快捷键**：新增动作 `nav.randomPage`（默认 `Alt+R`；裸 `R` 已被 `preview.rotate` 占用），与底栏 `#randomPageBtn` 调**同一个** `goToRandomPage`（唯一真相源）。i18n 中英各 1 条。
+  - 🔴 **退出前停后台任务**：关闭弹窗打开时查 `get-background-tasks`，有在跑的任务就亮出橙色警告行（任务名复用面板同一批词条）；点「退出程序」**先请求停止**（scan / 补全 / 重建 / 查重指纹四个有 cancel 通道的），再按契约 §8 判据轮询到全部停干净才退出，20 秒停不干净则**取消本次退出**并提示。理由：硬杀进程会留下几 GB 的 `-wal` 死文件（CONTRACTS T5 红线）。判据与全局任务面板**同源但各自一份**：面板管「显隐」、这里管「能不能退」，取值域必须同改（新增长任务时漏加 = 退出不打招呼就杀掉它）。
+  - 顶栏数学重算：加了「筛选」按钮后顶栏共 8 项，`1021px` 起仍单行（CDP 逐档实测 1021–1440 全部 `rows=1` 且无右溢出），折行阈值 `1020` **不变**；因「筛选」按钮复用 `.header-appearance-btn` 类，折行档的 `margin-left: auto` 改钉 `#headerAppearanceBtn` —— 沿用类选择器会让两颗按钮各得一个 auto，在行内撑出 27px 幻影间隙（实测 768px）。
+
+- 🔴 **图片编辑：P0 旋转 / 翻转（**写回原文件**）+ P1 裁剪（产物进 `photos` 表成为正常行），桌面端 + 网页端**（2026-10-09，用户诉求「做 P0、P1，需要写回，裁剪产物进表，导出不做、转 webp 不做」）。契约 → `docs/contracts/photo-edit.md`；新守护 `scripts/photo-edit-regression.js`（当时 **130 项**，此后随 P2「预览态编辑」扩到 **172 项**，见 `### Changed`；已注册进 `run-regressions.js`，含真跑临时库 + 临时目录的**行为组**）。
+
+  **① 图像层：唯一实现源，两端共用（新文件 `src/main/image-edit.js`）** —— 只做「读 EXIF 方向 → 算一条 sharp 算子 → 原子写盘」，不碰数据库。
+  - 🔴 **EXIF orientation(1–8) + 用户动作必须合成「一条」算子**，语义是 `正确显示 = R_a ∘ Fh^p ∘ Fv^q`，不变量 `p 与 q 不同时为 1`。**没有**任何「先 auto-orient 落一遍字节再处理」的两段式 —— 对有损格式那是白掉一代画质。
+  - 🔴 **5 与 7 的旋转角与直觉相反，第一版真写错**：5（transpose）= `R270 ∘ Fh`、7（transverse）= `R90 ∘ Fh`。按「5 在前所以是 90」写成 90/270 后，8 档里**恰好只错这两个** ⇒ 只在「带方向且翻转」时歪，静默。实测探针抓出后按 sharp 实际语义改为 270/90。
+  - 🔴 **sharp 的算子执行顺序是「flip/flop 先、rotate 后」**（实测，反直觉）：`p.rotate(90).flop()` 算的是 `Fh ∘ R90`。要表达「先按 EXIF 转正、再做用户翻转」必须把角度**取反补偿**（`F ∘ R_a = R_{-a} ∘ F`）。实测 `p.rotate((360-a)%360).flop()` 与两步法**逐字节相同**（8 组全过）。
+  - `.rotate(angle)` 显式给角度时 sharp **不读 EXIF**（只有无参 `.rotate()` 才按 EXIF 转）⇒ 本模块自己解 EXIF 再叠加动作角。
+  - 🔴 **`withMetadata({ orientation: 1 })` 收在唯一出口 `encodeToFormat()`**：不调它 sharp 会**剥掉全部元数据**（实测 orientation 读回 `undefined`，拍摄时间 / GPS / 相机型号 / ICC 全丢）；设了 1 才能防止 `thumb-format.js#resizeThumb()` 里的 `.rotate()` **再转一次**（缩略图转 180°）。调用点一律不许自己写 `.jpeg()` / `.png()`。
+  - 写回走**同目录**临时文件 + `rename` 原子替换（禁原地截断写）。
+  - 🔴 **拒绝路径按扩展名判、不按 sharp 的 format 判**：`createSharpInput()` 对 cr2/crw/cr3 会抠出**内嵌 JPEG 预览**，读出来的 format 是 `jpeg` ⇒ 只按 format 判会把预览图**写回 .cr2**（毁原片）。`DENIED_EXTENSIONS` 是 `main.js#RAW_EXTENSIONS`(7) + `sharp-input.js#OWN_DECODER_RAW_EXTENSIONS`(crw/cr3) + gif/svg 的并集，守护逐项对该并集。
+  - 裁剪用 `.rotate().extract()`：实测 **`extract()` 工作在 rotate 之后**的坐标系 ⇒ 用户看到的坐标可以直接用，不必自己按 orientation 换矩形。副本名 `原名_crop.jpg` / `_crop2` …，**永不覆盖**已有文件。
+
+  **② 编排层：编辑后要跟着改的东西收在一处（新文件 `src/main/photo-edit-service.js`）** —— 一次编辑会让**文件字节 / 文件大小 / 修改时间 / 像素尺寸 / 缩略图 / dHash / SHA-256** 同时失效，任何一项漏掉都是静默的。
+  - `writeDerivedToRow` 一次更新四样（缩略图 / dHash / 尺寸 / `file_size`+`date_modified`）；`computeDhashFromPipeline` 必须取在 `resizeThumb` **之前**（后者会消费 sharp 实例）。
+  - 🔴 `date_modified` 必须是 `scanner.js#formatMtimeFromDate` 那个格式（`YYYY-MM-DD HH:MM:SS`）：`thumb_fail_mtime` / `header_fail_mtime` / `exif_mtime` / `dhash_mtime` 四列记账都拿它做判据，**差一个字符 ⇒ 那几行被后台任务无限重试**。守护直接读两个源文件逐字对账。
+  - 🔴 `transform` 额外 `updatePhotoHash(id, null)`：文件内容变了不清 SHA-256 ⇒「精确重复」分组里混进一张已经改过的图。
+  - 🔴 **编辑一律全局串行**（内部 promise 队列）。理由不是性能而是正确性：「写盘 → 读回算派生 → 更新库行」不是原子的，并发编辑同一张图会互相覆盖。
+  - 🔴 **`getPhotoForEdit` vs `getFullPhoto`（本轮真事故）**：`loadEditableRow` 原本用 `getFullPhoto()`，而它只 SELECT 四列（**没有 `id` / `root_id` / `date_taken`**）⇒ `db.updatePhoto*` 全部影响 **0 行**（库里 width/height 停在 0x0、无缩略图、dhash 为 null）、`insertPhoto` 因 `root_id=undefined` 撞 NOT NULL 被 `INSERT OR IGNORE` **静默吞掉**（表现为「裁剪副本入库失败」）。**静态断言一条都不红**（列名都在、调用都在），只有真跑集成探针才看得见 ⇒ 新增 `database.js#getPhotoForEdit`（10 列），并把行为组写进守护。
+
+  **③ 数据库（`src/database.js`）** —— 新增列 `derived_from INTEGER DEFAULT 0`（0 = 原始，>0 = 派生来源 id），迁移 `ensurePhotosDerivedColumn()` 放在 `init()` 的**同步区**（照 `is_favorite` 那样延时会在老库首启炸 `no such column`）；新增 `getPhotoForEdit` / `updatePhotoFileMeta` / `getPhotoIdByFilePath` / `markPhotoDerived`。
+
+  **④ 两端协议** —— 桌面端 IPC `photo-edit-transform` / `photo-edit-crop`（**都有 `isFolderScanRunning()` 前置判据**，扫描期改文件 = 与扫描器抢同一行）；网页端 `POST /api/photo-edit-transform` / `POST /api/photo-edit-crop`（走 `readJsonBody`：Content-Type 校验 + 64 KB 上限；`photoEdit` 缺失 → 503 `EDIT_UNAVAILABLE`）。两端共用 `main.js` 里那**一个**惰性 `getPhotoEditService()` 实例。
+  - 🔴 **`transform()` 的返回值必须带 `dateModified`，IPC 与 HTTP 两条通道都得带**（本轮补）：界面图 URL 的缓存键是 `file_size + date_modified`，只回 `size` 的话 —— **翻转对称图 / 180° 旋转完全可能产出同样大小的文件** ⇒ URL 不变 ⇒ 浏览器命中旧缓存 ⇒ 用户以为没生效、**再点一次又转 90°**。守护按两端对偶钉。
+
+  **⑤ UI（两端）** —— 预览工具条加旋转 / 翻转 / 裁剪三个按钮（新增 `#icon-rotate` / `#icon-flip` / `#icon-crop`，两端同形各存一份）+ i18n 中英各 8 条。
+  - 🔴 裁剪选区**两份实现**（桌面端新文件 `src/renderer/preview-crop.js` / 网页端 `web/js/app.js` 里的 `webPreviewCrop`，网页端拿不到渲染端模块）：最小边长 24、初始居中占 80%、四角 `['nw','ne','se','sw']`、resize 即退出、Esc 取消 / 回车确认、先退出再回调 —— **同参由守护逐项对账**，不靠人记得改两处。
+  - 🔴 裁剪期间是**模态键盘态**：`window` 捕获阶段监听 keydown 并无条件 `stopPropagation`（只对 Esc/Enter `preventDefault`）⇒ 按方向键不会「图换了、选框还留在原地」。
+  - 🔴 换图 / 关预览都要先收掉选区：两端 `openPreview` 与 `closePreview` 各一条 exit（选区层挂 `body`，不随预览层消失）。
+  - 层 `position: fixed` + 视口坐标、`z-index: 15050`（> 预览层 1000、网页端首屏 loading 12000；< 照片对比 100050）、遮罩 `box-shadow: 0 0 0 9999px` 一笔画、三分线 `pointer-events: none`；进入裁剪先 `resetZoom()` **再**测量。
+  - 编辑按钮只在静止图片上亮、**裁剪进行中只留裁剪键**（三连随**每一次**切图同步：回调位置在 `preview-flow.js` 里紧挨 `onSyncPreviewLiveButton`，只写在 `openPreview` 里覆盖不到左右切换；两端同样**不做成必需回调** —— 漏传只是按钮不置灰，不该让整个预览 `return`）。
+  - 🔴 **两端的显隐机制刻意不同，不是笔误**（各自受本端 CSS 约束）：
+    - 网页端按 `isWebVideoFileType(photo.file_type)` + **`hidden` 属性** + 兜底 `.preview-action-btn.preview-edit-btn[hidden] { display: none }`。兜底**不能删**：`.preview-action-btn { display: inline-flex }` 是作者样式，按层叠规则压过 UA 的 `[hidden] { display: none }`。
+    - 桌面端按 `isVideoFile(photo)`（吃**整条照片行**，会先看 `media_type`），**只能用行内 `style.display`**：按钮带 `.btn.btn-sm`，而 `.preview-controls-group > .btn.btn-sm { display: inline-flex }`（0,3,0）既压过 UA 的 `[hidden]`，**也压过任何 `.xxx[hidden]` 兜底（0,2,0）** ⇒ 补兜底救不回来（同组 LIVE 按钮同理，走行内值）。
+    - 守护把桌面端**反着钉死**（函数体必须有行内 `display`、**不许出现 `setAttribute('hidden')`**），并连两条**前提断言**一起钉（按钮确实带 `.btn.btn-sm` + 那条让 `[hidden]` 失效的规则确实存在）——前提被重构掉时守护转红提示「这条理由过期了」，而不是让注释悄悄说谎。牙齿验证 9/9 精确变红并逐字节还原。
+  - ⚠️ **R 键语义变更**：`shortcuts.js` 的 `preview.rotate`（`def: ['R']`，v1.3.0 起就在）此前走显示层旋转（`previewInteraction.cyclePreviewRotate`，只改 `state.previewRotateDeg`，**不碰文件**），本批接到 `applyPreviewEdit`。⚠️ **该语义在紧接着的 P2 里被用户再次改掉** —— 现在是「只改预览、点保存才写回」，详见 `### Changed`。旧显示层那套（`ui-preview.js#cyclePreviewRotate` + `state.previewRotateDeg`）当时标为**刻意保留**（说是将来做「只转显示不改文件」的入口），P2 里已**删除**（判据变得没有意义了：显示层与待保存层是同一件事）。守护三段随之改写（`scope: 'preview'` / `ui-events` 转发 / **只攒动作、不直接落盘**）。
+
+- 🔴 **「标签导航页」落地：分类 → 子类 → 标签 三级树 + 照片网格 + 搜索（桌面端 + 网页端）**（2026-10-09，用户诉求「做标签导航页，布局参照文件夹，支持搜索」＋「tag 加分类层级」）。契约 → `docs/contracts/joytag-index.md` §16；新守护 `scripts/tag-nav-regression.js`（当时 **22 项**，已注册进 `run-regressions.js`；此后随「抬高展示线」「展示线可调」「0 命中的标签不列出」三次改动扩到 **32 项**，见下文 `### Changed` 三条）。
+
+  **① 分类体系（新文件 `src/ai/tag-categories.js`）** —— 在 5813 个**扁平**标签上叠一层主题分类，**14 分类 / 69 子类 / 全覆盖**（`clothing 1220 · work 774 · object 605 · person 487 · appearance 462 · scene 265 · adult 245 · pose 163 · expression 159 · style 108 · composition 59 · event 29 · creator 22 · other 1215`，合计 5813）。
+  - 🔴 **规则按「下划线边界短语」匹配，不按裸子串**：标签用 `_` 分段，token 必须落在段边界上（可跨段、不可跨边界）。第一版分类脚本的坑就是这么来的 —— 裸子串让 `hololive` 被 `loli` 命中、`lolita_fashion` 被误杀；反过来「恰好一整段」也不行（多段 token 全部失效，`other` 积到 42%）。引擎见 `phrasesOf`。
+  - 🔴 **顺序即优先级，首个命中生效**：规则表是有序的，越具体越靠前（`school_uniform` 必须落「制服」而不是「学校场景」）⇒ 改规则表当心别把通配规则插到前面。
+  - `other` **是有预算的，不是垃圾桶**：`tag-categories-regression.js` 把上限钉在 1300，且**必须有下界**（否则抬成 99999 就成恒真假牙）；真值 1215，几乎全是还没在库里出现过的冷门角色/画师人名。守护还用「抽掉整条规则 ⇒ `other` 必须暴涨」证明上限判据有牙。
+  - 分类名**两个来源**：这里给稳定机器 id + 中文兜底名 `label`（数据层自解释，报告/守护里直接可读），界面显示名**优先取 i18n**（`tagnav.cat.<id>`）—— 与既有的 `tUi(key, zhFallback)` 同一取向。⚠️ 所以改 `label` **不会**改界面（工程有「零裸中文」守护，界面文案一律不许硬编码）。
+
+  **② 只读数据服务（新文件 `src/main/tag-nav.js`）** —— 标签在 **tag 索引库**（`ai-search/tag-index.sqlite`）而不在 `photos` 表；而**读工作池只挂一个库**（`db-read-worker-pool` 一旦换 `dbPath` 就把整个池 terminate 重建）⇒ 这一步**不能**塞进 worker 池，只能像 `SemanticTags`/`JoyTagTags` 一样在主进程自开连接。
+  - 🔴 **只碰 tag 库，绝不碰主库**：需要「某标签下的照片**行**」时这里只回 `photo_id`（有序），由 `main.js` 用 `photoListColumns()` + `idListPredicate()` 回主库取行 —— 「索引库读不到」与「主库读不到」是两种独立故障，降级互不牵连。
+  - 库不存在 / 从没建过索引 / 正被索引 worker 占写锁 ⇒ **一律空结构，绝不抛**（界面显示「标签索引还没建好」而不是报错）。
+  - 🔴 **命中数按节点懒算，绝不做全表聚合**：`photo_tag` 现 11 万行（2032 张图）全表 `GROUP BY tag_id` 只要 8 ms，**但绝不能照这个读数设计** —— 索引铺满全库（165 万张 × ~56 标签 ≈ 9000 万行）时那是几十秒的主线程阻塞。树本身只给「这个节点有多少标签 / 其中多少已进索引」（从 `tag_vocab` 现算，与库规模无关）。
+
+  **③ 🔴 本页最核心的取舍：父节点不给照片网格。** 分类与子类节点只出**标签卡片下钻**，只有**标签叶子**走照片网格（单 `tag_id` 走 `idx_tag_score` 区间扫描）。理由同上：父节点要 `WHERE tag_id IN (…) GROUP BY photo_id`，规模一上来界面表现与「点了没反应」无法区分。守护 ① 段**反向**钉住：`TagNav` 类上不许出现 `GROUP BY photo_id`，也不许有 `photosForNode` 这类命名的方法。
+
+  **④ 桌面端**（新 `src/renderer/tag-nav-ui.js` + `src/renderer/tag-nav.css`，侧栏 rail 第 6 项「标签」，排在「人物」之后、「重复项」之前）。照片网格走**全工程唯一通路** `loadPhotos()` → `fetchPhotosPage()` → `paintBrowsePhotoGridShell()` ⇒ 预览 / 信息面板 / 分页**白拿**（`startPreview(index)` 只读 `state.currentPhotos.slice()`）。
+  - 缩进口径与目录树同源，唯一来源是行内 `padding-left`（`root 38 / category 12 / sub 26 / tag leaf 66`），`.tree-children` 保持 0；展开态是**双写契约**（`.expanded` 类 + 行内 `display`）—— 只写一半会被 `gallery-design.css` 的 `.tree-children:not(.expanded){display:none}` 再藏回去：箭头转了、点击有反馈、内容不出来，而 DOM 里一切正常。
+  - 🔴 **导航历史 / 启动定位刻意不含标签页**：`BROWSABLE_VIEWS` 与 `applyBrowseLocation` 都认 `'tag'`，但 `captureBrowseLocation` 在 `currentTag` 为空时返回 `null`（否则「标签页」会以同一个键反复入栈，后退按钮看起来卡住不动），`persistStartupPositionSnapshot` 对 `tags` **早退**（`tag` 不在启动白名单里 ⇒ 照写只会用一条**必然被拒**的记录顶掉上一个**可恢复**的位置，用户下次启动落默认页，症状看着像「启动定位坏了」）。
+  - 🔴 **真实渲染探针抓出的三个真 bug**（全是「界面没变但不报错」）：
+    (a) `loadPhotos` 的卡片早退分支**只画卡片就 return** ⇒ `state.currentPhotos` 没清（在卡片上按空格/方向键会打开上一页、上一个目录的照片）+ `previewFlow` 没重置（`previewTotalPhotos` 停在旧值）+ `updateBrowsePathLabel()` 没调（路径栏停在上一页的文字，实测停在「所有文件」）；
+    (b) **搜索态变化不刷主区** ⇒ 侧栏已换成搜索结果、主区还停旧卡片；修法是 `refreshMainForSearch()`，判据 `state.currentTag`（有值 = 正在看照片，**刻意不把用户拽回卡片**）；
+    (c) **切语言后已展开的子树停在旧语言** ⇒ `refreshLocale` 清 `subTags`/`pending` 并按新 locale 重取；⚠️ 两条路径指向同一子类时 `ensureSubTags` 的 `pending` 合并会**吞掉第二个 callback**（路径栏停在旧语言）⇒ 两条路径必须共用同一份回调。
+  - 🔴 `api.js#call(name)` 是 `photoAPI[name]` **直接索引** ⇒ 必须写 **preload 方法名**（`getTagNavPhotos`），不是 IPC 频道名（`get-tag-nav-photos`）：写错则 `has()` 恒 false、静默失效。守护按**双向**钉（api.js 与 preload.js 两侧对账 + 明令禁止频道名形状）。
+  - `enter()` 回包后补画一次卡片 ——「树比 `loadPhotos` 慢」时主区会白屏，不许赌「树先到」。
+
+  **⑤ 网页端**（新 `src/web/js/tag-nav.js` + `src/web/css/tag-nav.css` + 侧栏页签 + 2 条静态路由 + SW）。
+  - 🔴 **类名两端刻意不共用**：桌面端 `tag-nav-*` 挂在 `#sidebarContent`，网页端一律 `web-tag-nav-*`（父级布局与 CSS 变量不同，共用等于改一端动两端）。共用的是**契约**不是类名：`data-tag-nav-*` 属性与 `/api/tag-nav-*` 路径**刻意同名**（三端契约）。
+  - 静态资源是**逐个文件白名单路由** ⇒ 新增 js/css 必须在同一次改动里加路由 + `sw.js` 清单，否则 404 而所有静态守护全绿；`CACHE_NAME` `v53 → v54`（cache-first 客户端否则永远拿旧字节）。
+  - `loadPhotos` 与 `loadPreviewAdjacentPage` **两处** switch 都要有 `case 'tag'`（漏后者 = 预览翻到页边界就停）。
+
+  **⑥ 探针与守护**。
+  - **真实渲染探针**（`.workbuddy/tmp/tagnav-probe/`，手工，留在项目外）：真 `TagNav` + 真主库出数据，驱动真实 rail 点击 / 树展开 / 子类下钻 / 卡片进网格 / 搜索 / 中英切换，拿**几何读数**（`padLeft` / `nameX` / `computedDisplay` / `guideX`）而不是「没报错」当判据，17 张截图。实测：14 分类、叶子 88 个 `pad=66 dot=true toggle=false`、`getTagNavNode` 调用次数 `1→1`（缓存命中）、切回中文后路径栏 `🏷️ 黑发`、**中文叶子残留 0**、页内零产品报错。抓出上述 3 个桌面真 bug + 网页端 1 处类名漏改（4 条死 CSS 规则，被 `css-reference-regression` 拿到）+ 1 个 emoji 写错（`🍿` U+1F37F 而非 `🏷️` U+1F3F7）。
+  - ⚠️ **两次探针自身的坑（不是产品 bug，但方向相反也要记）**：① `stub-preload.js` 的 `getTagNavNode` 无视 locale 恒回中文 ⇒ 差点把「没修好」误判成产品问题（**夹具失真 ≠ 产品坏**，替身必须认 locale）；② 网页探针服务器没把根级 `/xxx.css` 映射到 `css/xxx.css` ⇒ `tag-nav.css` 404、卡片退化成行内文字。
+  - 新守护五段：① 数据层用**夹具库**（按 `tag-index-store` 的 DDL 现建，只断言行为与排序、不断言规模，避免随索引重建漂移）+ `rankedPhotoIds()` 用**入库线**（插一张 `score=40` 的行钉死「改成查询线就悄悄漏」）；② 桌面渲染层（rail **位置**顺序 + 样式表 + 脚本加载顺序、preload 方法名、卡片分支三件事、导航三张白名单、展开态双写、代次判据、搜索刷主区、切语言共用回调、`enter()` 补画卡片）；③ 网页端（页签与引用顺序、两条路由、SW 与 `CACHE_NAME`、两处 `case 'tag'`、类名不共用）；④ i18n 两包；⑤ **渲染层资源可达性** —— 此前**没有任何守护**检查 `src/renderer/*.js|css` 是否被 `index.html` 引用 ⇒ 补上**双向**（引用的都存在 + 存在的都被引用）。
+  - ⚠️ **本轮断言自身的一次误报（值得记）**：用 `[\s\S]{0,400}` 这种**字符预算**跨函数内的注释块 —— `persistStartupPositionSnapshot` 里 `'tags'` 距函数首行 **494 字符**，超预算就红，而修法很容易被误做成「放宽到 800」（下次再加两行注释又红）。已引入 `funcBody(src, name)` 切片取函数体，并把这条纪律写进守护注释。
+  - **牙齿验证 21/22 例注入式命中**（`.workbuddy/tmp/teeth-tag-nav.sh`，含 1 条**阴性对照**）：从「父节点加回聚合」到「rail 顺序被改」「SW 漏一条」「i18n 缺 `nav.tags`」逐条改坏，**每条都精确命中预期那条断言**，被改动文件逐字节 sha1 还原。
+
+- **「画面标签」中文映射 + 信息面板新字段 `joy_tags`**（2026-10-09，用户诉求「需要中文映射，图片信息加字段显示」）。**检索与库零改动**，全部是显示层追加，契约 → `docs/contracts/joytag-index.md` §15。
+  - `src/ai/tag-zh.js`：danbooru 标签 → 中文显示名，**全量覆盖随包标签表的 5813 个**（2026-10-09 先按真库已出现的 1752 个频次逐一译，再补齐余下 4061 个 ⇒ `ZH_COUNT === ai/tag-labels.js#labels().length`）；`toZh()` 查不到返回 `null`，**调用方回落英文原文**（不许在映射层编词 —— 编出来的中文在 tag 路检索不到）。没有通行中文译名的小众角色 / 画师名 / 表情符号**保留原文**（键值同文，113 条）。
+  - `src/main/semantic-tags.js#JoyTagTags`：与 `SemanticTags` 同构的惰性只读通道（`tag-index.sqlite`），`tagsFor(photoId, locale)` 按 `score DESC` 取前 `JOYTAG_PANEL_LIMIT = 24` 个；**中文映射在通道内做**（`en` 直出英文），桌面/网页两端自动同源；库不存在/被占锁一律降级空数组。
+  - 信息面板新字段 `joy_tags`（「AI 内容」组、默认显示、胶囊渲染）：四段接线对偶 `ai_tags`（`get-photo-joy-tags` IPC + preload + `/api/photo-joy-tags` + `handlePhotoJoyTags`）；空值整行隐藏；**无 `column` 白名单 2→3**（`photo-info-fields-regression` 新增 5e 节 + tag-zh 契约断言，**127 项全绿**）。真机探针实测：真库 photo 1979470 → 17 个标签中文直出、24 截断生效。
+  - 🔴 **覆盖断言是双向的**（只钉「条数够多」会放过两种真回归）：正向「每个标签都有映射」+ 反向「映射键必须是合法标签」+「条数与标签表相等」+「无空值」。牙齿验证（`.workbuddy/tmp/teeth-zh.sh`）：删一条映射 / 插一个脏键 / 值改空串，三种变异各自精确变红，还原逐字节一致。
+
+- 🔴 **「CLIP(cpu) ∥ JoyTag(dml) 两条路并行」落地：索引 1.41×（11.2 → 8.0 天）**（2026-10-08 深夜，承同日实测评估后用户拍板「立刻落地」）。
+  - **结构**：`index` 从单 worker 变**双 worker** —— `src/workers/semantic-worker.js`（CLIP/cpu 主路，仍是 relay 搜图的服务对象）+ **新文件** `src/workers/semantic-tag-worker.js`（JoyTag/dml 并行路，自己的游标扫全库、`hasPhoto()` 判重、进度只报 `tag*`、**不载 CLIP 那份 ORT**）。主进程 `spawn()` 同时起两路、两路都收场才结算（`mergeIndexOutcomes` 纯函数，已导出并被守护喂 8 例）；`run()`/`start()`/`cancel()`/`dispose()` 把 `this.tagWorker` 当占用人看（漏看 = tag 收尾期再点一次建索引直接放行）。
+  - **`offer()` 整体退役**：旧「offer ∪ drain」并集是为「drain 排在 CLIP 之后」服务的；并行结构里 tag worker 从起跑就自己扫全库，覆盖面天然 = 全库。代价 = 新库首建每张图多解一次码（实测 7 ms/张，已计入 416 那个数）。
+  - **写库不冲突**：两路各写一个库文件（`semantic-index.sqlite` / `tag-index.sqlite`，各自 WAL），都只读 `photos`。
+  - **取消/重启安全**：两路都接 `cancel`；候选谓词 `e.photo_id IS NULL OR …` + `hasPhoto()` 天然跳过已建行 ⇒ **断点续跑、不丢进度**；重启代价 = 按 id 倒序重走已建区间一遍（分钟级）。
+  - **失败联动**：一边非取消地崩 ⇒ 取消另一边、整任务报失败（不许「悄悄少一半」）；两边都取消才算 `AI_CANCELLED`；没发 done 信封就没了 = `AI_WORKER_EXIT`。
+  - **面板语义**：主行（进度条/ETA）= CLIP 口径，tag 计数行 = JoyTag 口径，两行同时推进；临界路径在 JoyTag ⇒ **主行先到 100% 而任务仍在跑是正确呈现**（两套口径不许串）。
+  - **实测依据**（`.workbuddy/bench/probe-parallel.js par`，重叠率 100%）：串行合趟 587 ms/张（CLIP 191 + JoyTag 自取图 396）⇒ 并行 416 ms/张（临界路径 = JoyTag）；代价 = 核显抢内存带宽致 CLIP +59%（191 → 304）。⚠️ 评估时第一版探针曾量出「重叠率 12%、并行更慢 22%」的**错误结论**（真因：DML 图编译 8.2 s 落在两段计时窗口之间）—— 必须加「预热完报到、主线程发令」的屏障；此坑连同「同进程多 ONNX 会话只有 cpu+dml 能跑」「本机 DML 读数跨趟摆动 ±50%」全部记入契约与 `aurora-gpu-ep-feasibility` 技能。
+  - **守护**：`joytag-index-regression.js` 新增 **⑪ 双 worker 并行**（拆分真实 / tag 路不发 phase 帧 / tag 路不 require embedding / 主进程编排四闸门 + `mergeIndexOutcomes` 结算 8 例）；②③④⑦ 的 AST 提取源同步改指新 worker 文件。
+
+### Added
+
+- 🔴 **JoyTag 标签倒排（第二路检索）落地：模型随包 + 「搜图建索引时同时建」**（2026-10-08，用户拍板「模型随包，搜图索引时同时生成」后开工）。契约与全部实测数字 → `docs/contracts/joytag-index.md`。
+
+  **① 形态：合趟，但 tag 趟有**两台发动机****。`index` 这一个操作里，CLIP 循环跑完立刻接一段 tag 趟；tag 的覆盖面是 `offer()` 与 `drain()` 的**并集**。
+  - `offer(id, bytes, fromThumbnail)` —— CLIP 循环**顺手递图**：那一份 512 内接 JPEG 已经在手上，而 JoyTag 的预处理正从它出发 ⇒ 边际成本 ≈ 0（不解码、不读库）。
+  - `drain()` —— 跑完 CLIP 后用**自己的游标**从 `MAX(photos.id)` 往下扫。
+  - 🔴 **只有 `offer()` 是不够的，这是整套设计的关键判据**：**老库上 CLIP 索引早已建完**，CLIP 游标一张都捞不到 ⇒ `offer()` 一次都不会被调用，跟着 CLIP 游标走的写法在那一趟**一张都不建**，而界面会显示「索引已完成」。端到端第二趟专门验这一条：`CLIP done = 0` 而 `tag done = 24`，库里 **24 张 / 1742 对**，与第一趟（新装两路都空）**逐值一致**；第三趟幂等 `tag done = 0` 且 `batches = 0`（连 366 MB 权重都没载 —— `drain()` 起手那句零成本早退）。
+
+  **② 权重身份 + 随包**。`fancyfeast/joytag` 的 `model.onnx`：**366,116,154 B**、`sha256 f85b7130…1097`、输入 **448×448**、输出 **5813** 维。用**内容哈希**而不是手写版本号（后者在「换了忘了抬」时完全失效）。三个源（HF 官方 / `hf-mirror` / ModelScope）是同一份文件的镜像，校验用同一个哈希 ⇒ 镜像坏掉只会下载失败，**绝不会把另一版权重标成这一代**。
+  - `scripts/bundle-models.js` 新增 `--joytag` / `--joytag-from`（后者接受 `<目录>/model.onnx` 与 `<目录>/joytag/model.onnx` 两种形状），`models/manifest.json` 增加 `joytag` 节（总 **755.7 MB**）。
+  - `bundled-models.js#seedJoytag` 播种到 `<aiPath>/models/joytag/`；**已就绪时一次 `statSync` 就返回，366 MB 不走哈希**（实测首拷 1203 ms、二次 3 ms `already-complete`），`hash-mismatch` 只在真拷过时才校验。
+  - ⚠️ 两侧对「根」的约定不同（播种收 **ai 根**、`joytag.modelPath()` 收 **models 层**），这条接缝由守护 ④ 组的**静态 + 行为**两条一起钉住 —— 错开的表现是「播种成功、加载说没有模型」，而界面只会说「下载模型」。
+
+  **③ 打标编码器 `src/ai/joytag-model.js`**（唯一真相源，不在 worker 里各写一份）：`prepareSource`（512 内接 JPEG）→ `prep448`（448 contain + 白底 flatten）→ `normalize`（**CLIP 那套** mean/std，不是 ImageNet）。`tag()` 刻意**不做任何阈值过滤**（sigmoid 原样交出去）—— 阈值归 `tag-index-store.put()`，在这里再写一遍就会与 store 分叉，后果是「入库的行查不到 / 查询的行没入库」这类**静默空结果**。
+  - 🔴 **`batch` 决定 GPU 到底有没有用**（受控基准，s/张 推理）：DML `b1 = 0.847 / b2 = 0.300 / b4 = 0.224 / b8 = 0.197 / b16 = 0.178`；CPU `b1 = 0.582 / b16 = 0.598`。⇒ **batch=1 时 GPU 比 CPU 慢 31%**，**batch≥8 才反超 3.0~3.4×**（端到端 DML b16 = 0.196 vs CPU b16 = 0.616）；而 CPU **完全不吃 batch** ⇒「一次一张」的实现会得出「GPU 没用」的错误结论。`BATCH = 16`。模型不需要重新导出（batch 轴本来就是动态的）。换 EP 不改索引内容：DML vs CPU 最大逐值差 **6.028e-5**，**0 个标签在 0.15 线上翻转**。
+    - ⚠️ **2026-10-08 深夜复核：上面这组「受控基准」在今天这台机器上一条都复现不出来，方向还是反的**。同脚本、同批真实缩略图、同会话只换 batch：b1 = 227→346、b2 = 245→452、b8 = 358→356、**b16 = 414→363**（两趟之间**同档位摆动 ±50%**，连「最优档位」都从 b1 跳到 b4）；`bench/out/dml-avail.txt` 里那个「单 EP 计时 **86 ms/张**」（b1）也不复现。相反，**b16 一致地不比 b1 快**（旧基准说快 4.8×）。⇒ 结论不是「`BATCH=16` 错了」，而是**这台机器（GPU 是 `AMD Radeon(TM) Graphics` 核显）的 DML 绝对读数不可当常数用**；要看批次的真实影响必须当次重量，且必须带上「何时 / 哪块 GPU / 单 EP 单进程 / 有无同步屏障」四个前提。详见 `docs/contracts/semantic-search.md` 的「两条路并行」一节。
+  - `sharp.concurrency(1)` **必须**配 `intraOpNumThreads = 8`，否则两者叠加成超额订阅，实测拖慢 **3~4 倍**。
+  - 内存（同进程 SigLIP2 两塔 + JoyTag）：RSS 720 MB → 1127 MB → 跑批后稳定在 **1630~1870 MB**（30 轮无明显爬升）。
+
+  **④ 取批与写入**。走覆盖索引 `idx_photos_id_hasThumb` 列全库 id 是纯索引扫描（真库 **165.7 万行 1106 ms**；带缩略图的主键倒序 64 行 24 ms / 854 KB）；缺这个索引时退回 `SELECT id FROM photos` 并**打 warn**（走主键树要读缩略图页，慢 1~2 个数量级，不许静默）。
+  - 🔴 **只读探针 + 惰性可写句柄**：可写打开 `TagIndexStore` 会在「还没建过索引」的机器上**凭空造出一个空库**，把「没有索引」伪装成「索引是空的」⇒ 判重走只读句柄，可写句柄等**马上要写第一行**时才开（播种层有对偶：manifest 里没有 `joytag` 一节时**不许凭空造目录**）。
+  - 🔴 **绝不落「已建到哪个 id」的水位线**：外置盘（`K:\COS` / `G:\T`）会掉线，失败必须能被下一次任务原样重试；判重只靠逐张 `hasPhoto()`。
+
+  **⑤ 新守护 `scripts/joytag-index-regression.js`**（钉 ⑦ 类「全绿但错」，已注册进 `run-regressions.js`）：①取图口径逐字同源（`semantic-worker.js#prepare` 与 `joytag-model.js#prepareSource`，acorn 剥注释后连 `limitInputPixels` 一起比）②进度口径不串 ③`flush(force)` 清空队列 ④播种落点 === 读取落点 + `ensureBundledModels` 真的播了 JoyTag ⑤归一化常数与 CHW 排列 ⑥`PREP_SPEC` 与链子数字**对账** ⑦索引身份不许写字面量 ⑧manifest 与代码身份一致 ⑨`verify()` 有牙（缺失 / 尺寸错 / 哈希错三支）⑩仓库内权重能过校验（不存在时**明确打印跳过**，不静默）。
+  - **注入式牙齿验证 19/19 精确命中**，含 1 条**阴性对照**（同一份源码必须判一致 ⇒ 证明比对器不是恒返回 false），19 个被变异文件**逐字节 sha1 还原**。
+  - ⚠️ **牙齿验证的两条环境坑**（都踩过）：① 从 node 里 `spawnSync(electron)` 在本机是 **EBUSY**，而 `EBUSY` 会让 `status = null` —— 看起来就像「守护没红」⇒ 必须**由 bash 拉起 electron**（或对 EBUSY 退避重试），**绝不许把「没跑起来」当成「真回归」**；② ④b 那条第一次注入**红了但不是预期那条** —— 我把「必须含字面量 `models`」写进了**查找条件**，于是改层级时先报「锚点移位」而不是「层级错了」。断言在、诊断指错方向，一样要修。
+
+  **⑥ 🔴 一次真事故 + 新纪律：夹具里**永远**不许用 junction / symlink 指向真实资产目录**。端到端探针原先用 `fs.symlinkSync(target, linkPath, 'junction')` 把 `models/search/onnx-community`（400 MB）与 `models/joytag`（366 MB）挂进临时目录省一次拷贝，收尾那句 `fs.rmSync(WORK, {recursive:true})` **顺着 junction 把真实目标一起删了** —— 两份模型当场消失。
+  - 恢复：从 `$TEMP/aurora-bench/models/joytag/` 与 `$LOCALAPPDATA/aurora-gallery/UserData/ai-search/models/` 两处副本，用 `bundle-models.js --search-from … --joytag-from …` 重建 manifest，**逐文件 sha256 对账 11/11 通过**。⚠️ 恢复**必须用独立的源**核对（拿刚写出来的 manifest 去校刚写进去的文件是**循环论证**）—— 这次是拿「删除**前**读到的 manifest」与「源码里硬编码的 `MODEL.sha256`」两边一起对的。
+  - 现在夹具**复制**模型（755 MB 几秒），并在删除前递归 `lstatSync` 查一遍链接：**发现链接就拒绝清理并报出来**（留着垃圾好过再删一次资产）。这次哨兵当场挡住了一个**遗留**的 junction 目录 —— 它确实会在正确的时机生效。
+
+- **后台任务面板新增「标签索引」计数行（消费 `tag*` 六键）**（2026-10-08，用户报「需要看到 tag 完成计数」—— 上一轮交代的缺口：老库补建那趟 CLIP 无事可做、只剩 JoyTag 在跑，主行停在「完成 0」、进度条不动、文件与速率全空，**面板看上去完全是死的**）：
+  - `#taskSemanticTagCount`（`index.html` AI 索引节新副行 + `scan-flow.js` 按 `prefix + 'TagCount'` 拼取）：与主行**并列**、不替换它；显示门 = `tagStage` 有值（**人脸节刻意没有这一格**，`taskFaceTagCount` 必须保持不存在）。分母带「约」（`estimatePending()` 是跨库估计值 ⇒ 只有带「约」的一条词条，没有精确版）；失败片段复用 `task.aiFailed`，只在 > 0 时追加。
+  - **`tagPct` 主进程派生**（`semantic-search.js#status()` 用 `computePct(out.tagDone, out.tagTotal)`）：🔴 **不许复用 `out.pct`** —— 那是 CLIP 的分母，两件事分母差几个数量级，「两套口径不许串」在**派生层**的翻版。`joytag-index-regression` 新增 ②b 钉住（含 3 条反向验证：拿 CLIP 的分子分母派生 / 整条删除 / 出现两处，都必须红）。
+  - **`background-tasks-panel-regression` 扩 ②b + ⑤③**：百分比喂与分子分母不符的值（12/24 就地相除 = 50%，断言要 42%）才有牙；`tagStage` 为空时**残留读数不许挂进来**（第一版用例只喂字段全 0、实测没有牙，改成喂「`tagStage: null` + 上一轮读数」的形状）；分母没出来时不许出现百分比；`#taskSemanticTagCount` 在 **HTML 定义 ↔ 渲染端取值**两头对账（拼接 id ⇒ 字面量对账有盲区，缺任何一半都是静默空白）。
+  - **观感探针** `.workbuddy/tmp/tag-panel-shot.js`（手工）：electron 无头加载真 `index.html`、驱动真 `renderBackgroundTaskPanel` 出 5 组截图（纯 CLIP / 老库补建 / counting / 失败 / 英文包）—— 修「面板看不出在动」必须亲眼看。读数与截图均正确；英文包零 CJK。
+  - ⚠️ **已知取舍**：`offer()`（CLIP 循环顺手打标）**不上报**（分母 `estimatePending()` 要跨库数行，循环里每批算太贵）⇒ 新装那趟的前半段 tag 行不显示；那段时间主行在动，不存在「面板是死的」的问题。见契约 §10 / §14。
+
+- **新增界面用词契约守护 `scripts/ui-wording-regression.js`（12 项，双向）**（2026-10-08，接「照片 → 图片」统一那两轮）：这类统一**没有守护就会自然衰减** —— 新写的文案不会遵守，而下一次全局替换又会踩到数据文件（上一轮就是这么把 `tag-vocab-regression` 踩红的）。所以它同时钉**两个方向**：
+
+
+
+  **① 界面文案侧**：剥注释后的**字符串字面量**不许出现「照片」，白名单只留 Apple 专有名词「实况照片」（Live Photo）一条。
+  - **载体用目录遍历而不是硬编码清单**（`src/renderer` + `src/web`，排除 vendor，收 js / html / css）—— 硬编码清单里新增的文件不进守护，那正是「衰减」的入口。范围与既有的 `check-text-corruption.js` 对齐；**`src/ai/` 不在扫描面里**（那里是数据不是文案），这条本身有断言。
+  - 🔴 **JS 必须走 acorn 取 token（cooked 值），不能裸 `replace`**：本项目中文大量以 `\uXXXX` 存在源码里（网页端 `view=all` 的标签就是 `'\u6240\u6709\u6587\u4EF6'`），文本匹配根本抓不到，而且它会连注释一起匹配。HTML 则把 `<script>` / `<style>` **整块摘掉**再看剩余文本 —— 两端 `index.html` 有 31 / 8 个 script 标签，内联脚本的 JS 注释不能被当成文案；CSS 剥块注释（`content:` 里的字符串才是文案）。
+  - **白名单按 (文件, 字面量) 精确匹配，不做文件级豁免**（文件级豁免会在那个文件里放过任何新写的「照片」），并配一条**防过期**断言：豁免项必须**仍因含「照片」**才被豁免，否则它已退化成永远不命中的豁免（键改名 / 字面量被改之后就会这样）。
+
+  **② 数据侧：三处必须「保留」旧词** —— 改了等于已建索引的分数口径作废。
+  - 🔴 `ai/embedding.js#GENERIC_TEXT`：**此前没有任何守护覆盖**（上一轮只靠人工分类才没被误改），本脚本把它补上，而且**读真实导出值比对**，不是文本匹配。
+  - `ai/search-vocabulary.js#TERMS` 的 `'黑白照片'`、`ai/tag-vocabulary.js` 的标签「黑白照片」。
+
+  **③ 三个取值契约**（2026-10-07 用户逐条拍板的）：`nav.folders` 中英 = `文件夹` / `Folders`；网页端 `view=all` = 「所有文件」（该落点**不筛媒体类型**）；PWA 描述走新词；Android Compose 字面量零「照片」（连注释也不许 —— 注释与界面不一致会让人照着注释写回旧词）。
+
+  - **牙齿验证 12/12 全中，含 2 条阴性对照**：往注释里塞「照片」（JS 注释 / HTML 注释各一条）**必须仍绿**，用来证明「不读注释」这条判据真的成立而不是靠巧合；另 10 条注入各精确红在自己的目标断言上（JS 字面量 / 两种数据 / **转义形态** / 白名单过期 / 对守护自身变异 / HTML 正文 / CSS `content` / 剥注释失效 / 说明贴回 `main.js`）；10 个被变异文件**逐字节 sha1 还原**。
+  - ⚠️ **本机沙箱里 `node` 建不了进程**（`spawnSync` 一律 `EBUSY`，连 `sh -c echo` 也是；但经 `npm` 那条链路可以）⇒ 牙齿验证改成 **bash 驱动建进程 + node 只做文件读写**（`.workbuddy/tmp/wording-teeth/`，含「施加前核对文件没被并行会话改过」这道闸）。
+
+- 🔴 **后台任务规范的头四项待办落地：AI 两节文案进 i18n、百分比收敛到主进程一个来源、诊断数据从任务 IPC 拆出、`app-dialog-bridge` 那 4 处窗口法改 AST**（2026-10-08，用户看完《后台任务统一设计规范》后说「好」，授权做这批**低风险项**）：
+  - **A · 文案**：人脸 / 搜图两节的标题、计数、失败 / 跳过、速率、准备中，以及「扫描队列 · 还有 N 项等待」badge，全部改走 `tui` / `tuiFmt`，消掉 `(en ? 'Processed ' : '完成 ')` 这类内联三元 —— **12 个 `task.*` 词条中英各一条**；`task.faceTitle` / `task.semanticTitle` 顺手对齐成代码里实际显示的那句（`人脸模型 / 索引` / `AI 模型 / 索引`，原词条是 `人脸索引` / `AI 搜索索引`，**定义了却和界面不一致**）。
+    - 🔴 **落地时踩到一处语义丢失**：重构后「完成 10 / 7374（0%）」变成「10 / 7374（0%）」—— 原代码的「完成 」前缀是在拼字符串时加的，抽成词条时漏了。**守护当场抓住**（这正是「文案搬 i18n」这件事必须配一条「词条内容也要验」的断言的原因）。
+    - 🔴 **同一个词条缺在中文包 / 英文包，后果不一样**：`t()` 先查当前语言包、取不到再回落中文包 ⇒ 中文包缺只是静默回落，**英文包缺会把中文显示在英文界面上**。守护按「`i18n.js` 里必须恰好命中 2 次」钉住。
+  - **B · 百分比唯一来源**：新建 `src/main/progress-pct.js#computePct(done, total)`（未知分母 ⇒ 0%，分子反超 ⇒ 夹 100，负数 / 非有限 ⇒ 0），主进程四处派生 `pct` 并进白名单 —— 缩略图重建 / 无效清理 / 查重指纹 / 扫描（`get-background-tasks` 的 `scanProgress`）+ AI 两节的 `status()`；渲染端四处改**读** `pct`。
+    - 🔴 **顺手删掉一处真·倒退**：无效清理那节的进度条是 `ifill.style.width = ipct ? ipct + '%' : '100%'` —— 第一帧（`pct` 还是 0）画 **100%**，第二帧回落到真实值 ⇒ 用户看到进度条**先满再掉**。现在 `total = 0` 一律画 `0%`（与其余任务一致）。
+    - `updateProgress`（吃裸数字、不是任务对象的那个通用工具）补同一条边界：原来 `total = 0` 也画 0%，但**不夹 100**。
+    - **新增守护 `scripts/background-tasks-panel-regression.js`（4 类断言）**：① 或链 —— 8 个任务**逐个单独跑**必须 `render() === true` 且 `panel.style.display === 'block'`，全空闲必须 `false` / `'none'`（这条针对本项目栽过两次的「新加进度列没进或链 ⇒ 只剩它跑时整块面板消失」）；② 百分比读 `pct` —— 给 `pct: 42` 而 `done/total = 10/100`，界面**必须显示 42%**（正面证明「不再就地相除」）；③ `total = 0` 一律 `'0%'`；④ 静态面 —— `showPanel` 或链必须含 8 个 `show*` 变量（AST 解析）、面板函数体内不许出现 `Math.round((a / b) * 100)`、面板引用的每个 `task.*` 键中英必须各一条。
+  - **D · 诊断数据不再是「任务」**：`maintenance` / `interaction` / `writeQueue` 三个字段从 `get-background-tasks` 移到新的 `get-diagnostics`（main + preload + api 各一处）。它们在渲染端**零引用**、也无守护钉 —— 按规范 §0，它们从来不是任务，混在里面会让「后台任务」这个概念的判据漂移。
+    - 🔴 **连带修掉一条「不管位置」的假牙**：`interaction-preempt-regression.js` 原来是 `/interaction:\s*interactionPreempt\.status\(\)/.test(mainCode)` —— 挪走之后**照样绿**（它只判「文件里出现过」），而消息里写着「要挂在 `getBackgroundTasks` 里」。按「口径一改，钉旧形状的断言必须同一次改动里翻面」改成**判位置**：切出两个 handler 各自那一段，新位置**必须有**、旧位置**必须没有**。
+  - **F · 守护的源码取法（窗口法 → AST）**：`app-dialog-bridge-regression.js` 那 4 处 `mainSrc.slice(At, At + N)` 全部改成 AST 取整个作用域。实测四条旧窗口的余量：清理确认 **1,200 / 3,717 = 30%**（窗外 2,587 字符，整个后台循环与 `finally` 都在外面）、优化确认 1,800 / 1,697 = 100%（**余量只剩 103 字符 ≈ 2 行**，处理器再长一点就瞎）、维护失败 600 / 1,416 = 39%（窗外 859 字符，而漏掉的正是**头段**——失败路径的 catch 自检在那里）、数据目录回退 900 / 1,340 = 67%。
+    - 🔴 **这四条的核心断言里有三条是反向断言**（`doesNotMatch(/dialog\.showMessageBox/)` = 「这里不许再弹系统弹窗」）——**窗外真出现了系统弹窗，窗口法根本看不见**，而「看见它」正是这条守护存在的唯一理由。这是「太宽 = 假绿」那一侧最典型的受害面。
+    - 新增两种取法（都配保偏移的 `stripCommentsByAst`）：具名处理器 / 回调 ⇒ 取 `objectPath.method('<字面量第一参数>', fn)` 的 **fn 体**（`a.b.c` 这种成员路径也认）；只有字符串能当锚点（如失败路径上的一句日志文案）⇒ 取**包含该字符串的最小外层函数体**。
+    - 🔴 **顺带升级一条判据**：「数据目录回退提示必须晚于 `did-finish-load`」原先靠 `indexOf('did-finish-load') < fallbackAt`（**首次出现的字符位置先后**）—— 那是个一改就假的判据（第一条出现完全可能在注释里）。现在直接取 `mainWindow.webContents.once('did-finish-load', fn)` 的**回调体**，「晚于」升级成**结构事实**：这段提示就在那个回调里。
+    - **牙齿验证双向各证一遍（5 个注入，全部 sha1 逐字节还原）**：4 个「假绿」方向 —— 把系统弹窗塞进四个作用域的**窗外位置**（清理尾部 / 失败路径头段 / 回退回调尾部 / 优化处理器先垫长 25 行再放末尾）⇒ **旧窗口法全绿（证明它没牙）、新 AST 法各精确红在自己的目标断言**；1 个「假红」方向 —— 在清理入口后插 1,013 字符正常代码把 `confirmInApp(` 挤出旧窗口（余量 752）⇒ **旧窗口法假红、新 AST 法照旧 PASS**。
+
+- 🔴 **新增横切契约 [`docs/contracts/background-tasks.md`](docs/contracts/background-tasks.md)：《后台任务统一设计规范》**（2026-10-08，起因是用户问完「搜图和人脸是否同样有后台任务显示及进度数量」后要求「梳理所有后台任务，统一设计规范」）：
+  - **为什么需要它**：一次盘点发现**同一件事在本项目里有好几套写法** —— 9 个后台任务（文件夹扫描 / 缩略图补全 / 缩略图重建 / 无效清理 / 查重指纹 / 优化数据库 / 人脸索引 / 搜图索引 / 补 tag 倒排）分布在**两处呈现**（顶栏面板 8 节 + 设置页「后台任务」区块），而它们的：
+    **「在跑」字段名有 3 种**（`running` / `busy` / `optimizing`）、**分子名有 2 种**（`done` / `processed`）、**显隐判据有 4 种形状**（`!!x.running` / `busy && phase ∈ …` / `busy && operation ∈ …` / 布尔）、**百分比在渲染端有 6 个计算点各算一遍**（且 `total = 0` 时清理画 100%、其余画 0%）、**元素 id 有 7 种前缀**（section id 反而 8 节全合规）、**停止按钮 2 种命名 + 3 个任务干脆没有停止入口**、**进度条 2 种实现**（`<div style.width>` vs `<progress value>`）。
+  - 🔴 **最值得记的一条发现**：缩略图补全**早就有**一套完整的「估算分母三态」—— `task.thumbCount` = `{done} / **约** {total}（{pct}%）`、`task.thumbCountCounting`（估计中）、`task.thumbCountNoTotal`（估计失败）。⇒ 前一天给 AI 那两节补的 `totalEstimated` 布尔其实**是同一语义的第二套表达**（补全用 `phase ∈ {counting,failed,ready}`）。**规范取补全那套**：它区分「还在估」与「估失败」，布尔区分不了。
+  - 🔴 **顺手盘出的一类新静默失效面**：面板文案本该走 `task.*` i18n 键（`tui` / `tuiFmt`），但**人脸 / 搜图两节的标题、计数、速率、状态行全是内联三元**（`(en ? 'Processed ' : '完成 ')`），而 `task.faceTitle` / `task.semanticTitle` 这些键**早已定义却没被使用**；「扫描队列 · 还有 N 项等待」甚至**连 en 分支都没有**。⇒ 已列为待办 A。
+  - **规范内容**：定义（三条同时成立才算任务；`maintenance` / `interaction` / `writeQueue` 是**诊断数据**、不是任务）→ 状态对象契约（字段表 + 「三个唯一」）→ 起手重置必须三处同改 → 分母三种来源与**估算四条硬规矩** → 显隐的唯一通道（`showPanel` 或链）→ 命名 → i18n → ETA 与速率二选一 → 停止能力 → 两处呈现 → 守护（含「源码取法必须 AST」）→ **9 任务合规矩阵** → **待办 A~F**。
+  - ⚠️ **本批只立规范、不动代码**：待办 A~F（AI 文案搬 i18n / 百分比唯一来源 / 状态对象改名 + 估算三态收敛 / 拆出非任务数据 / 元素 id 统一 / 那处窗口法改 AST）每一项都要同时改**主进程 + 渲染端 + 多个守护**，其中 C、E 还要**翻面断言**，属独立批次。
+  - 索引层同步：`.workbuddy/memory/MEMORY.md` 加了指针（挂在「统计口径」节），并按「只许压不许涨」等量压缩 ⇒ 9980/10000 字符。
+
+- 🔴 **人脸 / 搜图两节也补上「总数 / 百分比」—— 并且顺手查出「补 tag 倒排」这个长任务根本不在顶栏显示**（2026-10-08，起因是用户问「搜图和人脸检查是否同样有后台任务显示及进度数量」）：
+  - **先回答那个问题**：两节**本来就有**独立节、有计数（完成/失败/跳过）、有速率与进度条，也有专门守护 `face-task-regression.js`（真 DOM 断言，不是「名字出现过」）。用真 `renderBackgroundTaskPanel` 跑 5 种状态实证过 —— 人脸建索引 / 下载模型 / 搜图建索引都正常点亮，搜图「搜索中」刻意不显示（搜索不算后台任务）。**但有两处不对**，见下面 Fixed 首条与本条的「总数」部分。
+  - **计数行补「总数 / 百分比」**：形状与缩略图那两节的主行一致 —— `完成 N / 共 M（pct%）`，失败 / 跳过改成**只在 `> 0` 时追加**（索引跑起来很长一段这两个都是 0，一直挂着「失败 0 · 跳过 0」既占位置、又在一个正常运行的界面上报一个可疑的绝对数）。
+  - 🔴 **分母有两个来源，而它们必须能区分开** —— 这是本条最要紧的一处设计：
+    - `tag`（补 tag 倒排）阶段的分母是**精确 COUNT**（`index-store.js#pendingTagsCount`，一个纯 `COUNT(*)`），主进程**早就在上报 `total`** —— 界面对它**视而不见**正是本工程记过的「字段传播静默失效」。
+    - `index`（建索引）阶段**没有精确总数**：候选集靠倒序游标一批批走（`WHERE p.id < ? AND <谓词>`），规模不预先已知。⇒ **新增 `estimatePendingCount()`**，用 `database.js#estimatePendingCandidateCount()` 那套 **id 轴等距抽样点查**（`step = maxId / samples`，逐个 `WHERE p.id = ?` 判定，按 `hits / sampled × total` 放大，约 2000 次主键定位）。
+    - 两者在界面上用一个 `totalEstimated` 标记分开：估算值写「约」/`~`，精确值不写。**把估算值当精确值显示，用户会拿它去核对行数、然后得出「进度算错了」。**
+  - 🔴 **分母与真实候选集必须逐字同源**：两个 store 里的候选谓词**抽成共享常量** `CANDIDATE_PRED`（`index-store.js` 的 `e.*` / `face-store.js` 的 `s.*` 各一份），`batch()`（真取批）与 `estimatePendingCount()`（分母）都插这一个常量。缩略图补全那边是靠复用 `_sqlBackfillPendingExpr()` 本身解决的，这里用共享常量达到同一效果 —— **分母与候选集漂开 ⇒ 百分比与真实工作量脱钩，而且不会报错**，只是那个数字慢慢失去意义。
+  - **活库实测（165.7 万行真库，只读探针 `.workbuddy/tmp/teeth2/estimate-live.js`）**：搜图候选集估计 **1,649,649**（99.6% 全库）耗时 **553 ms**；人脸候选集估计 **1,406,063**（84.9%）耗时 **87 ms**。都亚秒级 —— 精确 `COUNT(*)` 走不通（谓词判断列一个索引都没有、还要跨库 JOIN，缩略图那边同形的 `COUNT` 实测 80~95 秒），而进度分母等不起这个、更不该反过来把正在编码的索引任务拖慢。
+  - 🔴 **估算失败必须降级、不许抛出**：估算包在独立 `try/catch` 里，失败时 `total = 0` ⇒ 界面按 `total > 0` 的门自然不画百分比。**一个只给用户看的进度分母，不该弄死一个要跑几十小时的索引任务。**
+  - 🔴 **任务起手必须重置 `total` / `totalEstimated`**：`semantic-search.js` 那块重置是**逐字段列的**、不是「清空后重建」⇒ 漏掉新字段，上一轮的 `total` 会**跨任务活下来**（`index` 播下一个百万级分母，接着跑 `tag` / `search` 时界面照用那个假分母，而且不报错，只是百分比永远接近 0%）。
+  - **分母是起始快照 ⇒ 消费端要夹 `Math.max(total, done)`**：扫描会持续往库里塞新图片，分子可能反超。修法是把**分母抬到分子**（与 `getThumbnailBackfillProgress` 同一条规矩），不是把分子压下来 —— 分子是「真的做了多少」，压它等于对用户少报工作量。两侧都夹住 ⇒ 百分比恒在 [0,100]。
+  - **顺手修掉一处我自己先写出来的排印 bug**：计数行的括号原先在两种语言下都是全角 `（）`，而英文界面必须是半角 `(42%)`（缩略图那节就是半角）。全角括号混进英文既是排印错误，又会**漏过「英文界面零 CJK」那类判据**（`（）` 是 CJK 标点）—— 是守护先红才发现的。
+  - **守护**：`face-task-regression.js` 扩面约 30 条，分两层 ——
+    - **行为层**（真 `renderBackgroundTaskPanel`）：`'tag'` 必须可见；精确分母画百分比且**不带「约」**；估算分母**必须带「约」/`~`**；分子反超时把分母抬到分子（显示 `/2000` 而非 `/1000`）且百分比夹 100%；失败 / 跳过为 0 时不画、> 0 后不再消失；**中英两种语言各验一遍**（英文那串还要断言零 CJK 与半角括号）；只跑搜图时人脸那节不许被点亮。
+    - **静态层**（AST 剥注释后再判，防注释顶包）：候选谓词**字面量在文件里只许出现一次**（有人重新内联进 `batch()` 立刻红）、两个调用点都必须插 `${CANDIDATE_PRED}`、抽样必须跳过 id 空洞、样本数夹在 `[50, 20000]`、两个 worker 都要上报分母且**必须 `totalEstimated`**、`tag` 阶段**必须显式标 `false`**（否则继承上一轮的 `true`）、起手重置块必须含 `total: 0` / `totalEstimated: false`。
+  - 🔴 **牙齿验证 15 次，全部精确红 + sha1 逐字节还原**：① 取值域去掉 `'tag'`；② 主进程报了 `total` 面板不读；③ 不分估算/精确一律写「约」；④ **只让估算那一侧丢掉「约」**（隔离验证，精确侧保持原样）；⑤ 分母不夹 `max`；⑥ 英文也用全角括号；⑦ `batch()` 重新内联谓词；⑧ `batch()` 不插常量；⑨ 估算法不插常量；⑩ 估算法不跳过 id 空洞；⑪ 起手不重置 `total`；⑫ worker 不标 `totalEstimated`；⑬ 估算失败改成抛出；⑭ 人脸 store 谓词漂开；⑮ 人脸 worker 不调估算。
+  - ⚠️ **第 ⑬ 条当场暴露了我自己写的一条假绿断言**：第一版判据是 `/estimatedTotal\s*=\s*0/`（「这个名字出现过」），而 `let estimatedTotal = 0;` 这个**初始化**就满足它 ⇒ 把 `catch` 改成 `throw` **照绿**。改成判**门**：取「`estimatePendingCount()` 调用点到下一个 `progress(`」之间的那一小段，要求里面包 `catch`、catch 里**必须赋值 0**、且**不许出现 `throw`**。改用强判据后同一个注入立刻精确红。
+  - ⚠️ **这次既改主进程（`semantic-search.js`）又改 worker（两个 worker）⇒ 要重启才生效**；纯渲染端那部分（计数行、取值域）`location.reload()` 即可。
+  - **无头渲染验过**（`.workbuddy/tmp/ui-thumb-progress/shot.js` 新增 5 个案例）：三节同显那一帧的读数是
+    `重建全部缩略图 700,000 / 1,656,548（42%）` + `人脸模型/索引 完成 412,300 / 约 1,406,063（29%）· 失败 3 · 跳过 12,040` + `AI 模型/索引 完成 1,200 / 7,374（16%）`；英文那帧是 `Processed 412,300 / ~1,406,063 (29%) · Failed 3 · Skipped 12,040`。
+
+- 🔴 **「重建全部缩略图」那节的统计信息对齐「缩略图补全」：补上产出 / 剩余，并让补全那节把「原图尺寸」也画出来**（2026-10-08）：
+  - **两节现在是同一套账** —— 补全：`预览图 N · 还缺 M · 原图尺寸 +N · 拍摄信息 +N · 视觉指纹 +N · 查重指纹 +N · 失败 N`；重建：`目标 512 px · WEBP · 已重出 N · 待重跑 M · 原图尺寸 +N · 拍摄信息 +N · 视觉指纹 +N · 查重指纹 +N · 失败 N`。四项顺手产出**复用补全的四个 i18n 键**（同一件事在两处显示成两种说法，会让人以为是两项不同的工作）。
+  - 🔴 **副行整条统一成「本次进程」口径**（用户纠正「**已完成的不是这一次跑的**」之后改的，见 Fixed 首条）：「本次已重出 N」读的是主进程算好的 `rebuiltThisRun`，**不是**在渲染端拿 `done/failed/missing` 相减 —— 那三个是跨重启累计值。⚠️ 这条原本是**反着写的**（「减法放在渲染端 ⇒ 不用动 IPC」），是**错的**：`thumb_regen_meta.done` 跨重启累计，拿它当产出报的就是上一个进程的账（现场：本次进程起了 21 分钟，界面报「已重出 387,250」，其中 37 万是上一趟做的）。现在连「失败 N」也取 `failedThisRun` —— 同一条副行里一半累计、一半本次是最难读的形状；累计值的正确去处是**主行 `done / total`**（总账）与空闲态设置页那句「已全部重建（共 N 张）」。
+  - 🔴 **续跑分支必须从 meta 恢复 `missing`**：`runThumbnailRebuild` 起手把 `missing` 归零（这是对的：它描述「这一轮」），但「接着上一条队列跑」那一支原先只恢复 `total/done/failed` ⇒ 重启后差值少减一截、**产出偏大**，而它不参与百分比与 ETA，没人会当场发现。守护钉住了这一行（归零与恢复各一条）。
+  - 🔴 **登记阶段不报「待重跑」**：那时 `done` 恒为 0 ⇒ `pending = total − done` 天然 > 0 且**只涨不跌**，而同一刻「已重出」恒为 0 被隐藏 ⇒ 界面剩一个孤零零上涨的数，与主行「已扫描 N 行、已登记 M 张…」读起来自相矛盾。闸在 `!rEnqueueing`。
+  - **顺手修掉一处静默缺失**：补全那节的「原图尺寸」主进程**早就在数**（`thumbnailBackfill.sized`，注释里写着「让用户看到不只是在做预览图」）却**从来没画出来** ⇒ 「四样全并」之后用户只看得见三样，而少的那一样在界面上**完全没有痕迹**。现在两节都画。
+  - ⚠️ **本轮自己的守护先出过一次假绿，已修**：判据原来写成 `/thumbs\.sized/`（只判「这个名字在函数里出现过」），而把 `if (thumbs.sized > 0)` 里的 `sized` 写成 `sizd` 时，push 体里仍留着 `formatNumber(thumbs.sized)` ⇒ **照绿**。改成判**门**本身：`thumbs\.sized\s*>\s*0` 与 `thumbRebuild\.<key>\s*\|\|\s*0\s*\)?\s*>\s*0`。牙齿验证：两处注入（补全那节、重建那节各一）都**精确红**，还原后 sha1 `0a9f3ed9…` 与改前逐字节一致。
+  - ⚠️ **另一个假绿源一并拆掉**：`checkMetadataMergeWiring` 原先按「从函数头往后切 14,000 字符」取面板源码 —— 那个窗口**本来就在临界上**（重建那节实测在函数头 **+16,658**），它之前之所以绿，只是因为喂进去的是**正则版 `stripComments`**（连注释长度一起删掉、偏移整体前移）。换成保偏移的 `stripCommentsByAst` 之后同一段代码立刻越界 ⇒ 改为按 AST 取整个函数体（`functionBodyByName`）。
+  - **守护**：`thumbnail-regen-regression` 从 145 → **166 项**（四道门的 `> 0` 判据、两节同款键、`待重跑` 走 `pending` 且闸在 `!rEnqueueing`、`missing` 归零与恢复各一、按 AST 切函数体的夹具自证），**随后因口径改本次又加到 178 项**（见 Fixed 首条）；`thumb-backfill-progress-regression` 的 `PANEL_I18N_KEYS` 纳入重建那节**此前一条都没被守**的键（`thumbRebuildEnqueueing` / `thumbRebuildTarget` / `thumbRebuildDetailRebuilt` / `thumbRebuildDetailPending` / `thumbDetailSized`）—— ⚠️ 唯独**不能**加 `task.thumbRebuildCount`：它的值是 `'{done} / {total}（{pct}%）'`、天然一个汉字都没有，会被「中文词条必须含中文」那条判据误伤。
+  - **端到端验过**：无头渲染真实 `renderBackgroundTaskPanel`（`.workbuddy/tmp/ui-thumb-progress/shot.js` 新增重建案例，读数落 `shots/*.log`）—— 四样为 0 时**一条都不画**（不会出现「原图尺寸 +0」）、四样出数时七项齐、英文界面零 CJK、登记阶段主行换成「已扫描 N 行」。⚠️ 探针夹具原先漏传 `formatThumbSpec`（面板是从 `options` 取它的）⇒「目标 512 px · WEBP」静默不画，看着像产品少了文案，已补齐。
+
+- 🔴 **「活跃数据目录在哪」有了唯一判据，脚本 / 探针不再硬编码默认路径**（2026-10-07 深夜，数据目录搬到 D 盘之后立刻补的）：`src/main/data-dir.js` 新增 `programDataDir()` / `readDataDirSetting()` / `resolveActiveDataDir()` 并导出。
+  - **为什么这是必须马上补的**：数据目录**能迁移**，而迁移之后**默认位置往往还留着一份同名旧库** —— 本机这次搬迁没走「删源」那一步，`%LOCALAPPDATA%\aurora-gallery\UserData\photos.db` 那份 **18 GB 的旧库还在**（mtime 停在迁移那一刻）。任何硬编码默认路径的工具都会**安静地对着迁移前的快照跑**：不报错、不告警、`photos.db` 长得一模一样，整份读数作废；更糟的是**会往旧副本里写**。
+  - **判据与产品同源、故意少一档**：真相源 = `<程序数据目录>/UserData/settings.json` 的 `dataDir`（空串 / 缺失 / 文件坏掉一律当「没配」⇒ 回落到同一层 `UserData/`）。产品启动路径 `main.js#resolveDataDirPath` 还会 `mkdir -p` + 写 `.writetest` 探可写性并带「回退 + 弹窗」副作用；诊断工具是**只读**的，不该往用户盘里写探针文件、也不该建目录，所以这里判据退一档（**配置的目录存在 ⇒ 就用它**），但**必须把「回退了」返回出去**让调用方自己喊出来（`{ dir, programDir, configured, isCustom, fellBack, reason }`）—— 工具没有界面，信息被吞掉就没人知道读的是哪一份。
+  - **修掉四处会安静读错库的地方**：① `scripts/face-index-full.js`（**全库人脸索引长跑**，错一次 = 几天白跑 + 索引写进旧目录，实测 60–78 h）；② `scripts/download-face-models.js`（默认落点写死 ⇒ 迁移后模型下到旧位置，应用表现成「模型没下过」）；③ 技能 `aurora-sql-plan-audit/scripts/_shared.js#DB_PATH`；④ 技能 `semantic-search-quality-probe/scripts/probe.js` 的 `--user-data` 默认值。两个技能侧改为**调用仓库的同一个函数**（不另抄一份判据），只在该模块加载不到时才退回旧写法。`face-index-full` 另在启动日志里打出「用的是哪个数据目录 / 是不是 settings.json 指定的 / 有没有回退」，因为它的读数只能靠日志带出来。
+  - **守护**：`data-dir-regression` 新增 `testActiveDataDirForProbes()` —— 五组分支各一例（没配 / 配了且目录在 / 配了但打不开 / 配的就是默认位置本身 / `settings.json` 是坏 JSON 不许崩），外加一条接线断言：`face-index-full.js` 与 `download-face-models.js` **必须调 `resolveActiveDataDir` 且不许再出现 `process.env.LOCALAPPDATA`**。**牙齿验证做过**：把判据改成忽略配置（`var configured = ''`）⇒ 精确红在「配了 dataDir 就要用它」，还原后复跑 PASS、恢复逐字节一致。
+  - ⚠️ 顺带清掉仓库根 6 个 **0 字节的误建文件**（文件名是上一轮某条 shell 命令里未加引号的中文串碎片，如 `⚠️` / `从` / `元规则：①…`）；其中名字带 `**` 的那个回收站工具报 `0x80070057` 参数错误、fail-closed 拦住了，改名后才删掉。**教训：往命令行传中文长串必须加引号。**
+
+- 🔴 **迁移到新位置时会自动新建一个以产品命名的文件夹 `AuroraGallery`**（2026-10-07）：`src/main/data-dir.js` 新增 `DEFAULT_FOLDER_NAME` 与 `resolveTargetDir()`，接在 `select-data-dir` 上。
+  - **起因是个真会被踩到的坑**：文件夹选择框是「选一个文件夹」，用户要搬到 D 盘时最自然的动作就是选中 `D:\` 本身 —— 于是 19 GB 的 `photos.db`、`ai-search/`、`face-index/` 会**摊在盘根**，和别的目录混在一起，事后想整体搬走、备份或删掉都得逐个挑。现在默认再套一层，整份图库数据自成一个可以整体搬运的单位。
+  - **四种情况只有一种会新建**：① 选中目录名已经是 `AuroraGallery`（大小写不同也算）⇒ 原样用（用户自己建好了）；② 选中目录里已经有 `photos.db` ⇒ 原样用（那是在**指向一份已有图库** —— 换盘、接回移动硬盘，再套一层就变成「在旧数据旁边新建一份空的」）；③ `<选中目录>/AuroraGallery` 里**已经有 photos.db** ⇒ **拒绝**（`code: 'OCCUPIED'`），不并进去覆盖：那可能是另一台机器拷来的另一份图库，默默往上写会毁掉它。拒绝文案告诉用户「想用那一份就在上一层里**直接选中它**」—— 那时走 ①，是**他明确指了那个目录**，不是我们替他决定的；④ 其余（含磁盘根目录）⇒ 新建 `<选中目录>/AuroraGallery`。
+  - 🔴 **体检必须针对最终目录，不是用户点中的那个**：`validateTarget` 现在比的是 `target.dir`。拿点中的目录去比，「选中当前数据目录自己」会因为多了一层而**误判成合法**，然后在复制阶段才发现目标就是源目录。
+  - **界面如实说明**：确认框在新建的情况下先加一句「会在所选位置 `D:\` 下新建文件夹 `AuroraGallery`，数据放进那里。」再列「从 X 迁移到 Y」—— 用户点中的目录与数据真正落地的目录不是同一个，不说明就是一次「怎么多了一层」的意外。文件夹名由渲染端从最终路径的最后一段取（与主进程同源，不另抄一份常量）。
+  - **名称选择**：用 `AuroraGallery` 而不是打包名 `aurora-gallery` —— 后者是**程序数据目录的键名**（`%LOCALAPPDATA%\aurora-gallery\...`）、没人会去翻，前者是用户会在资源管理器里一眼看到的文件夹，当成产品名写更好认。守护里钉了「必须带应用名」+「不许等于打包名」两条。
+  - **守护**：`data-dir-regression` 新增 `testResolveTargetDir()`（四条分支各一例 + 大小写 + 空目标 + OCCUPIED 的两种走法）+ 接线断言（必须走 `resolveTargetDir`、体检针对 `target.dir`、要把 `subfolder` 告诉界面），`OCCUPIED` 也进了「渲染端按 code 取本地化文案」那份清单。**牙齿验证做过两次**：把 `DEFAULT_FOLDER_NAME` 改成 `aurora-gallery` ⇒ 精确红在「默认文件夹名不要与程序数据目录名相同」；把 `resolveTargetDir` 的调用换掉 ⇒ 精确红在「选目录后要算出最终目录」；两次还原后 sha1 与改前逐字节一致。
+
+- 🔴 **主进程发起的提示 / 确认改由渲染端画 —— 跟主题走，不再弹系统弹窗**（2026-10-07）：`main.js` 新增 `askInAppDialog()` / `confirmInApp()` / `alertInApp()`（走 `app-dialog-request` → 渲染端 `#appDialogOverlay` → `app-dialog-response` 回执），三处调用点换过去：「清理无效记录」确认、「优化数据库（VACUUM）」确认、「数据库维护失败」提示。数据目录回退提示也走这条路。
+  - **起因**：主进程没有界面，它自己弹的 `dialog.showMessageBox` 是**系统**外观（暗色主题下白底、亮色主题下灰底），与应用里那一套 `--bg-card` / `--accent` 弹窗是两回事 —— 数据目录迁移把这条提示带到了台前，顺手把同一类问题一起收口。**只剩「窗口还没起来」这一类保留系统弹窗**（启动失败 `showErrorBox`、以及窗口关闭选择器在渲染端还没就绪时的兜底），那时没有界面可画。
+  - 🔴 **每个请求都必须结算**：`pendingAppDialogs` 里挂着一条等着的 Promise，「清理无效记录」这类确认框悬挂 = 用户点了按钮永远没反应。所以超时（20 s）、收到回执、`send` 抛异常三条路都要「摘表 + 清定时器 + resolve」；渲染端的 **成功 / 异常 / 连弹窗都画不了**三条出口也都必须回执 —— 只在成功分支回执的话，**用户点「取消」就会悬挂**（这个最像不出来的 bug）。迟到回执按 id 丢弃，不会给调用方第二个答案。
+  - **文案由渲染端渲染**：请求可带 `i18n: { titleKey, messageKey, params }`，渲染端按当前语言渲染（主进程拼界面文案换语言时不会变）；不带键就用手传原文（沿用它的是既有那几处中文硬编码串）。数据目录回退提示两条新词条（中英各一）已加。
+  - **守护**：新增 `scripts/app-dialog-bridge-regression.js`（已进套件）钉三类静默失效：① 应用自己的提示不许再退回 `dialog.showMessageBox`（四处的调用块各自断言）；② 渲染端三条出口都要回执；③ 主进程递的 i18n 键在中英两块里各有一条。另**人工探针** `.workbuddy/tmp/app-dialog-theme-probe.js`（隔离实例 + CDP，14 项全绿）：真弹窗、真回执（取消 ⇒ `用户取消`、确认 ⇒ 继续往下跑）、并扫码比出亮/暗两套下卡片底色与文字色确实不同（截图 `.workbuddy/artifacts/data-dir-dialog/`）。守护的**牙齿验证**做过：把「清理确认」退回系统弹窗 ⇒ 精确红在「清理确认不该再用系统弹窗」；把渲染端的异常分支回执删掉 ⇒ 精确红在「每条出口都要回执，实际 2」；还原后 sha1 与改前逐字节一致。
+  - ⚠️ **这次改造连带改红了一条既有守护，改法值得记一笔**：`maintenance-guard-regression` 里那条「优化数据库前必须先做磁盘预检，再做确认弹窗」原先钉的是 `dialog.showMessageBox` 这个 **API 名**，而这次正是要把这个 API 换掉 ⇒ 它红得完全正确。**但判据本身没变**（「预检在前、确认在后」），所以修法是把它改成钉**顺序契约**：`vacuumSpaceShortage()` 之后 400 字符内出现 `confirmInApp(`。**别因为它红了就把这条断言删掉** —— 那样「先算空间账再问用户」这件事就没人守了，而它过去真的抓到过「预检被绕过」。
+  - ⚠️ 探针本身踩过一个坑，记下来省得下次重踩：**别拿 `getComputedStyle(card).backgroundImage` 判主题**。这条规则的背景写成 `linear-gradient(...)`，在已被别的规则定了 `background-color` 的元素上量出来是 `none`，看着像「没上色」；真正跟主题走的是 `background-color` 与 `color`。
+
+- 🔴 **数据库目录可以整份迁移到别的盘：设置页「媒体与存储」新增「数据库位置」一行**（2026-10-07）：位置记在 `settings.json` 的 `dataDir`（空 = 默认的 `userData`），判定与搬迁在 `src/main/data-dir.js`（纯逻辑，回归能真跑），编排与 IPC 在 `main.js`。
+  - **搬的是整份图库数据，不是单个 `photos.db`**：清单固定为 `photos.db` / `catalog-cache.db` / `ai-search` / `face-index` 及它们的 `-wal`（本机实测 19.2 GB）。只搬主库会留下「索引在旧盘、主库在新盘」的两处状态，将来排查必然绕。
+  - 🔴 **关库之后必须重新盘点一次清单**：体检是在库还开着的时候量的，那时 `photos.db-wal` 存在；`wal_checkpoint(TRUNCATE)` 会把它收进主库并删掉那个文件 ⇒ 照体检清单去复制，第一条就撞 `ENOENT`（端到端探针实测）。删除旧文件用的也是这份重新盘点的清单。
+  - 🔴 **顺序不可换**：体检（目标合法性 / 空间 / 无后台任务）→ 放开全部数据库持有者 → 复制 → 副本校验（SQLite `quick_check` + `photos` 行数与源库一致）→ **通过后才改设置** → 删旧 → 重启。校验没过就不改设置 ⇒ 重启回原库、不丢数据；但走到「放开连接」之后**无论成败都重启**（那时进程已没有可用的库，留在原地就是点什么都没反应的壳）。
+  - **回收站放不下是常态**（18 GB 的主库进不了回收站，而且进了也不释放空间，要等清空）⇒ 失败就改为直接删除，两种方式分开记账（`removed` / `removedPermanently` / `removeFailed`），界面照实说清「进了回收站 / 回收站放不下已直接删除 / 没能删、请手动清理」。
+  - 🔴 **配了新位置却打不开时必须出声**：盘没插 ⇒ 回退默认位置 ⇒ 库多半是空的，而用户第一反应是「照片全没了」。所以回退原因进 `get-data-dir-info` 的 `fallbackReason`（设置页常驻显示）并在首窗后弹一次。
+  - **守护**：新增 `scripts/data-dir-regression.js`（已进套件）钉四类错：目标非法形状（同目录 / 套在自己里面 / 空）、复制字节级完整且**不碰 settings.json**、副本校验（含行数不符）、删除失败必须带回来。另用源码契约钉住两条顺序：「先校验后改设置」「关库后重新盘点」。
+  - ⚠️ **端到端探针** `.workbuddy/tmp/data-dir-e2e-probe.js`（手工跑、不进套件）：隔离实例（注入 `LOCALAPPDATA`）+ CDP，验设置页那一行真的画出位置/体积/余量、迁移后 `settings.json` 记下新位置、重启后生效目录是新位置。本机 13/14 通过 —— 唯一失败项是**沙箱环境拦截了删除系统调用**（`fs.rm` 也报 `[safe-delete]`，与产品代码无关）。
+
+- 🔴 **M4：tag 倒排路接进搜图 —— RRF 融合 + 来源标注 + 三份镜面提示，附 115 项守护**（2026-10-07）：语义搜图从「只有 CLIP 一条路」变成「CLIP + tag 倒排两路融合」。新增 `src/ai/tag-fusion.js`（**纯函数融合层**：`parseQuery` / `fuse` / `describeTag` / `mergeRoutes`），`src/workers/semantic-worker.js` 只加一层薄壳 `tagRoute(store, query, result, options)` 负责 IO（惰性只读开库 → 查一次倒排 → 交给 `mergeRoutes`）。
+  - **为什么融合层是独立模块**：融合的全部内容是「两串已排好序的 id、一个公式、一张 route 标签」，不含 IO。留在那里就能被回归直接喂假数据逐值断言；写进 `semantic-worker.js` 就只能靠读源码文本猜 —— 那个文件顶层读 `workerData.aiPath`，裸 node 一 `require` 就 `TypeError`，**等于把判据放在跑不到的地方**。所以连整条编排（`mergeRoutes`）也搬了过来，IO 用注入（`photosByIds`）。本仓已有先例（`ai-index-gate.js`）。
+  - 🔴 **修正一处写进方案文档的错误设计**：原文写「两路各取前 200 参与」，**这是错的** —— CLIP 路的返回上限是 5,000，截到 200 之后用户从「找到 3,000 张」变成「最多 400 张」，是一个纯粹的回退，而且**长得不像 bug**（数字变了而已）。真正存在的约束只有一条：**tag 路候选要按 id 回主库补照片行，而那条 SQL 是 `IN (?,…)` 展开的**（SQLite 参数上限 32766）⇒ **只截断 tag 路**（`FUSE_DEPTH = 200`），CLIP 全量参与。深度外的 CLIP 条目 `rrf = 1/(K+rank)` 在数值上必然小于任何进了头部的条目（头部最小也 ≥ `1/(K+200)`）⇒ 自动排后且保持原序，**不需要写「尾部拼接」，也就没有「忘了拼尾部」**。
+  - 🔴 **`matched` 的口径在「tag 没参与」时必须原样透传**。它的既有语义是「**达标总数、不受 maxResults 截断**」（守护钉着「threshold 0.5 / maxResults 2 时 matched 仍是 3」）；融合后若顺手写成 `photos.length`，这个契约就被悄悄改掉了，而数字看起来还挺合理。只有 tag 路**真的给出了候选**（`tagHits.length > 0`）时才换成融合条数。
+  - 🔴 **`describeTag` 的原因优先级：词用不用得上 > tag 路在不在**。反着写（先判索引）会让**没建索引的机器上每一句自由词查询**都得到 `NO_INDEX`，于是界面在用户随手打一句话时弹「tag 索引未建立」—— 那句话本身没错，但它既不相关（自由词本来就走 CLIP）又会天天出现，最后被学会忽略，**真正该看的那一次（词表词 + 无索引）也就一起被忽略了**。现在的顺序：`FREE_TEXT` / `UNSUPPORTED`（关于查询词的结论，与索引无关）→ `DISABLED` / `NO_INDEX` / `QUERY_FAILED`。
+  - **tag 独有条目的 `similarity` 是 `null`，不是 0**：`similarity` 的语义是 CLIP 的基线差，而 tag 的 0.55–0.95 是标签概率 —— 混进去会让「阈值 0.05」这种设置瞬间失去意义。分数另给 `tagScore` / `tagTags`。
+  - **设置**：`aiSearchTagEnabled`（默认 **true** —— tag 路不存在时会自己降级成 `NO_INDEX` 并如实报告，「默认开」不会让任何人变差）+ `aiSearchTagThreshold`（默认取 `TAG_ROUTE_RANGE.default`，**不许写字面量**；越界夹取、NaN 回默认）。两个键必须同时出现在 **`ensureSettingsShape()`**（布尔归一 + 夹取）与 **`buildWebSettingsSnapshot()`**（那是白名单；`cloneSettingsForIpc` 是整份克隆，无需维护）。网页端搜图经新增注入 `getAiSearchTagOptions` 与桌面共用同一份设置。
+  - **UI**：设置页「搜图索引」多一节「标签检索层」（开关 + 查询线，关闭时查询线置灰而非藏起来 —— 藏起来会让「刚才那个数字去哪了」变成一次困惑，置灰既说明「现在不生效」又保住用户填过的值）；结果状态行接一句 `tagNote(...)` 说清这一趟 tag 路为什么没参与；桌面搜图整页的卡片右上角按 `route` 标来源（**只标「只靠一路找到的」**，`both` 不标 —— 它是融合后排在前面的大多数，标了等于恒定徽标）。⚠️ 网页端与桌面右栏**只做状态行**，不做卡片徽标：那两处的网格是 `renderPhotoCards`/`renderPhotoGrid`（浏览页共用同一份），塞 AI 专属徽标要么泄漏到正常浏览、要么得给网格开分叉。
+  - 🔴 **顺手修掉一个 M4 自己引入的静默缺陷**：桌面搜图的匹配度条以 `photos[0].similarity` 为分母，而融合后**首位可能是 tag 独有条目**（`similarity = null`）⇒ `top` 变 0 ⇒ `top > 0` 这个闸门把**整列匹配度条一次全关掉**，不报错不告警，只是「条不见了」。改成取全表最大值，纯 CLIP 下与原先逐值等价。守护有一条断言专门禁止它再变回去。
+  - **守护**：新增 `scripts/tag-fusion-regression.js`（**115 项**，已进套件）钉七类错：RRF 公式与**名次从 1 起**、`route` 归属判据、**CLIP 不被截断**、`matched`/`truncated` 透传、`similarity = null`、`photosByIds` 的调用面（纯 CLIP 时**一次都不许被调**）、**三份镜面文案的 reason 集合一致**（三份谁也 require 不到谁，只改一处就会有一端永远少说一句话）。含**反向验证**：一份「想当然」的实现（matched 拿结果条数充数、`similarity` 填 0、静默丢条目）必须在对应断言上逐个撞红，另有一条**对照**确认它在 `route` 判据上是对的 —— 否则可能只是「它处处都错」，那就证明不了牙齿是逐条针对的。另外 `semantic-regression` 同步了网页端检索那条断言（形状从内联 `{ threshold }` 改成 `options`，但**钉的仍是「阈值传下去了」这件事**，不是那个字面量）。
+  - ✅ **真库判据已出读数（1500 子集 / 32 探针 = 27 概念 + 5 负对照 / K=60 / `FUSE_DEPTH`=200）**，验收器 `.workbuddy/bench/eval-tag-fusion-m4.js`（人工跑、不进套件）。**整条走出货路径**（`tag-fusion#parseQuery` → `TagIndexStore#query` → `tag-fusion#mergeRoutes` → `fuse`），**不是**台架那份内联 RRF —— 这一步是必须的：`rank-fuse-clip-joytag.json` 那份既有读数**不截断 tag 路、也不设查询线**，拿它当验收等于验了另一段代码。读数：**RRF 融合 Σ前10 = 87/270 ✅**（CLIP 返回集 37、tag 单用 79）、前 100 零命中 **4**、5 个负对照的额外误报 **1 条**（仅「鲜花」）。即融合把 CLIP 返回集的前 10 命中从 **37 拉到 87（+135%）**，且**高于 tag 单用 8 个**。口径锚点：`CLIP 全名次 = 49/270`、`avgP10 0.181` 与干跑 `rank-fuse-clip-joytag.txt` **逐值一致** ⇒ 说明两次测量的口径确实对上了。
+  - 🔴 **阈值扫描把 0.55 从「拍出来」变成「量出来」**（同一语料、走出货代码）：`0.20→101/3/81`、`0.30→100/3/35`、`0.40→99/3/16`、`0.45→96/3/10`、`0.50→93/4/6`、**`0.55→87/4/1`**、`0.60→80/8/1`、`0.65→74/10/0`、`0.70→56/11/0`（Σ前10 / 前100零命中 / 负对照额外误报）。**0.55 正落在拐点上**：它是**最松的、仍能让负对照额外误报降到 1 条**的阈值（0.5 处还有 6 条），同时是**最紧的、仍能满足 Σ前10 ≥ 85** 的阈值（0.6 处掉到 80）。⇒ 默认值不需要调，且这条曲线就是「为什么是 0.55」的证据。
+  - 🔴 **两条判据按实测修订（不是代码改，是判据本身不可满足）**：① 「零返回 ≤ 2/27」——零命中在 **0.2–0.45 之间恒为 3**，**任何阈值都到不了 2**，且 T=0.55 时零命中的 4 个概念里有 **`停车场`**，它的标签（`car_park`）**不在 JoyTag 标签表里** ⇒ `UNSUPPORTED` ⇒ tag 路**结构性地帮不上忙**、融合结果 = CLIP 单用。把它算进同一条判据是在要求 RRF 做它做不到的事。改为「**前 100 名零命中的概念数 ≤ 3**」。② 「5 个负对照误报数不得比 CLIP 单用更多」——融合结果**恒 ⊇ CLIP 路结果**（并集），这条在**数学上不可能成立**。它真正要防的是「tag 路给负词塞一堆候选」，改动后按那个量表述：「**tag 路对 5 个负词的额外返回 ≤ 1 条**」，实测 1。**两条修订连同读数一起写进 `docs/semantic-search-tag-plan.md` §M4（含两张表）**，避免下次有人拿旧判据去"发现"一个不存在的问题。
+  - 🔴 **验收过程本身抓到两个建模错误（不修会得出假结论）**：① 一开始把 CLIP 的**完整名次表**（1500 条）喂进 `mergeRoutes`，于是 5 个负对照的返回数**全变成 1500**，把「tag 到底加了几条误报」这个真问题淹掉 —— 产品里 CLIP 路返回的是**过阈值的返回集**（`IndexStore#search` 只回达标前缀），必须喂那个。② `P@10` 的台架口径算在**未截断**名次上（`metrics.js#evaluate` 的 `hit10` 用 `ranked` 而非阈值截断后的 `set`），而「返回集」口径要用截断后的，**两个口径混用会得到一整列 0**。现在两列分开列（`CLIP 全名次` 供对表 / `CLIP 返回集` 供融合）。
+  - ⚠️ **真库 `ai-search/semantic-index.sqlite` 上仍然一行 tag 数据都没有**（验收跑的是台架那份 `%TEMP%/aurora-bench/tag-index-subset.sqlite`，1500 张 / 131,592 标签对）。在真库建索引属 M5（约 10 分钟 / 7,374 张），在那之前产品里 tag 路会如实自述 `NO_INDEX` 并退回纯 CLIP —— **这是设计好的降级，不是故障**。
+  - **验收器为什么不进套件**：它要读 `%TEMP%/aurora-bench` 那份台架语料与 4 MB 的子集索引，套件里没有、也不该有。而它验的**排序质量**恰恰是结构断言**原理上测不到**的 —— `tag-fusion-regression` 那 115 项能证明「RRF 公式对、route 归属对、CLIP 不被截断」，证明不了「融合后前 10 名真的更准」。**分工是：结构断言守住不回归，验收器负责一次性的「这方案值不值得上」。**
+
+- 🔴 **启动期 GPU 能力探测：真的建一个 dml 会话 + 真的跑出正确数值，判据唯一、回落必打 warn、设置页可见**（2026-10-07）：`src/main/gpu-probe.js`（判据与**唯一记录处**）+ `src/workers/gpu-probe-worker.js`（真跑的那一半）+ 随包探测模型 `src/ai/ep-probe.onnx`（168 B，生成器 `scripts/ep-probe-model.js`）+ 守护 `scripts/gpu-probe-regression.js`（39 项，已进套件）。
+  - 🔴 **三条省事的路都是假的**，所以判据只剩一条。① `process.platform === 'win32'`：无 DX12 设备 / 驱动太老 / 虚拟机里照样是 win32；② `onnxruntime-node#listSupportedBackends()`：它返回的是**编译进包**的 EP 列表（来自原生绑定的 `GetAvailableProviders()`），答不了「本机能不能创建设备」—— 本机实测它连 `webgpu` 都列出来，而工程里没有任何代码路径用 webgpu；③ `DirectML.dll` 在不在包里：在也不代表能创建设备。**唯一可信的是 `InferenceSession.create(..., {executionProviders:['dml']})` 真的成功，且 `run()` 出正确数值。**
+  - **探测模型只有一个 `Conv` 节点**（`float32[1,1,8,8] ⊛ [1,1,3,3]`）。挑 `Conv` 是因为它是 DML **必然实现**的算子：换成 `Identity` 这类，一个 DML 不支持的图也会建会话成功、然后把节点**静默回退 CPU**，探测就成了假阳性。喂常数输入（全 0.5）+ 全 1 卷积核 ⇒ 每个输出分量必须正好 **4.5**，`verified === false` 一票否决「可用」。
+  - 🔴 **必须离开主线程**：`onnxruntime-node#createInferenceSessionHandler` 把 `new OnnxruntimeSessionHandler(...)` 放在 **`setImmediate`** 里 —— `setImmediate` 是**本线程的下一个 tick**，不是线程池，所以 `loadModel`（含 D3D12 设备初始化）**同步阻塞主线程**。实测本机用 dml 建这个小模型要 **约 2.0 s**（cpu 只要 153 ms）⇒ 放主进程就是开机白冻 2 秒（本工程拿 `eventLoop.maxDelayMs` 盯这个）。**「async 的 API」不等于「不占主线程」。**
+  - ⚠️ **失败不需要等超时**：EP 不存在时 ORT **1 ms 内**就抛 `no available backend found. ERR: [dml] backend not found.`（cuda / tensorrt 同样）⇒ 60 s 超时只对付「驱动把设备创建挂死」。
+  - **时机与接线**：`schedulePostWindowDeferredTasks()` 里 **+6 s** 点火（首屏不做任何事等它，也不推迟到「用户点建索引」那一刻 —— 它是准入信息，不该摊进任务启动耗时）。🔴 **点火块里只有「null 守卫 + `ensure()`」两条语句，没有「AI 忙就跳过」**：本版最初写的是「AI 任务在跑则整轮跳过并打日志」，但那样这一轮**没有结论** —— 首次启动时设置页那一行会永远停在「检测中…」，非首次启动则拿着上次的落盘值补一句「本次正在重测」（而本次根本没探）。**界面是这功能存在的唯一理由**（生产档 logger 是 `warn`，用户不会翻日志），所以不能说假话；省下的代价也不值得：探测是独立 worker 里的一个 168 B 卷积（本机整轮 2.4 s、挂死另有 60 s 上限），且当前所有 AI 任务都跑 CPU（换 EP 属 M5）⇒ 并不存在「两个 DML 设备抢」这件事可避。这条形状由守护按 AST 的**语句条数**钉住（正则匹配不到「多了一个 if」）。结论落盘 `<userData>/ai-search/gpu.json`，并挂在 `SemanticSearch#status()` 的 `gpu` 字段 ⇒ 桌面端 IPC 与内嵌网页 API **一次挂上、两处一致**（⚠️ **刻意不给人脸服务也挂一份**：`face-service.js#status()` 从不读它，挂了就是无人消费的死接线 —— 人脸面板没有这一行，哪天要有就挂上和渲染一起加）。
+  - **设置页可见**：「设置 → AI 与索引 → 搜图索引」多一行「硬件加速：…」。三种取值**必须可区分**：`gpu == null` = 还没探完（「检测中…」）、`stale: true` = 上次启动的结论（本次正在重测）、否则本次实测；失败原因（ORT 英文原文）只挂 `title`。**这条是必须的**：生产档 logger 是 `warn` 级、用户不会翻日志，静默回落时界面看起来一切正常，用户唯一能得出的结论是「换了显卡怎么没变快」。这一行的观感与三个状态的差异由**人工探针** `scripts/gpu-note-probe.js` 验（加载真 `src/renderer/index.html`、只桩数据层 `photoAPI.aiSearchStatus`、走真入口 `openSemanticSettings()`、靠面板真实轮询连读四态，12 条断言；不进套件 —— 它需要 `BrowserWindow`，在 `ELECTRON_RUN_AS_NODE` 下拿不到）。
+  - ⚠️ **这一版刻意只做「探测 + 可见」，不改任何任务的 EP**：CLIP 的 dml 数值不一致（余弦 0.9916），而库里已有 7,374 行是 CPU 编码的 —— 混编会按行随机偏置分数，而阈值标定到 0.01、top-20 只有 17.1/20 重合。⇒ 「让索引真的用上 dml」必须与**索引清单里的设备锁定**一起做（设备在清单创建时定死、索引与检索读同一份、要改就得整体重建），属 M5 全库那一趟。
+  - ⚠️ 脚本坑（已写进文件头）：手写 protobuf 的字段号以 `onnx.proto` 为准 —— `ModelProto.opset_import = 8`（不是 2）、`TensorProto.name = 8`（不是 5）；写错时 ORT 报的是「Missing opset in the model」这种**指向别处**的错。另外模型必须**读成 Buffer 再喂 ORT**：文件打进 asar 后 ORT 的 C++ 层用 `std::ifstream` 读路径，看不见 asar 虚拟文件系统。
+
+- 🔧 **回归验收补上「漂移归因」：新增 `scripts/regression-drift-probe.js`（手工用，不进套件）+ 两条环境坑**（2026-10-07）：起因是连续几轮全量套件的红/绿都**落在别的会话正在写的文件上**，光看日志分不出「真回归」与「读到中间态」——而误判的代价是两个方向都坏：把噪声当真回归去修，或把真回归当噪声忽略。探针把归因变成一次 diff：起跑前对 `src/` + `scripts/` 打 sha1 清单 → 原样 spawn 套件入口 → 跑完再打一次 → 按四组合给这一跑**定性**（绿+零漂移 = **有效全绿**（唯一可宣布 PASS 的情形）/ 绿+有漂移 = **作废**（假绿）/ 红+零漂移 = **真回归** / 红+有漂移 = **先归因**），漂移文件按「源码 / 套件成员 / 工具」三档标注，套件成员名单从入口里读而不是再抄一份。
+  - 🔴 **坑 1（把我自己坑了一次）**：套件入口**必须以 node 模式跑**（`ELECTRON_RUN_AS_NODE=1`）。`run-regressions.js` 第 5 行 `const electron = require('electron')` 是拿来当 `spawnSync` 的第一个参数的，而它的返回值**随模式变**：node 模式 = **字符串**（electron 可执行文件路径）✓、真 Electron 主进程 = **API 对象** ✗ ⇒ `spawnSync(<对象>)` 抛异常，被无 console 的 GUI 进程吞掉，表现为**零输出 + 退出码 `0x80000003`(STATUS_BREAKPOINT) + 约 15 秒**，看着像「套件神秘猝死」。⇒ ABI 一致靠的是「用 electron.exe 这个可执行文件」，**不是**「当 GUI 进程」。（另注：Bash 环境默认就设了 `ELECTRON_RUN_AS_NODE=1`，所以从 shell 直接跑套件一直是 node 模式 —— 这就是「shell 跑没事、脚本里 spawn 就崩」的原因。）
+  - 🔴 **坑 2**：`spawnSync` 的 `stdio[0]` **不能是管道**。本机实测默认 `'pipe'`（stdin 也是管道）⇒ `status=null` + `error.code='EBUSY'`，`execSync` 同样；`'ignore'` / `['ignore','pipe','pipe']` / `'inherit'` 都正常。EBUSY 长得像「子进程起不来 / 文件被占用」，很容易一路查到进程权限上去，真实原因只是 stdin 开了管道。`run-regressions.js` 用的是 `'inherit'`，所以它从来没踩到。
+  - 🔴 **顺带修掉探针自己的一个判定 bug**：`status === null`（**压根没跑起来**）与 `status !== 0`（真红）被同一个 `!== 0` 吃掉 ⇒ 把「套件没启动」报成了「❌ 真回归」，等于**把人送去查一个不存在的 bug**。现在单独成一支（`exit=2`：这不是回归结论，先修执行环境）。同理它的 PASS 计数从「N 项」（正则只认 `[名] PASS`，漏掉 `名: PASS` 与全部子项行）改回「**PASS 行 / FAIL 行**」——权威信号永远是 `exit` 与「零 FAIL 行」。
+
+- 🔴 **人脸 EP 验证：数值完全等价，但收益为零（0.95×）⇒ 不换；真瓶颈是反复对 1600 中间图的 sharp 往返**（2026-10-07）：补上第三条 ONNX 路径。`face-model.js#load` 的会话以前**硬编码** `executionProviders: ['cpu']`，现改为默认值 `DEFAULT_PROVIDERS = ['cpu']` / `DEFAULT_THREADS = 2` 的出口（**行为零变更**，只为让探针走真代码路径 + 让守护能钉住默认值）。探针 `.workbuddy/bench/probe-face-ep.js`（`cpu` / `dml` / `compare` / `micro` 四模式）。
+  - **等价性（fp32，与 JoyTag 同类）**：逐脸 embedding 余弦**最小 1.000000**、单分量最大差 0.000122、置信度最大差 0.00000、**逐张照片脸数 0/64 不同**、**同人/不同人判定 0/2016 对翻转**、配对 AUC 两边都是 **0.9999**（同人通过 99.6% / 不同人误判 2.0%）。**⇒ 数值这一关完全过。**
+  - **速度这一关不过**：整链 **602 → 634 ms/张 = 0.95×（dml 反而慢 5%）**；全库 1,630,813 张图片 ≈11.4 天，换 EP 换不来任何东西。
+  - 🔴 **原因用 `micro` 微基准钉死**：纯前向 **YuNet 640：cpu 8.8 ms vs dml 18.1 ms（dml 慢 2 倍）**、w600k 112：cpu 10.0 ms vs dml **3.0 ms**。按每张照片（1 次粗检 + 1 次局部复核 + 1 次识别）合计 **27.6 → 39.2 ms**，而整链 602 ms ⇒ **模型前向只占 4.6%**，其余 95% 是 sharp 与 JS 对齐（`detect()` 里 4 处 sharp + 一次纯 JS 双线性 warp，其中「解码 + 压到 1600」一项就 173 ms / 29%）。⇒ **小模型换 DML 是负收益**：每节点设备往返开销盖过算力收益。
+  - ⇒ 人脸索引要提速，该动的是**反复对 1600 中间图的 sharp 往返**，不是 EP。
+  - ⚠️ **取样两个坑（比结论更值钱）**：① 第一版拿 `.workbuddy/bench/rows.json` 取样，18 张检出 **0 张脸**（那批图包多是不露脸题材）⇒ 对比毫无意义；改用产品自己的 `face-index/faces.sqlite`（`scans` 246,040 / `faces` 81,043）取候选。② 改用后**优先取脸多的照片**又踩坑：同目录里常是多人合影 ⇒ 「同目录 = 同人」的 ground truth 被弄脏，得到同人通过率 17.9% / AUC 0.544（干净样本是 99.6% / 0.9999）—— **那不是模型差，是标签被取样弄脏**。最终样本固定为**优先取「恰好 1 张脸」**。
+  - ⚠️ 样本里 4/64 张因 `Input image exceeds pixel limit`（>1 亿像素）被 sharp 拒掉，产品侧同一个 `limitInputPixels` 走「回落缩略图」那条路（见 `face-worker.js`）。
+  - 🔴 **通用规律补完（判据从一条变两条，且是相乘关系）**：① **单进程连跑**（设备上下文是每进程一次的固定开销：逐张 spawn ffmpeg 固定 349 ms/次 ⇒ 缩略图 0.06–0.10×、视频首帧 0.66×）；② **模型前向占整链的比例**（人脸 4.6% ⇒ 0.95×，就算把前向优化到 0 整链也只快 4.6%）。**判断顺序固定为：前向占比 → 单进程 → 模型够不够大。**
+
+- 🔴 **CLIP 那一半的 EP 验证：能提速但只有 1.99×，且数值不再逐值一致 ⇒ 不许混用 EP**（2026-10-07）：补上 JoyTag 之外的第二条路径（`@huggingface/transformers` 的 `device`）。探针 `.workbuddy/bench/probe-clip-ep.js`（分 `cpu` / `dml` / `compare` 三个模式，**单 EP 进程才允许横比**）。
+  - **速度**：全链 222 → 112 ms/张（含 sharp 预处理）⇒ 全库 1,656,548 张从 ≈4.3 天到 ≈2.1 天。**不足以改变 M5 的结论。**
+  - 🔴 **一致性不过关**（与 JoyTag 的「余弦 1.000000」完全相反）：图像向量余弦 **0.9916**、单维最大差 **0.0264**、调整后分数最大 |Δ| **0.0092**（与地板 0.01 同量级）、top-20 集合重合 **17.1/20**。成因是 **q8/int8 量化**（JoyTag 是 fp32）⇒ int8 GEMM 累加顺序与 CPU 不同，误差 ~1e-2 不可忽略。**⇒ 索引侧与查询侧必须同一个 EP，混搭等于把两套数值口径缝在一起。**
+  - ⚠️ 探针里「命中数零变化 ✅」是**假绿**：40 张样本所有查询的 top1 都低于地板，谁都没跨线 ⇒ 不构成证据。
+  - 🔴 **「2 线程压低了 CPU 基线」这个假设被实测否定**：`intraOpNumThreads` 2 → 8 反而更慢（**249 vs 222 ms/张**）⇒ dml 那 2× 是真的。
+  - `src/ai/embedding.js` 新增两个**默认为原值**的出口：`device`（`DEFAULT_DEVICE='cpu'`）与 `threads`（`DEFAULT_THREADS=2`）。⚠️ win32 上 transformers.js **无条件**把 `dml` 列进 `supportedDevices` ⇒ **参数通过校验不代表机器能跑，建会话成功才是唯一判据**。产品调用点（`semantic-worker.js`）仍传默认值 ⇒ **行为零变更**，目前只有探针在用。
+
+- 🔴 **「缩略图也能用 GPU」在本工程不成立（且瓶颈根本不在算力）**（2026-10-07）：探针 `.workbuddy/bench/probe-thumb-gpu.js`。结论与证据：
+  - **静态图没有 GPU 入口**：随包 `@img/sharp-win32-x64/lib/libvips-42.dll` **不导入 `OpenCL.dll`**（`clGetPlatformIDs` / `clCreateContext` / `clEnqueueNDRangeKernel` 命中数全为 0），导入表里也没有 ⇒ sharp/libvips 没有 GPU 后端，**没有开关可拨**。
+  - **换栈更慢**：libvips 全链 **41.6 ms/张** vs ffmpeg 全 CPU **420.3 ms/张** vs GPU 解码 + GPU 缩放 **747.3 ms/张**（**慢 10–18 倍**）。编码那一段（`libwebp`）没有 GPU 版本（ffmpeg 里没有 nvJPEG），而逐张 spawn 的固定开销 ≈**349 ms/次**（实测）已经吃光理论收益。
+  - **视频首帧有入口但没收益**：随包 ffmpeg 确实带 `cuda / dxva2 / qsv / d3d11va`、`*_cuvid`、`scale_cuda` / `thumbnail_cuda`，但 `-hwaccel cuda` 实测 **986 ms/个 慢于**现状 CPU 的 651 ms/个（`h264_cuvid` 只成功 1/6）⇒ 每个视频一次 CUDA 上下文初始化的钱收不回来。要动它得改成**一个进程批量处理**，属架构改动。
+  - 🔴 **就算不换栈也得看产物**：同一张 1440×1831，`scale_cuda` 路给 **402×512**、`scale` 路给 **403×512** ⇒ **连尺寸都可能差 1 像素**；24 张里 5–7 张尺寸不同，同尺寸者像素平均绝对差 2.1–2.3/255。缓存键只含 `photoCacheVersion + thumb_size + thumb_format`（**不含引擎**）⇒ 真要换引擎必须**升 `photoCacheVersion` 并走 `thumb_regen_queue` 全量重跑**。
+  - ⚠️ **真瓶颈是 IO**：素材在 `K:\COS`（13 TB、99% 满），**冷读 0.4 MB 要 ≈72 ms**（≈6 MB/s），再读只要 **0.20 ms**；而 sharp 解码+缩放+webp 只要 **36–42 ms/张**。第一版探针量出的「libvips 1287 ms/张」是**冷 IO 被摊进单张**的假读数 ⇒ 缩略图优化该往缓存/预读走。
+  - 🔴 **通用规律**：GPU 的设备上下文初始化是**每进程一次**的固定开销 ⇒ 收益只在「单进程连跑很多次」时拿得到。JoyTag **9.4×** ✓ / CLIP **2×** △ / 缩略图 **0.06–0.10×** ✗ / 视频首帧 **0.66×** ✗。
+  - ⚠️ 探针踩到的工具坑（已写进文件头）：`spawnSync` 跑本工程的 82 MB `ffmpeg.exe` **连 `-version` 都返回 `EBUSY`**（stderr 为空 ⇒ 极易被写成「成功 0 张却打印了毫秒」的假读数），必须用异步 `spawn`；不带 `-hwaccel_output_format cuda` 就对内存帧加 `hwdownload` 会直接报错。
+
+- 🔴 **tag 倒排索引：第二路检索的存储层（tag 提精度这一路的地基）**（2026-10-07）：`src/ai/tag-index-store.js` 是唯一真相源（DDL / 阈值 / 取词 / 打分全在这里），离线建索引器 `.workbuddy/bench/run-tag-index.js`，守护 `scripts/tag-index-regression.js`（已进套件）。**验收：在 1,500 张验收语料上建索引后，用产品查询路径逐查询比对 → 28/28 逐值一致、0 处边界差、0 处实差。**
+  - **结构**：`tag_meta`（身份）/ `tag_vocab`（tag_id ↔ tag）/ `tag_photo`（**每张图的凭证**）/ `photo_tag`（`WITHOUT ROWID`，PK `(photo_id, tag_id)`，`score` 量化到 0–100）+ `idx_tag_score(tag_id, score DESC)`。只存**超过入库线**的标签（实测 **87.7 个/张**），不存 5813 维浮点。
+  - 🔴 **`tag_id` 用 JoyTag 的「输出下标」，不是自增**：自增依赖插入顺序，重建一次索引 id 就全漂，而**没有任何地方断言过 id 的含义** ⇒ 漂了也全绿。用下标还顺带让 `labelAt(tag_id)` 直接可用、「标签表换了」能被 `tag_meta.vocab_key` 一把判废。
+  - 🔴 **凭证按「每张图」存一行（`tag_photo`），不按 (图,标签) 对存**：`source_spec`/`engine` 的粒度和「这张图是怎么被打标的」一样粗，逐对存会把同一份字符串重复 ~88 遍。判废能力一点没少（M5 换缩略图规格后仍能只删旧规格的行），守护断言**无孤儿**。
+  - 🔴 **`quantize` 必须 `floor` 不能用 `round`**：要的是 `floor(p×100) ≥ t ⟺ p ≥ t/100`（t 为整数），这条**只有 floor 成立** —— `round(0.4999×100) = 50` 会在查询线处**多放进一张**。守护用**穷举 99×2001 组**验证这条等价性，而不是抽查。
+  - **两条阈值别混**：入库线 `0.15`（低于它永远查不到，且行数会爆）、查询线 `0.55`。**0.55 与 `scripts/tag-vocab-coverage.json#threshold` 同源**（守护钉着）—— 那份覆盖率快照就是在 0.55 上验证的，产品拿别的数查就是「验证过能用、真查却是空的」。台架上 F1 最优其实是 **0.5**，但 0.5 起负对照开始漏（雪山/咖啡/鲜花）⇒ **0.55 取精度、0.5 取 F1**，范围给到 `[0.2, 0.95]` 让用户自调。
+  - **守护的反向验证**：结构断言抽成 `assertStructure(db)`，拿一个**故意做错的夹具库**（PK 顺序反了 / 没有 `WITHOUT ROWID` / 索引少了 `DESC` / `tag_vocab` 没有 UNIQUE）逐条放行、逐条证明每一条断言都不是被上一条掩护的。
+  - 🔴 **验收基准差点选错，这条比结论更值钱**：计划原本写「与台架 `rank-joytag.json` 逐查询命中数一致」，照做后出现 **7 处「实差」**，看着像索引有 bug —— 实际是**基准换了标签**：`rank-joytag.json` 是用 `.workbuddy/bench/probes.js`（**M0 之前的草稿**）的 tags 排出来的，与产品词表在 **32 个概念里有 20 个不一样**（同一张图 `328317`：`animal_ears` **0.8245** 而 `cat_ears` **0.0809**）。换成与词表同口径的 `joytag-vocab-validate.jsonl` 后 **28/28 全绿**。⇒ **此前引用它的读数（「JoyTag 18/27」、「并集 21/27」…）量的是草稿那套标签，不能当作产品词表的质量。**
+    - **重新测量**（`eval-tag-vocab-quality.js`，同语料 / 同指标 / 只差标签集）：两个口径 **F1 持平**（0.5 / 0.55 / 0.6 三档：0.309→0.310、0.273→0.275、0.203→0.204），且产品口**负对照误报更少**（7→6、2→1、2→1）。被换掉的高分标签只有 `蛋糕/food`（正样本 0.7361），而 `food` 是泛化标签，换掉后该词 F1 反而 0.400→0.444 ⇒ **换对了**。
+    - ⚠️ 这张表自己踩过一次**分母错**：`probes.json#positives` 是在全量 7,374 张上数的（「制服」=317），而排序只在 1,500 张上做 ⇒ 直接把召回压低 5 倍、凭空得出「词表变差」。正样本**必须先与语料求交**。
+  - 🔴 **磁盘账修正（原估低 3.5 倍）**：实测 **87.7 行/张**（≥0.15），不是估的 25 ⇒ 全库 ≈ **1.45 亿行 ≈ 2.44 GiB**。同时给出入库线曲线（0.2 ⇒ 1.53 GiB / 0.3 ⇒ 0.75 / 0.4 ⇒ 0.44 / 0.5 ⇒ 0.28），**但入库线不许抬到接近查询线** —— 那是静默失效。选哪一档属于 M5 的磁盘决策。
+  - 口径必须与线上一致，否则「线下验过」不成立：取图 `thumbnail || file_path` → `rotate().resize(512,512,inside).removeAlpha().jpeg()`（与 `semantic-worker.js` 逐字相同）；预处理 `contain` 到 448×448 + ImageNet 归一化；`sharp.concurrency(1)`（不设会与 ONNX 线程叠加成超额订阅，实测拖慢 3~4 倍）。三者一起记进 `tag_meta.prep_spec`。
+
+- 🔴 **DirectML 闸门过了：JoyTag 实测 9.4×（86 ms/张 vs CPU 811 ms/张），且与 CPU 逐值一致**（2026-10-07）：这是「全库 165 万张能不能索引」的唯一门槛。探针 `.workbuddy/bench/probe-dml-avail.js`。
+  - **一致性**（同一张量喂两个会话）：概率向量余弦 **1.000000**、最大单标签绝对差 **0.00011**、`|Δ|>0.05` 的标签 **0/69756**、**跨线翻转 0 个**（入库线 0.15 与查询线 0.55 都查了 —— 只看「平均差很小」不够，**跨线**才决定结果集）。
+  - ⇒ 全库 JoyTag 从 **15.6 天 → 1.7 天**；7,374 张从 100 min → 10.6 min。DirectML.dll 本来就随 `onnxruntime-node@1.24.3` 发包，**不用换包、不用装 CUDA**。
+  - 🔴 **探针自己骗过我一次，这条是本次最该记住的**：第一版把 CPU 与 DML 放在**同一个进程**里先后跑，得到「只快 **1.96×**」，与真值差 **5 倍**。两个原因：① DML 首次 `run()` 会触发**图编译**，摊到 12 张上被放大成几百毫秒；② 同进程里 8 线程的 CPU 会话没释放，两个 ONNX 会话抢核心。⇒ 探针改为分模式：`both` 只做一致性对比，`cpu` / `dml` **单 EP 模式**的时间才允许横比。**这属于「测错了比没测更危险」——它差点把 M5 判成不可行。**
+  - ⚠️ 建 dml 会话会打一条 ORT 警告「Some nodes were not assigned to the preferred execution EP」——**正常**（形状算子本来就被分给 CPU），不影响正确性与上面的提速。⚠️ **回退必须打 warn**：「dml 不可用」与「dml 可用但只快 N 倍」是两种结果，静默回落会让人以为跑的是 GPU。
+  - ⚠️ **CLIP（SigLIP2）那一半还没测**：它与 JoyTag 是两条独立代码路径（`@huggingface/transformers` 的 `device` vs 直连 onnxruntime 的 `executionProviders`），而 M5 的可行性对两者同样敏感（CLIP 全库 CPU 也要 ≈14 天）⇒ **进 M5 之前必须先补这一半。**
+
+- **中文查询词 → danbooru 标签的词表（tag 检索路线的唯一词源）**（2026-10-07）：`src/ai/tag-vocabulary.js`（324 条 = 308 预选词表逐词对齐 + 16 个台架概念）把「用户打的中文」翻译成**真的存在于模型标签表里**的标签。这是「tag 提精度 + CLIP 保底」方案里 P0 的一步：tag 路线的精度上限由词表决定，而在此之前它**根本没有词表** —— 只有一份台架用的候选列表。
+  - 🔴 **为什么必须逐词核对，不能用英文侧原样查表**：308 预选词表的英文侧（去冠词 + 空格转下划线）拿去查 JoyTag 的 5813 标签表，只命中 **138/308 = 44.8%**，且命中的一半是「海滩 / 森林 / 沙漠」这类**本库一张都没有**的风景词。标签不存在 ⇒ 该词在 tag 路线上**恒 0 命中**，而这是**静默错**（界面不报错，只是没有结果）。逐词映射后 308 口径 **281/308 = 91.2%**，剩下 31 个词全部是**显式 unsupported + 写明缺哪个标签**。
+  - **随包标签表** `src/ai/joytag-labels.txt`（5813 行 = JoyTag 的输出维度，**顺序即下标**）+ 来源与许可证说明 `src/ai/licenses/JoyTag-Apache-2.0.txt`（Apache-2.0）。它是「这个标签存在」这件事的**唯一判据**，必须随包 —— 否则任何机器上都断言不了，而写错标签的症状只是搜不出来。
+  - **实测产出的两个结论**（正样本来自图包目录名，逐张看图核过）：① **「猫」在这个库里不是真猫** —— `桃良阿宅NO.025猫猫` 图包里 `cat_ears` 0.54~0.58 / `tail` 0.68，而 `cat` 只有 0.10~0.19，词条扩成 `cat, cat_girl, cat_ears` 后正样本最大分 0.19 → 0.67（「兔子」同理）；② **「停车场」打不出来** —— 模型词表只有 `car`、没有 `parking_lot`，而正样本上 `car` 只有 **0.0346**（噪声量级），所以它不是「弱映射」而是**错映射**，已降级为 unsupported。
+  - ⚠️ **弱标签有噪声，别迁就它改映射**：「泳装」那个图包（`NO.030分体制服jk泳装`）里其实是内衣照（`underwear` 0.43~0.74 vs `swimsuit` 0.20~0.29）⇒ 那 5 张「正样本」上 `swimsuit` 最大只有 0.31。这是 ground truth 错，不是映射错。
+  - 守护 `scripts/tag-vocab-regression.js`（已进 `run-regressions.js`）：① 标签必须在随包标签表里 ② `missing` 必须是真缺（把 `rock`/`lightning`/`selfie`/`castle` 这类**其实存在**的标签写成「缺」要被抓 —— 建表第一版就写错了 34 条）③ 308 词表一个都不能漏、有 ground truth 的概念一个都不能删 ④ 快照新鲜度 + **有正样本的概念不许哑**（门槛取正样本最大分 ≥ 0.15，理由见代码注释）。**判「零命中」必须区分「标签错」与「这个语料里没有那种内容」** —— 按全词表卡会逼人为了让守护变绿去给有内容的词硬凑标签。
+    - 🔴 `scripts/tag-vocab-coverage.json` 是 1500 张真语料（`K:/COS` 144 包连续段）跑出来的**冻结快照**：改词表就必须重跑 `.workbuddy/bench/run-tag-vocab-validate.js` + `report-tag-vocab.js` 并更新它。让改动变麻烦是**故意**的。
+    - 守护自带**反向自测**（塞假标签 / 误报缺失 / 删词 / 删证据概念 / 快照缺条目，五种改法都必须被当场抓住）：一个永远绿的守护比没有守护更糟，它会把「假绿」变成可引用的证据。
+  - 方案与里程碑见 [`docs/semantic-search-tag-plan.md`](docs/semantic-search-tag-plan.md)（M0 词表、M1 自适应阈值已完成，M2–M6 待做）。
+
+- **默认缩略图改成 512 px + WebP**（2026-10-07）：以前是 256 px / JPEG。档位与编码格式都收进了唯一真相源 `src/main/thumb-format.js`（`THUMB_DEFAULT_SIZE = 512`、`THUMB_ENCODE_FORMAT = 'webp'`），所有生成点（扫描 / 后台补全 / 网页端按需 / ffmpeg 抽帧与占位图）一律走 `resizeThumb()` / `encodeThumb()` —— 换格式只需要改那一个常量，「记进库的 `thumb_format`」与「响应头」同源，不会再出现「字节是 WebP、头写着 JPEG」。
+  - 只读实测（30 张真原图从原图重跑 pipeline，1,656,548 行外推）：`256 jpeg q75` 7,132 B → `512 jpeg` 19,997 B（2.8×）/ `1024 jpeg` 58,926 B（8.3×）/ **`512 webp q72 effort2` 11,919 B（1.67×）** / `1024 webp` 32,008 B（4.5×）⇒ 全库 BLOB 11.0 → 18.4 / 30.9 / 49.4 / 90.9 GiB。
+  - ⇒ **512 + WebP 是唯一自洽的组合**：4 倍像素只换来 +67% 体积（单升 512 JPEG 要 +180%），「换 WebP」正好抵消「升档」。1024 在这台机器上**物理上做不成**：+80 GiB，而 C: 只剩 27 GB。
+  - 🔴 档位的域**散在三处**且必须逐位一致：`thumb-format.js#THUMB_SIZE_CHOICES`（主进程持有）、`index.html#settingThumbSize` 的 `<option>`、`ui-settings.js#normalizeThumbSizeQuality`（渲染端拿不到主进程模块，只能留一份）。三处漂开的下场是**静默回落**：下拉里选得到 512、落库被 clamp 回 256。
+  - ⚠️ WebP 与 JPEG 的 `quality` **不是同一量纲**（同数值下 WebP 体积约 JPEG 的 64%），所以默认画质没有跟着档位一起动。
+
+- **缩略图全量重跑：改完档位 / 编码格式后，把已入库的缩略图按新规格整体重来一遍**（2026-10-07）：设置页「缩略图尺寸与质量」下面多一行状态 + 两个按钮（开始 / 停止）。核心是把「重跑」做成**物化队列**而不是「带规格谓词的倒序取批」：
+  - 🔴 **为什么必须是队列**：规格目标是**运行期取值**（用户随时能改），烤不进部分索引的 `WHERE`。于是「`thumb_size <> 目标 OR thumb_format <> 目标` + `ORDER BY id DESC LIMIT n`」就成了全工程唯一一条「谓词无索引可依 + 倒序取批」的查询 —— 它的代价是**游标到第一个命中之间的距离**，与批大小无关。补全那边真库实测过同一形状：每轮白扫 **75.7 万行 / 159.6 s 主线程阻塞**（见 `docs/contracts/thumbnail-backfill.md`）。队列把「筛选」和「取批」拆开：登记是一次**有界 id 区间扫描**（`id > ? AND id <= ?` + 谓词，每 40,000 行一个写队列票据，`PRIORITY.IDLE`），抽干是**按主键倒序 + LIMIT 50**（代价 ∝ 批大小）。SQL / DDL / 谓词的唯一真相源 = `src/main/thumb-regen-queue.js`。
+  - 🔴 **删除必须按「这一批取到的 id 列表」**（`json_each` 单参数，见 `src/main/sql-id-list.js`），**不许写成 `DELETE … WHERE id <= ?`**：队列是**稀疏**的，游标位置后面还留着没取到的行，按范围删会把它们静默吞掉（守护自测当场抓到过这一条，现在有专门的断言 + 注释）。
+  - 进度分母是**精确值**（累计登记数，持久化在单行 `thumb_regen_meta`）⇒ 关掉应用再打开能续跑、不再从头登记。`targetSignature` 刻意**只含档位与格式、不含画质**：调画质不该让整条队列作废。
+  - 重跑**不在启动时自动续跑**（有意）：它是小时级任务，会跟用户的浏览抢那块外接机械盘。状态在库里，丢失的只是「自动开始」。
+  - 🔴 **两个长任务的准入判据扩成了三个，且必须两两互相看得见**：新加的 `thumbnailRebuildBlockReason()` 挡补全与查重，但**查重那边当时没有对称地挡回来** —— 正是这份判据在 2026-10-06 踩过的那类漂移（「先起重跑、再起查重」的窗口一开，点下去就返回 `{success:true}` 而任务静默 return，界面不给任何提示，拒绝日志还是 info 级、生产档看不见）。`thumb-dup-admission-parity-regression` 已从「两个闸」扩成「三个闸 + 状态矩阵」：任何单向挡住的组合都会红，新增长任务只需要进那张矩阵表。
+  - 守护 `thumbnail-regen-regression`（取批形态 / 队列往返 / 取批计划必须是 `SEARCH q USING INTEGER PRIMARY KEY` / 档位三处一致 / 生成点只走唯一编码出口 / 准入双向 / 空闲态读数不许数队列 / **顶栏面板接线**）。契约见 [`docs/contracts/thumbnail-backfill.md`](docs/contracts/thumbnail-backfill.md) 的「全量重跑」一节。
+  - ⚠️ **这一版漏了顶栏那半**：主进程 / 设置页 / 队列全对，但顶栏「后台任务」面板没接这一列 ⇒ 只剩重建在跑时整块面板是 `display:none`。已于 2026-10-08 修掉并补了守护，见 `### Fixed` 首条。
+
+- **浏览层支持混规格缩略图**（2026-10-07）：重建跑到一半时库里**同时**有 256/jpeg 与 512/webp，浏览层必须都画得对、且**重建过的行要立刻显示新图**。这件事有两个各自独立、且都静默的失效点：
+  - 🔴 **缓存键不随规格变化**。缩略图重建**不动原图**：`file_size` / `date_modified` 一个字节都没变，所以沿用它拼出的 URL 在重建前后**完全相同**。而网页端 `/thumb/:id` 是 `Cache-Control: public, max-age=86400`、桌面端 `thumb://<id>` 进 Chromium 内存缓存 —— 两条路都不会去问服务端「变了没」⇒ 重建跑完了界面还是旧档位，而且**看起来完全正常**（图是好的，只是旧的）。现在键里带**这一行自己的规格**（`<原图键>-<档位><格式>`，唯一真相源 `renderer/utils.js#thumbCacheVersion`，网页端 `app.js` 与安卓 `Photo.kt` 各一份同形实现）；混规格库里这正是要的行为：重建过的行换 URL、还没轮到的行继续命中旧缓存。
+    - ⚠️ 残留（**有意**，已写进代码注释与文档）：单独调「画质」（档位与格式都不变）再重建时键不变，客户端可能继续显示旧画质直到缓存自然过期（网页端 ≤24h）。把「当前设置里的画质」也并进键能修掉它，代价是给浏览层加一条设置依赖（首帧还没拿到设置时 URL 会「先无后有一套」，白拉一遍），判定为不划算。
+  - 🔴 **列表行不带规格**。服务端那侧早就认识 `thumb_size` / `thumb_format`（响应头按行派生），但**列表查询**一直没取 —— 客户端拿不到「这一行是什么规格」。顺手把「哪些列会发给界面」这件事从 **15 处彼此抄写的 SQL 字面量**收敛成唯一真相源 `src/main/photo-list-columns.js`（`database.js` 12 处 / `db-heavy-read.js` 2 处 / `main.js` 1 处）：加一列只改一处，而漏掉任何一处的症状正是静默的（字段在 SQL 那层丢掉 → JS 侧 `undefined` → 消费端回落硬编码）。
+    - **封面单独一条约定**：三条封面查询的主体是 `ROW_NUMBER() OVER (PARTITION BY folder_path)`，会把整棵子树物化一遍（真库单根 90 万行 / 数分钟）⇒ **不许**把基线列清单整个塞进去（物化宽度 +8%，白等十几秒）。封面只按主键回查那两列（`thumbSpecColumnsPrefixed()`，计划里是 `SEARCH p USING INTEGER PRIMARY KEY`）；「封面行」还是手写白名单对象，所以 `FOLDER_COVER_FIELDS` 与 `folderCoverRow()` 的键被逐位比对。
+    - 🔴 缩略图与原图**用两个键**：`photo://` / `/preview-image/` **继续**用原图键，否则重建缩略图会把原图预览缓存也一起作废（反向断言在守护第 4 组）。
+  - ⚠️ **这条改动当场把三个既有守护的夹具撞红了，值得记一笔**（`query-regression` / `keyword-search-regression` / `browse-grid-style-regression`）：前两个是**手工建表**的夹具漏跑 `ensurePhotosThumbnailMetaColumns()` —— 列清单一旦收口，所有列表查询（含封面查询）都开始 `SELECT thumb_size, thumb_format`，夹具缺列就是 `db.prepare` 当场 `no such column`，报错栈落在查询实现里、看起来像代码写错了（同一条纪律它们早就写在注释里了，这次是**又被踩了一次**：夹具只建「建库期的骨架列」，其余一律交给真实迁移函数）。第三个是按项目惯例从 `app.js` 里**抽函数进 vm** 跑，而卡片 URL 现在要算缓存键 ⇒ 必须把**真的** `photoCacheVersion` / `thumbCacheVersion` 一起抽进沙箱（给替身等于在测替身）。顺手把该脚本的失败输出从「只打 `err.message`」改成打 `err.stack` —— 它当时的输出只有一句 `thumbCacheVersion is not defined`，没有任何帧信息。
+  - 守护 `photo-thumb-url-regression`（218 项，全部在真夹具上跑**返回的行对象**而不是扫 SQL 文本）：① 每个会画缩略图的取数入口都带规格（`getPhotos` / `getFolderPhotos` / `getPreviewAdjacentPhoto` / `getRandomPreviewPhotoBatch` / `searchPhotos` / `searchFolders` / `getPhotosByFileHash` / `getPhotosByDhash` / 三条封面路径）；② 封面白名单与 SQL 投影逐位一致 + `src/` 下不许再出现列表列清单字面量；③ 封面 SQL 不许塞基线清单 + 计划必须是主键探针；④ 两端键公式同形、所有 `thumb://` / `/thumb/` 拼装点都带键、`photo://` / `/preview-image/` 都不带缩略图键、`ai-views` 的 deps 注入不许少、安卓那条也随规格变化。
+
+- **搜图页结果的保留态：从结果里点目录跳走、再回来时结果还在**（2026-10-07）：搜图页的关键词结果里，「文件夹」组复用的是目录浏览那套 `.folder-cover-card`（于是「点卡片跳进这个目录」的委托监听自动生效）—— 但跳过去之后再回到搜图页，**结果全没了**：`enter()` 会清 `state.aiSearchQuery`、`leave()` 会清活变量，用户只能重打一遍。现在两端都记一份**渲染态快照**（查询 / 档位 / 两组的行 / 「更多」翻到第几页 / 状态行文案），离开过一次就原样画回来。守护 `ai-sidebar-regression`（行为 + 两端静态）、`ai-web-views-regression`。契约见 `docs/contracts/reentry-state.md`。
+  - 🔴 **判据是「离开过一次」的一次性标记，不是「有结果就还原」**：`loadPhotos()` 在扫描完成等时机也会跑（→ `loadSearch()`），那次要的是**重搜**（结果跟着库走），不是把离开前那一屏画回来 —— 写成「任何重画都还原」就会把结果**冻在过去**：新入库的照片永远搜不出来，而且不报错、不写日志。反方向同样要成立：从导轨的搜索图标**正常进来**时必须是干净的引导页，不能凭空冒出一屏用户没搜过的结果。判据只允许一份（`searchRestorable()`，`enter()` 与 `loadSearch()` 共用），各写一份必然漂移成「一个画引导页、另一个又还原」的闪烁。
+  - 🔴 **空结果必须作废保留态**：只在**同一个词**上才看得出来（查询不同源时 `refreshRetainedSearch()` 自己会作废）。库被重扫 / 删除之后，同一个词真的会从「有结果」变成「没有结果」，少了这一行就会把「两段都空」的结果壳刷进同源快照 ⇒ 用户回来看到的是一个**看着像搜索成功过**的空壳。给这条写牙时夹具必须走到「先搜到 → 把库改空 → 重搜同一个词」，否则删掉它也全绿（假绿，第一版就这么栽过）。
+  - 🔴 `enter()` 里**干净的进入**要把查询一起清掉，但**必须带 `!restoring` 守卫**：只画引导页却留着查询，会让紧接着那次 `loadSearch()` 又把它搜一遍（同一页在引导页 / 结果之间来回翻），而且语义档会**跳过「模型尚未就绪」的说明**（那段只在空查询分支里给）。去掉守卫 = 回来丢结果，直接违背这次的诉求。`state.aiSearchQuery = ''` 全文件只允许两处（`enter()` 的 `!restoring` 分支 + `startSearch()` 的空提交），空提交是用户主动清空的唯一入口。
+  - 还原必须连**「更多」翻过的页**一起记（`kwFilePage` / `searchShown`）—— 只还原数据不还原渲染基数的话，`renderSearchPage(false)` 会在旧基数上再「+200」，200 张变 300 张，**不报错、只是平白多画一页**。语义档的 `searchShown` 要先把基数退回 `kept.shown - SEARCH_PAGE` 再画。
+  - 网页端 `enterWebAiView()` 补上 `webAiViews.leave()`，与桌面端 `showTabContent()` 首行同口径：原先只在「从 AI 视图退回浏览」时 `leave()`，AI 视图之间切换（搜图 ⇄ 人物）没有 ⇒「去看了眼人物再回搜图」会重跑搜索（闪骨架 + 缩回第一页），而「点结果目录跳走再回来」却能保留，同一条诉求在两条路上表现不一致。
+  - ⚠️ **网页端这次动的是 shell 资源**（`js/app.js` / `js/ai-views.js`，都在 `sw.js` 的 `SHELL_ASSETS` 里）⇒ `CACHE_NAME` v50 → v51、`index.html` 的 `?v=` 同批抬高（`app.js` v4 → v5、`ai-views.js` v2 → v3）。**不改这一处，改动只在新设备上生效**（cache-first 会把旧 JS 一直发下去）。
+    - 顺带查出两条**一直是死条目**的预缓存：`/js/app.js`、`/js/web-theme-shared.js` 在清单里**没带 `?v=`**，而页面请求的是 `/js/app.js?v=5` / `?v=9` —— `caches.match(req)` 按**完整 URL（含 query）**做键，于是这两条预缓存从来没被命中过（首屏离线就缺这两个文件，得等运行时 `cache.put` 补）。已改成与页面逐字相同；同时删掉一条**页面与 manifest 都没引用**的 `/app-icon.svg`（预缓存时白下载一次）。
+    - 🔴 这一整类「清单和页面悄悄错开」原本**没有任何守护**（全是静态判据，全绿；只有真装一次 PWA 才看得出来）。新增 `web-asset-route-regression` 第 ⑦ 组：清单每条必须与 `index.html` / `manifest.webmanifest` 的引用**逐字相同（含 `?v=`）**，并自证「漏 `?v=`」与「凭空多出的条目」都抓得到。顺手修掉该脚本第 ① 组的同类盲区 —— 动态前缀原来写成裸 `'/photo'`，把 `/photo-compare.css` 一起吞掉了（`startsWith('/photo')` 为真），已改成与服务端分支逐字同形的带尾斜杠形态，对账项 15 → 16。
+
+- **搜图页「关键词」搜索：目录与文件**（2026-10-07）：搜图页此前**只有语义（向量）检索**，没装模型 / 没建索引就整页不可用。现在侧栏顶部是「关键词 / 语义」两档**显式开关**（默认停关键词），关键词档零依赖、点开就能搜。`database.js#searchFolders`（目录）+ `searchPhotos({ nameOnly: true })`（文件）**两条请求并行** —— 两者的排序、分页、代价模型都不同，合成一条只会让「只要目录」的那半边白等照片那半边。守护 `keyword-search-regression`。
+  - 目录组按**目录路径**子串匹配并 `GROUP BY folder_path`：这条查询必须走 `idx_photos_folder` 的**覆盖索引**（108,000 行 / 36,000 目录夹具实测 27~49 ms，计划里没有 `TEMP B-TREE`）。🔴 往这条 WHERE 上再加**任何**别的列（`file_type` / `live_still_id` 都算）就会让规划器放弃覆盖索引去逐行回表 —— 那是 `COALESCE(live_still_id,0)=0` 的 **105,954 ms** 同一档，而且不报错。排序 = 末段目录名命中优先，同档按照片数降序；封面与目录浏览共用 `_folderCoverPickOrderBySql()`（各写一份就会出现「搜图页的目录封面和目录浏览里的不是同一张」）。
+  - 两档的判据必须显式二选一，**不许由后端猜**：拿文件名去比画面描述（或反过来）都是静默错答案。`RendererAiViews.search()`（照片信息面板的 AI 标签那条入口）**强制切到语义档** —— 那些词是「海」「雪」这类画面词，拿去比文件名等于搜了个寂寞。
+  - 输入框的 `placeholder` / `aria-label` 是**按档位写进去**的，所以刻意不挂 `data-i18n-*`（i18n 静态重写会把它覆盖回语义档的文案）；切档、切语言都要重画一次档位。
+
+- **关键词档的「文件」组只认文件名**（2026-10-07）：搜「海边」时这一组**只列文件名里包含「海边」的文件**，不再把「所在目录名叫海边」的目录下的几十上百张照片一起倒出来 —— 那是「文件夹」组负责表达的事，两组重叠会让文件组变成一个目录的翻版。`searchPhotos({ nameOnly: true })` + 网页端 `/api/search?nameOnly=1`。守护 `keyword-search-regression`（第 ⑩ 组）。
+  - 🔴 **刻意不复用既有 FTS 路**：FTS5 是**分词前缀**匹配，而 `unicode61` 把一整串汉字切成**一个** token ⇒ `file_name:"日子"*` 匹配不到 `海边的日子_001.jpg`、`"图片"*` 匹配不到 `微信图片_20240101.jpg`（夹具实测两条都返回空）。这一档的用户语义就是「文件名里**包含**这几个字」，所以必须是真子串 `%kw%`。
+  - 🔴 **取批一律钉 `INDEXED BY idx_photos_name`**（1,200,000 行夹具实测三种形态）：钉覆盖索引 + `ORDER BY file_name` = **1~265 ms 且不随命中密度变化**；覆盖索引 + `ORDER BY date_taken` 要 `USE TEMP B-TREE FOR ORDER BY`，75 万命中时 **2,734 ms**；**不加 hint** 时规划器改走 `idx_photos_date` 倒序过滤，命中稠密时最快（1~30 ms），但**零命中要把整条日期索引走完并逐行回表 = 11,522 ms** —— 只在用户搜了个查不到的词时才出现。计数另走一条纯覆盖索引扫描（170~223 ms），结果进 `photosTotalCache`（键前缀 `NAME|`），「更多」翻页不再重算同一个数。
+  - ⚠️ **刻意接受的代价**：排序是**文件名**而不是拍摄时间。按时间排必须先拿到整个命中集，上面那两行就是它的两种代价。文件名搜索按名字排也符合直觉（相邻名字挨在一起），这里要的是**上界可控**。
+  - LIKE 元字符 `%` / `_` / `\` 在两条路上都是**字面量**（`escapeLikeLiteral()` 单一来源，`searchFolders` 与文件名路共用；归一化分隔符必须**排在转义之前**，反了会把归一化插进去的 `\` 自己吃掉）。
+  - `INDEXED BY` 指向**不存在**的索引是直接抛 `no such index`（不是静默降级）⇒ 加 hint 前一律过 `heavy.hasIndex()` 闸门。`NAME_LIKE_INDEX` 常量同时喂 DDL 与 hint，两处一个来源。
+
 - **拍摄参数（EXIF）回填**（2026-10-06）：真库 166 万行里 `camera_make` 非空的**一条都没有** —— 不是「没有带 EXIF 的照片」，而是**两段链路都不产**：扫描期元数据提取整块被 `GENERATE_THUMBNAILS_DURING_SCAN = false` 跳过，而缩略图补全虽然把每个文件都用 **sharp 打开过**，却只读尺寸与 dHash。现在补全任务在**同一次** `sharp.metadata()` 里顺手解析（零额外磁盘 I/O），解析器收敛到唯一来源 `src/main/exif-meta.js`（扫描侧与补全侧各 `require` 一份，都不许直接碰 `exif-reader`）。守护 `exif-backfill-regression`。
   - 拍摄时间落**独立列 `exif_date_taken`** —— 与时间线用的 `date_taken` 是两列、**刻意不同值**：面板上同时出现两条「拍摄时间」正是本意（前者是文件落盘时间）。合并成一列就没有「拍摄时间」可看了。
   - 一并修掉旧解析代码里三处**被 `catch` 吞掉**的取错：① 只翻 `exif.Photo`，而 `Make`/`Model` 在 IFD0（`Image`）、GPS 在 `GPSInfo` ⇒ 品牌 / 型号 / 定位**永远**取空；② `DateTimeOriginal` 被 `exif-reader` 转成 `Date` 后又 `String()` 拼成 `Wed Oct 06 2026 … GMT+0800 (…)` 落库；③ GPS 是 `[度, 分, 秒]` 数组，**绑不进 SQLite**（抛错后整段 EXIF 一起丢）。
@@ -25,6 +420,394 @@ Release versions match the root [`package.json`](package.json) `version` field.
 - **首帧可观测性：渲染层启动阶段上报**（2026-10-06）：新增单向通道 `notify-startup-stage`，渲染层上报 4 个启动阶段（`init.enter` / `settings.done` / `rootFolders.done` / `landing.done`）喂进 `startup-performance.json`；主进程侧**白名单**校验 —— 渲染层能送任意字符串，白名单外一律丢弃。
 
 ### Changed
+
+- 🧹 **`.gitignore` 补 `.workbuddy/`**（2026-10-10，提交前体检）。该目录实测 **282 MB**（`tmp/` 230 MB + `artifacts/` 42 MB + `bench/` 7.3 MB，内含大量探针截图与源码临时快照），历史上从未入库，但 `.gitignore` 里一直没有规则 ⇒ `git add -A` 会一次性把它灌进版本库。契约与设计正文另在 `docs/` 与 `docs/contracts/`，共享不依赖这里。同时把根目录那张**零引用**的散落截图 `people-sidebar.png` 移进 `.workbuddy/artifacts/_strays/`（**未删除**，仍可取回）。
+
+- ⚡ **搜图预选词改走主进程只读 SQL：不再起 worker、不再载模型，≈4 s（冷启 ≈17 s）→ 70–90 ms**（2026-10-09，用户诉求原话「预选词改走 embeddings.tags，主进程开一条只读 SQL 通道（照抄 JoyTagTags 那套），不起 worker、不载模型 → 约 160 ms。代价是要把『hits 只用于过滤与排序、不是张数』写进契约，加守护」）。契约 → `docs/contracts/semantic-search.md` 新增「预选词的两条路」；新守护 `scripts/suggest-terms-regression.js`（已注册进 `run-regressions.js`，**15 条牙齿用例**含 1 条阴性对照）。
+
+  **① 为什么能省掉整条 worker** —— 预选词要回答的只有一句「**这个库里哪些词点下去有图**」，而这份信息**早就躺在索引库里**：建索引 / 补标签那一刻（`src/ai/photo-tags.js`），每张图已经把 top-3 标签的**词表下标**写进 `embeddings.tags`。老实现却每次进搜图页都重算一遍：`loadEncoder`（只载文本塔，≈900 MB 常驻）≈2.1 s + 开索引 ≈0.7 s + 308 词 × 3000 张取样向量逐对点积 ≈1.2 s ⇒ **≈4 s**；冷启还要现算 308 个词的词表向量 **+12.9 s**。
+  - 新实现 `src/main/semantic-tags.js#SemanticTags.suggestTerms` 用 `json_each` 把 `embeddings.tags` **转置**成「词 → 命中张数」，复用的是 `SemanticTags` 那条**已有的只读连接**（读侧多开连接会招 `SQLITE_BUSY`；它的失败取向也一并沿用：读不到就 `{sampled:0, terms:[]}`，绝不抛）。实测 `GROUP BY` **36–45 ms** + 分母 `COUNT(*)` ≈30 ms ⇒ **开库到出结果 48 ms，完整一次调用 70–90 ms**（本机 9406 行）。
+  - 🔴 **顺带查明：老路不只是慢，它还是取样。** `photo_id` 在本机索引上落在 `324737..325141` 与 `1979470..1979844` **两段**上，8 个采样窗口的起点大量落进中间的空档 ⇒ `photo_id >= start LIMIT 375` 反复返回**同一批** ⇒ 去重后 `sampled` 只有 **750 / 9406 = 8%**（`CONTRACTS.md` 里「本库 7374 行 → sampled 稳定 3000」那句是 7374 行时代的结论，库长到现在已不成立）。新路是**全量转置**，一条不漏。
+
+  **② 按入参形状分岔，不是新旧替换** —— `{ lang, limit }`（界面唯一用法）→ 只读 SQL；`['词', …]` / `{ candidates: […] }`（老契约）→ **仍走 worker 的 `suggest` 分支**，因为只有它能对**词表外**的任意词真去打分（SQL 路只能在 308 词的词表里查下标，词表外的词一律 0）。两条路服务两个不同的问题。两侧出口 —— 桌面 `main.js#ipcMain.handle('ai-search-suggest')` 与网页 `web-server.js#handleAiSearchSuggest` —— **判据一致**，回答形状**逐字段一致**（`{ sampled, terms: [{ text, hits }] }`）⇒ 渲染层一行都不用改。网页端这条能力由主进程 `getAiSuggestTerms` **注入**（同 `getPhotoAiTags` / `getTagNavPhotos` 形态：只交能力，不交一个能开连接、能改状态的活对象）。
+
+  **③ 🔴 `hits` 是什么、不是什么（本次刻意写进契约的那条）** —— `hits` = **有多少张图把该词排进了自己的 top-3 标签**，**不是**「搜它能返回多少张照片」。两个原因都不是实现误差：`TAG_MAX = 3`（每张图入库只留 3 个标签，其余概念分数再高也没进库）；`TAG_THRESHOLD = 0.015` 与检索用的 `MATCH_THRESHOLD`（0.01）**不是同一把尺子**。
+  - ⇒ **只许用它做两件事：挡掉 0 命中、排序。** 不许显示给用户，也不许拿它跟「找到 N 张照片」对齐（想显示张数要另外去问检索）。⚠️ 界面只取 `terms[].text`（**根本不显示 hits**）⇒ 这条约束**在界面上看不出来**，只能靠契约与守护。
+  - 守护的判据是**返回条目的键集合恰好 `{text, hits}`**：想加一个像 `count` 的字段，就必须回来改这份契约。
+
+  **④ 🔴 必须按 `tags_key` 过滤** —— `tags` 里存的是**词表下标**，词表一改（增删词），同一个下标指向的就是**另一个概念**：不过滤会把「丝袜」的位置报成别的词，而且**不报错、数值也像真的**。指纹算法与写入方同源（`photo-tags.js#vocabKey(MODEL_KEY, 词表)`），判据与 `IndexStore.pendingTagsCount()` 判「还有多少行待补」**完全一致** —— 那里认为无效的行，这里也不许统计。
+
+  **⑤ 两个小的一致性收拾**
+  - `SUGGEST_LIMIT_DEFAULT = 24` / `SUGGEST_LIMIT_MAX = 64` 挪到 `src/ai/search-vocabulary.js` 作**唯一定义处**（worker 与只读路都引用）。另写一份的后果不是报错，而是「同一个界面元素被两条路服务时条数不同」，而界面只摆 5 个（`SUGGEST_COUNT`）⇒ 差 24 还是 64 **在界面上看不出来**。
+  - 只读路里**刻意不放** `hits > 0` 那种过滤：`GROUP BY` 只产出「至少被一行贡献过」的词，`COUNT(*)` 不可能为 0 ⇒ 那种过滤是**恒真分支**（看着像在挡 0 命中，其实什么也没挡）。真正挡 0 命中的是「过滤后的连接」本身。
+  - 覆盖面只等于**已打标**的那部分图；`sampled` 就是本次真正数到的行数（**与全库张数无关**），为 0 时界面把预选词整块收起（既有取向）。
+
+  **⑥ 验证** —— 新守护在**真夹具库**上跑行为（`tags_key` 过滤 / 同分次序 / 语言映射 / 条数夹取 / 降级不抛 / 只读句柄 / 返回形状）+ 接线（两侧分岔、注入、注释剥离后的「不起 worker」）+ 唯一源；**15 条牙齿用例全部三态命中**（14 条改坏精确变红 + 1 条阴性对照保持绿），四个被改文件逐字节还原。相关守护零连带：`semantic-` / `interaction-preempt-` / `ai-sidebar-` / `ai-web-views-` 全 PASS，eslint 改动文件 0 error。
+
+- 🔴 **图片信息面板的「画面标签」改成跳**标签导航页**的对应标签；「主题标签」保持搜图**（2026-10-09，用户提问「点击画面标签中的词，为什么不跳转到标签而是搜图」）。契约 → `.workbuddy/memory/CONTRACTS.md` 新增「目的地分岔」段；`scripts/photo-info-fields-regression.js` **127 → 139 项**。
+
+  **① 为什么必须分岔。** 两排标签原先共用 `.preview-info-tag[data-ai-tag]` + 同一个点击处理器，一刀切走 `openSemanticSearch()`。但它们**不是一种东西**：`joy_tags` 是 JoyTag 的 5813 个标签（标签导航页里**有节点**），`ai_tags` 是 308 条词表短语（「海滩」/`a beach`，导航页里**没有节点**，只能当查询词）。而且两条路的**结果本来就不是同一批图** —— 搜图走查询线 0.55 + tag 融合排序，导航页走展示线 0.35 全量。所以在面板上看到「盘腿坐」想看看还有哪些张，搜图给的不是那个答案。
+
+  **② 主进程先把全信息给出去**（`src/main/semantic-tags.js#JoyTagTags.tagsFor`）：返回从纯文本数组改成**结构化条目** `{tag, name, node, category}`。`name` 跟 locale，`tag` 是英文原名（导航页节点 id），`node`/`category` 在**主进程**用 `cats.subOf()` / `SUB_TO_CATEGORY` 算 —— 渲染层没有 `ai/tag-categories` 可以自己反查，而 `selectTag` 不带归属就既不展开侧栏树也不高亮（主区有图、侧栏一片没高亮，用户看不出自己在哪儿）。`SemanticTags.tagsFor`（`ai_tags`）**刻意保持纯文本数组不动**。
+
+  **③ 注册表按声明分岔**（`src/web/js/photo-info-fields.js`）：字段加 `tagTarget`（`joy_tags` = `'tagnav'` / `ai_tags` = `'search'`）；新增 `tagEntry()` 归一化两种形状（字符串 / 对象 —— 老数据与纯文本夹具因此一行不用改）；`valueHtml()` 据此出 `data-joy-tag` + `data-tag-node` + `data-tag-category`，或原来的 `data-ai-tag`。⚠️ `value()` 兜底必须走 `tagTextOf()`：对象条目直接 `join` 会拼出 `[object Object]` 摆进读数区。⚠️ `data-joy-tag` **刻意不等于**胶囊文本（文本是中文「盘腿坐」、id 是 `indian_style`）—— 这正是它与 `data-ai-tag` 那条「搜的词就是看到的词」契约的差别。
+
+  **④ 点击分岔 + 跳页**（`src/renderer/app.js`）：`bindPreviewInfoTagClicks` 变两组 `querySelectorAll`（`data-joy-tag` → `openTagNavTag()`；`data-ai-tag` → `openSemanticSearch()` 原样保留）；新增 `openTagNavTag(tag, node, category)`，与 `openSemanticSearch` 同构（先 `closePreview()`，预览是上层遮罩）。🔴 **顺序必须先切页再设 state**：`showTabContent('tags')` 内部会按 `tabMemory` 还原或**清空** `state.currentTag`，反了就「切到了标签页却停在分类总览」（与 `applyBrowseLocation` 的 `case 'tag'` 同一套顺序，照抄它、不另造一条路）。
+
+  **降级是刻意的**：只有**带英文原名的条目**才跳标签页；没有原名的（老数据 / 纯文本条目）**退回 `data-ai-tag` 搜图** —— 拿中文显示名去当节点 id，跳过去只会是 0 张。网页端 `tagClickable` 仍为 false（那边既没有搜图页也没有标签导航页）⇒ 渲染成不可点 `span`，不摆点了没反应的按钮。
+
+- 🔴 **标签搜索改成「提交式」：敲字不再发请求，回车 / 点搜索按钮才搜**（2026-10-09，用户诉求原话「标签搜索不要做成实时搜」）。契约 → `docs/contracts/joytag-index.md` **§16.10 / §16.11**（新增）；`scripts/tag-nav-regression.js` **32 → 51 项**；牙齿 **18/18 精确命中** + **阴性对照 4/4** + 真页面行为探针 5 用例。
+
+  **① 为什么防抖不算数。** 原来是 `SEARCH_DEBOUNCE_MS = 180`：只是把「敲 7 个字母发 7 次」压成「停顿后发 1 次」，**边打边扫的代价一点没省**（打字过程必然夹着停顿，主进程每轮遍历 5813 条标签名）；而且「打一半的词也在搜」本身就是错的 —— 用户看到的是 `yel` 的结果，不是他要的 `yellow`。现在 `input` 事件**只**更新输入框自己的状态，搜索只有一条发起路径 `submitSearch()`、两条入口（**回车** / 输入框右侧**可见的放大镜按钮**）。没有那个按钮不行：以前敲字就出结果，现在敲字什么都不发生，缺一个看得见的出口用户只会认为「搜索坏了」。`SEARCH_DEBOUNCE_MS` / `searchTimer` 干净退场。
+
+  **② 🔴 状态必须分两份：`keyword`（输入框里的字）≠ `lastQuery`（已提交并生效的词）。** `keyword` 非空 ≠ 在搜索态，**搜索态的唯一判据仍是 `searchResult`**。`lastQuery` 承担：重搜点（切语言 / 改展示线）只能重搜**已提交**的词（拿 `keyword` 判就会在用户只敲了半截话时替他把搜索开起来）、网页端 `leave()` 两个词一起清、以及「在途请求对应哪个词」的唯一来源（`runSearch` 里赋值）。
+  - 🔴 **回包判据删掉 `keyword.trim() !== q.trim()`**。实时搜时代它是对的，提交式下它是**错的**：`keyword` 可以合法地不等于最后一次提交的词（按了回车、又在回包到达前敲了几个字）—— 那份回包**才是该显示的**，丢掉它就成了「按了回车没反应」（侧栏停在树上、主区停在上一次的卡片列表）。过期回包**只看代次**。
+  - 🔴 **`exitSearch()` 必须 `searchToken++`**：清空（删到空 / Esc / 清除叉 / 空提交）是显式动作、**立刻**退出搜索态回树；不作废代次的话，在途回包会把刚清掉的结果又贴回来 —— 看起来「清不掉、自己弹回来了」。网页端 `leave()` 同理。
+
+  **③ 🔴 重画必须把焦点还给搜索框。** `renderSidebar()` 用 `innerHTML` 整块重建，旧 input 连同焦点一起被丢掉。实时搜时代也丢，但回包由敲字触发、人早停手了所以不显眼；提交式下**按回车就要重画**，焦点掉了 = 「想改一下关键词再搜一次」的人第二下敲不进任何字 —— 界面看着没坏，只是没反应。做法：重画前记 `activeElement` 与 `selectionStart`，重建后 `focus()` + `setSelectionRange()`。
+
+  **④ UI / CSS / i18n：** 搜索框 = `.tag-nav-search`（flex 行）＞ `.tag-nav-search-field`（**定位锚点**，包输入框与内嵌清除叉）＋ `.tag-nav-submit`（**独立**盒子）。提交按钮不能跟清除叉共用一个绝对定位锚点（否则输入框得白留 50+px 右内边距），且必须与输入框**等高**；类名两端刻意不共用，契约逐条同形。新增词条 `tagnav.searchSubmit`（中「搜索标签（回车）」/ 英「Search tags (Enter)」）。桌面端 `tag-nav.css` 不走 SW 不用抬版本；网页端改了 shell 资源 ⇒ **抬 SW**：`CACHE_NAME` `v60 → v61`、`/js/tag-nav.js?v=2 → v3`、`/tag-nav.css?v=1 → v2`。
+
+  **⑤ 守护与验证：** 判据集抽成模块级 `submitSearchChecks(src, who, opts)` **两端各跑一遍**（桌面 7 条 + 网页 8 条，网页端多一条 `leave()`），并**拆成多条 `check()`** —— 一条 `check()` 堆多个 `assert` 时先红的把后面的盖住，标题只能代表第一条。CSS 侧 `submitSearchCssChecks()` 按「一处定义类名、另一处引用 ⇒ 两侧各钉」钉（`indexOf` 是前缀命中，`.x-submit-y` 这种写歪一位的变体会照样绿）+ 按钮与输入框等高。牙齿 **18 条**（桌面 12 + 网页 6）**全部精确命中**，**阴性对照 4 条**（改 hover 底色 / 改 i18n 文案 / 改 placeholder / 改图标描边粗细都必须**保持绿** ⇒ 证明文案与外观没被钉死）。另加**真页面行为探针**（真模块 + 真样式表 + 真事件，5 用例）：键入 3 字母 **0 请求**、回车 1 请求且**焦点仍在输入框**、再敲字（未提交）仍 1 请求、点按钮 2 请求、清除回树、**在途清空不许被回包贴回来**（这条是 `searchToken++` 的行为级证明，静态断言钉不住）；几何读数确认两端在 240 / 190 两档宽度下按钮与输入框等高、间距 6px、清除叉不与按钮重叠、无横向溢出；网页端 EN 档验证词条走 `t()`（抓硬编码中文）。
+
+- 🔴 **展示线以下（命中数 0）的标签不再列出来**（2026-10-09，用户诉求原话「标签 0 的词不需要展示出来」）。契约 → `docs/contracts/joytag-index.md` **§4.3**（新增）；`scripts/tag-nav-regression.js` **28 → 32 项**；牙齿验证 **12 条全部精确命中**并逐字节还原。
+
+  **① 为什么该滤：过滤以前是反的。** 服务端回 0、界面按 0 置灰。实测（2032 张图 / 1752 个已索引标签 / `photo_tag` 113,280 行）：默认展示线 0.35 下 **1029 个标签的命中数是 0（58.7%）**；67 个子类里 **7 个**、顶层分类里 **1 个**在线以上整块为空。也就是说标签页**过半的行**是「看起来能点、点进去一张图都没有」的灰字。
+
+  **② 唯一源：** `src/main/tag-nav.js` 的 `node()` 与 `search()` 各一处 `.filter((t) => t.count > 0)`（不再回 0 让界面去判）。两端渲染层同时删掉那条已变成死代码的「0 就置灰」分支（`dim: !tag.count`）—— 留着它，**服务端过滤失效时界面只会灰一片**，看不出是 bug。
+  - ⚠️ 节点行（分类 / 子类）的 `dim: !tagIndexed` 是**另一回事**（那种 0 是真的，代表「索引还没铺到这儿」），**不许一起删** —— 守护里一正一反各钉一条。
+
+  **③ 🔴 代价：列表条数 ≠ `indexed`，于是「空」有了两种，必须说两句不同的话。**
+
+  | 判据（过滤**前**的候选数） | 真相 | 用户该做什么 |
+  |---|---|---|
+  | `indexed === 0` | 索引还没铺到这儿 | 去建索引 |
+  | `indexed > 0` 而列表空 | 有标签，但都低于当前展示线 | 去**调低**展示线 |
+
+  `node()` 早就有 `indexed`；`search()` 这次补了**同名同口径**的 `indexed = hits.length`（**不是** `tags.length` —— 后者还被 0 命中过滤与 `SEARCH_TAG_LIMIT` 动过，报它会把「都低于展示线」误报成「没匹配上」）。渲染层两端各一个 `emptyTextFor(indexed, mode)`（`mode` 分「搜不到」与「这儿本来没有」），侧栏叶子把父行已有的 `tagIndexed` 传进 `tagLeavesHtml`（别在叶子那层再问一次主进程）。新增 i18n 词条 `tagnav.belowLine`（侧栏短句）/ `tagnav.belowLineHint`（主区带出路：「可在设置里调低『标签展示线』」）中英各两条。
+  - ⚠️ **节点行上的数字仍是「索引覆盖」口径，故意与列表条数不等**：改成展示线口径要按子类做全表聚合（`photo_tag` 铺满时约 9000 万行）—— 正是本页「父节点不给网格」拒绝的那件事。落差由上面那句空态文案接管。
+
+  **④ 守护与牙齿：** 数据层夹具新增 `blue_hair`（只有 `score=20` 一行 ⇒ 进了索引但在展示线下），断言**双向** —— 只钉「它不在列表里」是假绿温床（删掉过滤 / 改成「不在 `tag_vocab` 里就跳过」/ 夹具标签名打错一个字母，全都照样绿），必须再钉「把线降到入库线，它要带着 `count=1` 回来」。结构层桌面 + 网页各一条（含「不传第三参」的反面、`renderCardList` 必须真的用 `emptyText`、i18n 两包都得有那两条词条）。牙齿 **12 条**（M1–M12，含一条阳性对照：把节点行的置灰一起删掉必须红）**全部精确命中**，被改文件逐字节 sha1 还原。
+  - 网页端改了 shell 资源 ⇒ **抬 SW**：`CACHE_NAME` `v59 → v60`、`/js/tag-nav.js?v=1 → v2`（`sw.js` 清单 + `index.html` script 标签两处同步）。
+  - ⚠️ 牙齿驱动踩到一个新坑（已写进技能铁律 26）：**`grep -E` 匹配不到 4 字节 emoji** —— `expect` 里写 `"✗ 🔴 …"` 恒 miss（`🔴` = `f0 9f 94 b4`），11 条明明精确红了的用例被整片误判成「红的不是目标那条」，看起来像「断言指错」。写法固定成 `'✗ .*' + <不含 emoji 的标题片段>`（`.` 在 UTF-8 下按字符匹配，能跨过它）。⚠️ 排查时**别拿 `grep -F`（固定串）去复核 `grep -E` 的 miss** —— 固定串能匹配，于是会得出「输出里有啊，那一定是脚本别处坏了」这个错误结论。
+
+- 🔴 **图片编辑改成「先预览、点保存才写回」—— 旋转 / 翻转 / 裁剪三个动作都不再一点就改文件**（2026-10-09，用户诉求原话「旋转需要确认才写入变化」；经确认：确认形态 = **先预览、点保存才写回**（不是弹窗二次确认），范围 = **旋转 + 翻转 + 裁剪**）。契约 → `docs/contracts/photo-edit.md` 的「P2 预览态编辑」章；`scripts/photo-edit-regression.js` **130 → 172 项**；**42 条变异全过**的牙齿验证。
+
+  **① 🔴 基石：CSS `transform` 与 sharp 同构 ⇒ 不写第三份数学。** 两侧的求值顺序都是「**最右先作用**」：CSS `transform: rotate(90deg) scaleX(-1)` 是先镜像后旋转，而 sharp 的算子顺序也是 `flip/flop` 先、`rotate` 后（P0 实测过的反直觉事实）。于是把用户点击的动作按**逆序**原样拼进 `transform` 字符串，就与后端逐像素等价 —— **不做任何前端代数合成**（`image-edit.js#composeAction` 是唯一实现源）。两端「动作→CSS 函数」与「动作→逆动作」两张表**逐字相同**由守护按字符串全等钉住。附带效果：**点「相反动作」即抵消**（`rotate-right` 后点 `rotate-left` = 什么都没做），点错一下不必「放弃全部」重来。
+  - 状态形状（两端**逐字同名**）：`previewEditPendingActions`（按点击顺序的动作串）/ `previewEditCssTail`（逆序拼出的 CSS 尾巴）/ `previewRotateDeg`（旋转角**和**，只用来判「是不是 90 的奇数倍」⇒ 布局要不要对调宽高）。
+
+  **② 🔴 保存顺序不可交换：先变换、再裁剪。** 新增 `photo-edit-service#applyEdit` 作为「保存」的唯一入口，也新增了配套的第三条通道 `photo-edit-apply`（IPC + `POST /api/photo-edit-apply` + `preload` + `renderer/api.js`）。理由：`extract()` 工作在 `rotate()` **之后**的坐标系 ⇒ 选框矩形就是「用户看到的（已变换的）那张图」的坐标，前端不需要任何逆变换；反过来写就成了「按未旋转的坐标去裁旋转后的图」，位置整体偏掉且不报错。`normalizeActions` 因此加了 `allowEmpty`（保存路径允许「只裁剪、不旋转」；变换路径仍不许空）。
+  - 🔴 「裁剪落库」抽出唯一实现 `createCropCopy(row, rect)`，`crop()` 与 `applyEdit()` 都只调它 —— 守护**双向**钉（两个函数体里都得出现它）。任一边自己复制一份落库逻辑，P0 那次「`getFullPhoto` 只 4 列 ⇒ `updatePhoto*` 影响 0 行」的静默就会以「只有其中一个入口中招」的形式复现，更难查。
+
+  **③ 🔴 裁剪几何：元素盒 ≠ 图片盒（本轮新踩到、并已实测确认）。** `.preview-image` 是 `width:100%; height:100%; object-fit: contain` ⇒ 元素 AABB 撑满整个舞台，图片在其中**居中留白**。GUI 探针实测：`1178×719` 的元素盒里放一张 `400×300` 的图，图**实际只占 `958×719`**。第一版直接量 `img.getBoundingClientRect()` ⇒ **选框盖住整块舞台、缩放算小 19%（裁出来比用户圈的小）**，而当时**静态断言一条都不红**。
+  - 修法：新增 `viewRect(el, angle)` 作为唯一取几何的入口 —— 按 `contain` 自算图片占据的那块、按**元素中心**对齐、旋转 90/270 时宽高对调、并从 AABB **反推有效缩放**（`offsetWidth` / `naturalWidth` 看不到 `transform`）。`currentRect` / `paint` / `selFromRect` 全部改用它，守护正反双向钉（不许再出现 `naturalWidth / frame.width` 那种硬算），并新增「**前提断言③**」：两端预览图 CSS 确实是 `object-fit: contain` —— 哪天换成 `cover`，算法就该跟着换，前提断言转红是提示「这条理由过期了」，而不是让注释继续替代码作证。
+
+  **④ 裁剪交互随之变化：`commit()` 只记录、不落盘。** 回车确认后**不** `exit()`、**不**调后端，只把 `rect` 记下、`layer` 加 `is-pending` 并回调；选区的出口从「确认即写回」变成工具条上的「保存 / 放弃」。
+  - 🔴 `is-pending` 必须 `pointer-events: none`：该层用 `box-shadow: 0 0 0 9999px` 画遮罩，不吃事件的话**工具条被它盖住** ⇒ 点「保存」等于点在遮罩上（按钮看起来在、点不动）。
+  - 🔴 键盘从「无条件模态」放宽成**两态**：未确认态仍无条件 `stopPropagation`（否则按方向键 = 图换了、选框还留在原地）；**已确认态刻意不是模态**，只接管 Esc（`resume()` 退回可调整）且**不再** `stopPropagation` —— 否则工具条上的空格 / 回车、`Ctrl+S`、方向键全被裁剪层吃掉，而「保存」正是用户此刻唯一的出口。守护按「committed 分支里 `stopPropagation` **有且仅有一处**且在 Escape 判据内」钉。
+  - 🔴 已确认的选区在窗口 resize 后**跟着重排**（`measure()` + `selFromRect(rect, view)`），不再整层丢掉；未确认态仍是退出。
+  - 🔴 **通用弹窗让路**：裁剪的 keydown 与 `showAppDialog` 都挂 `window` **捕获阶段**（后者注释明写「不许别的模块也往这里挂」）⇒ `onKey` 开头判 `#appDialogOverlay` 是否含 `.show`，含则 return。触发场景真实存在：待保存编辑在场时按方向键切图会弹出「放弃未保存的编辑？」，不让路就变成「弹窗弹出来了、按什么都没反应」。
+
+  **⑤ 离开当前图不许静默丢待保存的编辑。** 四条用户出口全挂守卫（桌面端 `guardedClosePreview` / `guardedNavigatePreview` / `guardedOpenPreviewAt` / `guardedToggleSlideshow`；网页端 `guardedClosePreview` + `navigatePreview` + 空格），确认后才丢弃。
+  - 🔴 守卫**刻意放在「用户意图点」，不放进 `openPreview` / `closePreview` 内部**：那两个也被**保存流程**与「查找相似」调用，在里面弹框会把调用方一起卡住（保存后重开当前张 = 自己弹自己）。
+  - 🔴 **唯一清空点** = 两端 `openPreview` / `closePreview` 里的 `resetPreviewPendingEdit()`（散在调用点必然漏）。**不能**清在 `resetZoom` 里 —— 那样「重置缩放」会把待保存旋转从**布局**上抹掉、CSS 变换却还在（图与留白对不上）；`ui-preview.js#resetZoom` 里那行 `previewRotateDeg = 0` 已删。
+  - 🔴 网页端**历史回退**的 `closePreview(true)` **刻意不走守卫**：`popstate` 是用户已经按了后退键（地址栏都变了），再弹确认框等于「后退被吞」。守护反向钉住这条。
+
+  **⑥ 键盘 / 工具条 / 文案。** 新增 `preview.editSave`（`Ctrl+S`，`scope: 'preview'`）+ 工具条两个结算键 `previewEditSaveBtn` / `previewEditDiscardBtn`（新增 `icon-check` / `icon-undo`），**只在有待保存内容时才亮**；网页端在 `document` keydown 里接 `Ctrl/Cmd+S` 并 `preventDefault()`（不拦 = 浏览器弹「保存网页」把 app 的保存顶掉）。`R` / `Shift+R` 现在是「只改预览」，`title` 与 `preview.rotateTitle` 都改成「只改预览，保存才写回」。i18n 中英各加 10 条。
+  - 🔴 文案用「**图片**」不用「照片」（`ui-wording-regression` 有零「照片」红线）。
+  - 网页端改了 shell 资源 ⇒ **抬 SW**：`CACHE_NAME` `v58 → v59`、`/js/app.js?v=7 → v8`（三处同步：`sw.js` 清单 + `index.html` 的 preload 与 script 标签）。
+
+  **⑦ 🔴 牙齿验证抓出「五种假绿」，写同类断言时别重犯**（已写进契约抬头表）：① `indexOf('名')` 被 `名X` **子串命中** ⇒ 用 `new RegExp('\\b'+n+':\\s*function')`；② 拿 `/resume\(\)/` 当「有调用点」，被**定义** `function resume()` 自己满足 ⇒ 判**出现次数 ≥ 2**；③ 在整份 `webAppCode` 里找 `state.previewEditCssTail`，那个符号在 state 声明与 `repaintPreviewEdit` 里到处都是 ⇒ 必须先 `functionSource(...)` 取**函数体**；④ `/onlyWhilePending/` 当「两个键都把住了」，摘掉**一个**按钮的开关仍为真 ⇒ 判**恰好 2 处**；⑤ `functionSource` 结果不判空 —— 函数被删/改名后切出**空串**，`''.indexOf('照片') < 0` **恒真**（本轮把已删除的 `commitPreviewCrop` 留在文案断言列表里，正是这个形态）⇒ 先 `body.length > 0`。⚠️ 另有「结构断言读注释」的老坑：`functionSource` 切的是**原始源码**（不去注释），「函数体不许出现某词」会被一句解释性注释满足**或恒红** ⇒ 一律喂 `code(...)` 剥过注释的那份。
+  - 顺带补齐：`photo-edit-apply` 这条**新通道此前一处都没钉**（IPC 注册 / 扫描中拒绝 / HTTP 路由 / preload 通道名 / `api.has` 询问），守护五组一并扩到三通道 —— 正是契约「七处会同时失效的链路」里最容易漏的那类。
+
+- **照片信息面板收紧密度（桌面端 + 网页端同步）**（2026-10-09，用户诉求「修改图片信息弹窗改紧凑点」）。
+  - 改动落在**两份镜像样式**：桌面端 `src/renderer/styles.css` 的 `.preview-info-*` 段 + 网页端 `src/web/index.html` 内联同名段（类名两端共用，数值逐项对齐同一次改完）。面板骨架与字段注册表（`photo-info-fields.js`）不动 —— 纯样式收紧，DOM 结构零改动。
+  - 数值：标题栏/分组内边距 `18px 24px → 12px 16px`；行 padding 桌面 `7px 10px → 4px 8px`、网页 `6px 0 → 4px 0`；值字号 `13px → 12px`、行高 `1.5 → 1.35`；标签列 `min-width 56 → 50px`（网页 `72 → 64px`）；胶囊 `2px 9px/12px/1.6 → 1px 8px/11px/1.4`、胶囊间距 `6 → 4px`；分组标题 `11px/mb10 → 10px/mb6`；空态 `40px 24px → 24px 16px`；面板宽度 **360px 不变**（收窄会让长值换行反而变高）。
+  - **实测**（Electron 无头探针：真 `index.html` 全 9 张样式表 + 注册表夹具 24 行 / 7 分组 / 11 个胶囊）：内容总高 **1311 → 955（−27%）**，单行高 `34 → 24px`，标题栏 `65 → 49px`；同屏可见字段约 12 → 20 行，文字与胶囊仍清晰。
+  - 🔴 网页端 shell 资源（`index.html`）改动 ⇒ `sw.js#CACHE_NAME` `v55 → v56`（cache-first 客户端否则永远拿旧字节）。
+  - ⚠️ 探针自身踩坑（复用 `electron-ui-screenshot` skill）：把面板 `appendChild` 到 body 独立定位后，仍被 `#previewOverlay`（更高 z-index 的 fixed 层）盖住 —— **裁剪图里没出现人为的红 outline 标记 = 被盖住了**，先修层级再出图；判「紧凑了多少」以 DOM 几何读数（`scrollHeight` / 行高）为准，截图只看观感。
+
+- **界面术语区分：照片信息面板「AI 标签」→「主题标签」（英文 `AI Tags` → `Theme tags`）；「画面标签」中文不变、英文 `Content tags` → `Visual tags`**（2026-10-09，用户诉求「AI 标签和画面标签的文案需要调整区分」）。
+
+  **为什么**：同一个「AI 内容」分组里并列的两行**都来自 AI**，旧名「AI 标签」既没信息量、又与「画面标签」无法区分。改名后按**来源与粒度**对位 —— **主题标签** = SigLIP2 零样本分类出的**场景/主题**（`search-vocabulary.js#TERMS` 308 词、最多 3 个、胶囊可点跳搜图）；**画面标签** = JoyTag 打标的**画面元素**（`joytag-labels.txt` 5813 词、最多 24 个、供标签导航页）。英文端原值 `Content tags` 与中文「画面」并不对位，顺带换成 `Visual tags`，中英一一对位（主题↔Theme / 画面↔Visual）。
+
+  - 🔴 **唯一源** `src/web/js/photo-info-fields.js`：桌面端 `renderer/index.html`、网页端 `web/index.html` 与主进程**共享同一份注册表**（主进程也 `require` 它）⇒ 面板行、设置页字段勾选框、两端渲染一次改完，没有第二条渲染路径。
+  - 🔴 **同步既有守护**：`photo-info-fields-regression` 有两条钉住旧文案的断言，其中一条是**负向断言**（`没有标签时整行隐藏`，判据 `!html.includes('AI 标签')`）—— 只改源码不改它，它会**变成恒真**（夹具自证失去检出能力，且**不报红**）。已一并改到新词（`主题标签` / `Theme tags`）。
+  - **注释一并统一（39 处 / 14 文件）**：源码与守护注释、探针 stdout 里的「AI 标签 / AI 内容标签 / AI Tags」全部改为「主题标签 / Theme tags」。留着旧词就是给下一个会话递「照注释把旧词写回界面」的把手。
+  - 🔴 网页端 shell 资源（`/js/photo-info-fields.js`）内容改动 ⇒ `src/web/sw.js#CACHE_NAME` `v54 → v55`（cache-first 客户端否则永远拿旧字节）。
+  - **验收**：全量回归 `EXIT=0` + 末项 `[ai-lifecycle-regression] PASS` + **✗ 0**（86 个 PASS）；`photo-info-fields-regression` **PASS（127 项）**；渲染直取实证 zh `主题标签` / `画面标签`、en `Theme tags` / `Visual tags`，空值整行隐藏仍成立；lint 与基线一致（0 error / 2 warnings）。
+  - **刻意不在范围内**：`CHANGELOG.md` 本文件与 `docs/lap-comparison.md` / `docs/RELEASE_PLAN.md` 是**历史记录**，条目保留当时的用词（同 `docs/contracts/`：那里面只有「画面标签」，名字未变，无需改）。
+
+- 🔴 **「标签展示线」变成设置项：从常量改为可调，改完立刻生效（免重启）**（2026-10-09，用户诉求「设置可调，调了怎么生效」）。契约 → `docs/contracts/joytag-index.md` **§4.2**（新增）+ §4 阈值表。
+
+  **为什么该可调**：0.35 只是**一次实测**的取舍（保留 30.9% 行 / 41.3% 标签 / 0 张图会「一个标签都不剩」），而不同库的噪声水平不一样 —— 拍得糊的库 0.35 仍会漏噪声、拍得干净的库 0.35 又砍得太狠。硬编码等于替所有用户做了这个**纯口味**决定。
+
+  **① 唯一源与范围**：新增 `src/ai/tag-index-store.js#TAG_DISPLAY_RANGE = { min: STORE_MIN_SCORE, max: TAG_ROUTE_THRESHOLD, step: 0.01, default: DISPLAY_MIN_SCORE }` —— **上下界就是那两条硬约束本身**（低于入库线的行库里根本不存在；高过查询线 = 导航比搜索还严，标签页看起来像缺图），写成引用而不是字面量，谁改了入库线/查询线却忘了改这里，守护会红。`DISPLAY_MIN_SCORE` 降级为**默认值**，夹取走唯一实现 `clampDisplayMinScore()`（空值/非法回落默认值、越界夹取并对齐 0.01 步长 —— 只有 2 位小数时 `quantize(线)` 才与 `线×100` 逐值相等）。
+
+  **② 设置项** `settings.json#aiTagDisplayThreshold`（`createDefaultSettings()` + `ensureSettingsShape()` 夹取 + 网页端快照白名单成对维护）。面板入口在桌面端「设置 → AI 与索引 → 标签检索层」的**第三行**「标签展示线」；🔴 它**不随「启用标签检索层」开关置灰** —— 展示线管的是「标签页与照片信息面板显示什么」，与「搜图走不走 tag 路」是两件事，关掉检索层用户照样在看标签页。
+
+  **③ 「调了怎么生效」的三段链路**（这是本次真正的题目）：
+  1. **落库**：面板 `change` → `updateSettings({tagDisplayThreshold})` → 主进程当帧写进内存 `settings` → 夹取 → 落盘；
+  2. **读侧即时**：`TagNav` / `JoyTagTags` 构造函数改为接受**取值器**（`{ displayMinScore: function () { return settings.aiTagDisplayThreshold; } }`），**每次查询现取、不缓存** ⇒ **下一次取数就生效，不重启、不重建索引**。🔴 必须是**读模块级 `settings` 的函数**：`reloadSettingsFromDiskSilently()` 是 `settings = Object.assign(...)`（整个对象被换掉），写成 `var s = settings; () => s.x` 会永远读到那个已被丢弃的旧对象（症状：改了没反应、且不报错）。两处注入必须挂**同一个设置键**（守护按该行**出现次数 === 2** 钉）；
+  3. **界面即时**：屏幕上已经画出来的数字不会自己重画（标签页 `subTags` 是渲染层进程级缓存）⇒ 渲染端 `tagLayer.write` 在写成功后调 `tagNavUi.invalidateCounts()`（`tag-nav-ui.js` 新增：清 `subTags`/`searchResult` + 记 `countsDirty`；人已回标签页则立刻重取重画，人还在设置页由 `enter()` 进页时补齐）+ `refreshOpenPreviewInfoPanel()`。🔴 `invalidateCounts` 里**「清缓存」必须排在「判断在不在标签页」之前** —— 反了就是「人在设置页改完等于什么都没做」，界面上完全看不出来（照搬 `refreshLocale` 的「先判在不在页」写法就是这个坑）。
+
+  **④ 量化口径收口**：两处读侧从 `Math.round(DISPLAY_MIN_SCORE * 100)` 改为 `quantize(this.displayMinScore())` —— 入库分数就是 `quantize(概率)` 存下的整数，只有同一个函数换算才能保证「概率 ≥ 线」与「整数分 ≥ 换算结果」逐行等价。
+
+  **⑤ 守护与牙齿**：`tag-nav-regression` 新增 **2 条**（`28 项`）—— 行为条「换掉 getter 的返回值，同一个 `TagNav` 实例下一次查询就换口径（`countsForTags` 同步）」，专抓「把值缓存成字段」与「只现取一处」两种写错法；结构条扩成「两处必须挂在同一个设置键上」+ 渲染层条「展示线改完必须让缓存失效（含清缓存与判页的先后）」。`tag-fusion-regression` 补跨端镜像（面板那份 `TAG_DISPLAY_RANGE` 逐字段比对主进程唯一源）+ 三个设置必经点 + 「不随开关置灰」正反两面。`match-threshold-regression` 新增一段**假 DOM 行为测试**（空框回落默认值、越界夹取、部分更新只带 `tagDisplayThreshold`、拨过开关后迟到的 read 仍要回填展示线、恢复默认）。
+  **牙齿验证 8/8 精确命中并逐字节还原**（`.workbuddy/tmp/teeth-display-line.sh` + `teeth-cases2.json`；手工件）：M1 两处注入挂了不同设置键 → 「展示线是唯一源」红；M2 取值器被当成构造期常量 → 「免重启生效」红；M3 不记脏标记 → 「让渲染层缓存失效」红；M4 展示线跟着开关置灰 → 「不随开关置灰」红；M5 `min` 脱离入库线 → 「展示线是唯一源」红；M6 面板写死 0.15 → 同上红；M7 读回并进 `tagTouched` 那段 → 「读回有独立分支」红；M8 面板不再夹取 → 断言「超过查询线要夹回上界」红。
+  **⑥ 验收**：全量回归 `NODE_EXIT=0` + 末项 `[ai-lifecycle-regression] PASS` + **1424 项 ✓ / 0 ✗**；lint 回到基线 **0 error / 2 warnings**。
+  ⚠️ 中途被**既有守护抓到一处真问题**：新写的面板说明文案里用了「照片信息里的画面标签」——
+  `ui-wording-regression` 的「界面文案零『照片』」判据（前端混用「图片/照片」会让用户以为是两种东西）当场红，
+  改成「**图片**信息里的画面标签」后 `PASS（12 项）`。这正是那条守护存在的意义：新文案一律用「图片」。
+
+  ⚠️ 驱动脚本自身踩到一个坑并已修正：Python 的 stdout 在 Windows 是 CRLF，`read` 只吃掉 `\n` ⇒ **最后一个字段**带着 `\r`（`mode="msg\r"`），`[ "$mode" = "msg" ]` 恒假、判据静默走错分支，症状是「守护没跑起来」而日志里明明有 `AssertionError`。所有字段一律去尾 `\r`。
+
+  **已知取舍**：网页端没有这条设置项（网页端设置页只剩「这台设备自己的浏览偏好」），它**照用桌面端设置**；桌面端改完后网页端在**下次取数**（切节点 / 刷新）时跟着变，页面上已有的数字不会自己重画。
+
+- 🔴 **抬高「标签展示线」：低分区的 JoyTag 噪声不再当结论显示**（2026-10-09，用户诉求「展示线抬高」）。新增唯一源 `src/ai/tag-index-store.js#DISPLAY_MIN_SCORE = 0.35`，**标签导航页**（`src/main/tag-nav.js`）与**照片信息面板**（`src/main/semantic-tags.js#JoyTagTags`）共用；契约 → `docs/contracts/joytag-index.md` §4.1 + §16。
+
+  **为什么原来不对**：入库线 `STORE_MIN_SCORE = 0.15` 是照「查询线 0.55」定的 ——「存下来的行将来**可能**被查到」。它从没考虑第二种用法：**把这些行直接当结论摆给用户看**，而导航页与信息面板正是这种用法，于是 0.15 的「噪声概率」被当成事实显示。真库实测（2032 张已打标 / `photo_tag` 113,280 行）：
+
+  | 观察 | 数据 |
+  |---|---|
+  | 15..29（低分区）占全部倒排行 | **69,066 行（61%）** |
+  | 1752 个标签里「最高分 <30」（整个标签没一张有把握） | **892 个** |
+  | 抽 top1 **肉眼核对** | `black_hair`(83) ✓黑发 / **`blue_sky`(22) ✗ 没有天空（浅色床单）** / **`cat`(21) ✗ 没有猫** |
+
+  ⇒ 误报**全部落在低分区**。取 **0.35** 后保留 35,059 行（30.9%）、723 个标签（41.3%），且 2032 张图**每张仍有 ≥1 个标签**（不会出现「点进去全空」）。要松/紧要改只改这一个数（0.30 → 39.0% 行 / 49.1% 标签；0.40 → 25.1% / 34.1%）。
+
+  - 🔴 **三处同口径，缺一即「界面写 A 张、点进去 B 张」且不报错**：卡片上的「N 张」由 `countsForTags` 给、点进去的总数由 `rankedPhotoIds` 给 —— 两处**必须同一条线**（这次同时给 `countsForTags` 补上了 `score >= ?`，它此前**完全没过线**）。
+  - 🔴 **面板必须跟导航共用同一常量**：分家会造出「面板列着『蓝天』、去导航点『蓝天』0 张」的错位。`JoyTagTags.tagsFor` 的 SQL 相应加上 `pt.score >= ?`。
+  - 三条硬约束进守护：`DISPLAY_MIN_SCORE ≥ STORE_MIN_SCORE`（低于入库线的行根本不存在）、`≤ TAG_ROUTE_THRESHOLD`（高过查询线 = 导航比搜索还严，标签页看起来像缺图）、两处同口径。
+  - 守护 `scripts/tag-nav-regression.js` **22 → 24 项**：`rankedPhotoIds` 那条改为**双向**钉（插一张刚过线的行**必须计入** + 插一张线下的行**必须排除**），新增「展示线是唯一源」整条。牙齿验证 6 例（revert 回入库线 / 只改一半 / 面板分家 / 面板写字面量 / 抬过查询线 / 低于入库线）**全部精确变红**。
+  - ⚠️ 记录一个**假牙教训**：只钉「刚过线的行还在」是不够的 —— 把阈值改回入库线**照样绿**（旧口径本来就会算它）。必须有线下的用例，抬没抬线守护才看得出来。
+
+- **文档面同步用词：`docs/**` + 三个 README + `promo-site` + `package.json` 描述，共 28 文件 217 处「照片 → 图片」**（2026-10-08，用户拍板「全部一起改」）：
+
+  - **在范围内**：`docs/**` 的 md / html、`README.md` / `README.zh-CN.md` / `android-app/README.md`、`promo-site/index.html`、`package.json` 的 `description`（「支持百万张图片的本地相册」）。
+  - 🔴 **故意排除两类，理由留在这里**：
+    **① `CHANGELOG.md`** —— 它是**历史记录**，条目必须保留当时的用词。本文件里就有一条标题叫「界面用词统一：静态图一律叫「图片」（**不再是「照片」**）」；一起替换会变成「（不再是「图片」）」，既自相矛盾、又把决策信息抹掉。同类还有 `.workbuddy/memory/**`（记忆与契约）。
+    **② 数据** —— `models/**`（模型词表，`tokenizer.json` 里也有这个词）、`scripts/tag-vocab-coverage.json`（覆盖率快照，被 `tag-vocab-regression` 钉住）、`src/**`（上一轮已处理，且那里剩下的三处就是数据）。改这些等于让已建索引 / 分词口径作废。
+  - **保护串**（先占位 → 替换 → 还原）：`一张照片 a photo`（`docs/local-ai-search.md` 引用 `GENERIC_TEXT`）、`黑白照片`（语料标签）、`实况照片`、`照片/图片`。替换后范围内残留的「照片」**正好只剩这两个保护串**，等于顺带自证了保护清单没漏。
+  - 🔴 **顺出 4 处「文档写的控件名 ≠ 界面实际控件名」** —— 这类替换**只会造出一个不存在的名字**，而且看起来毫无异常：
+    - `README.zh-CN.md` 的「启动默认页：欢迎页、~~所有图片~~、所有目录或恢复上次位置」与「与「~~全部图片~~ / 全部目录」等入口配合使用」——枚举的是启动页 / 侧栏入口，**真实名字是「所有文件」**（`settings.launch.allFiles` / `sidebar.allFiles`，该档位**不筛媒体类型**）；
+    - `README.md` 同两处 `All photos` → **`All files`**；
+    - `README.md` 的 `media type (all / images / videos)` —— 英文端真实取值是 **`Photos only`**（`filter.image`）⇒ 改成 `photos`；
+    - `docs/startup-home-plan.md` **13 处**「所有图片」（替换前是「所有照片」，即旧档位名）→ **「所有文件」**，并把该文引用的 `sidebar.allPhotos`（**不是真键**，真键是 `sidebar.allFiles`）一并改对。
+  - 📌 **教训**：用词统一在文档面的判据不是「没有旧词了」，而是**文档里出现的每个控件名都能在 `i18n.js` 里找到**。已写进技能 `ui-wording-sweep-guard` 铁律 15（控件名回查）/ 16（`CHANGELOG` 不在替换范围），并配了「在范围内 / 故意排除」两栏必须显式列出 + 写清理由。
+
+- **空态提示与骨架屏文案按媒体档位切换（全部 / 仅图片 / 仅视频）**（2026-10-08，承接上一轮用词统一，用户追加「还有仅图片、仅视频、全部时的页面提示和加载文案切换」）：
+  - **四张脸 → 九张脸**：改前网格空态与加载态各只有一句话（「暂无照片」/「正在加载…」），而浏览页有三档媒体过滤（`all` / `image` / `video`）。切到「仅视频」看一个只放图片的目录，界面说「换个位置看看，或到设置里添加目录」——**提示指向的动作是错的**（位置和目录都没问题，是档位把它滤空了）；切到「仅图片」同理。现在文案跟着档位走，并且**副提示给出可执行的下一步**：「这里没有视频，可切到「全部」或「仅图片」看看。」
+  - **落地矩阵**（用户拍板的四条）：标题用 `暂无{X}` 句式；「全部」档的 `{X}` 用**「图片与视频」**（不用「文件」——避免与侧栏「所有文件」这个**含视频的总集**档位撞词）；副提示必须是**可执行动作**而不是事实陈述；文案**搬进 i18n**（桌面端）。`src/renderer/i18n.js` 新增 **9 对**中英键：`grid.emptyTitle{All,Image,Video}` / `grid.emptyHint{All,Image,Video}` / `grid.loading{All,Image,Video}`。
+  - **唯一真相源建在 `ui-grid.js`**：新增 `MEDIA_FILTER_TEXTS = { all|image|video: { suffix, title, hint, loading } }` + `mediaFilterTexts(mediaFilter)`（非法档位一律归 `all`）。`suffix` 同时是**词条的尾巴**（`'grid.emptyTitle' + suffix`）⇒ 改档位名 = 改词条键，注释里写死了这条耦合；再加一档只需在表里加一行 + 补 3 个词条。
+    - 🔴 **判「有没有词条」不能写 `if (t(key))`**：`I18n.t()` 在缺词条时**返回键本身**（不是 `undefined`），直接用它当显示值会让界面出现 `grid.emptyTitleAll` 这种原始键。`ui-grid.js#tGrid(key, zhFallback)` 因此必须写成 `var s = t(key); if (s && s !== key) return s;` —— 同时它让**网页端与旧语言包**都能拿到中文兜底。
+  - **两份实现同一次改动里改完**（桌面 `renderer/` 与网页 `web/js/` 无共享模块，这是本项目的老账）：网页端没有 i18n、中文硬编码，所以两边的**中文串必须逐字一致**，并在注释里互相写明「与另一端 `MEDIA_FILTER_TEXTS` 同口径」——**没有守护能替你发现单边漂移**（`i18n-pack-regression` 只管桌面端词条对账）。
+  - 🔴 **顺手抓住一个本来会漏掉的第三档：搜图空态**。网页端 `renderPhotoGrid` 的空态与浏览页**共用同一段代码**，所以「换个位置看看，或到设置里添加目录」在搜不到结果时同样是错的（位置没变、目录也在）。现在先按 `state.currentView === 'search' && state.searchQuery` 分流：「没有找到匹配的内容」+（非 `all` 档时）「换个关键词试试，或把媒体筛选切到「全部」。」。桌面端搜图走的是另一套空态（`ai-views.js`），本轮不动。
+  - ⚠️ **`showSkeleton('folders')` 不能跟着档位走**：它的调用点是目录列表（`state.folders`），与媒体过滤无关，加了媒体分支后必须保留「正在加载目录列表」这条独立分支（网页端 `showSkeleton(gridHint)` 用 `gridHint === 'folders'` 早退）。
+  - `src/renderer/app.js` 的浏览骨架调用改为传 `mediaFilter: normalizeMediaFilter(state.mediaFilter)`（不再传死 `loadingLabel`）；`src/web/sw.js` 的 `CACHE_NAME` 升 `v52 → v53`（shell 资源变了，不升则线上用户永远拿不到新文案）。
+  - **验收**：`npm test` **exit=0、82 项 PASS、0 FAIL**（末项 `ai-lifecycle-regression`），其中 `i18n-pack-regression` **中英各 753 条**（744 → +9，正是本轮新增的 9 对）、`web-asset-route-regression` PASS（预缓存 17 条，`sw.js` 已同步）、`check-text-corruption` 未发现乱码或缺字；`npm run lint` **0 error / 2 warning**（既有基线）。
+
+- **界面用词统一：静态图一律叫「图片」（不再是「照片」）、`folders` 导航项叫「文件夹」、网页端 `view=all` 档位叫「所有文件」**（2026-10-07，用户拍板「反过来统一叫图片」）：
+  - **为什么反向选「图片」**：中文端本来 43 处「照片」只 7 处「图片」，但**英文端这些位置本来就是 `Photo`**（`web/js/photo-info-fields.js` 甚至同一文件里 `图片` / `Photo` 自相矛盾）；而且库的主体是图包 / 画册，不是相机照片。全站从此只剩 **图片 / 视频 / 文件夹 / 文件（含视频的总集）** 四个词。
+  - **覆盖面**：`src/` 下 **62 文件 593 处**（**注释一并改** —— 否则下一个人照着注释就把旧词写回新文案；其中 28 处是验收后并行会话新写的文案 / 注释，已**补扫**）、`src/web/manifest.webmanifest` 的 PWA 描述、`android-app` 的 Compose 字面量。
+    ⚠️ **补扫不能盲跑**：自己写的那两条「统一 照片/图片 用词」说明性注释会把「照片/图片」改写成「图片/图片」，`GENERIC_TEXT` 与「黑白照片」也会被再次误伤 ⇒ 保护清单必须先占位再替换（见技能 `ui-wording-sweep-guard`）。
+  - 🔴 **三处必须排除，它们是数据不是文案**（改了 = 已建索引口径作废）：
+    `ai/embedding.js#GENERIC_TEXT = '一张照片 a photo'`（基线差文本，**没有守护覆盖**，只能靠人工分类抓）、
+    `ai/search-vocabulary.js#TERMS` 的 `['黑白照片', …]`、
+    `ai/tag-vocabulary.js` 的 `黑白照片: {…}` —— 最后这条当场被 `tag-vocab-regression` 抓红
+    （`词表内容变了（tags / mode / missing 之一），但结构层快照没重建`）；
+    **正确反应是还原，不是跑重建脚本**（重建会白重跑约 1000 s 语料）。
+    另两处刻意保留：`实况照片`（Apple Live Photo 官方中文名）、「照片库」→ 降级为「图库」。
+  - 🔴 **顺手修掉一个真 bug + 一个死键**：网页端侧栏把 `view=all` 叫「所有照片」，而桌面端刻意叫「所有文件」并在 `index.html:1435` 写明了原因（该档位**不筛媒体类型**、视频也在里面）⇒ 两端现已同口径；`toolbar.allPhotos` 是**全工程零引用的死键**，值也一并对齐成「所有文件 / All files」，免得将来接线时把 bug 引回来。
+  - 🔴 **三条守护必须同改，否则就是假绿**：`ai-web-views-regression`、`home-page-regression`（`words: ['照片','视频']` —— 它钉的是「卡片说明提到的能力在同卡有入口」）同步新文案；`perceptual-hash-share-regression` 那条**负向**自证 `!mainSrc.includes('否则带 EXIF 方向的照片')` 因正文改名而**变成恒真** —— 不改就是悄悄失去检出能力（⚠️ 它读的是 `src/main.js`，而该句实际在 `src/main/perceptual-hash.js`，**本来就是个空断言**，另记待办）。
+  - 改了网页端 shell 资源 ⇒ `src/web/sw.js#CACHE_NAME` v51 → **v52**（cache-first，不升则已装 PWA 永远看不到新版本）。
+  - **验收**：`npx eslint .` **0 error / 3 warning**（多出的 1 条在 `scripts/gpu-probe-regression.js`，属并行会话在途改动，非本批引入）；`tag-vocab-` / `photo-info-fields-` / `photo-tags-` 与 15 条受影响守护（`check-text-corruption` / `ai-web-views` / `ai-sidebar-` / `home-page-` / `stats-count-parity-` / `sidebar-tree-` / `web-asset-route-` / `keyword-search-` / `people-page-` / `browse-grid-style-` / `theme-` / `css-reference-` / `dead-reference-` / `shortcut-contract-` / `photo-metadata-backfill-`）**全部 PASS**。
+  - **全量 `npm test` 绿**（跑到末项 `ai-lifecycle-regression` PASS、中途零 `FAIL`；`check-text-corruption` 报「未发现疑似乱码或缺字」，`i18n-pack-regression` 中英各 744 条键对齐）。
+    ⚠️ 验收期间曾稳定红在 `query-regression`（根目录聚合 `SELECT COUNT(*) AS n FROM photos WHERE root_id = ?` 未钉覆盖索引，`src/db-heavy-read.js:372`）—— 那是**并行会话正在改那个文件**（mtime 20:32 / 20:38 / 20:39），与本批文案无关，**没有去动别人的在途改动**，等它自己落地后自然转绿。这正印证本仓库元规则⑥：**判「全绿」前先核「回归起跑 > 最后一次改码」**。
+  - 方法论已固化成技能 `ui-wording-sweep-guard`（含「先分类界面文案 / 数据 / 代码判据」「转义 `\uXXXX` 形态要单独处理」「负向断言会被改成恒真」三条红线）。
+
+- 🔴 **日期 / 星期按语言显示：英文界面由 `10月8日` / `周四` 变成 `Oct 8` / `Thu`**（2026-10-08，就是 `app.js` 全域 i18n 化那批记成「独立主题、刻意不做」的**日期本地化**）：
+  - **为什么不能走词条表**：`10月8日` → `Oct 8` 不只是换词 —— 月名与语序都要变。⇒ 走 `Intl.DateTimeFormat`，住在 `I18n` 里（它因此有了 `t` 之外的**第一个格式化器**）；也正因如此，「中英两包逐条对齐」那套包级守护（`i18n-pack-regression`）**完全管不到它**，必须单独成守。
+  - **链路三层，真相源在 `i18n.js`**：`i18n.js#formatDate` / `#formatWeekday`（`Intl` 派生，导到 `global.I18n`）→ `utils.js#formatDateLabel` / `#getWeekday`（**先问 `global.I18n`**、每次调用时查，取不到再走中文兜底）→ `app.js:7957/7965` 的 `RendererUtils.X || …`。**`app.js` 零改动**：`||` 形状不变 ⇒ ④c 豁免不必动；三个显示点（日期侧栏 `:3431`、路径栏 `:3796`、导航历史 `:3980`）自然跟着变。日期分组用的仍是**原始** `YYYY-MM-DD`（`data-date` / `isActive` 不承格式化串）。
+  - 🔴 **两条红线，缺一条都是静默错**：
+    - **必须钉 `timeZone: 'UTC'`**：日期分组里的 `YYYY-MM-DD` 表示「那一天」而不是某个时刻。不钉 ⇒ `TZ=America/New_York` 下 `2026-10-08` 被算成前一天（`Thu` → `Wed`），而中文用户**永远看不到**。
+    - **formatter 缓存 key 必须含 `current`**（`current + '|' + kind`）：`new Intl.DateTimeFormat` 实测 **0.0725 ms/次**（2000 次 145 ms，复用只要 2 ms）而日期侧栏一次渲染几百项 ⇒ 必须缓存；而 key 少 `current` ⇒ 切到英文仍命中中文那份（症状：**英文界面显示 `10月8日`，切回去再看又是对的**）。上界 = 语言数 × 2 ⇒ 刻意**不写**失效逻辑（那是永远不承重的装饰代码）。
+  - 📌 **同一组 option 在两个语言下各自正确**（实测，**不需要按语言分支**）：`{ month:'short', day:'numeric' }` → `10月8日` / `Oct 8`；`{ weekday:'short' }` → `周四` / `Thu`。`month:'long'` 在中文里没有长短之分、英文会变成 `October 8`（侧栏挤）⇒ 统一 `short`。
+  - ⚠️ **中文侧有一处可见变化，而且是**有意**的**：单位数月**不补零**。旧实现是字符串拼接（`parts[1] + '月' + parseInt(parts[2], 10) + '日'`）⇒ 给出 `01月5日`；`Intl` 的中文月名本来就是 `1月` ⇒ 给出 `1月5日`。其余（`10月8日` / `周四` / 带时间串取日期部分）与旧实现**逐字节相同**。⚠️ 这条口径**是被牙齿验证翻出来的**（见下），原先注释与断言消息里写的是「与旧实现一致」—— **那句话是错的**。
+  - 🔴 **顺手修掉一个只在负时区现形的真 bug**：`utils.js` 那份中文兜底的 `getWeekday` 用 `new Date('2026-10-08')` —— 那是 **UTC 午夜**，配 `getDay()` 在负时区会把 10-08 算成 `周三`，于是界面出现「日期写 `10月8日`、星期写 `周三`」的自相矛盾（中文用户永远看不到）。改 `Date.UTC(y, m-1, d)` + `getUTCDay()`；同一次把兜底另外两处口径也改稳：形状不对的串**原样返回**（旧实现拼出 `undefined月NaN日`）、单位数月不补零（**与 `Intl` 那条路对齐** —— 两条路分叉时的症状只在「`i18n.js` 没加载」时才现形，所以两条路各配一条钉子）。
+  - **新增守护 `scripts/i18n-date-locale-regression.js`（11 组）**：真接线 / **①b 两处宿主必须是同一个对象**（见下）/ 中文逐字节 / 英文零 CJK / 切语言往返（钉缓存 key）/ **时区无关** / 解不出的输入不崩 / 拿不到 `I18n` 时中文兜底还在 / `app.js` 接线静态钉 / 换语言后日期侧栏要重画（AST 判「在 `localechange` 监听器**体内**」，不是「文件里出现过 `loadDateGroups`」）/ 自登记。⚠️ **三个语言面各钉一遍**（`i18n.js` 派生 → `utils.js` 转发 → `app.js` 接线）：缺任一个，另一面坏了没人报。📌 `app.js` 那两条**行为测不到**（一上来就摸真实 DOM / electron，没法整体加载）⇒ 只能静态钉。
+    - 🔴 **①b 是一条「沙箱正好会抹平」的契约，只能静态钉**：`i18n.js` 的 IIFE 传
+      `typeof window !== 'undefined' ? window : this`、`utils.js` 直传 `window` ⇒ 渲染端两边都是 `window`
+      ⇒ 那句 `global.I18n` 才拿得到东西（`index.html` 里 i18n 也必须**先于** utils 加载，
+      `utils.js` 的注释把这条写成前提）。⚠️ 但**沙箱里 `window === sandbox === 上下文全局对象`**
+      ⇒ 两个文件各写各的宿主时沙箱**照样全绿**，生产端却静默回落中文 —— 教科书式的「静态全绿、线上失效」。
+      按「一处定名字、另一处引用同一个名字 ⇒ 两侧各钉一次」办：两个 IIFE 的宿主表达式 + 加载顺序各一条。
+    - ⚠️ **第 ⑤ 组必须用「新建的沙箱」**：`Intl.DateTimeFormat` 的时区是**构造时**定下的 ⇒ 复用同一个沙箱时，**就算源码根本没钉 `timeZone`**，那份早先建好的 formatter 也照样给出 `Thu`（**假绿**）。判据自身还带**夹具自证**（先断言「NY 下一个没钉 `timeZone` 的 formatter 应当给出 `Wed`」），否则这条等于没测。
+    - ⚠️ **复位不能靠 `delete process.env.TZ`**：Node 只在**首次解析**时读它 ⇒ 删掉之后默认时区**不重算**，后续所有 `Date` / `Intl` 断言继续跑在污染时区里（本守护第一版就这么**假红**了一条，且极隐蔽）。改成记 `resolvedOptions().timeZone`、`finally` 里显式赋回，并加一条「复位自证」断言。
+  - **牙齿验证 15/15**（`.workbuddy/tmp/regen-four/teeth9.js`，逐个逐字节还原 + 核 `sha1` + 末尾总漂移自证）：去 `timeZone` / 缓存 key 塌成 `kind` / 硬编码 `'zh-CN'` / 删 `utils` 的转发分支 / 删 `localechange` 里的 `loadDateGroups()` / 断 `app.js` 的 `RendererUtils.formatDateLabel ||` / 兜底退回本机时区 / 去掉 `_dateAt` 的回读校验 / 兜底把前导零拼回来 / `day:'2-digit'` / **`utils.js` 宿主换 `globalThis`** / **调换 `index.html` 两个 `<script>` 顺序**，外加 **3 条阴性对照**（改注释 / 缓存表改 `Object.create(null)` / 监听器改箭头函数）。
+    - 🔴 **与上一轮牙齿脚本的关键差别：不只判「变红了」，还判「红在预期那条断言上」**（每条期望配一个**断言消息特征子串**）。只判 `exit ≠ 0` 时，「红在 A 而你以为在 B」与「A 根本没牙、是 B 替你红的」长得**一模一样**。**这条当场兑现**：注入「删掉 `utils` 转发分支」时，真红点是**第 2 组那条中文断言**（`01月5日` ≠ `1月5日`），而不是我以为的英文那条 ⇒ 由此翻出上面那句错话。
+  - 📌 **发现、本轮不做**：**网页端 EN 分支当前不可达** —— `src/web/index.html` 硬编码 `lang="zh-CN"`、`main.js:8446` 的 `sync-ui-locale` handler 只刷托盘 / 标题、**网页端无人派发 `localechange`** ⇒ 网页端 `formatDateLabel`（`src/web/js/app.js:4529`，仍是旧串拼接）拿不到英文。将来若把语言推给网页端，需同步该处与 `:474` 的 `it.textContent = '日期: '`。
+  - 📌 **`app.js:7956/7964` 那份死代码 fallback 刻意不动**：它**不可达**（`RendererUtils` 恒存在），动它只会改变 ④c 豁免的形状、换来零用户可见收益。契约 §6.1 / §10 与 `.workbuddy/memory/MEMORY.md` 已同步。
+
+- 🔴 **`app.js` 全域的 50 条用户可见文案全部走 i18n —— 面板之外的「英文界面显示中文」清零**（2026-10-08，接扫描节那条之后继续推 §6「文案一律走 i18n」）：
+  - **起点 68 条**（口径见下），分三部分：**真硬编码 50 条**（本批全部落地）+ 「i18n 键 → 中文兜底」具名表 9 条（`PATH_CRUMBS_ZH` / `NAV_HISTORY_ZH`，与 `tUiFmt` 第三参同义 ⇒ 合规）+ 日期格式化的**降级实现** 9 条（`|| function(){…}`，死代码 ⇒ 豁免）。
+  - **50 条的分布**（`app.js` 34 处 + **30 个新词条** ×中英两包）：通用弹窗 5（★ `dialog.title` / `dialog.ok` / `dialog.cancel` **早就有词条、只是没被用**）· 设置页确认正文 5（各抽成一个多行词条）· **分隔符 6**（顿号 ×5 + 全角间隔点 ×1 ⇒ `common.listSep` / `common.partSep`；契约 §6 明写「分隔符要跟语言走」，英文用 `, ` 与 ` · `）· 加载/失败态 7（内嵌 HTML 的 title/desc，照既有 `escapeHtml(tUi(…))` 风格）· 相似图查找 9 · 设置项保存/应用失败提示 6 · 全屏标签 / 预览边界 toast / 打开目录 / 收藏路径栏 8。
+  - 🔴 **新增守护 ④c：`app.js` 全域零裸中文（总闸）**，与既有 ④b（扫描相关 4 个函数里的**调用实参**）并存 —— ④b 是精确锚（将来拆文件时按函数名仍守得住），④c 是总闸（硬编码加在哪个函数里都抓住）。
+  - 🔴🔴 **两个判据坑（都是实测撞出来的）**：
+    - **光列举助手名不够，还得认别名**：`app.js` 里 `var tR = typeof tUi === 'function' ? tUi : …` 是局部别名，`tR('preview.winRestore', '还原窗口')` **完全合规**，只认名单的判据报成硬编码 = **假红 4 条**。现在助手判定**双轨**：显式名单 + 形态启发式（`t` 开头短名 + 第一实参是点号键）。这与「`/^t[A-Z]/` 匹配不到 `tui`」是同一族坑的升级版。
+    - **键对账的扫描面漏了整片命名空间（靠注入用例 T4 才发现）**：④ 组原先的键提取正则前缀写死 `(?:task|settings\.task)` ⇒ `sidebar.` / `preview.` / `path.` / `dialog.` / `common.` / `theme.` 以及非 task 的 `settings.` 键**全都不在扫描面里**；本批新加 30+ 个这样的键，**英文包漏一条没有任何断言会响**（删掉 `preview.similarNoneFound` 的英文包，守护照样绿）。现在改成**两条采集并集**：① 文本面（`task.*` 家族，不限位置 ⇒ 抓得到 `titleKey: 'task.faceTitle'` 这种「存起来稍后消费」的形状）；② **调用面（AST）**：`app.js` 里所有 i18n 助手的第一实参若是点号键字面量就收进来（不限命名空间）。⚠️ ①为什么不干脆也放开前缀：放开后 `'photo.jpg'` / `'application/json'` 这类**非 i18n 点号串**会大批涌入 ⇒ 假阳性；走调用面没这个问题。
+  - **牙齿验证 6/6**（sha1 逐字节还原），其中两条**不靠「改坏产品代码」**、价值最高：
+    - **豁免不越界**：往「具名兜底表」里塞一个**函数属性**、函数体写裸中文 ⇒ 必须红 —— 证明「遇函数边界就停」真的有效，否则任何对象里的函数都能夹带硬编码 = 假绿。
+    - **对守护自身做变异**：把形态启发式（第二轨）整段删掉 ⇒ 必须红 —— 证明「认别名」承重（当前 ④c 之所以绿，正是因为 `tR(…)` 被第二轨认出来了）。
+    其余四条：别处新加硬编码 / 已 i18n 化的提示回退 / 删英文包一条键 / 分隔符回退成顿号。
+  - ✅ **原先记成「刻意不做、属独立主题」的日期本地化已落地**（同日第四批：`i18n.js` 出 `Intl` 派生 + `utils.js` 转发 + 新守护 11 组 + 牙齿 15/15），见本文件 `### Changed` 顶部那条。
+  - **验收**：eslint 全仓 0 error / 2 warning（基线未动）；守护 `PASS`；两批牙齿 13/13。⚠️ **当时写的「全量套件 `exit=0`」这句话是错的** —— 那一跑实际红在 `page-size-control-regression.js`，且 `run-regressions` 的「首个失败即退出」把第 30 项之后的 47 个守护一起挡住（**根本没跑到**，其中还有一处同族的 `browse-grid-style-regression.js`）。改真过程见 `### Fixed` 首条，修完重跑才是 `exit=0`。
+
+- 🔴 **扫描节的 16 条状态 / 收尾文案全部走 i18n —— 后台任务规范的 §6「文案一律走 i18n」至此零剩留**（2026-10-08，接上一条的形状收敛之后继续推 §11.1 待办）：
+  - **原记「8 条串」，实际盘出 16 个词条**。差的 8 条全在**收尾**消息里 —— 它们写在与状态行**完全不同的两个函数**里（`scan-flow.js#doScanFolder` 与 `app.js` 四个入口函数），原先的清单只覆盖了状态行：状态行 7（`task.scanPreparing` / `scanRunning` / `scanPaused` / `scanDone` / `scanEnumerating` / `scanQueuedGate` / `scanQueuedPending`）+ 失败 2（`task.scanFailed` / `task.unknownError`）+ 收尾 7（`task.scanDoneCleaned` / `rescanDoneMarked` / `rescanDoneFolders` / `rescanDoneFoldersMarked` / `scanStopped` / `autoScanFailed` / `rescanFailed`）。
+  - **改动面 = 「三个文案面」+ `app.js` 四个入口**（`scan-flow.js` 11 处 / `app.js` 8 处）。🔴 **只改面板那一处会半途失效**：扫描期间显示英文、下一拍轮询又退回中文 —— 因为 `updateProgress`（扫描**快路径**，worker 每推一次进度就写一格文字）比面板轮询快得多，两处写的是同一格。
+  - ⚠️ **一处刻意的一字符改动**：`doScanFolder` 的失败提示原先用**半角**冒号（`'扫描失败: '`）、面板状态行那条用**全角**（`'扫描失败：'`）。现在两处共用 `task.scanFailed` ⇒ 取全角，中文界面这一处会从 `:` 变 `：`（同一个失败两种标点会让人以为是两件事）。**中文兜底串逐字节等于原文**，其余各处中文产出零变化。
+  - **守护扩面**（`background-tasks-panel-regression`）：④ 组「键必须中英成对」的扫描面从 `panelBody` 扩到 `panelBody + updateProgress + doScanFolder + 整个 app.js` —— ⚠️ **`doScanFolder` 不能漏**，`task.scanDoneCleaned` / `task.scanPaused` 这类键**只在那里出现**（`app.js` 里没有），漏了它那些新词条的英文包缺失就**无人报警**（注入用例 T4 专测这一格）。
+  - **新增 ④b 组「零裸中文」**：剥注释后取真正的字符串字面量，凡含 CJK 的必须落在 i18n 助手的实参里（那串就是合规的中文兜底串）。刻意取「**调用实参区间**」而不是「含 `task.*` 键的调用」—— 后者在**回退**成裸中文时**恰好失效**（没有 `task.*` 键 ⇒ 该处不被扫描 ⇒ 断言照样绿）。
+  - 🔴 **这条判据本身踩了三个坑**（都记进契约 §6.1）：① 助手名要**显式列举** —— 第一版写 `/^t[A-Z]/` 想一把抓，它**匹配不到 `tui`**（第二个字母是小写），恰恰漏掉最核心的那个；② 「是否落在 i18n 调用里」必须**沿父链向上找第一个不可穿越的祖先** —— `tuiFmt(key, {…}, '完成 ' + n + '（' + pct + '%）')` 里那串中文是拼接表达式，只看父/祖父节点 ⇒ 合规兜底串集体误判（实测**假阳性 80+ 条**，差点照着错读数去改产品代码）；③ **作用域本身也会造假红，而且更隐蔽** —— `renderBackgroundTaskPanel` **一个函数渲染 8 节**，拿整个函数体当作用域时，其余 7 节的存量裸中文会替本节把断言顶红（实测 6 条：两节标题的具名兜底属性 `titleZh`；重建那四项兜底串**先存进数组、循环里才喂 `tuiFmt`**）。那时只剩两条错路：删/改松断言（拔牙）或给每条假阳性打补丁。⇒ 正解是**把作用域收到本次改动范围**：`SCAN_TEXT_SCOPES` = `updateProgress` 体 + `doScanFolder` 体 + `if (showScanBlock) {…}` 的 **`BlockStatement` 区间**（AST 结构性取块，不是行号窗口法）。⚙️ 判据够不到「**跨语句的间接引用**」（兜底串先存变量、稍后才在别处喂 `tuiFmt`，父链到 `VariableDeclarator` 就断）—— 这类形状靠**收窄作用域**回避，**不要**靠放宽判据。
+  - **牙齿验证 7 个注入，全部精确红 + sha1 逐字节还原**：6 个「回退会红」方向（快路径回退裸中文 / 面板扫描节块回退裸中文 / 英文包删 `task.scanRunning` / 中文包删**只出现在 `doScanFolder`** 的 `task.scanDoneCleaned` / `app.js` 的 `handleSettingsRescanAll` 回退裸中文 / `showScanBlock` 的 AST 形状变了要让夹具自证报警）+ **1 个阴性对照**：把裸中文插到 `if (showScanBlock)` 块**之外**必须**仍然绿** —— 用来证明「作用域收窄」不是「判据失效」。
+    - ⚠️ 注入用例本身也踩了两个坑：**锚点唯一性不能用缩进保证**（`:673` 那行 14 空格缩进**包含**`:273` 那行 10 空格缩进的整段 ⇒ `indexOf` 判「不唯一」直接 SKIP，得换成带 `state.isScanPaused` 这类本处独有行的整块锚点）；**本守护会真渲染 DOM 夹具**，所以「改个变量名」这种注入会抛 `ReferenceError` 而不是断言失败（判不出「精确红」），要换成 `if (showScanBlock && true)` 这种「运行期等价、AST 形状变了」的注入。
+  - 📌 **面板之外的裸中文是另一个主题**（别混）：`app.js` 里仍有 **68 条**（侧栏 / 路径栏 / `appConfirm` 正文 / 其它弹窗），本轮从 **82 → 68**。探测方法记在契约 §6.1。
+  - **验收**：eslint 0 error / 2 warning（基线未动）；新守护 `PASS`；全量套件 `exit=0`（元规则⑥：回归起跑晚于最后一次改码）。
+
+- 🔴 **后台任务面板的形状收敛三件套：停止按钮的「停止中」反馈补齐、副行职责统一、进度条统一成 `div`**（2026-10-08，起因是用户「排查其他后台任务，列出每种任务的显示项」，摆出 8 节 × 7 类显示项的矩阵后三处跨节不一致现形；用户选「三处一起修」）：
+  - **① 停止按钮：三个按钮点完毫无变化。** 盘点发现只有扫描节（`handleCancelScan` → `disabled = true` + 文案变「⏳ 停止中...」）与人脸 / 搜图（`app.js` 内联 handler）给了反馈，而 `taskThumbStop` / `taskThumbRebuildStop` / `taskDupHashStop` **零禁用逻辑**（`ui-events.js` 只有 `bindClick`，三个取消函数只调 API + 刷新设置页，完全不碰按钮）—— 契约 §8「已请求停止期间按钮禁用」在这三个任务上从未落地。
+    - 🔴 **根因不是缺数据，是信号没人读**：`cancelled` 一直是主进程在报（起手置 `false`、收到停止请求置 `true`），而且**整对象透传**（`get-background-tasks` 没有白名单）⇒ 渲染端拿得到、只是零消费。于是用户只能靠「任务什么时候消失」猜停止有没有生效。改动因此是**读现成字段**，主进程净变更 0。
+    - **判据分两组，这是刻意的**：补全 / 重建 / 查重用 `running && cancelled`，人脸 / 搜图用 `phase === 'stopping'` —— 前者的 `phase` **被别的语义占着**（补全 = 分母估算三态 `counting/ready/failed`、重建 = `enqueueing/draining`），塞 `'stopping'` 进去会让同一字段名在两处表示两件**正交**的事。论证与 §3.1.4 的 `phase` / `countPhase` **完全同构**。四个按钮统一走 `scan-flow.js#syncStopButton`（唯一入口）。
+    - ⚠️ **判据必须同时看 `running`**：`cancelled` 只在起手时置回 `false`，单看它会让「上一轮被取消过」的任务一露头就顶着「停止中」+ 禁用（守护有专门的反对照）。判据写成**绝对**的（看状态、不看「点过没」）之后，整节隐藏期间**不需要任何复位逻辑** —— 下次任务起手 `cancelled` 已被主进程重置，按钮自然复原。
+  - **② 副行（`Detail`）职责四节四种形状 → 一种。** 统一后的分工：`Count` 说主口径、`Fill` 说百分比、**`Detail` 只说产出**、`File` 只说正在处理哪个、`Hash` 只说当前对象的明文子串。
+    - **查重那节补齐 `taskDupHashDetail`**：它原先拿指纹行 `taskDupHashHash` 当第二行、**根本没有 `Detail`** ⇒ 主进程一直在报的 `hashed` / `reused` / `failed` **界面从来没显示过**（分子 `done` 只说「处理了多少行」，看不出其中多少是真算的、多少是复用现成指纹的，而两条路径耗时完全不同）。
+    - **无效清理的摘要从文件行挪进 `taskInvalidCleanupDetail`**：原先是 `currentFile + ' · 已删除 N 条'` —— 同一行背两种语义，且 `total = 0` 那段时间同一个数在**计数行与文件行各出现一次**。计数行同时收敛成「没分母时只报已检查 N」。
+    - ⚠️ **「统一」不等于「每节都要有个 `Detail`」**：AI 两节的产出（`done` / `failed` / `skipped`）并进了 `Count`，属可接受的差异 —— 统一的是**职责边界**，不是行数。
+  - **③ 进度条 `<progress>` ×2 → `div` ×7**（人脸 / 搜图换成 `div + .progress-fill` + `width`，与其余五节一致；契约 §5 取 `div` 的理由是圆角与主题变量可控、`<progress>` 各平台长得不一样）。
+    - 🔴 **换的时候有个隐藏语义不能丢**：`<progress>` 不带 `value` 时浏览器画的是**动画条纹**（=「在跑，但进度未知」），而 `div` 的 `0%` 会被读成「进度就是 0」—— **两者含义相反**。这个语义现在由新增的 `styles.css#.progress-fill--indeterminate`（宽度 40% + `margin-left` 从 -40% 滑到 100%）承担。
+    - 🔴 **顺带修好一处真实的不同步**：原先 AI 两节是 `else removeAttribute('value')` —— 把**索引阶段**（那时已有 `done` / `total`）也一并压成不定态，而同一节的计数行明明在显示 `done / 约 total（pct%）` ⇒ **计数有百分比、进度条却不动**。现在优先级是：下载阶段用下载字节进度 > 有确定分母时用主进程派生的 `pct` > 不定态。无障碍**没有降级**（`<progress>` 原有的 `role` / 走 i18n 的 `aria-label` 搬到了外层容器上）。
+  - **顺带 i18n 化的三批硬编码文案**（原先都在 §6.1 的账之外、本轮盘显示项时才翻出来）：动作按钮（`scan-flow.js` 的 `'⏸ 暂停'` / `'▶ 继续'` / `'⏹ 停止'` / `'⏳ 停止中...'` + `app.js#rescanFolder` / `#rescanAllFolders` 各一份，而 `index.html` 在**同一个按钮**上本来就有 `data-i18n` ⇒ 骨架一份、JS 覆盖时又写死一份，正是 §6 点名的静默形状）；查重指纹行的 `'当前编号：'` / `'正在读取当前文件…'`；无效清理的 `'已检查 N，已删除 M'` / `' · 已删除 N 条'`。唯一拼法收在 `scan-flow.js#scanPauseLabel` / `#scanStopLabel`（导出给 `app.js` 复用），**图标在函数里拼、词条只放文字**。
+    - ⚠️ **仍未落地**（契约 §6.1 更新后明确）：扫描节的**状态文案** 8 条（`scan-flow.js` 两处 + `app.js` 两处 —— 后两处原先没被记下来）—— 英文界面这几行仍显示中文，属 §6 的唯一剩留。
+  - **守护**：`background-tasks-panel-regression` 新增**第 ⑦ 组**（行为层 —— 三个按钮的两态 + AI 两节 `stopping` + 反对照「在跑但没被取消时不许禁用」；副行 —— 查重 `hashed`/`reused`/`failed` 必须出现、三个数全 0 时不许画、无效清理摘要必须在副行且 `File` 里不许再有「已删除」、`total = 0` 时计数行不许重复报；静态面 —— 面板区不许再有 `<progress>`、`.progress-fill` 恰好 7 条、不定态类必须存在且渲染端用**同一个**类名）；`face-task-regression` 两处**翻面**（`.value` 判据 → `style.width` + 不定态类，并新增「有确定分母时进度条跟 `pct` 走」—— 故意让 `pct` 与 `done/total` 对不上）。
+  - **牙齿验证 6 / 6（全部 sha1 逐字节还原）**，其中 **T5 抓到一条真假绿**：不定态类的断言原写成 `css.indexOf('.progress-fill--indeterminate') >= 0` —— 把类名改成 `.progress-fill--indeterminate-x` 之后**照样绿**（前者是后者的子串），与 §10 记的「`/thumbs\.sized/` 对 `if (thumbs.sizd > 0)` 照样绿」是同一形状。改成 `assert.match(css, /\.progress-fill--indeterminate(?![-\w])/)` 并要求渲染端用**完整**类名后精确红。
+  - **契约同步**：新增 **§4.2「副行（`Detail`）只管一件事：说产出」**（五行职责表 + 收敛前四节四种形状的逐条说明）；**§5 重写**（进度条已统一 + 不定态怎么表达 + 无障碍是独立待办）；**§8 重写**（停止中判据分两组 + 为什么不能并成一个字段 + 绝对判据不需要复位）；**§6.1 更新**（动作按钮已落地、状态文案剩留 8 条含 `app.js` 那两处）；**§11.2 删掉「进度条实现两种」**（已落地）。
+  - 🔴 **收尾用截图核观感时，抓到一处自己埋的回退：不定态在 `prefers-reduced-motion` 下被压死**（同日补，属 ③ 的收尾）：
+    把 AI 两节的 `<progress>` 换成 `div` 时，只补了「不定态」的**名字**（`.progress-fill--indeterminate`），
+    漏了「它在 `reduce` 下也得动」。根因：`<progress>` 的条纹画在 **UA shadow tree 的伪元素**上，
+    而 `styles.css` 那条全局压制是 `*` 选择器 —— **命中不到 shadow 伪元素** ⇒ 它从来压不住原生
+    `<progress>`；换成 `div` 之后同一条动画挂在**普通元素**上，正好落进压制范围（`animation-duration: 0.01ms`
+    一次、`fill-mode` 又默认 `none` ⇒ 回落到基值 = **完全静止**）。本机（Windows）`prefers-reduced-motion`
+    **恒为 `reduce`** ⇒ 用户看到的是**一条静止的 40% 填充**，读作「进度 40%」这个**错误的确定值**，
+    而真相是「在跑、进度未知」。（`theme-polish.css` 又把面板里的 `.progress-fill` 背景改成纯色 ⇒
+    面板内不定态的**唯一**可见运动就是这条 `margin-left` 位移，压掉就一点动感都不剩。）
+    - **判据只能靠像素实测**（推理、读码、跑守护、看契约全看不出来）：最小对照页里 `reduce = true` 时
+      旧 `<progress>` 逐帧变化 **7.29%**、新 `div` **0.00%**；置 `no-preference` 后新 `div` **3.82%**。
+      两个「必须不动」的对照（`<progress value="40">`、静态 40% 条）两趟都是 0% ⇒ 采样方法可信。
+      ⚠️ 采样本身有两个坑：① `capturePage` 在页面完全静止时会**反复返回同一帧** —— 一次 `0.00%`
+        无法区分「没动」与「没出帧」，每帧必须逼一次真实重合成；② 必须有**已知会动**的阳性对照，
+        否则「全 0」无从解释。
+    - **修法**：在 `@media (prefers-reduced-motion: reduce)` 块里豁免 `.progress-fill--indeterminate`
+      （周期 1.4s → **2.4s** 刻意放慢、`animation-name` 收窄成**只留位移那一条**、`iteration-count: infinite`），
+      理由与同块里的加载圈 / 底栏「随机」光晕**同源**：它是**重点功能的可辨识信号**，不是装饰性位移动效。
+      修完实测 `margin-left` 从常值 `0px` 变成 `147.125px`（真的在推进）。
+    - **守护**：`background-tasks-panel-regression` ③ 补四条断言（`@media` 块里命中**完整**类名 + duration +
+      iteration-count + animation-name），文件头补**第 ⑥ 类错误**（「类还在、动效却被压死」）。
+      ⚠️ 判据必须取**那条豁免规则自己的声明体**（`cssRuleBody(block, …)`）—— 拿整个 `@media` 块去 match
+      会**永远为真**（块里早有加载圈那条 `iteration-count: infinite !important`），这正是 T3 钉的陷阱。
+    - **牙齿验证 6 / 6**（全部 sha1 逐字节还原）：删整条豁免 / duration 忘放回 / 删 iteration-count /
+      `animation-name` 没收窄 / 类名被加 `-x` 后缀 / 豁免写到了 `@media` 块**外面**。
+    - **契约同步**：§5 补一张实测对照表（新旧元素 × reduce / no-preference）；§11「已收敛的五处」的 ④
+      后面补上这处回退的来龙去脉，以及可搬走的教训 —— **「语义靠浏览器白拿」的写法换成自绘元素时，
+      要逐条把语义补回来并各配一条断言**：这次补对了「不定态」这个名字，漏了「它在 reduce 下也得动」。
+
+- 🔴 **修「重建缩略图时看不到其他四项计数」：四项副指标的判据在两个任务里**刻意不同**（2026-10-08，用户报「重建缩微图，没有看到其他四项计数」）**：
+  - **先定性：不是 bug，是同一个判据被当成两件事共用了。** 四项（原图尺寸 / 拍摄信息 / 视觉指纹 / 查重指纹）的显示判据在**补全**那节是 `(thumbs.X || 0) > 0`，重建那节**照抄**了同一个 —— 但两边的**候选集不同**：
+    - 补全收「**缺**缩略图」的行 ⇒ 候选行天然也缺四样 ⇒ `> 0` 才画没问题（0 只可能是故障）；
+    - 重建收「**有**缩略图、只是 `thumb_size` / `thumb_format` 与目标不符」的行 ⇒ 这四样是**补全**（同样走主键倒序）**先**补的 ⇒ 两个反序任务**在同一段高位 id 碰头**：补全刚补过的高位段（最近入库的照片），重建跟着重跑同一段时四样本来就齐。
+  - **真库实测（只读；队列 1,656,548 行 / `signature=512|webp`）** 沿队列从队首打剖面，每点 3000 行的**四样缺失数**：
+    队首段（id 1.30M–1.50M）**只缺 1~14 行**；**id ≈ 1.2M 是硬分界线** —— 抽干 300k 起（id ≤ 1.20M）**每 3000 行缺 3000 行**；900k / 1100k 处（id 0.40M–0.60M）尺寸只缺 12~20 而 **EXIF 仍 100% 缺**。
+    ⇒ 游标停在 id ≳ 1.2M 那一段时四项恒为 0，按老判据**一个都不画** ⇒ 用户看到副行上什么统计都没有，**分不清「这段无事可做」与「统计坏了」**。
+  - **改法**：重建那节的四项改判 `if (!rEnqueueing)` —— **进了抽干阶段就一律画，`+0` 也画**（0 是「本段没得补」这个**事实**，不是异常）。`failedThisRun` 保持 `> 0`（上面四项是**产出**，0 有信息；失败 0 没有）。**补全那节保持 `> 0` 不动**。登记阶段仍不画（那时一张都还没重跑，与「登记阶段不给 ETA」同理）。
+  - **顺带把四项收成一张表**（`var rFour = [...]`）：判据变成无条件之后「字段名拼错」**更难发现** —— 把 `sized` 写成 `sizd` 只让那一项永远显示 `+0`，而 `+0` 现在是**合法值** ⇒ 肉眼与「本段没得补」无从区分。收成表即可逐个断言绑定。
+  - **守护 `thumbnail-regen-regression.js` 第 ⑦ 组双向翻面**：新门必须在场（`if (!rEnqueueing)`）+ **旧门不许回退**（反向断言禁 `(thumbRebuild.X || 0) > 0`）+ 四个来源字段逐个绑定 + 这张表**必须真的被遍历**（只定义不遍历 = 静默空白）。原注释那条教训（「判门，不判名字出现过」）保留：拼错只废掉门、push 体里名字还在 ⇒ 只判「出现过」照样绿。
+  - **牙齿验证 7 个注入全过**（原始 Buffer 还原 + sha1 逐字节核对 + 还原后基线回绿）：
+    - 静态面 4 个（`thumbnail-regen-regression.js`）：拿掉新门 / `sized` 拼成 `sizd` / `for` 条件改成恒假（表定义但不遍历）/ 在新门**仍在**的前提下插回旧形态 `(thumbRebuild.sized || 0) > 0`。
+    - **行为层 3 个**（`background-tasks-panel-regression.js`）：把 `if (!rEnqueueing)` 改回 `(thumbRebuild.sized || 0) > 0`（⇒ 红在「0 时也必须画出」）/ 改成 `if (true)`（⇒ 红在「登记阶段不许画」）/ 把**补全那节**改成无条件（⇒ 红在「补全那节保持 `> 0`」）。
+    - 全部**精确红在各自预期的那条断言**。⚠️ 行为层那 3 个是本轮新加的第 ⑥ 组守的 —— 静态断言只能证「代码形态」，**证不了「界面上真的多出那四个词」**，而用户报的正是后者。
+  - ⚠️ **牙齿验证本身踩了一个坑（已回写技能）**：`background-tasks-panel-regression.js` 用的是 **Node 内置 `assert`**（抛 `AssertionError`），而 `thumbnail-regen-regression.js` 用本仓自定义 `assert`（抛 `'FAIL: ' + msg`）⇒ 我第一次写的 JS 版牙齿脚本判「输出里有 `FAIL`」在**内置 assert 的守护上恒假**，把三个「精确红」误判成「没红」，差点去改本来没坏的断言。正确判据 = **`exit code ≠ 0` + `/AssertionError|FAIL:/`**，且期望串要在**断言消息那一段**里找（断言消息文本也写在守护源码里 ⇒ 整份 `indexOf` 可能命中源码副本 = 假阳性）。已加进 `aurora-regression-teeth-verify` 技能铁律 12 / 13。
+  - **契约**：新增 `docs/contracts/background-tasks.md` **§4.1「副指标：什么时候该把 `0` 画出来」**（两个任务的判据对照表 + 实测剖面表 + 三条不许动的理由）。
+  - ⚠️ **探针坑记一笔**：`SELECT SUM(CASE…) FROM photos`（165 万行 × 4 个 CASE）会把这台机器跑到**静默 SIGTERM 无输出**；改成 `FROM (SELECT id … LIMIT n) q LEFT JOIN photos` 采样（一次 300~800 ms）。另 `stmt.all.apply` 会 `TypeError: Illegal invocation`，别 spread。
+
+- 🔴 **《后台任务统一设计规范》后两项待办落地：状态字段名统一（C）+ 元素 id 前缀统一（E）**（2026-10-08，用户看完待办表后说「继续ce」。A / B / D / F 已于同日先落地）：
+  - **C · 状态对象统一**。规范 §1.1 点名了三种「在跑」写法，这一批把它们收成一个：
+    - **`busy` → `running`**：产品代码 11 个文件 36 处（`semantic-search.js` 状态初始化 / 起手重置 / spawn 失败与 worker-exit 两个收尾分支、`main.js` 4 处准入判据、`maintenance-guard.js`、以及桌面渲染端 `scan-flow.js` / `ai-views.js` 与网页端 `ai-views.js` / `people.js` / `semantic-search.js` 共 25 处）、外加 ~50 处守护 / 探针夹具。⚠️ **只改进程间共享的字段名**：worker 之间的内部指标名（`percent` / `indexed` / `ratePerMinute`）没歧义、改名收益低而风险高，**刻意不动**。
+    - **`optimizing`（裸布尔）→ `optimize: { running }`**：优化数据库是 9 个任务里**唯一没有状态对象**的那个 —— 它只往 `get-background-tasks` 里塞一个布尔，于是「在跑」这个字段名在它身上与别处不同名，渲染端的 9 个显隐判据里它是**唯一的特例分支**（特例分支正是漂移源）。包成对象后 9 个判据形状一致（`!!x.running`）。
+    - **`processed` → `done`**：人脸 / 搜图两节分子改名。⚠️ **worker 内部**的累加器仍叫 `processed`（它数的是「已处理的行数」而非「产出」），只在**上报边界**映射为 `done: processed` —— 映射点显式可见，比偷偷改名安全。⚠️ 顺带记一处**同名两义**：`semantic-search.js` 里 `message.done`（**信封**上的布尔：worker 干完了）与结果里的 `done`（**数目**）撞名，两处都已在就地点明。
+    - 🔴 **新增 `countPhase ∈ {counting, ready, failed, null}`，并把估算顺序倒过来**：AI 那两节原先只有一个 `totalEstimated` 布尔，而它在「估成功」与「估失败」两种情况下**取值相同**（都是 `true`）⇒ 零信息量，界面**没有能力**区分「正在估」/「估失败」/「估出来就是 0」这三件含义完全不同的事（前者会自己过去、后者永远不会好）。规范 §3.1.4 早定了「取补全那套三态」，这一批补上。
+      - 🔴 **顺带修掉一个真缺陷：估算顺序反了**。`estimatePendingCount()` 是 2000 次跨库点查（真库实测 553 ms / 87 ms），原代码是**先阻塞估完才发第一条 progress** ⇒ 那段时间界面读到 `done = 0 / total = 0`，只能画成「完成 0」，与「估失败」不可区分（三态加了也白加）。现在两个 worker 都**先报 `'counting'` 再去做估算**，与缩略图补全同一套做法。
+      - **起手重置三项成套**：`total` / `totalEstimated` / `countPhase` 必须一起归位（那块是逐字段列的、`preserveProgress` 只跳过该段）。只重置前两个的话，上一轮 `index` 留下的 `'failed'` 会挂到下一轮 `tag` 上 ⇒ 界面**对着一个刚刚精确数出来的 `COUNT` 说「总数估计失败」**，而且不报错。
+      - **渲染端**按 `countPhase` 画三态：`aiCountCounting`（正在估）/ `aiCountNoTotal`（估失败），而 `'ready'` + `total = 0` **刻意不画失败** —— 那是「估成功且就是 0」。补全那边只有两态、会把它误标成「估计失败」，AI 这边靠三态分岔避开了。新词条中英各一条（`i18n.js`），英文串零 CJK。
+    - ⚠️ **刻意不改的两类同名物**（都已在契约里点明，免得后人「顺手统一」）：主进程变量 `optimizeTaskRunning`、渲染端局部标志 `_dupHashProgressRunning` —— 它们是**局部标志变量名**，不是状态字段。
+  - **E · 元素 id 前缀 7 种 → 1 种**：**50 个元素 / 9 个文件 / 176 处**一次改完，全部收敛为 `task<Name><Part>`（`Part` 词表见契约 §5；`Text` / `Pause` / `Cancel` / `Hash` / `Progress` / `Rate` 是落地时补进去的 —— 扫描节需要暂停 / 取消，AI 两节用 `<progress>`、查重多一个指纹格）。改的是 `index.html` 定义、渲染端**字面量**引用、`options.dom` 的**键名**（`app.js` 传 / `scan-flow.js` 读，两边都得动）、`ui-events.js` 的 5 个 `bindClick`、4 个守护的夹具与 id 清单、以及契约文档。
+    - ⚠️ **盘点方法本身就是个坑**：扫描节那 7 个是**裸 id**（`progressText` / `progressCount` / `progressFill` / `progressFile` / `scanProgressEta` / `pauseResumeScanBtn` / `cancelScanBtn`），不在任何 `task*` 前缀清单里 ⇒ **靠前缀 grep 盘点是整块漏掉的**（技术债的典型藏身处）。权威清单只能从面板区逐行取 `id="…"` —— 实测 62 个 id（容器 4 + 节 8 + 元素 50）。
+    - 🔴 **中途真漏过一次，值得单独记：`prefix` 本身也是 id 片段。** 人脸 / 搜图两节的元素不是按字面量取的，而是 `document.getElementById(aiTask.prefix + 'Title')` **拼出来的** ⇒ HTML 换了 `taskFaceTitle`、`prefix` 还留着 `'faceTask'`，拼出 `faceTaskTitle` 取到 `null`：**那一格永远空白、不报错、不写日志**。而「JS 字面量 ↔ HTML」那类对账**只看字面量**（查不到），`dead-reference-regression` 也解析不了拼接（它照样报「DOM id 400 个」、对这条无感）—— 最后是**行为层**断言（`faceTaskCount.textContent` 读到空串）抓到的。
+    - **不动的三类命中（是分类，不是漏改）**：`CHANGELOG.md` 的历史条目（记的就是当时的名字，改了 = 篡改历史）、i18n **键名**（`settings.task.thumbProgress*` 是键名命名空间，不是元素 id）、上面那两类局部标志变量。
+  - **守护**：`background-tasks-panel-regression` 新增第 ⑤ 组三条判据 —— ① 面板区每个 id 必须命中 `task<Name><Part>` / `task<Name>Section` / 容器三类之一（**白名单式整体形状**，不是「不含那 7 个旧前缀」：黑名单对第 8 种新前缀照样绿）；② **JS 字面量 → HTML** 对账（`getElementById('拼错的 id')` 取到 `null` 是静默的）；③ **前缀展开 → HTML** 对账（正是上面漏过的那条）。三个方向合起来堵住「两侧各改一半」。
+    - `face-task-regression` 新增 4 条：`countPhase` 三态行为（含「`'ready'` + `total = 0` 不许说成失败」）、**顺序位置断言**（`countPhase = 'counting'` 必须出现在 `store.estimatePendingCount()` 之前）、取值域只许三个字面量、起手重置必须含 `countPhase: null`；两个新词条进 `AI_KEYS`（自动被「面板必须引用」+「中英各一条」两条覆盖）。
+    - ⚠️ **顺手删掉一条自己刚写下的死断言**：`assert.notEqual(zhCounting, zhEstFailed)` 被前两条 `match` / `!match` **逻辑蕴含**（一个不含「失败」、一个含「总数估计失败」，而「失败」是后者的子串）⇒ 永远不可能红。「加一条永远绿的断言」只给守护增重、不增牙。
+  - **牙齿验证 7 个注入，全部「改坏 → 精确红在预期断言 → 逐字节还原（核 sha1）」**：C 4 个（order 反转 / 取值域多一个 / 重置丢掉 `countPhase` / 渲染端把三态退化两态）、E 3 个（HTML 形状 / JS 字面量打错一个字母 / `prefix` 退回旧写法）。还原后基线各自回绿。
+  - **验收**：eslint **0 error / 2 warning**（基线未动）；全量套件 `exit=0`、严格失败 `0`、末项 `ai-lifecycle-regression` PASS（元规则⑥：回归起跑晚于最后一次改码）。
+  - **仍未落地（已知，都不是遗漏；详情见契约 §11.2）**：扫描节用 legacy 形状（`status` / `current` / 无 `running` —— 这是**形状迁移**不是改名，`status` 的取值域承重）；进度条实现两种（`<div>` vs `<progress>`，换法碰布局）；扫描节 7 条状态文案仍是硬编码中文（契约 §6.1，英文界面那一行会显示中文）；补全 `phase` 与 AI `countPhase` 的**字段名**不统一（值域与语义已统一 —— AI 的 `phase` 已被任务阶段占用，同名会撞车；改补全那个要动 ~18 处 + 6 条断言，且它已改过一次名）。
+
+- 🔴 **缩略图全量重跑那一趟，现在**同一趟解码出五样**：顺手补齐原图尺寸 / 拍摄参数 / dHash / 查重指纹**（2026-10-08）：`main.js#regenerateRowsWithConcurrency` 从「只写 `updatePhotoThumbnail` 一列」变成与补全 `processOne` 同源的五个写入口。
+  - **起因是一个被问出来的事实**：用户问「和补全缩微图任务一样有拍摄信息等吗，查重相似指纹」。答案是**不一样** —— 重建那条路全函数只有一行写库，出的只有缩略图一样；而补全一趟出五样（缩略图 / 原图尺寸 / 拍摄参数 EXIF / dHash / 查重指纹），四样**吃的是同一次读盘与同一次解码**。两条任务的候选集互不包含（补全按「缺什么」、重建按「规格 ≠ 目标」）⇒ **「重建跑完」≠「补全跑完」**。
+  - **量清了才动手（2026-10-08 实测）**：用**应用自己的谓词**（`db-heavy-read.js#BACKFILL_PENDING_CORE_PRED` + `database.js#_sqlBackfillPendingExpr()`，**逐字同源**，计划自证 `SCAN photos USING INDEX idx_photos_backfill_pending`，258 s）量补全的真实剩余 —— **第一支（缺缩略图）= 0** ✅（出图那半确实收尾干净），**第二支 = 857,372 行**（缺 dHash 531,173 / 缺尺寸 530,641 / 需读 EXIF 857,372），分布成段压在 id 297,229–1,288,000。⇒ 不并就是**这 85.7 万行把同一批字节再读一遍**，而原图在 K:/G: 外接机械盘上，读盘是这里的主导成本（不是 CPU）。
+  - 🔴 **要并只能现在并，是有时间窗的**：重建按 `ORDER BY q.id DESC` 抽干，那一刻 `done ≈ 3.8 万`、游标在 id ≈ 1,943,000，**已处理的行全部落在「元数据已齐」区段**（id ≥ 1,288,000 残余 0）⇒ 此刻并进去**一行不丢**；再往下约 65 万行才碰到 1,288,000（按当时 ~14 张/秒约 13 h）。等它跑完再并，那 85.7 万行就真得单独再读一遍。
+  - **并入的东西一件都没有自己重写**：四个「还缺吗」门复用补全的判据（EXIF 那项必须走 **`db.photoNeedsExif(row)`** —— 手写 `!(row.exif_mtime && …)` 只判一个标记列而候选谓词判两个，漂开就是「每轮取出来、每轮判不需要」的静默死路）；写入口、失败语义、内存闸门全部沿用。
+  - 🔴 **顺序是承重的**：读文件头（`metadata()`，几乎零成本）→ 算 dHash → **最后**才缩放置换。`resizeThumb()` 内部会 `rotate()`，dHash 取在它之后 = 带 EXIF 方向的图片位全变，而 dHash 是相似聚类的输入，**位差会翻面且不报错**。守护对这三者的源码偏移做了大小断言。
+  - **缩略图编码单独一层 `try`**：它失败不许把已经到手的尺寸 / 拍摄参数 / dHash 一起带走（补全那边为这个坑返工过一次：那个截断 JPEG 明明读出了 4608×3456 + 9,687 B EXIF，却因为解码失败一样都没写进库，每轮白读 1.15 MB 再丢一次）。
+  - **查重指纹的内存闸门照抄补全**：`sharedBuf`（`THUMB_SHARED_READ_MAX_BYTES = 64 MB`）优先，超大 / 大小未知才退回流式 `hashFileSha256`。⚠️ 并发 8 ⇒ 峰值可能多几百 MB 常驻 Buffer，这是本改动唯一需要留意的地方。
+  - **取批 SQL 补列**（`src/main/thumb-regen-queue.js#FETCH_SQL`）：加了 `dhash / width / height / file_hash / exif_mtime / exif_ver`。**不是可选项** —— 少取一列，那一项的「还缺吗」门恒开（`row.dhash` 恒 `undefined`），变成每行都白重算一遍；而**取批计划没有任何变化**（仍是 `SEARCH q USING INTEGER PRIMARY KEY (rowid<?)` + `SEARCH p USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN`，`thumbnail` 那个大 BLOB 没被选中、溢出页不读）。
+  - **界面**：顶栏「重建全部缩略图」那一节的副行多出「拍摄信息 +N · 视觉指纹 +N · 查重指纹 +N」，**复用补全那行的三个文案键**（同一件事在两处叫两种说法会让人以为是两项不同的工作）。五个计数（含尺寸与 EXIF 已检查）是**本次进程**口径、不入 `meta`，接着上一条队列跑时也归零。
+  - 🔴 **顺手把 `tryReadShared` 提到模块作用域**（它原本写在 `runRowsWithThumbConcurrency` **内部**）：重跑那一趟也要用它，而它的契约「**读不到时返回 null 而不抛**」是「文件读不到就不许盖失败章」那条红线的落点 —— 各写一份迟早漂开，且漂开的后果不对称（多盖一次 = 把整个图库的补全永久挡在候选集外且不自愈）。**连带修好一条假红**：`perceptual-hash-share-regression` 用的 `bodyOf()` 结束标记写死了 `'\n  }'`（2 空格缩进），函数提到模块作用域后闭合括号变成 `\n}` ⇒ 它切在 `\n  } catch (eRead) {` 那一行上，把 `catch` / `return null` 全切掉，报出「函数不满足契约」这种**看起来像产品坏了**的假红。改成显式给 tail。
+  - **守护**：`thumbnail-regen-regression` 新增 `checkMetadataMergeWiring()`（33 项 ⇒ 总计 **145 checks**）：列清单齐全（缺一列就报「门恒开、每行白重算」）、判据必须走唯一真相源（并有一条**反向**断言禁出现手写的 `row.exif_mtime &&`）、四样写入口都在、顺序三条偏移大小、查重指纹的共享/流式两条路都在、五个计数同时出现在状态对象与**进度白名单**、面板复用补全那三个键。另修夹具：`new PhotoDatabase()` 只建骨架列，`dhash` / `file_hash` / `hash_size` / `hash_mtime` 是**迁移**加的 ⇒ 新增 `openFixtureDb()` 统一跟跑 `ensureDhashSchema()` + `ensureDuplicateHashSchema()`（同一个坑 2026-10-07 在 `query-regression` / `keyword-search-regression` 上踩过一次）。
+  - 🔴 **`stripComments` 是正则实现，不能拿去 `parse()`**（本轮实测）：它按 `//` 截到行尾，遇到字符串 / 正则字面量里的 `//` 会把后面内容一起吃掉 —— 在 `src/main.js` 上直接解析成 `Unterminated regular expression`。本工程元规则本来就写着「结构断言不许读注释（用 `acorn` 剥）」，新增 `stripCommentsByAst()`（按 acorn 的注释区间剥、补等长空格保持偏移），正则版只留给**纯文本**的负向断言。
+  - **牙齿验证两次，均精确红 + sha1 逐字节还原**：① 把 `computeDhashFromPipeline` 挪到 `resizeThumb` 之后 ⇒ 精确红在「顺序必须是 读文件头(2515) < 算 dHash(2879) < 缩放置换(2813)」；② 从 `FETCH_SQL` 里拿掉 `p.dhash` ⇒ 精确红在「少取这一列，那一项的『还缺吗』门就恒开」。**eslint 基线保持 0 error / 2 warning**。
+  - **文档**：`docs/semantic-search-tag-plan.md` 的 §M5 ⑤ 按实测改写了结论（原文只看了第一支就读成「补全已收尾干净」），并新增「§十·补 现状对照」（两条任务各出几样 + 合并的技术成本三点 + 「要并就现在并」的时间窗）。
+
+- **面向用户重写「图库数据位置 / 迁移」与「提示弹窗」两批文案**（2026-10-07）：功能先落地，文案按「读的人只想知道自己会不会丢东西」重排。改的都是**文案与判定键**，没有改任何行为，但顺手补掉两个真实的界面缺陷（见 ⑤⑥）。
+  - ① **术语**：`数据库位置` → **`图库数据位置`**。用户看到「数据库」并不知道那指的是什么、更不知道它长得很大；描述也从「缩略图、索引和图库记录都存在这个文件夹里」改成先讲**这是什么**再讲**为什么要搬**。同时消掉一处撞名：`dbWriteBusyLabel()` 里那条 `数据库迁移（缩略图标记）`（其实是启动期校正 `has_thumbnail`）改成 `校正缩略图记录` —— 图库数据搬家也叫迁移，两边同词之后用户看到「数据库迁移」根本分不清是哪件事。另 `打开 SQLite 目录` → `打开所在文件夹`。
+  - ② **危险动作必须说清「能不能找回」**：迁移后清理旧文件分三档，原来三句各说了一半 —— 现在分别是「已放入回收站，**需要时可以从回收站恢复**」、「已直接删除 —— 文件太大放不进回收站……**这些旧文件无法找回**」、「没能删掉。**它们只是白占空间**，你可以自己删除」。中间那档是**不可逆**的，含糊过去等于让用户事后才发现。
+  - ③ **失败要给的是一句安心话，不是错误码**：迁移失败一律补上「**图库数据没有变动，仍在原位置**」（要重启的那条说「重启后继续使用原位置」）。回退提示的正文第一句改成「**所以图库看起来可能是空的 —— 照片并没有丢**」—— 看到空图库的人第一反应就是「我的照片没了」，这句必须排在他自己下结论之前。
+  - ④ **技术细节降级，但不删**：主进程原来把 `EPERM: operation not permitted, mkdir 'Z:\not-there'` 直接摆在提示正文里 —— 用户读不懂、还会以为出了大事，而排查的人确实需要它。现在主进程把它拆成两句：`dataDirFallbackReason`（「无法访问 `Z:\not-there`」）进弹窗正文与设置页那一行，`dataDirFallbackDetail`（原始报错）**只挂在这行状态的 `title` 上**并照旧进 `logger.warn`。弹窗里一个字的技术黑话都不留 —— 那份 `EPERM...` 摆在对话框里看着像崩溃报告，而排查要它的时候是在看设置页、不是在读弹窗。
+  - ⑤ **系统对话框的标题也跟语言走**（真实缺陷）：文件夹选择框是**系统**对话框、由主进程弹，而 i18n 表在渲染端 ⇒ 英文界面会弹出一个中文标题的框。改成标题由渲染端传（`api.selectDataDir({ title })`，preload 与 `api.js` 同步透传）。
+  - ⑥ **主进程校验文案的本地化**（真实缺陷）：`validateTarget()` 的三条拒绝理由（空 / 就是当前位置 / 在当前目录里面）只有中文，英文界面照收。`select-data-dir` 补返回 `code`（`EMPTY` / `SAME` / `INSIDE`），渲染端**按 code 取本地化文案**、取不到才退回主进程原文。
+  - ⑦ **错误键按语义拆开**：原来一条 `dataDirFailFmt` 同时当「读不到位置信息 / 空间不足 / 迁移失败」三种用，于是「读不到信息」会显示成「迁移失败」、空间不足被塞进 `{error}`。现在拆成 `dataDirReadFailFmt` / `dataDirPickFailFmt` / `dataDirSpaceFmt` / `dataDirFailFmt` / `dataDirFailRestart`（末尾两条带「数据没有变动」）。
+  - ⑧ **读不到余量时不再写「未知」**：`目标磁盘还剩 未知。` 不是人话 ⇒ 换成一条**不含那句话**的整条文案 `dataDirConfirmNoFreeFmt`（`freeBytes < 0` 时用），设置页那一行本来就会跳过余量、不受影响。
+  - ⑨ **维护弹窗去黑话**：`清理无效记录` → `清理失效记录`（并说清「**只把记录从图库里移除，磁盘上的文件一个都不会动**」、备份入口指到界面上的按钮而不是「复制 photos.db」）；`优化数据库（VACUUM）` → `整理数据库`，正文改说「回收删除记录后留下的零散空间、刷新查询统计信息」，并解释**为什么临时空间要两处都够**（整理时要先另存一份）。`vacuumSpaceShortage()` 里那句「请先清理磁盘再试，或改用备份功能」也修了 —— 空间不足时建议去备份是答非所问，改成「腾出空间，或把图库数据迁到空间更大的磁盘」。
+  - ⑩ **任务名统一成动词短语**：这些 label 会被拼进 `maintenanceBusyMessage()` 的「正在 X，请等它完成后再试」，所以必须是能接在「正在」后面的说法（`目录扫描` → `扫描目录`、`文件名索引重建` → `重建文件名索引`、`重复文件比对` → `比对重复文件`，等等）。笼统的「后台任务进行中（…）」也改成「正在补全缩略图，请等它完成后再试」。
+  - ⑪ 🔴 **改文案本身踩出一个真缺陷：调用方在拿文案当判据。** 端到端探针的重试循环原来写的是 `/后台任务/.test(error)` —— 它靠**界面上那句话**判断「是被闸门挡住了、该重试」。`maintenanceBusyMessage()` 一换说法（`后台任务进行中（数据库索引补齐）` → `正在补齐数据库索引，请等它完成后再试`），这个循环立刻不再重试，**7 项断言一起红，看着像迁移功能坏了**（复现记录：`FAIL 迁移返回成功 — 正在补齐数据库索引，请等它完成后再试`）。修法不是把探针的正则改宽（下次换个词还会中），而是**让主进程给出可判定的信号**：`runDataDirMigration()` 里「已经在迁移中」「被写库闸门挡住」两种拒绝都带上 `code: 'BUSY'`，校验失败透传 `validateTarget` 的 `code`（`EMPTY`/`SAME`/`INSIDE`）、空间不足带 `SPACE`、源目录没有图库数据带 `NO_DATA`；探针改成判 `code === 'BUSY'`（正则只留作老版本兜底）。⇔ 与 ⑥ 是同一条原则：**主进程产出的拒绝理由必须带一个 code，界面/调用方不许读它的文案。**
+  - **验证**：中英两块的 `settings.storage.dataDir*` 36 条键逐条对齐（每条在两个块里各出现一次）；`npx eslint src scripts` 0 error；全量回归 `exit=0` / 0 FAIL；两个手工探针——弹窗主题 **15/15**（新增「正文明确说了『照片并没有丢』」一条）、数据目录端到端 **13/14**（唯一失败项仍是沙箱拦截删除系统调用，`removeFailed[photos.db]` 里带着 `[safe-delete] ... trash` 的原文，与产品无关）。`data-dir-regression` 新增 5 条断言钉上面这几个 code + 渲染端按 code 取本地化文案，并**做了牙齿验证**：去掉 `code: 'BUSY'` ⇒ 精确红在「被写库闸门挡住时返回 code: 'BUSY'」，还原后 sha1 与改前逐字节一致。
+  - ⚠️ **判据没动**：`maintenance-guard-regression` 钉的仍是 `/磁盘空间不足/` 与「预检在确认弹窗之前」；`app-dialog-bridge-regression` 钉的仍是按 IPC handler 定位调用点（它按 handler 名找，不按标题文案找），所以这次改文案一个断言都不需要放宽。
+
+- 🔴 **语义搜图的阈值从「固定门槛」改成「自适应地板」：`effective = max(阈值, α × top1)`**（2026-10-07，α = 0.3）：这是用户报的「语义搜图关键词不准」里**量最大**的一处修复。固定阈值有个绕不过去的两难 —— 定高了把「排序全对但分数低」的概念整条杀掉（`圣诞` 前 10 名 P@10 = 1.0 却返回 0 张），定低了往屏幕上灌噪声（`0.01→0.02` 的边际精确率只有约 2.8%）。自适应让每个查询**按自己的 top1** 收尺子：低分查询几乎不受影响、高分查询收得很紧。
+  - **真库实测（7,374 张 / 32 个查询，`.workbuddy/bench/probe-adaptive-live.js`）**：α 把 **14/27** 个概念的生效阈值抬到地板之上，**平均返回 1196 → 701（−41%）**，而**零返回 0/27 → 0/27 不变**。逐概念：`空姐` 4971→2249、`女仆` 4334→3380、`制服` 3486→1942、`丝袜` 3352→1233 —— 用户抱怨的「一堆不相关的图」修在这里。
+  - **改动点**：`src/ai/index-store.js` 新增 `ADAPTIVE_ALPHA = 0.3` 与 `search()` 里的自适应过滤、新增返回值 `candidates`（达到**用户地板**的张数，与 `matched` 在自适应生效后不是同一个数）；`MATCH_THRESHOLD_RANGE.max` **`0.03 → 0.15`** —— 旧上限比真命中还低（「丝袜」到 **0.08**），等于在设置里摆了一个用户收不到效果的档位（0.03 时已严到 11/27 个概念零返回、平均只返回 111 张）。上限**两处同改**：主进程 `MATCH_THRESHOLD_RANGE` + 面板/网页端 `MATCH_RANGE`，`semantic-regression` 逐值比对，中间态会让套件红。
+  - 🔴 **地板 `Tmin` 一度跟着下调到 `0.002`，被真库实测推翻并撤回，最终保持 `0.01`。这是本次最有价值的产出，因为它是一条方法论**：台架上 `(α=0.3, Tmin=0.002)` 的卖点是「零返回 1/27 → 0/27」，而**真库上这条卖点根本不存在** —— 零返回的充要条件是 `top1 < 地板`，真库 27 个概念的 top1 **最小值 0.0120 > 0.01**，地板设成 0.01 就已经一个都饿不死。台架那个 1/27 是 **1,500 张子集**的产物：样本少 ⇒ 最大值低 ⇒ 才有概念掉到线下；而**规模越大 top1 只会越高**（取最大值的样本变多）⇒ 全库（75 万行）在这件事上比真库**更安全、不是更危险**。代价却实打实：地板绑定从 **13/27 掉到 0/27**（低分查询失去兜底），只换来 +3.0% 召回（701 → 723），而且**负对照开始漏进来** —— 「汽车」0 → **5 张**、「咖啡」0 → **1 张**（达标 0 张的负对照 **4/5 → 2/5**）。台架上 `(0.3, 0.01)` 的 F1 **0.160 本来就高于** `(0.3, 0.002)` 的 0.159 ⇒ 两个语料都指向 0.01。**教训：台架是对「已算好的分数数组」做过滤，样本量决定 `top1` 的期望 ⇒ 只在子集上调阈值参数会系统性地偏向「更松」。** 所以改这个数必须跑**两个**：台架二维表 + 真库复算探针。
+  - **探针自己做了交叉验证**（这条比结论更重要）：Pass A 调**产品实现** `IndexStore.search`，Pass B 用 `threshold: 0` 把该查询的**全部**分数 dump 回来、离屏复算 —— 两者在 32 查询 × 2 档上**逐值一致**才算过；α 抄本与产品常量也在脚本里当场断言（抄一份不导出就会漂）。有了 Pass B，之后换任何 (α, Tmin) 都不用再编码一遍查询（编码 27 条要 13 s，是整支探针最贵的一步）。
+  - **三条既有契约在实现时全被踩过，都写进注释了**：① `threshold === 0` 是用户显式说「我全都要」（滑杆拉到最左），此时自适应必须让路 —— 写成无条件的 `max(0, α×top1)` 会替用户做决定；② `matched` 在自适应**未生效**时必须用流式计数（**不受 `MAX_RESULTS` 影响**），生效时才能用过滤后的长度；③ `truncated` **只**表示「受返回上限限制」，不含被自适应砍掉的那批 —— 把「阈值收紧了」说成「截断」会让界面误报成「结果太多只显示一部分」。
+  - **关键算法洞察（省掉一整趟向量扫描）**：`effective ≥ threshold` **恒成立** ⇒ 按 `threshold` 收集的候选一定是最终结果的超集、不会漏；而 `top1` 是最大值，「攒到 2×`MAX_RESULTS` 就排序截断」这种**有界截断必然先保住它** ⇒ 扫完时 `kept[0]` 就是真 top1，哪怕底下压着几十万张候选。点积是这个方法的全部成本，因此**不需要为求 top1 再扫一遍**。
+  - ⚠️ **已装库拿不到新默认值（本次恰好无需迁移）**：`settings.json` 是**默认值全量落盘**（活跃库 49 个默认键一个不缺，另有 8 个历史键）⇒ 改代码默认值对已装库不生效。本次地板最终留在 `0.01`，与库里持久化的值一致，所以用户拿得到 α 的全部收益；**换默认值时必须同时想迁移**。
+  - 守护 `semantic-regression` 扩面：断言 α 的定义与公式 `max(threshold, ADAPTIVE_ALPHA * top1)` 的结构形态（防「优化」时被改成无条件自适应）；`match-threshold-regression`（上一轮已修成从 `MATCH_THRESHOLD_RANGE` 派生）无需改动。契约见 [`docs/contracts/semantic-search.md`](docs/contracts/semantic-search.md) 的「分数口径与阈值」，里程碑记录见 [`docs/semantic-search-tag-plan.md`](docs/semantic-search-tag-plan.md) M1。
+
+- 🔴 **`match-threshold-regression` 不再把阈值默认值写成字面量**（2026-10-07）：它头部注释写着「常量只有一处定义（`MATCH_THRESHOLD_RANGE`）…这里断言的是行为，不是数字」，正文却写着 `const DEFAULT = 0.02;` —— 一个「只有一处定义」的常量在守护里有了第二份副本：默认值一改它必红，而红的信息只是「实现与副本不一致」，最容易把人引向「改数字让它变绿」（这正是它自己的注释里警告过、也确实发生了一次的失效）。现在 `DEFAULT` / `MAX` 从 `MATCH_THRESHOLD_RANGE` 派生。**缘起是一次被推翻的阈值改动**：先前按「假命中清零」把默认值提到 `0.02`（依据是分档表：0.01 下「猫」仍能拿到 2 张，命中的是**床单上印的猫图案**，人工看图核对）。**但当天又用「图包目录名当弱标签」的全库对照测试推翻了它**（27 个确有内容的概念、7374 张）：`0.02` 在**精确率与召回两个轴上都更差** —— P@set 0.107→0.081、R@set 0.341→0.181、F1 0.163→0.112、零返回 1/27→6/27。关键失效形态是「**排序是对的、被阈值整条杀掉**」：`圣诞` 前 10 名 P@10 = 1.0 却**返回 0 张** —— 这正是用户报的「搜不出来」。⇒ `0.02` 的代价是实的（≥5 张的可用词 137 → 61、0 命中 109 → 201、「人物肖像」直接归零），但那量的是「有没有返回」；弱标签测试量的是「返回的对不对」。两个数必须**一起读** —— 只读分档表就会得出与事实相反的结论。⇒ **本次改动后代码的净变化为零**：`DEFAULT_MATCH_THRESHOLD` 与设置面板那份 `MATCH_RANGE.default` 都回到 HEAD 的 `0.01`（面板那份一度停在 `0.02`，那段时间 `semantic-regression` 实测为红 —— 「必须两处同改」的中间态会让整套件红）。留下的是这条守护修复，以及两处的**注释重写**（`MATCH_THRESHOLD_RANGE` 那段当时还写着「默认值 0.02 贴着上限 0.03」）。完整分档与自适应阈值推导见 `docs/semantic-search-model-selection.md` 第五节，契约见 `docs/contracts/semantic-search.md`。
+  - 同时显式保证 `OTHER ≠ DEFAULT`（`DEFAULT === 0.015 ? 0.02 : 0.015`）：默认值哪天真的挪到 `0.015`，「输入了另一个值 → 写库」那几条用例也不会静默退化成空断言。
+  - **固定阈值本身也不是终点**：`0.01→0.02` 这一档的边际精确率只有约 **2.8%**，抬高买不到什么；正解是自适应阈值 `score ≥ max(Tmin, α × top1)`。（当时写的「实测 α=0.3 / Tmin=0.002、**尚未实现**」已在**同日**落地，并且那个 `Tmin=0.002` 被真库复测推翻 → 见本小节第一条。）
+  - 上限 `0.03` 当时**未动**：真命中能到 `0.08`（「丝袜」0.0796），默认值回到 `0.01` 后用户往严调只剩 `0.02` 空间 —— 放开上限当时被列为「下一个独立决定」，**同日已放开到 `0.15`**（见本小节第一条）。
+  - 标签阈值 `photo-tags.js#TAG_THRESHOLD`（`0.015`）**刻意不动**：与检索同一口径但不是同一个数，它有自己「错了比没有更糟」的实测定档。
+
+- **网页端搜图页同步「关键词 / 语义」两档**（2026-10-07）：新增只读路由 `GET /api/search-folders?q=&limit=`（目录）与 `/api/search?nameOnly=1`（文件名），与桌面端同一套判据与文案；`src/web/js/ai-views.js` 里是同一份镜面实现，两侧的档位开关都只认 `data-ai-search-mode` 属性、**不认按钮 id**（加档位不用回来改判据）。网页端仍只是只读镜像：档位切换不影响后端状态。`src/web/index.html` 的 `?v=` 与 `src/web/sw.js` 的 `CACHE_NAME` 同批抬高（网页端是 cache-first，不抬高就永远拿旧 JS）。
 
 - **网页端设置页精简为 2 面板**（2026-10-06）：原先它是桌面端 8 面板的只读镜像，其中 6 个面板（媒体库 / 快捷键 / 媒体与存储 / 后台任务 / AI 与索引 / 网络与远程）以及其余面板里的「桌面端」取值行，对网页端**既改不了、也不影响自己怎么显示**，已整块删除。留下的 6 个控件全部落在浏览器本地偏好上 —— 每页显示、网格与比例、卡片尺寸、界面风格、强调色、背景基调。
   - 面板 id / 名称仍必须 ∈ 桌面端 8 面板且**相对顺序一致**（`web-asset-route-regression` 第 ③ 组判据由「两端逐位相同」同步改为「子集 + 顺序单调」）；面板数 8 → 2。
@@ -71,7 +854,293 @@ Release versions match the root [`package.json`](package.json) `version` field.
 
 - **工程侧**（2026-10-06）：新增 5 个模块 —— `src/main/deferred-indexes.js`（运行期索引 DDL 的唯一真相源，部分索引的 `WHERE` 是拼接出来的，worker 与回归**同一份字符串** —— SQLite 的部分索引匹配是**逐字**的，差一个字符就静默失效）、`src/main/exif-meta.js`、`src/main/file-hash.js`、`src/photos-total-cache.js`、`src/stats-agg-cache.js`；新增 9 个守护脚本（`read-latency` / `face-order` / `exif-backfill` / `perceptual-hash-share` / `thumb-backfill-progress` / `scan-incremental-update` / `scan-tail-watchdog` / `thumb-dup-admission-parity` / `settings-rescan-all`，全部登记进 `run-regressions.js`，全量 54 脚本），另有 6 份既有守护同步扩面（`browse-grid-style` / `photo-metadata-backfill` / `face` / `maintenance-guard` / `sidebar-tree` / `photo-info-fields`）。
 
+- **缩略图补全第二趟：文件头与 dHash 共用一次打开**（2026-10-07）：`processOne` 的 `skipThumbnail` 分支（「早就有图、只补元数据」的那批）原本先建 sharp 实例读**文件头**，下面 `needDhash` 又调 `computeDhash(row.file_path)` **按路径重新打开**、整图解码 —— 同一份字节读**两遍**。现在两样产物共用 `siSkip` 这一个实例。
+  - 这一支恰恰是补全里**行数最多**的那批：真库实测第二支候选 **1,044,733 行**、几乎全部 `has_thumbnail = 1`，「多余的那次读盘」被乘在这个量级上。30 张真图（0.1 MB~50 MB，含 GIF / PNG）实测 **18,740 ms → 5,551 ms（省 70%）**。
+  - 建实例的**条件必须把 `needDhash` 一起算进来**：只写 `(needSize || needExif)` 时，「只缺 dHash」的行根本拿不到实例，读两遍照旧 —— 而且**不报错、不写日志、静态全绿**。
+  - 合法性前提是**逐位相同**，而它并不平凡：两条路的打开方式原本不同（`computeDhash` 用 `{ sequentialRead: true }`、`createSharpInput` 用 `{ failOnError: false }`），大图上会走到 `shrink-on-load` 那条支路。真机实测 **29/30 逐位相同**。
+  - 两条路**不对称**：剩下那 1 张是动图 —— **pipeline 算得出、按路径算不出**。所以回落判据从「只看标志位 `dhashDecodeUsed`」改成「**先看结果**（`dhashDecodeUsed && dhashFromDecode`），空了才退回按路径」，免得把「这一路读不出来」直接记成永久失败。
+  - 守护 `perceptual-hash-share-regression` 扩面：「第二趟必须共用实例」四条静态断言 + `[3c]` 大图（4000×3000 / 6000×4000 / 3000×3000 PNG）逐位相同与「pipeline 不能比按路径更弱」的行为断言 —— 原先只有 240×180 的小图，逐位相同在那里是**平凡**的，覆盖不到真正的分歧路径。
+
 ### Fixed
+
+- 🔴 **三条快捷键「按了没反应」：注册表里明明有，接线断了 —— `Alt+R`（随机跳页）、`Ctrl+O`（添加目录）、`F12`（开发者工具）**（2026-10-10，提交前体检逐键核对发现）。三条都**不报错、不打日志**，只是把键吃掉。
+  - **机理（同一个）**：`ui-events.js#bindKeyboardShortcuts` 的 handler 写作 `if (sr.matches('xxx', e)) { e.preventDefault(); if (typeof onXxx === 'function') onXxx(); return; }`。而 JS 里 **`typeof 未声明标识符` 合法且恒为 `'undefined'`**（不抛 `ReferenceError`）⇒ 守卫永假、`preventDefault()` 之后直接 return ⇒ **「ui-events 侧漏声明」与「app.js 侧漏喂值」症状完全一致**：键被吃掉、什么也不发生。
+  - **三键成因各不相同**：`nav.randomPage` 是**本轮新接的**（handler 与注册表都写了，但局部变量 `var onGoToRandomPage = options.onGoToRandomPage;` 漏了，`app.js` 调用点也没喂）；`global.addFolder` / `global.devtools` 是 **HEAD 上就已断**的（ui-events 侧声明与使用都在，`app.js` 从没喂过 `onHandleAddFolder` / `onToggleDevTools`）—— 本文件头注释早写过「标题栏菜单里写着 Ctrl+O / F11 / F12，实际没有任何人监听」，这回是同一件事又发生了一遍。
+  - 修法：① `ui-events.js` 补那行局部变量；② `app.js#bindKeyboardShortcuts({…})` 补三个入参 —— `onGoToRandomPage: goToRandomPage`（与底栏 `#randomPageBtn` 同一真相源）、`onHandleAddFolder: handleAddFolder`、`onToggleDevTools`（体内与 `ui-shell.js` 的 devtools 分支逐字同源：`api.has('toggleDevTools') → api.toggleDevTools()`）。**没有新实现，全是把已有的线接回去。**
+  - **守护缺口（更值得记的一条）**：`scripts/shortcut-contract-regression.js` 只钉**注册表**（动作存在、id / scope / 默认键合法）—— 「动作表里有」与「按下去有人接」是两件事，中间这条线此前**零覆盖**，所以三个死键在原有 61 项断言下**全绿**。本轮补 §4.1 两条：① `ui-events.js` 里每个 `typeof onX === 'function'` 的 `onX` 必须在**自己的作用域链**上有声明（acorn 作用域遍历；宿主全局 `ResizeObserver` 等在白名单里，附合成源码阳性对照）；② `bindKeyboardShortcuts` 从 `options` 读的每个键，`app.js` 调用点都得喂进来（对象字面量用 acorn 取**顶层**键，不靠正则）。**牙齿验证**：先写守护 → 精确红 3 项 → 修源码 → 全绿（61 → 67 项）。⚠️ ② 刻意只对 `bindKeyboardShortcuts` 一条断言、**不**铺开到全部 14 个 `bind*`：实测全量对账会误报 —— `bindMobileSidebar` 的 `closeAfterDesktopWidth` 是**带默认值的可选项**（`options.x !== false`，不喂是设计），`bindSettingsDelegates` 的 `previewBindings` / `onPersistPreviewDisplay` 是**孤儿分支**（全仓只有 ui-events.js 自己提到这两个名字，属死代码而非接线断）；反向（调用点多喂）也刻意不断言。
+  - 顺带修掉两处 lint error（`npm run lint` 由 **7 错 → 0 错**）：`app.js` 五处 `!!(t.x || {}).running` 的冗余双取反（`no-extra-boolean-cast`）、`org-meta-ui.js` 一处在 `try` 里必被覆盖的 `var r = null`（`no-useless-assignment`）。
+
+- 🔴 **右侧抽屉打开时，「下一张」与缩放下拉被整个盖住 —— 从 `.preview-info-panel` 时代就有的死区**（2026-10-09，做「整理」抽屉时实测发现）。两个抽屉都是 `right: 0; width: 360px; z-index: 20`，而 `#previewNext` 是 `right: 16px; z-index: 6`、`#previewZoomBox` 是 `right: 12px; bottom: 12px; z-index: 12` ⇒ 抽屉一开，右箭头**完全**落在抽屉底下：点它没反应、不报错、控制台一行字都没有。
+  - **实测**（`%TEMP%/aurora-orgmeta-shot/drawer.js` 渲染探针，一例一进程）：抽屉打开后往 `#previewNext` 中心 `(1386, 458)` 发真实 `mouseMove/mouseDown/mouseUp`，`state.previewIndex` 与 `state.previewPhotos[i].id` **一动不动**（`photoId` 停在 2）；修复后同一发点击翻到 3，且抽屉仍开着。同一探针把抽屉内 9 个控件的 `elementsFromPoint` 命中栈逐条打出来：全部 `insidePanel=true`、`top` 就是控件自己、`pointer-events: auto`（**反面样本**见下面那条冲片条修复 —— 那次整摞里根本没有条）。
+  - 修法：`#previewOverlay` 挂 `has-right-drawer`，CSS 把两者左移一个抽屉宽 —— `min(376px, calc(85vw + 16px))` / `min(372px, calc(85vw + 12px))`，与抽屉自己的 `width: 360px` / `max-width: 85vw` 逐字对应（各自 + 原有的 16px / 12px 边距）。⚠️ **类只能挂 `#previewOverlay`**：`.preview-zoom-box` 不在 `.preview-body` 里（它是 overlay 的直接子元素），而 `.preview-body` 自成 `z-index: 2` 的层叠上下文 ⇒ 抽屉那个 `z-index: 20` **压不住缩放胶囊**，实测浅色截图里「250%」小胶囊正压在「标签」分区下缘。挂在 `.preview-body` 上够不着它 —— 这条已写进守护。
+  - 为什么现在才修：信息抽屉的用法是「看一眼就走」，没人报过；而「整理」抽屉要**一边看图一边翻着标**，鼠标点不动「下一张」就等于塌了一半。两个抽屉几何完全相同，所以一处修、两处好。
+  - **守护**：`scripts/org-metadata-regression.js` §6.7 —— ① 两端都必须有那两条让位规则（数值逐字钉住）；② 不许把类挂回 `.preview-body`（那样缩放胶囊会重新浮上来）；③ `closePreviewInfoPanel` / `togglePreviewInfoPanel` / `closePreviewOrgPanel` / `togglePreviewOrgPanel` **四个函数体**里都必须出现那个同步函数（用函数体扫描而不是整文件扫词 —— 后者被函数名本身满足，是典型假绿）。两端同构，网页端一并改。
+
+- 🔴 **冲片条整条「看得见、点不动」—— 它继承了 `.preview-body` 的 `pointer-events: none`**（2026-10-09，用户报「冲片条无法点击」）。一行修：`src/renderer/styles.css` 的 `.preview-culling-bar` 补 `pointer-events: auto`（网页端同构补一份，见下）。
+  - **成因不是「被谁盖住」**，这一点值得记下来：`.preview-body { pointer-events: none }` 是**刻意**的（让点击穿透到 `.preview-body-inner` 里的图片，好拖拽/缩放），而冲片条是它的**直接子元素**、自己又没声明这一项 —— 指针事件是**继承**属性 ⇒ 整条被摘掉。所以它从来没被遮挡，只是把每一次点击都放行了。
+  - **实测**（`%TEMP%/aurora-orgmeta-shot/hit.js` 命中探针，修复前）：`elementsFromPoint` 在条中心与「收藏 / 选 / 否 / 清除 / 评分」六个控件中心返回的整摞里**根本没有冲片条**，最顶上是 `img#previewImage`；往「否」按钮中心 `(641, 801)` 发真实 `mouseDown/mouseUp` 后 `state.previewPhotos[i].flag` 仍是 `"pick"`、按钮 `active` 仍是 `false` —— 事件完全没到产品代码。修复后同一个探针：条自身 `pointer-events = auto`，同一发点击把 `flag` 改成 `"reject"`、按钮 `active` 变 `true`。
+  - 🔴 **`.preview-body` 那条 `none` 不许删**（删了图片没法拖拽/缩放，等于用一个 bug 换另一个）。正确修法永远是给子元素补 `auto` —— 本工程**既有的写法就是这样**：同一父元素下的 `.preview-info-panel.open`、`.preview-org-tags-panel`、`.preview-nav` 各自都写了 `auto`，冲片条是漏掉的那一个。**新守护 §6**（`scripts/org-metadata-regression.js`）把这一整类钉住：交互子元素必须有 `auto`、`.preview-body` 的 `none` 必须留着、另外三个控件作为**阳性对照**一起断言（它们被删时先红）、并附「规则提取器真的找到了这些选择器」的自证 —— 否则阳性对照可能是空转。牙齿验证 2/2 精确变红并逐字节还原（`sha1` 与备份一致）：删冲片条的 `auto` ⇒ 红；删 `.preview-body` 的 `none` ⇒ 红。
+    ⚠️ 两次注入里第一次的锚点 `count=3`（不唯一）导致**注入没发生**而脚本照样打印 PASS —— 那是我**验证脚本**的假绿，不是守护的。注入器现在会先数匹配次数、不是 1 就中止（`INJECT-ABORT`）。
+  - ⚠️ 网页端本来是好的（那边冲片条是 `.preview-body` 的**兄弟**，且网页的 `.preview-body` 没有 `none`），但两端这条规则号称「同构」，所以一起写死：将来谁把节点搬进 `.preview-body` 就不会重踩。`web/index.html` 在 `SHELL_ASSETS` 里 ⇒ `sw.js#CACHE_NAME` 升 `v64 → v65`（不升的话装过 PWA 的设备永远拿不到新页面）。
+
+- 🔴 **`setPhotoTags()` 往「不存在的图片 id」写标签会抛 `FOREIGN KEY constraint failed`，而不是像另外两个 setter 那样返回 `null`**（2026-10-09，写 `scripts/org-metadata-regression.js` 的真库夹具时抓出来的）。修在 `src/database.js`：写之前显式查一次主键，行不存在直接返回 `null`。
+  - **为什么是缺陷而不是「反正会报错」**：两个调用方**都**写了 `if (!result)` 分支并各自给了用户可读的文案 —— `main.js` 的 `{ success:false, error:'图片记录不存在' }`、`web-server.js` 的 404。抛错让这两个分支**永不可达**，用户拿到的是英文的 `FOREIGN KEY constraint failed`（而评分的同一情形给的是「图片记录不存在」）。
+  - 外键**真开着**：`better-sqlite3` 默认 `foreign_keys = 1`（实测 `= 1`），`database.js#open()` 里又显式设了一次 ⇒ 不检查就必然抛。
+  - ⚠️ 另外两个 setter 用 `info.changes` 判存在（更便宜，因为写入本身必然改行），`setPhotoTags` **不能**照抄：一张图本来就可能没有任何标签，`changes === 0` 是合法结果，分不出「没标签」与「图不存在」。所以这里只能显式查一次主键（`SELECT 1 FROM photos WHERE id = ?`，主键定点）。
+
+- 🔴 **`loadTagsForPreview()` 不接住读取异常 ⇒ 标签面板永远空白**（2026-10-09，同上，守护的 async 段抓出来的）。`src/renderer/org-meta-ui.js` 的 `await api.photoGetTags(id)` 外面补 `try/catch`，失败降级成空集合。
+  - **为什么这条会静默**：调用点 `app.js#syncPreviewOrgMeta` 是**点了就不管**的写法（既不 `await` 也不 `.catch`），而它在调用前已经把面板清空了 ⇒ 一旦传输层 reject（IPC 通道缺失 / 主进程正在重启 / 窗口在关），结果是一个 unhandled rejection + 一块永远空着的面板，除了控制台一行红字没有任何提示。与 `database.getPhotoTags` 的 `try/catch → []`、网页端 `/api/photo-tags` 的「读不到一律空结构」是同一条取向（面板是只读展示）。
+
+- 🔴 **瀑布流（原比例）档下，「少于一排照片」的文件夹 / 标签会把这几张图拉满整行 —— 卡片宽了近 2.6 倍**（2026-10-09，用户诉求「当某个文件夹或标签少于一排照片时，不要将图片占据所有宽度，保持和多图时一样宽度」）。两端各删一个 `capMasonryColumns()`：`src/renderer/app.js`、`src/web/js/app.js`（连同 `_masonryResizeObserver`）。
+  - **成因**：那个函数在「卡片数 < 可容纳列数」时把 `grid.style.columnCount` 压成**卡片数**，于是列宽从「按容器均分 N 列」变成「按卡片数均分」——图越少、每张越宽。列宽本来就该由**容器宽度**决定，与张数无关。
+  - **实测**（桌面 1440 窗、瀑布流档、basis 180 / gap 12、网格宽 1038）：改前 `2 张 = 513px`、`3 张 = 338px`、`6 张 = 198px`、`14 张 = 195px`；改后 `1/2/3/6 张 = 198px`、`14 张 = 195px`，且**单张仍落在第一列**（`x` 与多图时第一张完全一致）。网页端同测：`1/2/3 张 = 208px`、`6 张 = 205px`（差 3px 是滚动条）。统一高度档 `1/2/6 张` 一律 `198px` —— **未受影响**（它本来就走 `auto-fill`，没有这段逻辑）。
+  - **顺带解掉一个挂了很久的告警**：原实现用 `ResizeObserver` 观察 `.grid--masonry`，而回调里又改 `grid.style.columnCount` ⇒ **自反馈环**，console 反复刷 `ResizeObserver loop completed with undelivered notifications`（`CONTRACTS.md`「本轮**未修**」那条记的就是它，当时给的方向是「把写入放进 rAF」或「改成观察容器」）。写者没了，观察者也就没有存在理由，一并不再创建 —— 这比当时那两个方向都干净。源码里留了「不要为了别的目的把 RO 加回来观察这个 grid」的说明。
+  - ⚠️ **手机档的 `columns: 2` 是另一回事，不许连带删**：它是 `column-count`（列宽 auto、由容器均分），解决的是「固定 180px 列宽在约 317px 内容区里塌成单列、卡片铺满整屏」——**必须**从 CSS 侧兜底，因为 JS 那次压列只会**减少**列数、从不增加。`web/index.html` 里那段注释已同步改写（原文引用的函数名现已不存在）。
+  - **新守护 3 条**（`scripts/browse-grid-style-regression.js`）：① 两端列布局代码里不许再出现 `capMasonryColumns` / `columnCount`（**先剥注释** —— 两处删除点都留了同名的历史说明，不剥会拿注释里的字样判红，CONTRACTS 元规则③）；② 正向：两端的 `.grid.grid--masonry` 必须仍然自给列宽 `columns: calc(var(--grid-card-basis) * 1px)`（否则「不压列」可能退化成「根本没有列宽规则」）；③ 网页端 ≤600px 的 `columns: 2` 兜底必须还在。牙齿验证 3/3 精确变红并逐字节还原（塞回函数 ⇒ ①红；删 `columns:` ⇒ ②红；把 `2` 改成 `1` ⇒ ③红）。
+    ⚠️ ③ 不能用现成的 `mediaBlock(source, '@media (max-width: 600px)')` 取块：那个 helper 命中**第一个**同名媒体查询，而 `web/index.html` 里有 **9** 处（第 1 处还是注释里的提及）⇒ 取到别块、判据恒红（第一版就是这么失败的）。改成直接匹配「该媒体查询里的第一条 `.grid.grid--masonry { columns: 2 }`」。
+
+- 🔴 **预览浮层 18 个按钮的图标全部没渲染过 —— `data-i18n` 挂在 `<button>` 上会把按钮里的 `<svg class="btn-icon">` 和 `<span class="btn-label">` 一起抹掉**（2026-10-09，做冲片条时靠渲染回读抓出来的；静态断言一条都不红）。
+
+  - **机制**：`src/renderer/i18n.js#applyDom()` 对每个 `[data-i18n]` 节点执行 `el.textContent = val`，而**标签页界面把 `data-i18n` 挂在了 `<button>` 自己身上**、图标与文案是它的两个子节点 ⇒ 首次同步就把两个子节点**整棵**删掉（实测 `childCount` 从 2 变 0、`querySelector('.btn-icon')` 返回 `null`）。按钮于是只剩 i18n 那串纯文本，**看起来完全正常**，所以从没人发现。命中的 18 个：`slideshowToggleBtn` · `previewFullscreenBtn` · `previewRotateBtn` · `previewFlipBtn` · `previewCropBtn` · `previewEditSaveBtn` · `previewEditDiscardBtn` · `previewSubtitleSettingsBtn` · `previewTagsBtn` · `previewLiveBtn` · `previewFindSimilarBtn` · `previewShowInFolderBtn` · `previewOpenExternalBtn` · `previewMoveToTrashBtn` · `previewFavoriteBtn` · `previewFlagPickBtn` · `previewFlagRejectBtn` · `previewFlagClearBtn`。
+  - **反例就在同一个文件里**：`slideshowRandomBtn` 把 `data-i18n` 挂在 **`<span class="btn-label">`** 上（`index.html:3202`）⇒ 它的 `#icon-shuffle` 一直正常。所以这不是「设计如此」，而是挂错位置。
+  - **影响与现状**：不崩、不报错，只是图标永久缺失 —— 属于本工程最忌讳的「静态全绿、线上失效」。原为掩盖它，几个词条把图案塞进了文案（`'⛶ 全屏'` / `'📂 位置'` / `'🗑 删除'`，标记三连一度也被写成 `'✓ 选'`）；图标一回来就会变成「图标 + 符号」两份图案，所以**图案与文案必须一起收**。
+  - **本轮已根治**（用户选定「挪属性」方案）：把 17 处 `data-i18n` 从 `<button>` 挪到各自的 `<span class="btn-label">` 上（与 `slideshowRandomBtn` 同形），并撤回 6 条词条里的图案符号（`preview.fullscreen` / `preview.showInFolder` / `preview.trash` 中英各一条）。`previewOverlay` 上方留了一条规矩注释，说明「本浮层内 `data-i18n` 一律挂 span、不挂 button」。
+    - **`slideshowToggleBtn` 是唯一例外**：它**刻意没有图标**（雪碧图里只有 `#icon-play`、没有 `#icon-pause`，用 `<svg>` 表达不了「正在播放」那一态），状态由文案承载（`'▶ 播放'` / `'⏸ 暂停'`）。顺带删掉了它那个永远不显示的死 `<svg>`，并把 `ui-preview.js` 的两处 `textContent` 改走新的 `setSlideshowToggleLabel()` —— 直接写 `button.textContent` 会把 `span.btn-label` 整个替换掉（同一个失效机制，只是这次是 JS 干的）。
+    - 渲染回读实测：19 个按钮全部 `children` 正确、可见的 `iconW=13`；4 个 `iconW=0` 的是 `.preview-edit-btn` / LIVE 的**隐藏态**（`display:none`），子节点完好。
+  - **新守护断言**（`scripts/i18n-pack-regression.js` 第 ④ 段，三条）：「图标按钮的 `data-i18n` 不许挂在 `<button>` 上」+「文案不许以符号开头」+ 夹具自证（正确形状的图标按钮 `>=15`，实测 18）。牙齿验证 2/2 精确变红并逐字节还原：把 `#previewFullscreenBtn` 的属性挪回 button ⇒ 第一条红；把 `preview.fullscreen` 改回 `'⛶ 全屏'` ⇒ 第二条红。
+    ⚠️ 本条守护**必须先在源码里剥 HTML 注释**（CONTRACTS 元规则③）：上面那条规矩注释本身就写着 `` `<button>` `` / `` `<svg class="btn-icon">` `` 这些字样，不剥就会把注释里的示例匹配成真按钮，凭空多出一个「匿名按钮挂了 `preview.slideshow.play`」。
+  - ⚠️ 同时纠正一处**我自己写错过的注释**：`src/web/css/photo-compare.css` 里原写「条内其它按钮是无边框的，所以「加入对比」也做成无边框」—— 实测邻居（`收藏 / 选 / 否 / 清除`）都是带边框的 `.btn.btn-sm`，那条注释与截图都对不上。现已按 `.btn.btn-sm` 复刻（1px `--border` + `--bg-card` + 8px 圆角 + 4px/10px 内距 + 12px 字号），两端同一份 CSS。
+
+- 🔴 **`indian_style`（显示名「盘腿坐」）被分到「画风与画质 → 媒介与技法」：它是坐姿，不是画风**（2026-10-09，用户提问「盘腿坐为什么在媒介」）。修 `src/ai/tag-categories.js` —— 从 `medium` 那条规则挪进 `pose/posture`；契约 → `docs/contracts/joytag-index.md` **§16.3**（新增「定点修正」注记，并更新 `stats()` 规模）。
+
+  - **成因**：`indian_style` 后缀是 `_style`，当画风收进了「媒介与技法」，和 `retro_artstyle` / `contemporary` / `concept_art` 同组。但 Danbooru 上它是**坐姿**：`sitting with the butt on the ground and the legs crossed at the ankles, pretzel style`，别名 `agura`（胡坐），**implicates `sitting`、Tag group = Posture** ⇒ 官方译文就是「盘腿坐」。也就是说 `src/ai/tag-zh.js:321` 的译名**没错**，错的是分类。
+  - **为什么挪得动、又为什么位置承重**：改前诊断 `phrasesOf('indian_style')` = `{indian, style, indian_style}`，而这两条短语**不在任何规则的 token 里** ⇒ 全表只有 `medium` 这一条命中它，不会连带影响别的标签。⚠️ 但 `posture` 那条规则排在 `medium` **之前**，「挪出去又不加进 `posture`」会让它静默掉进 `other` —— 这正是硬约束①要防的静默丢失。
+  - **验证**：`other` 恒为 **1215**（它本来就不在 `other` 里），三条硬约束与定点关系不受影响；全量副作用只有 `pose +1 / style −1`；可见集合（展示线 0.35）`pose 52→53 标签 / 1742→1743 行`、`style 22→21 / 3084→3083`；`scripts/tag-categories-regression.js` **PASS**（顶层 14 / 子类 67 / 标签 5813 / `other` 1215 / 上限 1300）。
+
+- **预览浮层「滚轮被当成切换图片」：指针在图片信息 / 字幕设置面板上滚动时，图片被切走、而面板一动不动**（2026-10-09，用户反馈「还有鼠标滚动问题，默认是切换图片」）。两端同步修：桌面端 `src/renderer/ui-events.js#bindPreviewBasicControls` + 网页端 `src/web/js/app.js` 同段（两端镜面，改一处必同改另一处）。
+  - **成因**：这两个面板是 `overflow-y: auto` 的滚动容器，但它们**是 `#previewOverlay` 的后代**；而 wheel 监听挂在 overlay 上、**从不看 `e.target`** ⇒ 面板内滚动冒泡上来后被 `preventDefault()` + 直接切图（`|deltaY| > 20`）。面板内容比视口长时（上一轮紧凑化后面板仍需滚动），用户在面板上滚看到的正是「图换了、面板没动」。
+  - **修法**：无修饰键的滚轮先交还给面板 —— 指针落在 `.preview-info-panel / .preview-subtitle-settings-panel` 内、且**该方向还能滚**时，既不 `preventDefault` 也不切图；**滚到上/下边界后仍旧落下去切换图片**（与浏览器 scroll-chaining 直觉一致，否则把长列表滚到底时会突然发现自己换了图）。`Ctrl/⌘ + 滚轮` 永远走缩放，不受面板影响。切图判据（`|deltaY| > 20`）与面板宽度、字段表**均未改动**。
+  - **验证**（`%TEMP%/aurora-info-panel/wheel-probe.js`：直载真 `renderer/index.html`、挂真监听、真 `WheelEvent` 驱动，面板内容 1536px / 视口 756px 确证可滚）：面板可滚时 `defaultPrevented=false` 且切图 **0 次**；到底继续向下 → 切下一张；到顶继续向上 → 切上一张；指针在图片区 → 切图（原行为不变）；面板内 `Ctrl+滚轮` → 只缩放、不切图；小 delta（10）→ 维持原判据不切图。
+  - **牙齿**：临时拆掉守卫重跑 ⇒「面板可滚」那条**精确翻红**（`prevented=true, nav=[1]`），其余五项读数一字不变；还原后 `ui-events.js` sha1 逐字节一致（`8fc503d6…`）。
+  - 🔴 网页端 shell 资源（`js/app.js`）改动 ⇒ `sw.js#CACHE_NAME` `v56 → v57`。
+  - ✅ **已补守护 `scripts/preview-wheel-regression.js`（22 项，已注册进 `run-regressions.js`，插在 `tag-nav-regression.js` 与 `ai-lifecycle-regression.js` 之间）** —— 补之前 `grep wheel|deltaY|滚轮 scripts/` 为空，这条契约毫无防线。守护分两半：
+    - **行为半**（桌面端）：假 DOM 真调 `RendererUIEvents.bindPreviewBasicControls`，拿注册上去的真监听器跑九个场景 —— 可滚面板/面板中部/已到底/已到顶/图片区/面板内 Ctrl/浮层未打开/小 delta/面板不可滚。
+    - **镜像半**（两端）：`web/js/app.js` require 不起来（整页应用），只能读源码做结构断言，且**必须先剥注释** —— 修复处的注释里正好写着「不 preventDefault」，不剥会把「`closest(` 早于 `preventDefault()`」这条顺序断言污染成假绿。断言：顺序、`scrollTop/clientHeight/scrollHeight` 三件套齐、两端选择器**逐字相同**、有 `return`。
+    - ⚠️ 真 `WheelEvent` 那层**不能进套件**：`run-regressions.js` 用 `ELECTRON_RUN_AS_NODE=1` 拉起所有脚本，拿不到 `BrowserWindow` ⇒ 留作人工探针（`%TEMP%/aurora-info-panel/wheel-probe.js`）。
+  - **牙齿三组变异**（每例都要求「红的是不是预期那条」）：M1 删掉桌面整块守卫 → **7 条红**；M2 只改网页端选择器（镜面漂移）→ **精确 2 条**镜像条红、行为条全绿；M3 把边界判断退化成无条件 `return` → **精确 4 条**红。三次还原后 `ui-events.js` / `web/js/app.js` sha1 逐字节一致。
+
+- 🔴 **语义搜图不再被后台任务拒：「后台任务正在运行，请稍后再试」**（2026-10-09，用户报「语义搜索时提示后台任务正在运行，请稍后再试。不应该影响搜图」）。契约 → `docs/contracts/semantic-search.md`「只读请求的路由」一节。
+  - **根因是路由，不是内存**：`run()` 里「已经有 worker 占着」时只有一条出路 —— relay 给那个 worker，而准入门写死 `state.operation === 'index'` ⇒ 其余一律 `AI_BUSY`。于是搜图页上**三个自动动作**都正好撞在用户的搜索上：进页面自动取预选词（`suggest`，载模型 ≈2.1 s + 打分 ≈1 s，冷启 ≈15 s）、启动 3 秒后自动补 tag 倒排（`tag`，1.8 s，**在后台任务面板里可见** ⇒ 那句话看起来完全成立）、会话第一次查状态（`status`，≈1 s）。
+  - **另有一条更严重的同源故障**：`index` 是双 worker，CLIP 路收场后 JoyTag 路还要跑几小时（临界路径在它那边），而槽要等两路都收场才清 ⇒ 这整段窗口里 relay 投的是**一具尸体**（`postMessage` 到已退出的 worker 不报错也不回话，实测）⇒ 每次搜索挂满 **120 s** 后报「任务超时」。
+  - **修法**：把「跟谁要这次只读」抽成纯函数 `src/main/semantic-search.js#readRoute(occupying, workerExited)` —— 手里**握着编码器**的（`index` / `search` / `suggest`）走 relay（内存红线要的那条路，不会有第二份 SigLIP2）；`status` / `tag`（在 worker 里都提前 `return`，压根没载编码器）与**已退出**的对端改为**自起一个只读 worker**（textOnly）；只有「模型正在下载」保持拒绝。索引刚起手那 ≈2 s 的 `AI_BUSY` 由 `relayWithRetry()` 退避重试吸收（那是「等我一秒」不是「别搜」，且**每轮重看一次路由** —— 对端在等待期间收场就立刻改走自起 worker，绝不再投尸体）。
+  - **顺带修掉一个会锁死索引的隐患**：`spawn()` 从前**无条件**把新 worker 写进 `this.worker`，而并发只读的收场走「不写状态、不碰槽」那一条 ⇒ 槽会永远指着一具尸体，此后 `start('index')` / `run('index')` 一律 `AI_BUSY`（直到重启）。现在那行必须带 `primary` 门。
+  - **守护**：`semantic-regression` 新增路由表逐项、`status`/`tag`/已退出对端走 spawn、`install` 仍拒、重试把「还没就位」变成成功、重试中途对端收场 ⇒ 只投一次并改走 spawn、预算有界（`RELAY_READY_ATTEMPTS × 500 ms`）；`ai-lifecycle-regression` 新增「并发只读不得占 `this.worker` 槽」+「槽清干净后仍能再起索引」。**牙齿验证 4/4**（槽退回旧写法 / `readRoute` 退回「只有 index」/ 去掉重试 / 去掉 relay 的已退出门），全部精确红在预期断言并逐字节 sha1 还原。
+
+- **后台任务面板 AI 两节补上「预计剩余」行（ETA）**（2026-10-08，用户报「不显示预计完成时间」）—— 这是一笔**欠账**，不是取舍：其余 7 节一直有 `task<Name>Eta`，只有 AI 这两节没有，原因是**它们长期没有分母**（连待办总数都不存在）⇒ 契约 §7 当时规定只报速率；后来加了**抽样估计分母**（`totalEstimated: true`）分母就有了，**面板元素却没人跟着补** —— 上游加了字段、下游的格子不会自己长出来。真库实测读数：`done=527 / total≈1,649,649 / 103 张/分` ⇒ **「预计剩余约 11 天 2 小时 51 分」**（与当日吞吐台账 11.2 天一致）。
+  - **求值收进唯一真相源 `src/main/eta.js`**（新建）：把 `main.js` 里的 `estimateEtaSeconds` / `estimateEtaSecondsSmoothed`（含平滑状态表）**搬进去**，并新增**第三支** `estimateEtaSecondsFromRate(done, failed, total, ratePerMinute)` —— 给「`startedAt` 在 worker 里、速率由 worker 自报」的人脸 / 搜图用。⚠️ **为什么不是平滑版**：那支要 `startedAt`，而这两个任务的 `startedAt` 在 worker 里（模型加载 / 词表向量 / 估分母都发生在它之前），主进程手上只有「派发时刻」，硬喂会把那一段算进速率 ⇒ ETA 系统性偏大。⚠️ **分子分母必须与速率逐字同口径**：速率分子是 `done + failed` ⇒ 剩余也是 `total − (done + failed)`（失败的那些已经过了一遍）；这与面板主行的分子（`done`）**刻意不是同一个量** —— 主行答「建成了多少」，ETA 答「还剩多少件要过一遍」。**它刻意不做平滑**：喂进来的速率本身就是自起手以来的累计均值。
+  - **派生点在 `semantic-search.js#status()`**（与 `pct` / `tagPct` 同一处）：桌面 IPC 与内嵌网页 API 共用那个返回值 ⇒ 算一次两边都有；渲染端只做 `formatEtaLine(state.etaSeconds)`，**不许自己除**（与 `pct` 同一条规矩）。`null`（还估不出来）与 `0`（真的做完）都画空行，但语义必须分开。
+  - **面板**：`index.html` 给两节各加 `taskFaceEta` / `taskSemanticEta`（class `progress-eta`，与其余 7 节同款；位置在速率行之后、tag 计数行之前 —— ETA 属于主路，tag 计数是第二路）；`scan-flow.js` 在 AI 两节的循环里**无条件赋值**（写成 `if (v) …` 会让任务停在上一轮那句话上，行为断言专门抓这条）。i18n 复用 `task.etaPrefix`，零新词条（「约」正好交代了「分母是估值」）。
+  - **守护**：`background-tasks-panel-regression` 扩 ⑤d–⑤g。**判据写成通用规则**：凡有进度条（`Fill` **或上古遗留的 `Progress`** —— 只认 `Fill` 会把这两节静默漏掉，正好漏在最该管的两节上）的分节必须有 `Eta` 格；值必须由 `estimateEtaSecondsFromRate` 在 `status()` 里派生、`main.js` 里不许再长一份 ETA 算法。**牙齿验证 11/11 精确红在预期断言**（含 1 条阴性对照、5 个文件逐字节 sha1 还原）；其间真踩了一次「红在 A 而你以为在 B」—— 注入目标串在 `eta.js` 里**有两个函数各有一份**，`replace` 改到了前一个函数上，红是红了、红在另一条断言上 ⇒ 用例的 `from` 补上下文才唯一。
+  - **观感探针** `.workbuddy/tmp/eta-panel-shot.js`（真 `index.html` + 真渲染函数 + 真 `eta.js` 算值 + 真库状态快照）出 3 组截图：中文 / 英文（`About 11d 2h 51m left`，零 CJK）/ 刚起手（两行均为空、面板高度 339→330，不留旧值）。人眼核对通过。
+
+- **后台任务面板 AI 两节的「文件」行改为显示完整路径**（2026-10-08，用户问「为什么不显示图片完整路径」）：搜图 / 人脸两个 worker 上报的是 `photo.file_name`（只有文件名），而同一面板上缩略图补全 / 重建上报的是 `row.file_path` —— 同一面板两套口径。数据本来就在取批的 SELECT 里（`index-store.js#batch()` 与 `face-store.js#batch()` 都已选 `p.file_path`，face 的 `detect` 也在用它），纯属上报字段选错。实测行宽：可用 1214 px、普通完整路径只需 272 px、深目录 461 px（`text-overflow: ellipsis` 兜底）。改 `semantic-worker.js` 2 处 + `face-worker.js` 2 处。**对正在跑的那趟索引不生效，下次启动起生效**。
+
+- 🔴 **搜图页谎报「本地模型尚未就绪」**（用户报「搜图索引为什么显示模型未下载」）—— 根因**不是文件缺失**，是 `ready` 只是个缓存值，且有一条不需要任何错误就能走通的失效链。
+
+  `ready` 起手 `false`，只在任务（`install` / `status`）跑完时按 worker 返回值的白名单写回；而 `refresh()` 只在 `phase === 'idle'` 时才跑一次 `status` 探明它。于是：进程起来后第一个 AI 动作若是「建立索引」，`phase` 离开 `idle` 之后再没有代码会去探它，它会一直停在 `false` **直到重启**。判据链两端（网页端 `web/js/ai-views.js#noticeFor`、桌面端 `renderer/ai-views.js` 搜图页空态）都是 `!ready` ⇒ 整个「模型没下载」的样子是纯显示层的谎。真库核对：`D:\AuroraGallery\ai-search\ready.json` 与 `MODEL_KEY` **逐字一致**、两份量化 onnx 都在（412 MB）。
+
+  - **修法**：把它降格成「一个文件的属性」，在 `semantic-search.js#status()` 里**按磁盘实况同步派生**（`out.ready = isSearchReady(this.aiPath, MODEL_KEY);`，一次 `readFileSync` + 比字符串 ≈ 几十微秒，远低于起一个 worker 的约 1 秒）。`semantic-worker.js` 里自己拼的 `readyFile` 常量与内联判据一并删除，两端共用 `src/ai/bundled-models.js#isSearchReady / writeSearchReady` 这一对函数 —— 两份判据漂开就是「界面说没就绪、索引却照跑」这种不报错的错。
+  - **第二个独立理由**（这条让「等索引跑完再探」根本不可行）：`status` 不在 `concurrentReads` / `relayReads`（只有 `['search','suggest']`）⇒ 索引在跑时 `run('status')` 必被 `AI_BUSY` 拒，网页端 `/api/ai-search-status` 直接 503 —— 那条路在最需要它的时刻恰好是关着的。
+  - `state.ready` 留着不动（它现在只是「最近一次任务的结果」，与派生值同源同判据，不会矛盾），派生值不写回 `state`。
+  - 守护：新增 `scripts/model-ready-regression.js`（5 组，每组配反向用例）+ 6 条源码级注入验证（静态组 5 条 + 行为组 1 条「把共用判据改成恒真」；全部精确红在预期断言、逐字节 sha1 还原）。契约见 [`docs/contracts/semantic-search.md`](docs/contracts/semantic-search.md) 的「模型就绪状态（`ready`）的判据与求值时机」一节。
+  - 顺带修 `scripts/ai-lifecycle-regression.js`：它的 `vm` 沙箱替身表是**显式列举**的（`throw Error(name)`），`semantic-search.js` 新增的两个 require 必须补桩，且桩接**真模块**（在夹具里重写一份判据就又造出一个漂移点）。这次失效方向是「响的」（加载期就崩），所以没变成假绿。
+  - ⚠️ **一个被推翻的类比（同日当场纠正）**：修这个 bug 时曾把 `indexed` 也判成「同形的缓存缺口」（依据是真库 `embeddings` 7374 行而接口返回 `"indexed": 0`）。**那是错的** —— `index` 的返回值里**有** `indexed`（`semantic-worker.js` 末尾 `return { indexed: store.count(), … }`），白名单里也有，任务结束时必然刷新；那个 `0` 只是「**任务进行中**」的自然结果（起手块刻意不重置 `indexed`，重置成 0 更糟），实测当时那个进程正在跑索引。消费端本来就用 `running` 做门 ⇒ **不修**。契约里单列一节记这次纠正。
+
+- 🔴 **JoyTag 合趟里三处「不报错但数字是错的」——全部由端到端探针（真 worker + 真图三趟）当场量出来，已修并各配守护**：
+
+  **① `flush(force)` 只冲一批 ⇒ `result.tags` 比库里实况少一个尾巴**。
+  `force = true` 的语义是「把队列**清空**」，实现却是单次 `batches.splice(0, model.batch)`；而 `stats()` 是在 `finish()` **之前**就被取走的（取完就 `return`），没冲完的那些要等 `finish()` 才落库。实测**老库补建那一趟报 `done:16 / pairs:896`，而同一时刻库里是 24 张 / 1742 对** —— 界面报一个比实际小的数。丢多少 = `TAG_SCAN_WINDOW`(64) − `batch`(16)，**最多 48 张的读数**。顺带补全第二条：`drain()` 起手那句 `flush(true)` 的用途是「先把 CLIP 留下的半批落库，否则 `hasPhoto()` 还是假、同一张图会被收第二遍」，只冲一批的话这条保证也只有半截（今天靠「CLIP 循环每次 `flush(false)` 后残留 < 16」侥幸成立）。
+  - 修法：`force` 时循环冲到队列空（`force = false` 仍旧只跑一批，`if (!force) break`，凑批语义一点没动）。
+  - 守护：`scripts/joytag-index-regression.js` 第 ③ 组两条 + 3 条反向用例。
+
+  **② `announce()` 往**共享**进度字段里写 ⇒ tag 的分母会盖掉 CLIP 的分母**。
+  父进程收进度帧是 `Object.assign(this.state, message.progress)`（`src/main/semantic-search.js`）—— 那是一套**共享**的扁平字段、不是按阶段分开的命名空间。tag 趟报的是 `phase:'indexing' + stage:'tags' + done + failed + total + totalEstimated + countPhase`，与 CLIP 趟**同名同槽** ⇒ 两件事的分母差好几个数量级（待索引几十万 vs 待打标几千），混着写就是**拿「24」盖掉「484000」**，面板的分子 / 分母 / 百分比一起变成另一件事的数字，**而且一个错都不报**。属于「**两套口径不许串**」那条红线（缩略图重建第一批的教训）。
+  - 修法：tag 的数字一律走 `tag*` 前缀（`tagStage / tagDone / tagFailed / tagTotal / tagTotalEstimated / tagCountPhase`），并在 `semantic-search.js` 的 `state` 起手里**登记 + 逐轮重置**（漏重置 = 上一轮读数在新任务起手后继续挂着，与 `total` / `countPhase` 那条老坑同源）。⚠️ 这六个键**当前还没有消费者**（面板加「打标」那一行属独立一轮），先定键名是为了那一步不用再动 worker。
+  - 守护：第 ② 组 —— 双向判键（禁共享键 + 键名必须与 `ANNOUNCE_KEYS` 完全一致）+ **跨文件对账**（worker 报的键，main 侧 `state` 必须都登记了；走 AST 取 Property 键，不吃注释里那六个名字）。
+
+  **③（本批内已修）`drain()` 不收 CLIP 留下的半批 ⇒ 同一张图被收第二遍**。
+  早期版本的 `drain()` 直接开扫，CLIP 循环留在 `batches` 里没落库的那几张 `hasPhoto()` 仍为假 ⇒ **当场收第二遍**。库里看不出异常（`put()` 先删旧行，幂等），但读数**翻倍**：实测第一趟 `done:32 / pairs:2588`，而库里只有 **24 张 / 1742 对** —— 界面报「打标 32 张」，**这种错没人查得动**。修法是 `drain()` 开头先 `flush(true)`。
+
+- 🔴 **「重建全部缩微图」会**静默漏做**行：抽干一批时把没轮到的那几行连坐删掉**（2026-10-08，用户问「检查当前的重建缩微图任务，计数准确吗」时只读核查发现）。用户看到的是「已完成」，而库里还剩一小片旧规格的行 —— 实测 **42 行**，界面上**看不出来**：`done` 与队列彼此自洽、`failed` 是 0、不报错也不写日志。
+
+  **根因**：`main.js#regenerateRowsWithConcurrency` 的 `worker()` 在**每一行开头**检查取消并 `return`，而调用方 `runThumbRegenDrainPass` 是「先把这一批做完、再按**本批取到的全部 id** 删队列」（`thumbRegenFinishBatch(batchIdList, …)`）—— 于是取消时**没被取到**的行照样被删：`done` 加满（按 `info.changes` 累加）、那些行的规格没换、而且它们已经不在队列里 ⇒ **永远不会被重跑**。讽刺的是 `cancel-thumbnail-rebuild` 那条 IPC 的注释早就写明了正确语义（「任务在**批次边界**自行收尾」）—— **注释是对的，实现没跟上**。
+
+  - **实测**（真库 `512|webp`，队列剩 104 万行的中途，全程只读）：`done = 614,600`，而真正换过规格的只有 614,558，**差 42 行**；落成 **3 段连续 id**（5 / 10 / 27 行），全部在**已抽干区**（`id > 队列上界 1,362,477`），且每段的上下邻居都已换新 ⇒ 形状正是「一批的尾巴被整批删掉」。
+  - **修法**：把「批原子」变成硬契约 —— 取消只在**批次边界**生效（`while (!thumbnailRebuild.cancelled)`），批内唯一允许放弃的是「这一行在 `photos` 里已不存在」（那种行由调用方按 `missing` 记账，本来就没有活可干）。代价是「停止」最多多等一批（`THUMB_REGEN_DRAIN_BATCH = 50`，实测约 7 s），拿它换「不漏行」是划算的。
+  - **守护**：`scripts/thumbnail-regen-regression.js#checkDrainBatchAtomicity`，三条独立断言（`acorn` 剥注释后看结构）：① worker 循环体里没有「test 提到 `cancelled` ⇒ return / continue / break」；② 调用方仍按「本批取到的全部 id」删、且 `batchIds` 逐行收全；③ 取消仍挂在批次边界。**牙齿 4/4**，含 1 条**阴性对照**（往批内塞一条**写着这句代码的注释**必须仍绿 ⇒ 证明断言不读注释）；4 次注入均逐字节 sha1 还原。
+  - ⚠️ **已经漏掉的行不会自愈**：签名相同 + `phase='done'` 时登记阶段刻意直接返回（不重扫全库）⇒ 再点一次「重建全部缩略图」会**秒完成**而不登记任何行。要收它们回来，只能让签名失配（换一次档位**再换回来**、或置空 `thumb_regen_meta.signature`）⇒ 整条队列重登记，而登记谓词只挑「仍不符规格」的行 ⇒ 实际只有那几十行进队列、抽干是秒级。
+  - 📌 **核查方法本身也修了一处**：初见时拿「扫全表 165 s 得到的达标数」去减「扫**之前**取的 `done`」，得出 −42 的差 —— 这个比法**必然带时点污染**（任务正以 5~7 行/秒在写）。改成**单语句原子快照**（`done` / `total` / 队列行数 / 全库分桶放进**同一条 SQL**：一条语句 = 一个读事务 = 一个瞬间）之后，`达标 − done` 变成 +4，而漏行精确等于 42。另外 `done + 队列剩余 = total` **是恒等式、不是证据**（三者同源：Σ`INSERT OR IGNORE` 的 `changes` 与 Σ`DELETE` 的 `changes`），它只能证「没被外部改库」。
+
+- 🔴 **修掉一条恒真的「夹具自证」（假牙）—— 它两个方向同时失效**（2026-10-08，排查用词统一时顺手扫出来的）：`scripts/perceptual-hash-share-regression.js` 里那条
+  `check('夹具自证：main.js 剥注释后不再含那句提示性说明', !mainSrc.includes('否则带 EXIF 方向的图片'))`
+  **是假的**。它的危害形态正是最坏的那种：**不红、不报错、也不写日志**，只是悄悄不再有检出能力。
+
+  - ① **目标选错了文件**：那句说明跟着「旋转那一刀」在 2026-10-07 从 `main.js` 收进了 `src/main/perceptual-hash.js`，`main.js` 里**根本没有这句话**（实测两个文件各 `grep -c` 一次：`perceptual-hash.js` 1 处、`main.js` 0 处）；
+  - ② **就算选对文件也仍然是恒真**：它先 `stripComments` 再断言「不含这句**注释**」—— 剥注释这一步已经把它抹成空格了，源码怎么写都为真。
+
+  **修法：拆成两条各有牙的**（形状照抄同文件 §1 第 113 行那条**正确**的自证）——第 1 条读 `HASH` 剥注释（`stripComments` 真坏掉时它会红，也就是顺便证明剥注释有效）；第 2 条读**未剥的** `main.js`（那句说明被贴回 main.js 时它会红）。
+  **双向证明（同一个变异：把那句说明以注释形态贴回 `main.js`）**：**旧断言版守护 `EXIT=0` 且自证行显示 ✓ —— 完全没抓到，假牙成立**；新断言版 `EXIT=1` 且精确命中目标断言；`main.js` sha1 逐字节还原（`03d1dda7186a` → `03d1dda7186a`）。
+  - 📌 值得记的是**正确的那条与错的这条长得几乎一样**（都是 `!stripComments(read(X)).includes('…')`），差别只在 `X` 指向谁、以及有没有先剥注释。⇒ 同一仓库里同类自证要**挨个**复核，不能因为「旁边那条是对的」就推定这条也对。
+
+- 🔴 **两个用 `vm` 抽函数跑的守护全崩在 `tUiFmt is not defined`；而且真正的问题不止这一个 —— `run-regressions` 的「首个失败即退出」把另外 47 个守护一起藏住了**（2026-10-08，接 `app.js` 全域 i18n 化那条）：`page-size-control-regression.js`（抽 `syncPageSizeControl` / `changeBrowsePageSize`）与 `browse-grid-style-regression.js`（抽 `changeBrowseGridStyle`）从源码抽函数进 `vm` 跑，沙箱是**逐项显式列举**的替身表、**没有 `tUiFmt`** —— 本批给这两处的失败提示加了 `tUiFmt('settings.pageSizeFailFmt' / 'settings.gridStyleFailFmt', …)` ⇒ 失败路径一走到就 `ReferenceError`。
+  - 🔴 **发现过程本身值得记**：一眼只看到 `Regression failed: page-size-control-regression.js 1`。`scripts/run-regressions.js` 是 **`result.status !== 0` 立刻 `process.exit(1)`**（`spawnSync` 逐项、`stdio: 'inherit'`）⇒ **它停在第 29 项，第 30 项之后 47 个守护（含 `background-tasks-panel-regression` / `ai-lifecycle-regression`）这一跑根本没执行**。「套件报了 1 个红」≠「只有 1 处坏」。另外 `browse-grid-style-regression.js` 的失败文案是「`[browse-grid-style] 回归失败：`」、**不含 `FAIL:`**，`grep 'FAIL\|Regression failed'` 直接漏掉它 ⇒ 定位靠的是「按『哪些守护在抽函数』重新体检」，不是读日志读出来的。
+  - **体检方法（可复用）**：遍历 `scripts/*.js` 的 `extractFunction(src, '<name>')` 调用点，再取对应函数体看有没有 i18n 助手。⚠️ **必须同时认 `for (const name of ['a','b']) … extractFunction(src, name)` 这种数组循环** —— 第一版只认字面量名，正好把这两个文件全漏掉（剩下的命中只有 `data-dir-regression.js`，而它**早就**用 `new Function('tUiFmt', 'tUi', …)` 注入桩了，不受影响）。
+  - 🔴 **修法不是「补一个返回第三参兜底串的桩」**：那种桩能让原本那两条中文断言继续绿，却把两个真坏法整个盖住 —— 键写错 / 英文包漏这条（`I18n.t()` 静默回落中文）与英文模板漏 `{err}`（说不出原因）。现在两个沙箱都 **`require('../src/renderer/i18n.js')` 接真包**、按 locale 取词；键在两包都不存在时 `t()` 会原样返回键 ⇒ **判红，不许退兜底串**。
+  - **各补一条英文用例**（把 locale 拨到 `en` 再走同一个 `catch`）：期望串**从真包派生**、**刻意不钉英文措辞**（改文案不用改守护）；同时断言 `/settings locked/`（`{err}` 真插值了）与**零 CJK**（没回落中文包）。三种坏法实测各精确红：用错键 / 英文缺这条 / 模板丢 `{err}`。
+    - ⚠️ **「不钉措辞」这条是牙齿验证的阴性对照当场逼出来的**：第一版写死 `/Failed to change photos per page/`，注入「纯措辞改名」（占位符不动、不引入中文）立刻**假红** —— 那等于给守护加了「文案不许改」的假契约。
+  - 🔴 **新增守护 `scripts/i18n-pack-regression.js`（包级对账，3 条不变量）**：① **同键** —— 两包键集合一一对应（少一条只会在切语言时**静默回落中文包**，界面看不出是缺词条）；② **同占位符** —— 同一条词条两包 `{name}` 集合必须一致（英文漏 `{err}` ⇒ 「失败」说不出原因，**只在英文界面复现**）；③ **英文包里不许有中文**（漏翻译最常见的形状，而 ① ② 对它都是绿的）。走 AST 而非正则：词条值有 **`+` 拼接**（多行确认框），只认单字面量的写法会把它们整段跳过 —— 而「跳过」在断言里跟「通过」长得一样；顺带还断言「折不动的值」必须为 0（否则就是静默漏检）。白名单只有 2 条（`settings.lang.zh` 语言自称 / `help.aboutBody` 作者署名），并附**防过期**断言（豁免项必须仍因含中文才被豁免）。**为什么单独成守**：`background-tasks-panel-regression` ④ 只覆盖「面板 + `app.js` 引用到的」键，其余词条没人管；② ③ 原本**全工程零覆盖**。实测 744 / 744 条、139 条带占位符、0 处不一致。
+  - **牙齿验证 14/14，全部精确红 + sha1 逐字节还原**：新守护 7（英文少一条键 / 英文漏 `{err}` / 英文混中文 / 值折不动 / 白名单过期 / 抽掉真豁免 / **阴性对照：纯措辞改动**）+ 两个 harness 7（英文模板漏 `{err}` / 产品代码**回退成裸中文** / 键写错 / 网格侧同三条 / **阴性对照 ×2**）。
+    - ⚠️ **两处踩坑**：① `spawnSync` 跑守护必须用 **Electron 二进制**（托管 node 去 spawn 自己会 `EBUSY`）**且 `stdio[0]: 'ignore'`**（给管道同样 `EBUSY`，`status` 会是 `null` —— 看着像「没红」，其实是**根本没跑起来**）；②「白名单过期」那条分支不能用「把真豁免换掉」来测 —— 会先撞上「③ 泄漏」分支，红是红了但红的不是目标那条 ⇒ 等于没测到。
+  - **验收**：eslint 全仓 0 error / 2 warning（基线未动）；全量套件 `exit=0`、末项 `ai-lifecycle-regression` PASS、零 `FAIL:` / `AssertionError` / 「回归失败：」、**81 项 PASS**（比上一跑多 1 项 = 新守护）；`sha1sum -c` 七个文件全 OK ⇒ 元规则⑥ 起跑晚于最后一次改码 = **有效全绿**。三个受影响的守护这次都真跑了（`[page-size-control-regression] PASS` / `[browse-grid-style] 全部通过` / `[i18n-pack-regression] PASS`）。
+
+- 🔴 **`semantic-search.js` 多一个 `require`，`ai-lifecycle-regression` 就在加载期崩**（2026-10-08，B 项落地后全量套件当场红）：那条守护把 `src/main/semantic-search.js` 放进 `vm.runInNewContext`，并给它一个**显式列举**的 stub `require`（只认 `worker_threads` / `path` / `./logger`，其余 `throw Error(name)`）。B 项给 `status()` 加了 `require('./progress-pct')` ⇒ stub 不认识它 ⇒ `Error: ./progress-pct`。
+  - **失效方向是「响的」**（加载期硬崩，不是安静跳过）—— 这点值得记：显式列举的夹具一旦漂开，坏的方向**不**是假绿。
+  - **补进 stub 的必须是真模块**（`require('../src/main/progress-pct')` 后直接返回），再抄一份算法就又造一个「夹具跟产品漂开还照绿」的点。已在 stub 处写明「这张表是显式列举的、`semantic-search.js` 每多一个 `require` 这里就得补一条」。
+
+- 🔴 **「补 tag 倒排」这个长任务在顶栏一个字都不显示 —— 若它是唯一在跑的任务，整块面板连标题一起消失**（2026-10-08 查出）：`scan-flow.js#showSemantic` 的判据是 `!!semantic.busy && ['install', 'index'].includes(semantic.operation)`，而 `semantic-worker.js` 里有一条 `if (operation === 'tag') return refreshTags();` —— **`'tag'` 不在那个取值域里**。
+  - **那个任务是真实存在的长任务**：`run('tag')` 由主进程在**启动后 3 秒自动触发**（`main.js` 里那段 `setTimeout`，补的是「升级前就已索引好、因此永远没有标签」的那批图片），走的是 `refreshTags()` 的纯点积补标签循环、按主键倒序一批批走，并在每批上报 `progress({ phase: 'tagging', processed, total })`。
+  - **实证（不是读代码推的）**：用真 `renderBackgroundTaskPanel` 跑 5 种状态，`operation: 'tag'` 那一行返回的面板是 **`none`** —— 不只是那一节隐藏，`showPanel` 的或链整体为假 ⇒ **整块「后台任务」面板消失**。
+  - 🔴 **为什么一直没被发现**：缩略图重建正在跑、**它撑着面板**（`showThumbRebuild` 为真）。这与第 27 轮「缩略图重建不显示」被补全遮掩是**同一个形状** —— 两条进度列里只要有一条在跑，另一条坏了就看不出来。**新增一条进度列时没进或链 / 没进取值域，缺陷要等到「只剩它自己跑」才暴露**，而那时它已经跑了很久。
+  - **触发条件（现在还没到）**：索引规模扩到全库，或**词表指纹变化**导致整表 `tags_key` 过期。当前无感是因为实测活库 `ai-search/semantic-index.sqlite` 只有 **7,374 行** `embeddings`（全库 165.7 万的 0.45%）、且 `tags_key` 已全是当前键 ⇒ `pendingTagsCount = 0`、任务秒退。**这个 bug 是「等着被踩」而不是「已经踩了」。**
+  - **修法**：取值域加上 `'tag'`。⚠️ 判据**保持 `operation` 而不是改成 `phase`** —— `phase` 里有个 `'loading'`，搜索与预选词也会经过它，按 `phase` 放行会把「正在搜图」显示成后台任务。搜索 / 预选词**刻意不显示**（那不是后台任务），守护里有一条断言钉着这一点。
+  - **守护**：`face-task-regression.js` 新增 `operation: 'tag'` 用例（必须可见）—— 覆盖范围原先只有 `'index'`/`'install'`/`'search'`，**唯独漏了 `'tag'`**。牙齿验证：把 `'tag'` 从取值域删掉 ⇒ 精确红在「「补 tag 标签」是长任务，必须在顶栏显示」。
+
+- 🔴 **「重建全部缩略图」把「跨重启累计」当成了「本次进程」：ETA 差 18 倍、产出报的是上一个进程的账**（2026-10-08，用户连报两条：「**预计时间不对**」→「**错了，已完成的不是这一次跑的**」）：`thumb_regen_meta` 里的 `done` / `failed` / `missing` 是**跨重启累计**的，而 `thumbnailRebuild.startedAt` 与五项顺手产出计数是**本次进程**的 —— 两套口径在同一个函数里被当成一套用。
+  - **症状①（ETA）**：`getThumbnailRebuildProgress` 把 `done` 与 `startedAt` 一起喂给 `estimateEtaSecondsSmoothed`，而那个函数的速率是 `rate = done / (now − startedAt)` ⇒ 算出来的是「整条队列的累计完成量 ÷ 本次跑了多久」。真库实测（重启续跑 21 分钟时）：`done` 387,250 ⇒ 速率被放大成 **305 张/秒**，实测 **17 张/秒** ⇒ 界面写「预计剩余约 **1 小时 9 分**」，真实约 **20.7 小时**。**错得离谱却看着合理**，这才是它危险的地方 —— 差的是十几倍，而不是一眼能看出坏掉的数量级。
+  - **症状②（产出）**：同一批数据里 `done` 被直接当成「本次已重出」报给用户 ⇒ 本次进程才起了 21 分钟，界面写「已重出 387,250」，其中 **37 万是上一个进程做的**。这不是「数字略偏」，是把**上一个进程的账记到这一个进程头上**。
+  - 🔴 **修法是同一个形状：起手对三个累计量各取一份快照，之后只报差值。** 状态里新增 `doneAtStart` / `failedAtStart` / `missingAtStart`（**不持久化**），起手在 `isQueueReusable` 那次恢复**之后**取一次；`getThumbnailRebuildProgress` 里算出 `sessionDone` / `sessionFailed` / `sessionMissing`（各自夹 `>= 0`）⇒ `rebuiltThisRun = sessionDone − sessionFailed − sessionMissing`（真的产出，`done` 里含失败与「行已不在库里」两类），并把 `doneThisRun` / `failedThisRun` / `rebuiltThisRun` 三个字段加进**进度白名单**。ETA 改喂 `sessionDone`，第二个数同理换成 `sessionDone + pending`（相减后 remaining 不变、速率回到真值）。基线只在起手取一次 —— 每批更新等于把速率变成瞬时值，ETA 会跟着抖。
+  - 🔴 **面板那半也一起改**：`scan-flow.js` 原先在**渲染端**拿 `thumbRebuild.done − failed − missing` 现场算「已重出」⇒ 现在只读主进程算好的 `rebuiltThisRun`（那次减法跨三个数，放两处迟早两处不一样）；「失败 N」也换成 `failedThisRun`。**理由是同一条副行不能一半累计、一半本次** —— 那是最难读的形状。累计值没有消失，它的正确去处是**主行 `done / total`**（总账）与空闲态设置页那句「已全部重建（共 N 张）」。文案随之改成「**本次已重出** N」（i18n 中英各一条）。
+  - 🔴 **三条顺序/形状约束都不是洁癖**：① 基线取在恢复**之前** ⇒ 恒为 0，等于没修（ETA 仍按整条队列算）；② 基线从 meta 恢复成 `meta.done` ⇒ 差值恒为 0 ⇒ `estimateEtaSeconds` 的 `done < 1` 直接返回 `null` ⇒ **ETA 永远不显示**、且「本次已重出」恒为 0 ⇒ 那一项**永远画不出来**（两种都比算错更难发现，界面上只是少一行字/少一项）；③ 面板不许再自己拿累计量相减（两处减 = 两个口径）。三条都写进守护。
+  - **对照查了一遍同形状的地方**：补全那条路的 `thumbnailBackfill.done` 在起手时 `= 0`（每次跑都是本次口径）⇒ 分子分母本来就一致，没有这个毛病；`invalidCleanup` / `dupHash` / `folderScan` 的 `checked`/`d`/`spCur` 同理都是本次口径。**唯一会跨重启累计的 `done` 就是重建这条队列**，所以这两个 bug 只在重建上出现、也只在**重启续跑之后**才出现。
+  - **守护**：`thumbnail-regen-regression` 的 `checkEtaSameUnits()` 重写为 **`checkSessionScopeAndEta()`**（159 → **178 checks**）—— 判据落在**调用实参**与**门**上，不是「这段代码里出现过某个名字」：① 三个 `*AtStart` 都在状态对象里、都从 `thumbnailRebuild.<key>` 取、都在 `isQueueReusable` **之后**取、都不许从 `meta.*` 恢复；② 三个差值都夹 `>= 0`、`rebuiltThisRun` 的减法形状、三个 `*ThisRun` 都在进度白名单里；③ ETA 的实参必须是 `sessionDone` 且不许出现把原始 `done` 喂进去的形状。`checkMetadataMergeWiring` 里那条**已过期的断言同时翻面**：原先判「`var rRebuilt` 那片里要出现 `thumbRebuild.done/failed/missing`」，那正是被用户否掉的形状 ⇒ 改成判「读 `rebuiltThisRun`」**加上反向**「禁止出现 `thumbRebuild.done/failed/missing`」。**判据必须跟着口径一起翻，否则守护会替错误的旧实现站队**（这条旧断言在改口后第一次跑就会红，红得完全正确）。
+  - 🔴 **同一天，这个「源码切片窗口」的假绿源在另一条断言上又咬了一次 —— 同一份文件里两种取法并存 = 复发源。** `checkBackgroundPanelWiring` 也在检查同一个 `renderBackgroundTaskPanel`，取法是 `panelBody.slice(fnAt, fnAt + 12000)`；而本轮给 AI 那两节补计数行之后该函数体长到 **23,258** 字符，重建那节的 4 个 id 实际落在函数头 **+15,296 / +15,364 / +15,434 / +15,569** ⇒ 全部滑出窗口 ⇒ **全量套件红在「面板要填 `thumbRebuildTaskFill`（进度条 / 计数 / 副行 / 剩余时间）」**，而产品代码一行没错（`scan-flow.js` 的 sha1 与改动前逐字节一致、`thumbnail-regen-regression` 的其余 8 项在 `checkBackgroundPanelWiring` 之前全是 `ok`）。两次的差别只在**发现方式**：上一次是主动审计（换保偏移的 `stripCommentsByAst` 之后偏移不再前移、同一段代码当场越界），这一次是**真红**（新代码插在前面，把旧内容挤出去）。两种都会复发 —— ⇒ 该处一并改成 `functionBodyByName` 按 AST 取整个函数体（**同一文件里 ⑦ 那条早就改了、② 这条漏了**）。
+  - **全仓库窗口法余量审计**（`.workbuddy/tmp/teeth3/window-audit.js`；判据：用 acorn 取该结构的真实闭合位置，`结构真实长 > 窗口` 即**未覆盖**）：`app-dialog-bridge:55` 窗口 1200 / 结构 3788 ⇒ 覆盖 **32%**；`data-dir:259` 窗口 2000 / 结构 2080 ⇒ 覆盖 **96%**（差 80 字符）。两处当前都是绿的（目标恰好在窗口内），本轮**不动**（不属本次改动面），但已连同本表记进技能 `aurora-regression-teeth-verify` 的「窗口法审计」一节 —— **窗口法没有「暂时安全」，只有「已经越界」和「还没越界」**：那 4 个 id 能滑出 12,000 的窗口，同样意味着 1200 的窗口挡不住后面 68% 的反向断言（`doesNotMatch` 在窗外看不见东西）。
+  - **牙齿验证（两条断言各自验，因为它们是分工不是重复）**：把 `var rfill = document.getElementById('thumbRebuildTaskFill');` 整句退化成 `var rfill = null;`（让那个名字**彻底消失**）⇒ 精确红在目标那条；而把 id 改一个字母（`…'thumbRebuildTaskFill_XX'`）⇒ 反而红在配对的「`getElementById` 取的 id 必须存在于 `index.html`」那条 —— 因为 `fn.indexOf('thumbRebuildTaskFill')` 对 `…Fill_XX` 是**前缀命中**。**挑注入形状前先分清「这条管名字出现过、那条管名字两边一致」**，否则会得出「这条没牙」的错误结论。还原后 `scan-flow.js` = `e800a3fa…`、守护脚本 `11ccce21…`，逐字节一致。
+  - **牙齿验证 5 次，均精确红 + sha1 逐字节还原**：① 分子换回原始 `done` ⇒ 红在「不许把原始 `done` 直接喂进 ETA」；② 基线改成 `Number(meta.done)` ⇒ 红在「起手要把 `doneAtStart` 设成恢复后的 `done`」；③ 把基线挪到 `isQueueReusable` 之前 ⇒ 红在「必须在恢复之后取」；④ 面板改回 `Math.max(0, done − failed − missing)` ⇒ 红在「必须直接读 `rebuiltThisRun`」；⑤ 面板保留 `rebuiltThisRun` 但**多留一行累计减法**（模拟「先改成新口径、旧的忘删」）⇒ 红在反向那条，证明正反两条**各自独立有牙**。
+  - ⚠️ **这一版改的是主进程**（ETA 与三个差值都在 `getThumbnailRebuildProgress` 里算）⇒ 与更早那两项纯面板读数不同，**要重启才生效**；队列本身持久化，重启后从抽干处继续。重启后「本次已重出」会从 0 开始涨（那是真的本次量），「待重跑」仍是 100 多万。
+
+- 🔴 **「重建全部缩略图」真的在跑、顶栏「后台任务」里却一个字都不显示（用户实拍）**（2026-10-08）：用户点完「重建全部缩略图」来问「**为什么不显示在顶部后台任务中？**」—— 那一刻重建**确实在产出**（只读探针三连采：`phase='draining'`、`done` 4,500 → 9,200、`failed=0`、队列剩余 165 万、约 19 张/秒），但顶栏面板**整块是 `display:none`**，界面上唯一能证明「机器在干活」的地方是设置页那一行。
+  - **根因**：主进程一直在报（`get-background-tasks` 的返回里**早就有** `thumbRebuild` 这一列），设置页也在正常转，只有**顶栏面板这一处没接线** —— `src/renderer/scan-flow.js#renderBackgroundTaskPanel` 里写的是 `var thumbs = t.thumbs`，而 `showPanel` 的或链（`showScanBlock || showThumb || showInvalidCleanup || …`）**从来没有「缩略图重建」这一项** ⇒ 扫描 / 补全 / 清理 / 优化 / 查重 / 人脸 / 搜图**全都没在跑时，整块面板被隐藏**，重建自己撑不起面板。
+  - 🔴 **为什么这条能一直没被发现**：`thumbs`（补全）与 `thumbRebuild`（全量重建）在主进程是**刻意分开报**的两列（分子分母口径不同 —— 补全的分母是「缺缩略图的张数」，重建的分母是「全库登记数」，并成一行会让百分比在两者之间跳）。而面板只接了其中**一列**：两者同时在跑时补全撑着面板、肉眼正常；**只有「只剩重建在跑」才暴露**。偏偏重建正是那个要跑 **24–36 h** 的任务，用户最需要看见它。
+  - **修法（面板这一格补齐，不动主进程口径）**：`index.html` 在「补全缩略图」与「清理失效记录」两节之间新增 `#taskThumbRebuildSection`（标题 / `done / total` 计数 / 进度条 / 副行 / `当前文件` / ETA + 右侧「停止重建」按钮）；`scan-flow.js` 取值 + 进 `showPanel` 或链 + 切显隐 + 填数；`app.js` 的 `onRenderBackgroundTaskPanel` 把 `formatThumbSpec` 一起传下去；`i18n.js` 中英各 5 键（`task.thumbRebuildTitle` / `Stop` / `Count` / `Enqueueing` / `Target`）；`ui-events.js` 绑 `taskCancelThumbRebuildBtn`（处理器 `onCancelThumbnailRebuild` 早就传进来了，只是没人绑）。
+    - **副行把「目标 512 px · WEBP」与「失败 N」并排画出来**：规格串走 `formatThumbSpec`（**唯一拼法**，面板不另抄一份，否则「面板显示 256 而重建在按 512 跑」会是一次纯靠人眼的比对）；`failed` 必须画 —— M5 的验收判据是「`remaining → 0` **同时看 `failed`**」，**收敛 ≠ 成功**，只画进度条会把「160 万张全失败」显示成 100%。
+    - **登记期（`phase === 'enqueueing'`）的进度条刻意钉在 0%**：登记阶段的 `scanned` 是往上跳的、分母也在变，拿它算百分比会得到一个**会往回退**的进度条。改成显示「已登记 N 张」，条不动。
+  - **守护**：`thumbnail-regen-regression` 新增 `checkBackgroundPanelWiring()`（6 组断言：① 主进程必须单列 `thumbRebuild`；② 面板必须读它**且 `showPanel` 或链里含它**；③ 骨架与按钮的 id 及事件绑定都在；④ **面板 `getElementById` 取的每个 id 都必须在 `index.html` 里真有**；⑤ `formatThumbSpec` 必须从 `app.js` 传到面板；⑥ 5 个 i18n 键中英各一条），守护 **112 checks PASS**（原 105 → 112）。
+    - 🔴 **④ 是这次顺手补上的一个真缺口，值得单独说**：`getElementById('拼错的 id')` 是**静默**的 —— 取到 `null`、那一格永远空着，不报错也不写日志。而这条**没被 `dead-reference-regression` 覆盖**：它那条判据的 `ID_LITERAL` 是 `/^#[A-Za-z_][\w-]*$/`，只认 querySelector 的 `'#id'` 写法，**看不见 `getElementById('id')`**。另外 ② 里那几条 `indexOf(id) >= 0` 只证明「这个字符串在函数里出现过」，对**多打一个字母**（`thumbRebuildTaskEta` → `…EtaX`）是**照样通过**的 —— 补的正是「名字两边一致」这件事。
+  - **牙齿验证两次，均精确红 + sha1 逐字节还原**：① 把 `showPanel` 里的 `showThumbRebuild ||` 删掉（= 原始缺陷复现）⇒ 精确红在「showPanel 必须含 showThumbRebuild —— 否则只剩重建在跑时整块面板被 `display:none` 掉」。⚠️ 这条断言**不能写成「面板里有 thumbRebuild 字样」** —— 只查字符串的话，取值取了、`showPanel` 忘了加，缺陷照样在（这正是本次的形状）。② 把 `getElementById('thumbRebuildTaskEta')` 改成 `…EtaX` ⇒ 精确红在「面板 getElementById 取的 id 必须存在于 index.html（现在找不到：`thumbRebuildTaskEtaX`）」。
+
+- 🔴 **迁移重试时「被暂停的后台任务」又被吞掉了：`mergePausedTasks()` 写好了却没人调用**（2026-10-07 深夜）：`src/renderer/app.js` 的重试循环里写的是 `pausedSeen = (r && r.pausedTasks) || []`（**每次覆盖**），而不是 `pausedSeen = mergePausedTasks(pausedSeen, r)`（**累积去重**）。
+  - **为什么这是缺陷、且是「界面一个字都没说」那种**：真实 change 探针实测的形状是 —— 第一次返回 `code:'BUSY'` 且带着 `pausedTasks:[{清理失效记录, startup}]`（清理已被摘下来，但**在途那一批还握着写锁**），**第二次就成功了、`pausedTasks` 是空的**。覆盖写法让累积表在第二次尝试里被清空 ⇒ 暂停**真的发生了**（用户下次启动会看到清理「从零开始」），界面却什么都没提，用户无处可对。这正是这段代码自己的注释里写明的形状。
+  - **发现路径值得记**：`scripts/data-dir-regression.js` 里那条断言（「每一次尝试的返回都要过一遍累积（漏了它 = 又回到「只看最后一次」）」）**先变红了**，而与此同时 `npx eslint .` 多出一条 `no-unused-vars`（warning 数 2 → 3，指向 `mergePausedTasks`）。两条不同来源的信号指向同一件事 ⇒ 顺手用 lint 基线漂移当「有没有死代码」的探针是有效的。
+  - **注释里的 `rememberPaused` 是个不存在的符号**（全仓零命中）——说明「累积」这个修法当时只写了一半（函数 + 注释到位、调用点没换）。这与 `mergePausedTasks` 的定义一起，是「注释说一套、代码做一套」的典型，改回后已把注释里的错误符号名一并订正。
+  - **守护**：`data-dir-regression` 复跑 **PASS**（那条断言本来就钉着这个形状，不需要新增判据）。
+
+- 🔴 **「迁移到…」被后台任务挡住时报成了「迁移没有完成」（用户实拍）**（2026-10-07）：真机上点迁移，界面返回
+  `迁移没有完成。／正在清理失效记录，请等它完成后再试／图库数据没有变动，仍在原位置。` —— 前一行说失败、后一行说没事，读起来像迁移坏了，而**什么都没发生**。
+  - **根因**：`migrate-data-dir` 被写库闸门（`maintenanceBusy()`）挡住时返回的是普通失败，渲染端只有「成功 / 失败」两条路，于是把「**暂时**被挡住」渲染成了失败。启动后十几秒里几乎必然撞上一次（启动期的失效记录清理、索引补齐、FTS 维护都在这段跑），所以这不是罕见路径 —— 用户第一次点就撞上了。
+  - **修法**：主进程给「已经在迁移中」「被写库闸门挡住」两种拒绝带上 `code: 'BUSY'`（与 Changed ⑪ 是同一条原则）；渲染端按 **code** 认出来并**自动重试**（30 次 × 3 s ≈ 90 s，等待期间如实报出「在等谁、等了多久」），而不是把用户打发回去重新选目录、再确认一次 —— 那几秒里挡住的原因可能早就没了。
+  - **等满上限仍然要说对话**：超过 90 s 就停手并换成「迁移还没能开始：`{原因}`／迁移要等这些后台任务结束才能动手。等它跑完后再点一次「迁移到…」就行 —— 图库数据没有变动。」**不能无限转**（「扫描目录」这种任务可能跑几小时），也**不能说成失败**（那时关库、复制都还没开始，确实什么都没动过）。
+  - **判据按 `code` 不按文案**：这次真正要防的是「调用方拿界面文案当判据」—— 同一批改动里已经栽过一次（Changed ⑪ 那个探针）。守护钉三条：渲染端必须出现 `r.code !== 'BUSY'`、自动重试必须有上限（`attempt >= BUSY_RETRY_MAX`）、两个新文案键在中英两块里各有一条。**牙齿验证**：把 `r.code !== 'BUSY'` 换成按文案的 `/请等它/` 判断 ⇒ 精确红在「渲染端要按 code 识别『被闸门挡住』」，还原后 sha1 逐字节一致。
+  - 🔴 **第二层修法：迁移时让「清理失效记录」让路（用户指令「迁移时不清理失效」）。** 上面那层只让界面「等得起」，但**等不到头** —— 失效清理要**扫完整个库**：启动那一趟每批 400 行、批间 450 ms（`main.js#scheduleStartupInvalidCleanup` 的 `START_DELAY_MS` / `STEP_DELAY_MS` / `BATCH_SIZE`），在本机 **165.7 万行**的真库上是**几十分钟到几小时**的量级，而它整段都举着 `maintenanceBusy()` 这把闸门 ⇒「等它跑完再迁移」实际上等于「**今天别迁了**」，90 秒的重试上限必然等满。新增 `main.js#pauseInvalidCleanupForMigration()`，在 `runDataDirMigration()` 里**先让它让开、再看闸门**。
+    - **为什么让路是安全的**：这个清理是**开机自检**（`submitStartupWriteTasks` → `scheduleStartupInvalidCleanup`，每次启动都重排一次）、**幂等**（只删「源文件已不在磁盘上」的记录）、**可续跑**（倒序游标 + 每批独立事务），中断没有任何副作用；迁移完应用本来就要重启，重启后它照样跑。⇒ 用户看到的代价只是「这一趟白跑」，而不是丢东西。
+    - **两条出口各停一处，判据各不相同**：启动那一趟放闸门的判据是 `startupInvalidCleanupTask.running`（`maintenanceBusy()` 直接读它）⇒ 置 `false` **并且清掉 `timer`**（它可能正停在批间 450 ms 的 `setTimeout` 上，不清就会有一次作废的 step 空跑、还写出一条与事实不符的 `invalid-cleanup.finish` 打点）；手动那一趟的批间循环读的是 `invalidCleanupTask.cancelled` ⇒ 置 `true`。
+    - 🔴 **`invalidCleanupTask.cancelled` 原先只被读、从没被写过**（即永远的 `undefined`），为了给迁移让路才第一次真的会置位 —— 所以必须在手动入口**开跑前复位**（`invalidCleanupTask.cancelled = false;`），漏了这一行 = 用户再点一次「清理失效记录」**一批都不做就立刻结束**，界面上是「点了没反应」、日志里什么都没有。
+    - 🔴 **暂停是「已经发生的副作用」，所以每个出口都要把它带回去** —— 不只是成功那条。`runDataDirMigration()` 用一个 `withPaused()` 包装所有暂停之后的 `return`（BUSY / 体检失败 / 没数据 / 空间不够 / 成功 / 异常共 6 处），返回值新增 `pausedTasks: [{label, scope}]`。用一层包装而不是逐个 return 手写，是为了**新增出口时不可能漏**。界面上用 `dataDirPausedNote()` 如实说明，且**按 `scope` 分开说**：自动那一趟每次启动都会重排 ⇒「下次启动图库时会接着做」是真话；手动那一趟没人会替他再点 ⇒ 只能说「需要时再点一次就会接着做」；两趟都停了就两句都交代。**两种口径混成一句就会对一半错一半**（只停了手动那次时说「下次启动会自动继续」是假话）。认不出的 `scope` 另走第四句（只承诺「你可以随时重新开始」）—— 不许拿上面任何一句去猜，将来新增任务类型时那句话会变成假话。
+    - **停的是批次边界**，不是当场掐断：在途那一批会跑完（它的写库票据还在 `dbWriteQueue` 里，实测 1200 行一批约 1 s 级）⇒ 紧接着的第一次迁移尝试**可能仍撞到写锁**并返回 `code: 'BUSY'`，由界面那层 3 s 自动重试兜住。这不是失败，是设计好的两段式。
+    - **守护**：`data-dir-regression` 新增 `testPausedCleanupContract()`。两条断言**不是读源码字符串，而是把函数抽出来真跑**（`extractFunction()` + `new Function` 注入桩）—— 因为考点是「它到底有没有把两个任务从闸门上摘下来、有没有通知界面」，字符串匹配只能证明那几行写得像：① 注入 `running:true` 的启动任务 ⇒ 断言 `running` 变 `false`、`clearTimeout` **真的收到那个 handle**、`timer` 置空、启动打点 `invalid-cleanup.paused` 落盘、`emitBackgroundTasksChangedThrottled` 被调用（否则界面会一直显示「正在清理失效记录」）；② 两趟都在跑要报两条且 `scope` 不串；③ **都没在跑时一个字都不许动**（返回 `[]`、不碰状态、不发无谓的界面通知）；④ 渲染端那个 `dataDirPausedNote` 同样抽出来真跑，四种 scope 组合逐个比返回值。另外把「先让路再看闸门」的**顺序断言夹进「暂停调用 → 体检」这段区间**里比 —— 原先从暂停处往后 `indexOf('if (maintenanceBusy())')` 是**假绿**：手动静音清理的 IPC 里也有同名检查点，顺序真写反时它会替那处顶包（实测过）。
+    - **牙齿验证 5 次，每次都是精确红 + sha1 逐字节还原**：删掉暂停调用 ⇒「暂停调用要落在 runDataDirMigration 里」；删掉手动入口的 `cancelled` 复位 ⇒「手动入口要复位 cancelled」；成功返回不挂 `withPaused` ⇒「成功返回也要带 pausedTasks」（⚠️ 首轮它先撞上「实际 5 处」那条计数断言，**报不出漏的是哪一处** ⇒ 把精确那条提到计数之前）；把通知界面的 `emit…` 去掉 ⇒「要让界面立刻知道『正在清理失效记录』已经不在跑了」；把暂停调用挪到闸门之后 ⇒「先让失效清理让开，再看写库闸门」。
+    - **一条被这次改动改红的既有断言（改法值得记）**：守护里「被闸门挡住时返回 `code: 'BUSY'`」原先钉的是 `return { success: false, code: 'BUSY'` 这个**字面形状**，而这次正是要把它包进 `withPaused(...)` ⇒ 它红得完全正确。**但契约没变**（「这两种拒绝必须带可判定的 code」），所以修法是把它改成钉**契约**（`return withPaused({ ... code: 'BUSY'`），不是删掉它。同理还有一条钉渲染端 `dataDirPausedNote(` 出现次数的断言，把更精确的「成功那条要接上」提到计数之前。
+    - ⚠️ 顺带记一个**假 OK 的诱因**：`scripts/run-regressions.js` 在跑的过程中我又改了守护脚本，于是那一轮虽然 `exit=0`、末项 `ai-lifecycle-regression` PASS，**起跑时间早于最后一次改码** ⇒ 按元规则⑥ 它不算全绿，改动定稿后重跑了一遍才算数。边跑边改会得到「中途态绿」。
+
+- 🔴 **「正在检查新位置的数据时卡死」—— 不是死锁，是主线程被一个同步 `PRAGMA quick_check` 占住了 5 分 19 秒**（2026-10-07，用户实拍）：用户报「正在检查新位置的数据时卡死」，随后要求「先把数据库位置换到新位置，再解决问题」。真库（18,345,889,792 字节 / 4,478,977 页 / 1,656,580 行）上用独立进程逐步计时，读数非常干净：**读页头 103 ms → `PRAGMA quick_check` 318,948 ms（5 分 19 秒） → `COUNT(*)` 229 ms**。`better-sqlite3` 是同步 API，而这一整段跑在**主进程**上 ⇒ 5 分 19 秒里主线程一点动不了、进度事件一条发不出、窗口被系统标成「无响应」。**它不是死锁**（进程一直在读盘、也没等任何锁），是「长任务写在了主进程上」这个本工程反复记过的形状（`AGENTS.md` 的 *Critical: Main Thread Blocking Issues*）。
+  - 🔴 **搬迁本身是安全的，先落地再做修复**（按用户指定的顺序）：独立进程验副本 ⇒ `quick_check = ok`、行数 目标 = 源 = **1,656,580**、`page_count × page_size` = 4,478,977 × 4096 = **18,345,889,792** = 文件大小（逐字节相符）、`ai-search/` 13 文件与 `face-index/` 12 文件全在（唯一差异 `ai-search/gpu.json` 是每次启动重探的硬件结论）。随后在 `settings.json` 写入 `"dataDir": "D:\\AuroraGallery"`，启动日志实证生效：`[startup] db path=D:\AuroraGallery\photos.db exists=yes size=18345889792` / `photos=1656580 roots=3`。
+  - **修法一：把校验搬进独立线程。** 新增 `src/workers/db-verify-worker.js`（只取数，判定不在这里）与 `main.js#verifyCopiedLibrary()`（起 worker、3 s 一次心跳、20 min 超时兜底、**起不来时退回同步版并打 warn**）。迁移路径改调它，`dataDirLib.verifySqliteFile()` 降级为「参考实现 + 回归夹具专用」。
+  - **修法二：判据抽成唯一源。** 新增 `data-dir.js#judgeCopy()` / `judgeCopySize()` / `readSqliteHeader()`。取数有**两处**（主进程同步取 / worker 异步取），而「什么算通过」只许有一份 —— 两处各写一遍的方向必然是「一边把坏库放了进去、另一边不认」，而两条路都在迁移关键路径上。
+  - 🔴 **「文件被截断」这一道必须在 `open` 之前判死**：截断的库往往连 `new Database()` 都过不去，排在 open 之后的话报出来的是「文件打不开」，用户看不出是「没拷完」。而它同时是最省的一道 —— 读 100 字节页头，真库实测 103 ms。⚠️ 这一道用 `judgeCopySize`（只管截断），**不是** `judgeCopy` —— 后者见到「结构检查还没做」（`verdict: null`）会判 `CORRUPT`，拿它当预检会把**每个好副本都判死**。
+  - 🔴 **页头字段的实测偏移，以及那个差点写反的「可信条件」**（真库上逐字节量出来的，写进注释免得下次再猜）：第 **28~31** 字节 = 页数声明（真库 4,478,977）；第 **16~17** 字节 = 页大小编码（1 表示 65536，真库 4096）；第 **92~95** 字节 = *version-valid-for*（真库 **180**）——**它必须等于第 24~27 字节**（*file change counter*，同为 180）。⚠️ 第一版把可信条件写成「92~95 === 96~99」，一读真文件才发现 96~99 是 `SQLITE_VERSION_NUMBER`（3,053,000）⇒ 条件恒不成立、预检**永远无效**。**读到真文件才算数。**
+  - 🔴 **`PRAGMA page_count` 判截断是恒真式**（本次最大的一个错误假设）：这个 pragma 由**文件大小**推导 ⇒ `page_count × page_size` 与文件大小**恒等**，拿它比文件大小永远相等、抓不到截断。真正携带「这个库应该有 N 页」这个**声明**的只有页头第 28~31 字节。
+  - 🔴 **界面必须给出「已等多久」**：只写「正在检查新位置的数据…」放五分钟，用户唯一能得出的结论就是「它死了」（他报的原话就是这个）。新增 `emitDataDirProgress` 的 `verifyMs` 字段 + 3 s 心跳 + 渲染端 `fmtElapsedMs()`「已等 N 秒 / N 分 M 秒」+ 加一句「大图库这一步要几分钟，请不要关闭窗口」。⚠️ `verifyMs` 是**白名单拼装**的，漏了它 = 界面收得到事件却永远画不出秒数，**看上去跟卡死一模一样**。
+  - 🔴 **真实 change 探针抓到第二个真缺陷：暂停发生了、界面一个字都没说。** `.workbuddy/tmp/data-dir-paused-cleanup-probe.js` 实测 `__attempts` = `[{code:'BUSY', paused:[{清理失效记录,startup}]}, {success:true}]` —— 暂停发生在**某一次尝试**里，而界面只看得到**最后一次**的返回值（那次是空的）。修法：渲染端新增**纯函数** `mergePausedTasks(seen, res)` 按 `label+scope` 去重累积各次尝试，四处结果文案统一用累积结果。**静态断言完全测不出这个形状**（字符串在不在根本说明不了「看的是哪一次的返回值」）。
+  - 🔴 **顺带修掉 `fmtElapsedMs` 的一个 NaN 洞**：原写法 `Math.max(0, Math.round(Number(ms)/1000))` —— `Math.max(0, NaN)` **还是 `NaN`**，于是走进「分」分支、写出「已等 **NaN** 分 **NaN** 秒」。调用点虽有 `Number(p.verifyMs) || 0` 护着，但这个纯函数本身不该不设防（界面上显示 NaN 与卡死是同一件事）。
+  - **守护**：`data-dir-regression` 新增 `testReadSqliteHeader()`（真文件上「声明字节数 === 文件大小」、截断后 `声明 > 实际`、空文件 / 坏魔数 / 不存在各有明确 `reason`）、`testJudgeCopy()`（三道逐个分支 + `judgeCopySize` 的「声明不可信就跳过」）、`testVerifyWorker()`（**真起 worker**：好副本通过且带回各段耗时、行数不符、截断**在 `quick_check` 之前**判死（断言 `quickCheckMs === undefined` 且 `elapsedMs < 5000`）、文件不存在 ⇒ `UNREADABLE`），以及 `fmtElapsedMs` 的进位边界（59000 / 60000 / 319000 / NaN / 负数）。
+  - **牙齿验证 13 项，每项精确红 + sha1 逐字节还原**（脚本 `.workbuddy/tmp/data-dir-teeth.sh`，可复算、支持按步分批跑）：去掉 `await`、白名单漏 `verifyMs`、成功返回不挂 `pausedTasks`、顺序反（先看闸门再让路）、假绿 A/B（5a 绿 / 5b 红）、`judgeCopySize` 不比「比声明的短」、页头可信条件写错、`judgeCopy` 放行「不知道」、`mergePausedTasks` 不去重 / 改入参 / 界面回到「只看最后一次」、`fmtElapsedMs` 去掉 NaN 兜底、worker 不做页头预检。改写用**二进制**读写（文本模式会把 CRLF 归一成 LF，那会让「还原后 sha1 一致」当场失效）；13 步跑完全部 5 个文件的 sha1 与基线逐字节一致。
+  - 🔴 **同一次改动里修掉一条既有假绿（值得单独记）**：`testSourceContracts` 里「先校验、后改设置」这条顺序断言原先钉的是 `mainSrc.indexOf('dataDirLib.verifySqliteFile')` —— 而校验搬进 worker 之后，这个名字在 `main.js` 里**第一次出现的位置变成了 `verifyCopiedLibrary` 内部的退回分支**（是函数体，位置在迁移函数之前）⇒ 断言退化成「某个函数定义在写设置之前」，**恒真**：把真实校验调用挪到写设置之后，它照样全绿。牙齿脚本的 5a/5b 步专门把这个假绿 A/B 出来 —— **同一个 bug，旧写法 PASS、换成钉 `await verifyCopiedLibrary(` 才 FAIL**。⇒ 判据要钉**那一次调用**，不是某个同名函数的位置（元规则②「钉死代码 = 假绿」）。
+    - ⚠️ 5a 的破坏方式**不能**用「把调用整段删掉」：那样会被 `testVerifyWorker` 里另一条「迁移必须 `await verifyCopiedLibrary(`」先抓住（它只查模式在不在），**真正的假绿被顶包遮住、5a 会红**。只有「**挪位置**」对那条断言是隐形的，才隔离得出来。**做 A/B 之前先确认没有第二条断言会替它顶包**，否则得到的是一个看起来相反的结论。
+  - ⚠️ **探针连错两次，两次都不是产品的问题；第二次才找到真原因 —— 先把探针自己的「耳朵」查清楚**：升级后的探针先读出 `PASS=12 FAIL=2`，两条 FAIL 都是「校验那几分钟界面在走字」，看着像产品没修。**第一版归因（「小库 `quick_check` 太快、3 s 心跳撞不到」）是错的**（后来的运行里 `verifyMs` 实测到 **6025**，心跳明明触发了）。改成「只增不减的记录」之后仍然 FAIL，于是加了两路互相印证的读数：`MutationObserver` 记到 **0 条**、**逐轮直接读**每次都读到同一串静态占位符 `读取中…` ⇒ 那行文字确实一次没被写过。再往下量到真原因：**本沙箱起的窗口从不绘制 ⇒ `requestAnimationFrame` 触发次数实测 = 0**（去掉 `--disable-gpu-compositing` / `--disable-software-rasterizer` 之后**仍然是 0**）。而产品启动链里 `await yieldToPaint()` 是**双 rAF**，`registerRuntimeApiListeners()`（绑「画那行文字的人」）就排在它后面第四行 ⇒ init 卡死在 yieldToPaint ⇒ **运行时监听器一个都没绑** ⇒ 那行文字结构上不可能更新。⇒ 那两条改记 **SKIP 并打印 rAF 实测值**。
+  - 🔴 **顺带记下一条产品侧观察（本轮不改，先留证据）**：启动链对 `requestAnimationFrame` 有**硬依赖**，而不绘制的环境里 `init()` 会**静默停在那里**，代价是**整套运行时监听器都不绑**（关闭选择器 / 后台任务面板 / 主进程发起的提示弹窗 / 数据目录迁移进度）。本机历史上有过 GPU 进程崩掉把 `loadFile` 一起带失败的情形（见 `scripts/gpu-note-probe.js` 的注释），所以这条不是纯理论。真要修的话方向是「给那几个 `await` 加超时兜底」或「把监听注册提到 `yieldToPaint()` 之前」—— 但那是启动时序重构，与本轮的用户诉求无关，**没有顺手改**。
+
+- 🔴 **切「仅图片」媒体档 → 「照片加载失败」：根目录聚合缓存未命中时是一趟整表扫**（2026-10-07，用户报）：底栏媒体档切到「仅图片」时 `app.js#loadRootFolders` 会 `await api.getRootFolders({mediaType:'image'})`，而 `db-heavy-read.js#runGetRootFoldersAgg` 在 `root_folder_stats_cache` 未命中时走的是一趟**整表 CTE**：`SUM(CASE WHEN 视频…)` 要 `file_type`（在缩略图 BLOB **之后** ⇒ 只能逐行回表、穿过溢出页链）、`SELECT DISTINCT root_id, folder_path` 还要把 166 万行物化一遍 ⇒ 计划里是对 `photos` 的**非覆盖整表 `SCAN`**。真库（1,656,580 行 / 18 GB）实测 `mediaType='image'` **60 秒还没跑完**（探针 60 s 硬切）。
+  - **为什么只有「仅图片」炸**：真库 `root_folder_stats_cache` 只有 root 23/27 的 `all`/`video` 行、root 28 的三档 —— **root 23/27 没有 `image` 行**（扫描收尾只补它跑过的那几档）⇒ 每次切「仅图片」都必然落到那条慢路，而 `all` / `video` 档读缓存就返回了。离线补缓存也不行：档位组合是开放的。
+  - **它怎么变成用户可见的故障**：这条读走共享读池，而 `db-read-worker-pool#JOB_TIMEOUT_MS = 120000`（**含排队时间**）⇒ 被掐掉 + `retire()` 一个 worker；读池只有 3 个槽，被它占住的那 120 秒里排在后面的浏览请求一起过 deadline（`db-read-runner` 失败**不做主进程降级**，直接传播）⇒ `loadPhotos` 的 catch ⇒ **「照片加载失败」**。
+  - **修法**：`runGetRootFoldersAgg` 改成**逐根**调 `runAggregateStatsForSingleRoot`（每个指标各走一条覆盖 / 部分索引 —— 那个函数本来就是为这件事写的），原整表 CTE 只保留给「`root_folders` 为空的老库」兜底。真库实测（修复后，三根逐档**合计**）：`image` 档热态 **429 / 475 ms**（第一遍冷 1,966 ms）、`all` 档热态 **335 / 388 ms**、`video` 档 **81 ms** —— 原形状 `image` 档是 **60 s 硬切未完成**。⚠️ 第一遍的 `all` 档 root 23 单根 3,271 ms 而热态只 213~247 ms（**10 倍**，写库期间的锁/IO 争用摊进去了）⇒ 这类数字必须说清热/冷。
+  - 顺带两处索引取舍：`all` 档 `folder_count` 必须钉 `idx_photos_root_folder`（真库无 hint 时规划器挑 `idx_photos_root` 逐行取 `folder_path`：根 23 实测 3,424 ms vs **228 ms**，值相同）；而**同一档的 `COUNT(*) FROM photos WHERE root_id = ?` 刻意不加 hint** —— 规划器自选 `COVERING INDEX idx_photos_root_size` 只要 **53 ms**，**加** `INDEXED BY idx_photos_root` 反而 **399 ms**（「无 hint 就会挑错索引」那条经验说的是**带媒体谓词**的 COUNT，不适用于这条）。
+  - 守护 `scripts/query-regression.js` 的「根目录聚合统计」新节：夹具建 root 3/4（含 `''` 与 `NULL` 两种边界 `file_type`）+ 三档数值断言 + SQL 录制 → 媒体档必须钉住对应部分索引 + **逐条 `EXPLAIN QUERY PLAN` 断言「对本表无非覆盖整表 SCAN」** + `name` 升序。
+  - 🔴 **计划判据写错过两次、两次都是全绿放行**（都靠反向构造反例才发现）：① 按表名写 `/SCAN photos/` —— 整表 CTE 的别名是 `p` / `p2`，计划里是 `SCAN p`，**三例全放过、判据完全失效**；② 「有 `USING INDEX` 就放过」—— 那条 CTE 的计划实际是 `SCAN p USING INDEX idx_photos_agg_root_folder_image`，它顺着部分索引**逐项回表**取 `file_type`，一样是 91 万次回表、一样慢。正确判据 = **非 `COVERING` 的整表 `SCAN`**：`SCAN x USING COVERING INDEX i`（遍历索引不回表）与 `SEARCH x USING … (root_id=?)` 放行，`SCAN x` / `SCAN x USING INDEX i` 判红。⇒ 把这条反向验证**内建**进回归：先拿一条与兜底 CTE 同形的反例跑 `EXPLAIN QUERY PLAN`（不执行），断言它**必须**被判红 —— 判据一旦退化，自检先红，否则本节其余断言全是假绿。
+  - 🔴 **数值断言抓不住这个 bug**：退回整表写法时三条数值断言**全绿**、只有计划断言变红（整表写法算出来的数一模一样，只是慢几十倍）——「静态全绿、线上失效」的又一例。
+  - ⚠️ 顺带修掉一条**钉实现**的断言：`photoSelects.length >= 6` 数的是「逐根 = 每根 1~2 条」这个实现的查询条数，换成整表兜底只剩 3 条 ⇒ 它先红、把真正的形状断言挡在后面。契约是「不许回表整表扫」，不是「必须查几趟」⇒ 改成 `>= 1`。
+  - 反向验证四条：① 抹掉模块内的 `INDEXED BY` ⇒ hint 断言红；② 短路逐根分支、强制走整表兜底 ⇒ 数值断言红（**并暴露一处语义差异**：兜底路径由 `photos` 驱动，没有该档媒体的根会**整根从列表消失**；逐根版由 `root_folders` 驱动所以不会）；③ 构造「逐根驱动 + 整表 CTE 形状」⇒ 形状断言 ② 红（证明计划判据承重）；④ 把判据改回失效版 ⇒ 自检报红。
+
+- 🔴 **「所有文件」重新进入时跳到第一页 —— 记忆存了、也还原了，然后被抹掉**（2026-10-07，用户报）：`showTabContent('folders')` 末尾有两支「切到 folders / dates 先把右侧归位到默认视图」的重置块，它们**排在 `applyBrowseTabMemory()` 之后**、且**不区分这次是「套用记忆」还是「头一回进这个 tab」** ⇒ 刚还原出来的 `page` 又被无条件写回 1（folders 那支连 `currentView` / `currentPath` / `currentDate` 一起改写）。folders 支的判据是 `currentView !== 'folder' && !== 'folder_overview'`，而「所有文件」的视图正是 `'all'` ⇒ **目录视图毫发无伤、只有「所有文件 / 收藏」被打回第 1 页** —— 这正是用户点名「所有文件」的原因。全程不报错、不写日志。
+  - 它藏在「存进去了」这条缝里：上一轮新加的守卫只断言到**写入侧**（`tabMemory.page === 3`），**没有一条**断言还原侧（回到文件页之后 `state.page` 还是不是 3）。写入侧全绿、症状照旧。
+  - 修法：`applyBrowseTabMemory()` 改成**回报有没有命中**（`tabMemory` 可能被 `invalidateTabSessionCaches` 清空，也可能是头一回进这个 tab），两支归位各自加 `!memoryApplied` 守卫。判据用「**记忆命中**」而不是「`fromTab` 有值」—— 有 `fromTab` 但记忆为空（设置页改完库回来）时仍必须归位，不能拿旧位置硬撑。
+  - ⚠️ **刻意没动的三条路**（都是显式落点、不是重进）：① 首页卡「所有文件」/ 侧栏「所有文件」→ `viewAllPhotos()`，显式 `page = 1` —— 那是「去所有文件」这个动作本身的语义；② 导航历史 `applyBrowseLocation()` —— `captureBrowseLocation()` 的位置键只含 `view`/`path`/`date`/`tab`、**不含页码**（含了会让同一个「所有文件」因页码不同算出两个位置、后退栈长出一堆假站）⇒ 后退回「所有文件」只能落到第 1 页；③ 布局刷新引起的 `showTabContent` 重入（没有 `fromTab`）。
+  - 守护 `sidebar-tree-regression#testBrowseMemoryExits` 新增两组：**行为 4** 三个视图跑往返（目录视图当对照，`all` / `favorites` 是回归项），并断言「回来那一次加载请求的就是第 7 页」（状态对了但请求的还是第 1 页的话，用户看到的依然是第一页）；**行为 5** 是**反方向基线**（记忆被失效清空 / 这一页没存过 / 没有 `fromTab` ⇒ 必须归位到「所有文件」第 1 页），没有它的话「干脆别归位」这种写法会让行为 4 假绿。
+  - 反向验证三条：摘掉 `!memoryApplied` ⇒ `1 !== 7`；让记忆「永远命中」⇒ `'favorites' !== 'all'`（行为 5 红）；让 `applyBrowseTabMemory` 静默不返回值 ⇒ `1 !== 7`（证明 `=== true` 这条判据本身承重）。**桌面端独有**（网页端没有 `tabMemory` 这套实现）⇒ 不涉及 shell 资源，不用抬 `sw.js` 的 `CACHE_NAME`。
+
+- **「每次重进文件标签页，默认跳转之前点击的文件夹」**（2026-10-07，用户报）：导轨上点「文件」时会先把**当前**页签的位置存进浏览记忆、再按记忆还原 —— 但「离开文件页」的出口一共有**六条**，其中**首页**与**设置页**这两条没存。于是用户的路径是：在搜图结果里点目录 X 跳过去 → 又去首页绕了一圈 → 回「文件」页 ⇒ 拿到的记忆停在**上一次走导轨**时的那个 X（这中间真正的浏览动作一条都没记上）。症状看着完全像浏览记忆本身坏了，实际是「六条出口只存了四条」。契约见 `docs/contracts/reentry-state.md`。
+  - 六条出口分别是：导轨的搜图 / 人物 / 日期 / 重复（`ui-events.js#bindNavTabs`，按 `prevTab` 判一次）、`viewDuplicates()`（自己那两支）、**首页** `openHomePage()`、**设置页** `openSettingsPage()`。修法是新增 `app.js#rememberBrowsePosition()` 把判据收到唯一一处（`currentTab` 是 `folders` / `dates` 才存 —— 搜图 / 人物有各自的视图态，存进 folders 记忆会让相册页拿到 `ai_search` 视图），缺的两条出口各补一次调用。
+  - 🔴 **调用位置本身就是契约**：它读的是 `state.currentTab`，所以在 `openHomePage()` 里必须落在 `state.currentTab = 'home'` **之前**（挪到之后 = 判据恒假、静默不存，不报错、不写日志，只是记忆永远停在更早的位置）；在 `openSettingsPage()` 里必须落在 `settingsFlow.openSettingsPage()` 那个 `await` 之前（await 期间后台回调可能已经改过 state）。
+  - 守护 `sidebar-tree-regression#testBrowseMemoryExits`：行为面覆盖六条出口（存了什么、非浏览页签是 no-op、dates 不会串写 folders），静态面钉「判据在两处 switch 之前」「导轨处理器按 `prevTab` 窄判」「`saveBrowseTabMemory(` 全文件恰好 **4** 处」（定义 1 + `rememberBrowsePosition` 1 + `viewDuplicates` 2）。
+  - ⚠️ **语义刻意没动**（用户 2026-10-07 拍板）：记忆记的是「上次**离开**文件页时在哪」，于是**从搜图结果跳进的目录也算一次浏览**，下次重进就落在那里。这是期望行为、不是这次的 bug —— 别顺手改成「只记住手动浏览过的目录」。
+
+- **缩略图响应头写死 `image/jpeg`：库里一旦出现异格式就是静默破图**（2026-10-07，巡检发现）：`thumb_format` 这一列早就存在（写入端如实记录它、迁移判据 `<> 'webp'` 也在用它），但**服务端从来没读过它** —— `database.js#getThumbnail()` 只 `SELECT thumbnail, has_thumbnail`，格式在**取数处**就被丢了（字段传播链上少带一个字段），于是桌面 `thumb://` 与网页端 `/thumb/:id`（安卓端走同一条）只能把 `image/jpeg` **硬编码**在 6 个地方。
+  - 症状是**静默的**：字节是 WebP、头写着 JPEG 时浏览器不抛错、不进 console、只是不解码 —— 表现成「格子空白 / 预览一片白」，排查会被带偏到「文件损坏 / 解码器坏了」上。今天全库仍是 `jpeg`（活库 1,656,548 行有缩略图；最近 5 万行 49,999 条 `jpeg/256` + 1 条空 BLOB），所以这个 bug 目前**肉眼不可见**，只等第一次换编码器的那天。
+  - 修法：新增 `src/main/thumb-format.js` 作唯一真相源（白名单 + 格式→MIME + `normalizeThumbFormat()` + `thumbMimeType()`；未知 / 空 / 非法一律回落 `image/jpeg` —— `''` 的语义是「本列引入之前的存量行」，实测全是 JPEG，回落成别的东西等于把那批全部标错）。`database.js` 改为消费它（删掉本地副本），`getThumbnail()` 带出 `format`；6 处响应头改成派生 —— 桌面 `thumb://` 用 `thumbMimeType(cached.format)`、网页端 `handleThumb` 用 `thumbMimeType(photo.format)`，当场生成的三处用与写入**同源**的 `generatedFormat`（写进库的 `thumb_format` 与响应头读同一个值，避免「改了编码器忘了改头」）。
+  - 存量行为不变：`format === ''` 回落 `image/jpeg`；`photo://` 的 RAW→JPEG 预览与 2560 档预览缓存那几处**保持硬编码**（它们不是缩略图、编码就写在上两行），已就地加注释说明，免得后来人被「顺手统一」掉。
+  - 守护 `thumbnail-spec-regression` 第 4 组：① 白名单每项必须**显式**有 MIME（漏项 = 静默回落）；② 未知 / 非法值必须落到 `image/jpeg`；③ 夹具写一行 webp 缩略图，`getThumbnail()` 必须能说出 `webp`（钉住「SELECT 列清单不许丢字段」）；④ 用 acorn 取两个 thumb 处理器的**真实函数体**，断言体内没有 `image/jpeg` 字面量、且走了 `thumbMimeType()`。反向验证：把网页端那一处改回 `'image/jpeg'` ⇒ 断言命中并报出文件名 + 处理器名。
+  - 顺带修掉 `scanner.js` 里一句漂了的行号注释（「编码在 714 行」，实际在 784 行 ⇒ 改成不写行号）。
+
+- **切换照片时「照片信息」面板不刷新**（2026-10-07，用户报）：预览里开着面板时用键盘 `←`/`→`（以及幻灯片）切图，**标题换了、面板还是上一张的读数**。鼠标点两侧箭头看不出这个问题，只是因为那一下会命中 `_closePreviewInfoPanelOnOutside` 把面板顺手关掉 —— 等于绕开了它。
+  - 根因是**接线漏了**：面板内容只在四处刷新（打开面板 / 改字段 / 切语言 / AI 标签补写完成），**切图路径不在其中**，而切图有唯一出口 `app.js#openPreview`。网页端（`src/web/js/app.js#openPreview`）一直有这一步，桌面端漏了。
+  - 修法：切图后调 `refreshOpenPreviewInfoPanel(state.previewPhotos[index])` —— **显式传当前张**，不依赖 `previewFlow.openPreview()` 内部给 `state.previewIndex` 赋值的时序。
+  - 🔴 只加刷新会引入**第二个**静默 bug：连切（按住方向键）时「上一张的回包」会晚于「这一张的首屏」到达 ⇒ 面板显示 B 的照片配 A 的读数，不报错。故两端各加一个加载代号 `previewInfoLoadSeq`，比对不通过的回包直接丢（桌面端挡在三条异步来源的唯一写入口 `patchInfo`，网页端 `loadPreviewInfoPanel` 是 async 且内有多次 await、两次调用会交错，挡在 `render`）。这条**实测承重**：只摘掉守卫 ⇒ 探针仅 C 项变红。
+  - 守护 `photo-info-fields-regression` 第 5d 组（用 acorn 定位函数体，不用文本匹配 —— 注释里反复出现这些函数名）：切图出口必须刷、必须显式传当前张、必须丢掉过期回包，两端同口径。另加人工探针 `scripts/preview-info-refresh-probe.js`（加载真实 `index.html` + 真实 `app.js`，只桩数据层，真走 `navigatePreview()` 切图；不进 `npm test`）。反向验证：摘掉切图那句 ⇒ B/B3 红；摘掉代号守卫 ⇒ 只有 C 红。
+  - `sw.js` 缓存 v49 → v50（网页端 `js/app.js` 属 shell 资源，cache-first 不升版本改动静默不生效）。
+
+- **缩略图补全「第二趟」把界面卡死两分半**（2026-10-07，用户报）：日志停在 `thumbnail pass drained, switching to metadata pass` 之后就没动静了，界面整个卡住。这不是「慢」，是**主线程被一句同步 SQL 独占**：`getPhotosMissingThumbnailsBefore()` 是全工程**唯一一条「谓词完全无索引可依 + 倒序 LIMIT」**的取批，执行计划恒为 `SEARCH photos USING INTEGER PRIMARY KEY (rowid<?)` ⇒ 代价 = 游标到第一个命中行的**距离**，而不是批大小。
+  - 真库（1,656,580 行）只读实测：id 1,181,504 以上共 **80 万行「候选 = 0」**（早就补完了），而第二趟每轮都从 `MAX(id)+1` 起手 ⇒ **每轮白扫 75.7 万行回表 = 159,601 ms**；`startup-performance.json` 同一次启动里打点断档 12,786 → 173,311 ms、`eventLoop.maxDelayMs = 159699`，逐毫秒对上（对照：第一趟走 `idx_photos_hasThumb` = **8 ms**）。
+  - ⚠️ **不会自愈**：候选上界随补全推进**逐轮下移** ⇒ 白扫只会越来越长。而那次卡顿曾被归给「强杀进程留下的 3.67 GB WAL」—— 那是**放大器**（同一行冷回表 ~0.2 ms），语句形态才是起因。
+  - 修法两件**必须同时**：① 新增部分索引 `idx_photos_backfill_pending ON photos(id) WHERE <候选核心谓词>`；② 取批 WHERE 里加一个**逻辑上冗余**的合取项（`_sqlBackfillPendingExpr() ⟹ 那个核心谓词`，所以**口径零变化**，结果集逐行相同）。⚠️ 只做①没用 —— 夹具实测「索引存在、谓词不动」时计划**仍是**老形状：部分索引要求「查询的 WHERE 蕴含索引的 WHERE」，而那个「四支 OR + 逐支 residual」的形状规划器证不出来；把核心谓词当成一棵与索引 WHERE **逐字相同**的子树显式合取进去，蕴含才退化成一次表达式树相等比较。
+  - 核心谓词只留「缺什么」、**不含失败标记**（那是逐支 residual 的事），且后三支**刻意被 `is_image` 门住**：视频 `dhash` 恒 NULL，不门住就会永久留在索引里，倒序扫到时逐个回白表（夹具实测：不门住 125 个视频条目 / 门住 **0**）。第一支（缺缩略图）**不许**门进 `is_image` —— 视频的缩略图是能生成的。
+  - 🔴 新索引会把**既有查询**带偏：`getPhotosLackingThumbnailBefore()`（第一趟）的 WHERE 同样蕴含核心谓词，而两者条目数差三个数量级（真库 ≈0 vs ≈86 万）⇒ 第一趟必须钉 `INDEXED BY idx_photos_missing_thumb`（走 `hasIndex()` 闸门，索引缺席时**不许**加 hint —— 指向不存在的索引是 `no query solution` 报错，不是变慢）。
+  - 谓词唯一真相源在 `db-heavy-read#BACKFILL_PENDING_CORE_PRED`（`database.js` 与 `main/deferred-indexes.js` 都取同一份；索引名在 DDL 里写成字面量，才能被延迟索引白名单的源码正则看见）。该 DDL 里**烤了 `EXIF_SCHEMA_VERSION`** ⇒ 是本工程第一条**会随版本变化**的索引，带 `rebuildOnChange`：`deferred-index-worker` 比对 `sqlite_master.sql` 与期望 DDL，不同就 DROP + CREATE（`IF NOT EXISTS` 只认名字、不认定义 —— 升版后留下的旧定义会让蕴含**静默**证不出来，第二趟又退回全表扫）。
+  - ⚠️ `rebuildOnChange` 的**比较口径**埋着一个陷阱：**SQLite 存进 `sqlite_master.sql` 时会剥掉 `IF NOT EXISTS` 这半句** ⇒ 只折叠空白的话，库里那条**永远**「等于不了」清单里的 DDL ⇒ 判成「定义变了」⇒ **每次启动都白花几分钟重建整条索引**（正是 `rebuildOnChange` 想避免的那个失败模式，只是换了个方向）。已修：`deferred-index-worker#normalizeSqlText` 除了折叠空白，还剥掉 `IF NOT EXISTS`。⚠️ 归一化**只许剥这一句** —— `IFNULL(exif_ver, 0) < 1` 与 `< 2` 这种**实质**差异必须留在比较里（抹平了重建断言就成了空过），所以守护里另钉一次「版本号字面量」。
+  - 建索引代价：核心谓词引用的四列（`has_thumbnail` cid 12 / `dhash` 29 / `exif_mtime` 34 / `exif_ver` 36）**全在 `thumbnail`（cid 11）之后** ⇒ 逐行穿 7.6 KB 溢出页链，真库外推 **3~5 分钟**，只在 `deferred-index-worker` 里跑（已登记进延迟索引白名单）。守护 `thumb-backfill-metadata-fetch-regression`（新增 11 组：从活代码 `db.prepare` **截获**取批 SQL，不抄一份；钉住「跨文件同源」「CORE 四支逐字」「取批含冗余项」「建索引前是老形状」「只建索引不翻计划」「加冗余项才翻」「新旧逐行相同」「第一趟仍走自己的索引」「计数仍走 `idx_photos_hasThumb`」「索引缺席不加 hint」「`rebuildOnChange` 的**行为**（真跑 worker：旧定义 ⇒ 真重建 + 有打点；定义已对 ⇒ 零打点）」）。⚠️ 跑真 worker 时**不能**拿 `worker.terminate()` 之后的退出码判失败 —— **`terminate()` 会把退出码变成 1**（Node 既定行为），曾让这条守护在最后一步假红。
+
+- **顶栏与首页的「照片数」对不上**（2026-10-07，用户报）：同一个库，顶栏显示 **1,656,580 张照片**、首页显示 **1,629,971 张照片 + 26,609 个视频** —— 差值恰好是视频数。两个数**谁都没算错**，错在口径没共用一份：`getStats()` 的 `totalPhotos` 是 `COUNT(*) FROM photos`，**含视频行**；首页做了 `total − videos`，顶栏却把它直接标成「张照片」。
+  - 收敛为唯一真相源 `app.js#stillPhotoCount`，顶栏全档 / 顶栏「仅照片」档 / 文件夹作用域 / 首页统计带**四处共用**。文件夹 `image` 档是唯一例外（`result.total` 那条 SQL 已带 image 谓词，再减就错）。顺带修掉顶栏「仅照片」档 —— 它的体积原先用的是全库 `totalSize`，含视频。
+  - 🔴 用减法而**不是**新增一条 `NOT IN (视频)`：`file_type` 为 `NULL` 的行会被 `NOT IN` 一并排除，与「全档 − 视频档」不是同一个集合（这与 `runAggregateStatsForSingleRoot` 里那条老注释是同一个坑）。未知扩展名（`.xyz`）与 NULL 都归照片。
+  - 「从文件夹视图回首页」时顶栏会残留**该文件夹**的局部计数（`paintBrowsePhotoGridShell` 改写的），`openHomePage()` 现在把它还原成全局统计 —— 这是同一处界面上另一种更离谱的错位。
+  - 网页端是**另一份实现**（`compactLibraryStats` / `compactFolderStats`，没有共享模块），同步改；`sw.js` 缓存 v47 → v48。守护 `stats-count-parity-regression`（新增：真夹具跑 `statsAggSql` 验守恒 + acorn 剥 AST 溯源每个「照片」位）。
+  - `home-page-regression` 里那条原本钉 `total - videos` **字面量**的断言改为钉「调了真相源」—— 钉具体表达式会在抽函数时误报（元规则 ⑤：锚点禁钉具体实现调用）。
+
+- **「所有文件」报「照片加载失败」**（2026-10-06，用户报）：`all` 档为了藏掉 Live Photo 的伴生 MOV，在整张 `photos` 表上压了一句 `COALESCE(live_still_id, 0) = 0`。语义上只排掉 **1 行**，代价却是计划从「覆盖索引扫描」退化成**逐行回表** —— `live_still_id` 在 `photos` 里排在缩略图 BLOB **之后**且没有任何索引，真库（1,656,580 行 / dpr 1）实测 `SELECT COUNT(*) FROM photos` **478 ms → 105,954 ms（221×）**。它挂在 `getPhotos()` 的第一步（COUNT 先算 `totalPages`，`photosTotalCache` 首次必然未命中）⇒ 入口要等近两分钟，前端先超时、`loadPhotos` 的 catch 接管 ⇒ 界面上就是「照片加载失败」。另外两档平安无事正好互相印证：`image` 档早退不带谓词（1,347 ms）、`video` 档有部分索引 `idx_photos_agg_root_folder_video` 先筛到 2.6 万行（2,825 ms）。
+  - **治本不是删条件，是换形状 + 让索引兜**：条件改成 `id NOT IN (SELECT id FROM photos WHERE live_still_id > 0)`，子查询由新增的**部分索引** `idx_photos_live_companion`（`ON photos(id) WHERE live_still_id > 0`，真库上只有 **1 个条目 / 1 页**）兜住，外层重新拿回覆盖扫描（`SCAN photos USING COVERING INDEX` + `CREATE BLOOM FILTER`）。结果值与旧写法**逐个相同**（1,656,579）。索引照旧只走 `deferred-index-worker`（进 `PHASE5_INDEXES`，第 6 条）。
+  - 🔴 **闸门必须自适应，不能无条件加**：实测「那条索引不在时，`NOT IN` 与 `COALESCE` 一样慢」—— 带内联 BLOB 的 60,000 行夹具上 **231 ms vs 231 ms**（子查询自己退化成 `SCAN photos` 回表），索引就绪后 `NOT IN` 是 **4 ms（58×）**。所以索引就绪之前**刻意不加**（宁可多显示那 1 行，也绝不回到 106 秒）。闸门是 `db-heavy-read.js#liveCompanionExcludeCondition()`，返回 `null` 即「不加」；索引名与谓词都只在它那里写一份，与 `deferred-indexes.js` 的 DDL 由 `read-latency-regression` 断言逐字一致（SQLite 的部分索引匹配是**逐字**的）。
+  - `maintenance-regression` 的「延迟索引不许出现在启动路径」白名单同步补上 **Phase 5 全批**：原先那五条**没登记** —— 它们已从 worker 搬到 `main/deferred-indexes.js`，而这条守保护的是 worker 源码 ⇒ 那五条其实一直没被守住。现在两个合法家都登记了。
+  - 同一函数的两个消费者 `getFolderPhotos` / `searchPhotos` 只取了 `mediaConds[0]`，而 `_pushMediaTypeCondition` 在 `video` 档会 push **两条**（排除伴生视频 + 视频扩展名）⇒ 那两个入口的「视频」档**把照片也列出来**。夹具实测（6 jpg + 4 mp4 + 1 mov + 1 伴生 MOV）：`getFolderPhotos(video)` 返回 **11** 行（应为 5）、`searchPhotos('IMG', video)` 返回 **6 张 jpg**（应为 0）；而同参数的 `getPhotos`（用 `join(' AND ')`）两个都对 —— 同一个 `mediaType` 在四个入口上分叉。改为 `join(' AND ')`。守护 `query-regression` 新增一节「同一个 `mediaType` 在四个入口上的集合必须一致」（抓**消费者**丢条件，而不是某条 SQL 的写法），`live-photo-regression` 扩成**两态都断言**。
+  - ⚠️ `searchPhotos` 的 `all` 档**刻意不排**伴生视频（`preserveLiveCompanion`）：`hasExtraFilter` 的判据是 `!!favoritesOnly || mediaConds.length > 0`，排了就会把无筛选搜索判成「有附加筛选」，两条经过标定的优化同时失效（total 79.5 ms → 25,759.7 ms = **324×**、取一页 141.2 ms → 32,428.3 ms = **230×**），而收益只是少显示 1 行。预览作用域同步按「产出当前列表的那个函数」判：`view === 'search'` 不排，其余视图排 —— 否则出现「列表里没有这张卡、预览的上一张/下一张却跳得到它」。
+  - ⚠️ 顺带一条新知道的限制：`ALTER TABLE photos DROP COLUMN live_still_id` 会被 SQLite 拒绝（`error in index idx_photos_live_companion after drop column`）—— 被**索引引用**的列不能直接删。将来真要删列，必须先 `DROP INDEX`、并连 DDL 一起改（否则下次启动又建回来）。
 
 - **「点下去什么都没发生」**（2026-10-06，用户报「补齐缩略图点击之后不开始」）：两个长后台任务（缩略图补全 / 重复比对）各自有「IPC 入口」与「任务内部」两道准入检查，它们是**各写一份**的，于是漂移了 —— `start-thumbnail-backfill` 漏了 `duplicateHashTask.running`，而 `runThumbnailBackfill()` 内部**多一条**；反过来也一样。两个 handler 都是「立即返回、任务在后台异步跑」，返回值只挂了 `.catch` ⇒ 内部早退时 **IPC 已返回 `{ success: true }`，任务却什么都没做**：前端不弹任何提示，刷新后显示「未运行」；而拒绝日志用 `logger.log`（info），生产档级别是 `warn` ⇒ **连一行现场都没有**。**这是静默失效，不是性能问题。** 守护 `thumb-dup-admission-parity-regression` + `maintenance-guard-regression`。
   - 判据收敛为**唯一一份**（`thumbnailBackfillBlockReason()` / `duplicateHashBlockReason()`，IPC 入口与任务内部共用），**不许再把判据内联回 handler**（内联就是下一次漂移的起点），拒绝日志提到 **warn** 级。
@@ -94,6 +1163,10 @@ Release versions match the root [`package.json`](package.json) `version` field.
 - **1.7.0**（导入与文件操作）：拖拽导入、按日期组织导入、安全移动 / 复制 / 删除。
 - **1.8.0**（复合资源）：RAW + JPEG/HEIC 配对、Live Photo / Motion Photo。
 - **1.9.0**（内置编辑）：裁剪、旋转、翻转、缩放与基础调整。
+
+- ~~**未排期 · 缩略图档位 / 编码格式（JPEG 256 → 512 + WebP）**~~：**已于 2026-10-07 落地**（见 `[Unreleased] → Added` 的前三条：默认档位改成 512 + WebP、全量重跑机制、浏览层混规格）。骨架（白名单收了 `webp`、迁移判据 `thumb_format <> 'webp'` / `thumb_size <> 目标`、`countThumbnailsNeedingRegen()`、响应头按行派生）当时就备好了，这次补上的是**生成端换档位/编码器**、**把已入库的存量整体重跑一遍的机制**、以及**浏览层在混规格下正确显示**。下面几条实测数据仍是这套取值的依据，保留备查：
+  - 重生成成本 ≈ 重读一遍全部原图（首触 458 ms/张 ⇒ ~210 CPU 小时，8 并发 ≈26 h 起），**与目标档位几乎无关**；写放大、WAL、`dbWriteQueue` 独占准入同 WebP 迁移那一段。
+  - 语义索引源会随档位改变（`docs/contracts/semantic-search.md` 明写「要提分辨率必须先改索引源」）⇒ 必须按同源重建。**这一件本轮刻意没做**：用户明确要求「语义搜图先不改」。人脸不受影响（主路读原图，缩略图只是回落）。
 
 > ⚠️ **编号在 2026-10-05 整体顺延一档**：本计划原把 `1.3.0` 留给「组织能力基础」，但实际先发布的是「界面与交互批次」（见下）。为免出现两个语义不同的 `1.3.0`，原 `1.3.0` 起的编排全部 +1，`docs/RELEASE_PLAN.md` 已同步。
 
