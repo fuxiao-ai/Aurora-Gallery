@@ -868,6 +868,13 @@ Release versions match the root [`package.json`](package.json) `version` field.
   - **`## History` 移到 `## Features` 之后**，四阶段：2026-04 起步 / 2026-05 质量与性能 / 2026-09 → 10 本地 AI / 2026-10 至今。⚠️ 写历程时发现的矛盾：`1.2.0` 的版本日期是 2026-10-03，而其内文全是 2026-09-25/27/29 ⇒ **9 月的 AI 开发没进 git**，故该阶段写作「2026-09 → 10」。
   - 🔴 **补 `LICENSE`（MIT）** —— 根目录此前**没有** LICENSE / COPYING / AUTHORS，而 README 与 `package.json` 都声明 MIT ⇒ 授权只有声明、没有载体（GitHub 也因此识别不出 license，多数 Awesome / 第三方榜单按 license 过滤，无 license 直接被机器筛掉）。版权行与 `package.json#author` 同源。
   - `package.json` 补 `keywords`（20 个）/ `repository` / `bugs`（三个字段此前全缺）；仓库侧 `description` 改为英文为主、`topics` 由空补满 20 个 —— GitHub 站内搜索把 topic 当精确匹配信号，且 `github.com/topics/<x>` 是长期免费的浏览入口。
+- **🖼️ 界面截图进 README 与官网「产品展示图」**（2026-10-10，用户口径「加上一些图片示例，需要我审核，不暴露隐私」→ 四张审核通过「都能用」）。
+  - **隔离演示库渲染真实应用**：`LOCALAPPDATA` 重设隔离数据目录 + 64 张自生成 SVG 插画（四个分组各 16 张）；自证闸门每轮验 `dataDir ⊆ %TEMP%\aurora-demo-la && totalPhotos === 64`；隔离目录 `dir /AL` 零 junction，`ai-search/` 的 778 MB 全是 ONNX 模型文件（索引 sqlite 仅 8 KB 空、`faces.sqlite` 28 KB 空）⇒ **截图内无真实照片、无真实路径、无人脸、无局域网地址**。
+  - **四张 1920×1080**（`promo-site/images/feature-01..04.jpg`，sharp 转 JPEG 合计 ≈540 KB）：主界面网格与目录树 / 全屏预览与整理工具条 / 局域网网页端 / 设置-外观与行为。
+  - **官网 `promo-site/index.html`**：「产品展示图」由 3 个占位坑位扩成 4 张真实幻灯片，`captions` 数组同步 4 条；alt 按真实内容改写；「替换图片说明」开发占位卡换成面向访客的说明；删掉 `onerror` 占位降级块（图片已随仓库提交，不再需要兜底文案）。
+  - **两份 README** 新增 `## Screenshots` / `## 界面截图`（引用同四张 jpg），节顺序中英对齐；顺带补上中文版缺失的第 6 条「有规模，但不失控」（英文版有、中文版漏了）。
+  - 🔴 **环境坑（非应用缺陷）：Windows 遮挡计算会让 rAF 停摆** ⇒ 应用启动卡死在渲染层 `await yieldToPaint()`（`renderer.landing.done` 永不打印、网格不渲染、侧栏永远「正在加载目录…」，且**零 JS 报错**）。`Page.bringToFront` 与 hide/show 往返都无效；解法是启动开关 `--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`（零源码改动）。诊断锚点：`document.visibilityState` 与「2 秒内 rAF 帧数」两个探针。
+  - 另两个自动化小坑：进预览是**单击**（`#photoGrid` click 委托 → `.photo-card[data-preview-index]`）而非双击；程序化 `dispatchEvent` 因 `isTrusted=false` 被拦，CDP 自动化要走 `Input.dispatchMouseEvent` 或直接调 `openPreview(i)`；Electron 里 `/json/new` 建不了新页 ⇒ 局域网网页端截图用**同 target `Page.navigate`** 到 `http://127.0.0.1:3456/`。
 
 ### Fixed
 

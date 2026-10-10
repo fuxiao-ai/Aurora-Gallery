@@ -55,6 +55,26 @@ Website: <https://foredawn.vip/>
 - **Editing and organizing, not just viewing.** Non-destructive rotate, flip and crop; ratings, flags and user tags; one filter model that stays consistent across the list, folder, date, search, tag and preview scopes.
 - **Contracts backed by regression guards.** Behaviour established empirically is written down as a contract under [`docs/contracts/`](docs/contracts/); each one that matters has a regression script that fails the suite when it drifts—today that is 80+ scripts, from SQL execution plans down to whether a keyboard shortcut is actually wired to a handler.
 
+## Screenshots
+
+Four screens from the app itself, captured on a demo library of 64 generated illustrations—no personal photos, file paths or network addresses.
+
+![Overview: photo grid, folder tree and filter bar](promo-site/images/feature-01.jpg)
+
+_Overview — photo grid, folder tree and filter bar._
+
+![Full-screen preview with the organize toolbar](promo-site/images/feature-02.jpg)
+
+_Preview — full-screen viewing with the rotate, flip, crop and organize toolbar._
+
+![The same interface in a browser on your LAN](promo-site/images/feature-03.jpg)
+
+_Web access — the same interface in a phone or desktop browser over your LAN._
+
+![Appearance and behavior settings](promo-site/images/feature-04.jpg)
+
+_Appearance — interface style, accent colour, background and window behaviour._
+
 ## Features
 
 High-level overview; details follow the in-app **Settings** pages.

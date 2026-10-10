@@ -290,7 +290,7 @@
           <div>
             <h2 class="text-2xl font-bold md:text-3xl">产品展示图</h2>
             <p class="mt-2 text-sm text-slate-300">
-              自动轮播展示核心界面。你只需替换下方图片路径即可。
+              四张均为应用真实界面截图，自动轮播展示核心流程。
             </p>
           </div>
           <span
@@ -306,58 +306,37 @@
             <div class="slide active">
               <img
                 src="./images/feature-01.jpg"
-                alt="界面总览截图"
+                alt="主界面：照片网格、目录树与筛选栏"
                 class="h-full w-full object-cover"
-                onerror="
-                  this.style.display = 'none';
-                  this.nextElementSibling.style.display = 'flex';
-                "
               />
-              <div class="soft-grid hidden h-full items-center justify-center text-center">
-                <div>
-                  <p class="text-sm font-medium text-cyan-200">截图 01 占位</p>
-                  <p class="mt-1 text-xs text-slate-400">`./images/feature-01.jpg`</p>
-                </div>
-              </div>
             </div>
             <div class="slide">
               <img
                 src="./images/feature-02.jpg"
-                alt="查找与分类截图"
+                alt="全屏预览与整理工具条"
                 class="h-full w-full object-cover"
-                onerror="
-                  this.style.display = 'none';
-                  this.nextElementSibling.style.display = 'flex';
-                "
               />
-              <div class="soft-grid hidden h-full items-center justify-center text-center">
-                <div>
-                  <p class="text-sm font-medium text-cyan-200">截图 02 占位</p>
-                  <p class="mt-1 text-xs text-slate-400">`./images/feature-02.jpg`</p>
-                </div>
-              </div>
             </div>
             <div class="slide">
               <img
                 src="./images/feature-03.jpg"
-                alt="局域网与远程访问截图"
+                alt="局域网网页端：手机与电脑共用同一套界面"
                 class="h-full w-full object-cover"
-                onerror="
-                  this.style.display = 'none';
-                  this.nextElementSibling.style.display = 'flex';
-                "
               />
-              <div class="soft-grid hidden h-full items-center justify-center text-center">
-                <div>
-                  <p class="text-sm font-medium text-cyan-200">截图 03 占位</p>
-                  <p class="mt-1 text-xs text-slate-400">`./images/feature-03.jpg`</p>
-                </div>
-              </div>
+            </div>
+            <div class="slide">
+              <img
+                src="./images/feature-04.jpg"
+                alt="外观与行为：多套界面风格与配色"
+                class="h-full w-full object-cover"
+              />
             </div>
             <div
               class="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/80 to-transparent p-4"
             >
-              <p id="slideCaption" class="text-sm text-slate-200">界面总览：清爽布局与多主题切换</p>
+              <p id="slideCaption" class="text-sm text-slate-200">
+                界面总览：照片网格、目录树与筛选栏
+              </p>
               <div id="slideDots" class="mt-2 flex gap-2"></div>
             </div>
           </div>
@@ -366,17 +345,17 @@
             <div
               class="soft-grid min-h-[140px] rounded-xl border border-dashed border-white/25 bg-slate-900/40 p-4"
             >
-              <p class="text-xs text-slate-300">替换图片说明</p>
+              <p class="text-xs text-slate-300">截图均为应用真实界面</p>
               <p class="mt-1 text-xs text-slate-500">
-                把截图放到 `promo-site/images/` 目录，并命名为 `feature-01/02/03.jpg`。
+                取自演示图库（64 张自生成插画），不含任何真实照片与个人路径。
               </p>
             </div>
             <div
               class="soft-grid min-h-[140px] rounded-xl border border-dashed border-white/25 bg-slate-900/40 p-4"
             >
-              <p class="text-xs text-slate-300">轮播设置</p>
+              <p class="text-xs text-slate-300">自动轮播</p>
               <p class="mt-1 text-xs text-slate-500">
-                当前自动切换间隔为 4 秒，可在脚本中调整为你想要的节奏。
+                当前切换间隔为 4 秒，也可点下方圆点手动切换。
               </p>
             </div>
           </div>
@@ -488,9 +467,10 @@
 
         var slides = Array.prototype.slice.call(document.querySelectorAll('#gallery .slide'));
         var captions = [
-          '界面总览：清爽布局与多主题切换',
-          '查找分类：快速定位想看的图片',
-          '多端访问：局域网与远程都可浏览',
+          '界面总览：照片网格、目录树与筛选栏',
+          '全屏预览：缩放、旋转与整理工具条',
+          '多端访问：局域网内手机、平板、电脑共用一套界面',
+          '外观与行为：多套界面风格与配色随心切换',
         ];
         var captionEl = document.getElementById('slideCaption');
         var dotsWrap = document.getElementById('slideDots');
